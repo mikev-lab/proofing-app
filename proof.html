@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCE Printing - Proof</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Load Inter font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+        #pdf-viewer {
+            position: relative;
+            width: 100%;
+            height: 100%;
+        }
+        #pdf-canvas {
+            width: 100%;
+            height: auto;
+            border-radius: 0.375rem; /* rounded-md */
+        }
+        #navigation-controls {
+            position: absolute;
+            bottom: 1rem;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            align-items: center;
+            background-color: rgba(15, 23, 42, 0.8); /* bg-slate-900/80 */
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem; /* rounded-lg */
+            backdrop-filter: blur(4px);
+        }
+    </style>
+
+    <!-- PDF.js Library -->
+    <script src="https://mozilla.github.io/pdf.js/build/pdf.mjs" type="module"></script>
+
+</head>
+<body class="min-h-screen bg-gradient-to-br from-[#0f172a] to-[#334155] text-gray-100">
+
+    <!-- Header Navigation -->
+    <nav class="bg-slate-800/60 backdrop-blur-sm shadow-lg">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between items-center h-16">
+                <!-- Logo/Title -->
+                <div class="flex-shrink-0 flex items-center">
+                    <h1 class="text-2xl font-bold text-white">MCE Printing</h1>
+                </div>
+
+                <!-- User Info & Logout -->
+                <div class="flex items-center">
+                    <span id="user-email" class="text-sm text-gray-300 mr-4 hidden sm:block"></span>
+                    <a href="dashboard.html" class="text-sm text-gray-300 mr-4 hover:text-white">Dashboard</a>
+                    <button id="logout-button" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all duration-150 ease-in-out">
+                        Sign Out
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="flex-1 p-6">
+        <!-- Loading Spinner -->
+        <div id="loading-spinner" class="text-center py-12">
+            <div class="h-12 w-12 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900 mx-auto" role="status">
+                <span class="sr-only">Loading...</span>
+            </div>
+            <p class="mt-4 text-gray-300">Fetching proof details...</p>
+        </div>
+
+        <!-- Project Content -->
+        <div id="project-content" class="hidden grid grid-cols-1 md:grid-cols-3 gap-6">
+            <!-- Left Column: PDF Preview -->
+            <div class="md:col-span-2 space-y-6">
+                <div class="bg-slate-800/60 p-6 rounded-lg shadow-xl border border-slate-700/50 min-h-[700px] flex flex-col">
+                    <h3 id="project-name-header" class="text-xl font-semibold text-white mb-4">Proof Preview</h3>
+                    <div id="pdf-viewer" class="flex-1 bg-black/20 rounded-md flex justify-center items-center overflow-auto">
+                        <canvas id="pdf-canvas"></canvas>
+                        <div id="navigation-controls" class="hidden">
+                            <button id="prev-page" class="text-white px-2 py-1 rounded-md">&lt;</button>
+                            <span class="text-white px-2" id="page-num"></span> / <span class="text-white px-2" id="page-count"></span>
+                            <button id="next-page" class="text-white px-2 py-1 rounded-md">&gt;</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Column: Details, Comments, & Actions -->
+            <div class="md:col-span-1 space-y-6">
+                <!-- Project Details -->
+                <div class="bg-slate-800/60 p-6 rounded-lg shadow-xl border border-slate-700/50">
+                    <h3 class="text-lg font-semibold text-white mb-4">Project Information</h3>
+                    <div class="space-y-2 text-sm">
+                        <p><strong class="text-gray-300">Status:</strong> <span id="project-status"></span></p>
+                        <p><strong class="text-gray-300">Last Updated:</strong> <span id="last-updated"></span></p>
+                    </div>
+                </div>
+
+                <!-- Action Buttons -->
+                <div id="action-buttons" class="bg-slate-800/60 p-6 rounded-lg shadow-xl border border-slate-700/50 space-y-4">
+                     <h3 class="text-lg font-semibold text-white mb-2">Actions</h3>
+                     <button id="approve-button" class="w-full bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md">Approve Proof</button>
+                     <button id="changes-button" class="w-full bg-yellow-600 hover:bg-yellow-500 text-white font-semibold py-2 px-4 rounded-md">Request Changes</button>
+                </div>
+
+                <!-- Comments -->
+                <div class="bg-slate-800/60 p-6 rounded-lg shadow-xl border border-slate-700/50">
+                    <h3 class="text-lg font-semibold text-white mb-4">Comments</h3>
+                    <div id="comments-list" class="space-y-4 max-h-60 overflow-y-auto">
+                        <!-- Comments will be dynamically inserted here -->
+                    </div>
+                    <form id="comment-form" class="mt-6 flex space-x-4">
+                        <input type="text" id="comment-input" placeholder="Add a comment..." class="flex-1 rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
+                        <button type="submit" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md">Send</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, updateDoc, collection, addDoc, query, orderBy, onSnapshot, Timestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import * as pdfjsLib from "https://mozilla.github.io/pdf.js/build/pdf.mjs";
+
+        pdfjsLib.GlobalWorkerOptions.workerSrc = "https://mozilla.github.io/pdf.js/build/pdf.worker.mjs";
+
+        const firebaseConfig = {
+          apiKey: "AIzaSyApmEJdFi96QS3TwYh7GyEDSbZrCuVpBrg",
+          authDomain: "proofing-application.firebaseapp.com",
+          projectId: "proofing-application",
+          storageBucket: "proofing-application.firebasestorage.app",
+          messagingSenderId: "452256252711",
+          appId: "1:452256252711:web:68795c1e5cc9438ff05f02",
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        const loadingSpinner = document.getElementById('loading-spinner');
+        const projectContent = document.getElementById('project-content');
+        const projectNameHeader = document.getElementById('project-name-header');
+        const projectStatus = document.getElementById('project-status');
+        const lastUpdated = document.getElementById('last-updated');
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const projectId = urlParams.get('id');
+        let currentUser;
+
+        function formatTimestamp(fbTimestamp) {
+            if (!fbTimestamp) return "N/A";
+            return fbTimestamp.toDate().toLocaleString();
+        }
+
+        function getStatusBadge(status) {
+            status = status || 'unknown';
+            let classes = "px-3 py-1 rounded-full text-xs font-medium";
+            let text = status.charAt(0).toUpperCase() + status.slice(1);
+            switch (status) {
+                case 'pending': classes += " bg-yellow-500/20 text-yellow-300"; break;
+                case 'approved': classes += " bg-green-500/20 text-green-300"; break;
+                case 'changes_requested': classes += " bg-red-500/20 text-red-300"; text = "Changes Requested"; break;
+                default: classes += " bg-gray-500/20 text-gray-300"; text = "Unknown"; break;
+            }
+            return `<span class="${classes}">${text}</span>`;
+        }
+
+        async function fetchProjectDetails() {
+            if (!projectId) {
+                loadingSpinner.innerHTML = '<p class="text-red-400">Error: No project ID specified.</p>';
+                return;
+            }
+
+            const projectRef = doc(db, "projects", projectId);
+            onSnapshot(projectRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const project = docSnap.data();
+                    displayProjectDetails(project);
+                    projectContent.classList.remove('hidden');
+                    loadingSpinner.classList.add('hidden');
+                } else {
+                    loadingSpinner.innerHTML = '<p class="text-red-400">Error: Project not found.</p>';
+                }
+            });
+        }
+
+        function displayProjectDetails(project) {
+            projectNameHeader.textContent = project.projectName || 'Proof Preview';
+            projectStatus.innerHTML = getStatusBadge(project.status);
+
+            const latestVersion = project.versions[project.versions.length - 1];
+            lastUpdated.textContent = formatTimestamp(latestVersion.uploadedAt);
+
+            if (latestVersion && latestVersion.fileURL) {
+                loadPdf(latestVersion.fileURL);
+            }
+        }
+
+        const pdfCanvas = document.getElementById('pdf-canvas');
+        const pageNumSpan = document.getElementById('page-num');
+        const pageCountSpan = document.getElementById('page-count');
+        const prevPageBtn = document.getElementById('prev-page');
+        const nextPageBtn = document.getElementById('next-page');
+        const navigationControls = document.getElementById('navigation-controls');
+
+        let pdfDoc = null;
+        let pageNum = 1;
+        let pageRendering = false;
+        let pageNumPending = null;
+        const scale = 1.5;
+
+        async function loadPdf(pdfUrl) {
+            try {
+                const loadingTask = pdfjsLib.getDocument(pdfUrl);
+                pdfDoc = await loadingTask.promise;
+                pageCountSpan.textContent = pdfDoc.numPages;
+                navigationControls.classList.remove('hidden');
+                renderPage(pageNum);
+            } catch (error) {
+                console.error("Error loading PDF:", error);
+            }
+        }
+
+        function renderPage(num) {
+            pageRendering = true;
+            pdfDoc.getPage(num).then((page) => {
+                const viewport = page.getViewport({ scale });
+                const context = pdfCanvas.getContext('2d');
+                pdfCanvas.height = viewport.height;
+                pdfCanvas.width = viewport.width;
+
+                const renderContext = {
+                    canvasContext: context,
+                    viewport: viewport
+                };
+                const renderTask = page.render(renderContext);
+                renderTask.promise.then(() => {
+                    pageRendering = false;
+                    if (pageNumPending !== null) {
+                        renderPage(pageNumPending);
+                        pageNumPending = null;
+                    }
+                });
+            });
+            pageNumSpan.textContent = num;
+        }
+
+        function queueRenderPage(num) {
+            if (pageRendering) {
+                pageNumPending = num;
+            } else {
+                renderPage(num);
+            }
+        }
+
+        prevPageBtn.addEventListener('click', () => {
+            if (pageNum <= 1) return;
+            pageNum--;
+            queueRenderPage(pageNum);
+        });
+
+        nextPageBtn.addEventListener('click', () => {
+            if (pageNum >= pdfDoc.numPages) return;
+            pageNum++;
+            queueRenderPage(pageNum);
+        });
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                currentUser = user;
+                document.getElementById('user-email').textContent = user.email;
+                fetchProjectDetails();
+            } else {
+                window.location.href = 'index.html';
+            }
+        });
+
+        document.getElementById('logout-button').addEventListener('click', () => signOut(auth));
+    </script>
+</body>
+</html>
