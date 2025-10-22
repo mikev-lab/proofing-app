@@ -60,17 +60,61 @@
                             <input type="text" id="projectName" name="projectName" required class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
                         </div>
                         <div>
-                            <label for="clientName" class="block text-sm font-medium text-gray-300">Client Name</label>
-                            <input type="text" id="clientName" name="clientName" required class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
+                            <label for="companyId" class="block text-sm font-medium text-gray-300">Select Company</label>
+                            <select id="companyId" name="companyId" required class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
+                                <option value="">Loading companies...</option>
+                            </select>
                         </div>
-                        <div>
-                            <label for="clientId" class="block text-sm font-medium text-gray-300">Client ID (User UID)</label>
-                            <input type="text" id="clientId" name="clientId" required class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
+
+                        <!-- Print Specifications -->
+                        <div class="border-t border-slate-700/50 pt-6">
+                            <h3 class="text-lg font-semibold text-white">Print Specifications</h3>
+                            <div class="space-y-4 mt-4">
+                                <div>
+                                    <label for="dimensions" class="block text-sm font-medium text-gray-300">Dimensions</label>
+                                    <select id="dimensions" name="dimensions" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
+                                        <option value="A5">A5 (5.8" x 8.3")</option>
+                                        <option value="B5">B5 (7.2" x 10.1")</option>
+                                        <option value="US Manga">US Manga (5" x 7.5")</option>
+                                        <option value="Light Novel">Light Novel (5.12" x 7.4")</option>
+                                        <option value="US Comic">US Comic (6.63" x 10.25")</option>
+                                        <option value="custom">Custom</option>
+                                    </select>
+                                    <input type="text" id="custom-dimension" name="custom-dimension" class="hidden mt-2 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500" placeholder="Enter custom dimensions">
+                                </div>
+                                <div>
+                                    <label for="page-count" class="block text-sm font-medium text-gray-300">Page Count</label>
+                                    <input type="number" id="page-count" name="page-count" required class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
+                                </div>
+                                <div>
+                                    <label for="binding" class="block text-sm font-medium text-gray-300">Binding</label>
+                                    <select id="binding" name="binding" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
+                                        <option value="Perfect Bound">Perfect Bound</option>
+                                        <option value="Saddle-Stitch">Saddle-Stitch</option>
+                                        <option value="Coil Bound">Coil Bound</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label for="paper-type" class="block text-sm font-medium text-gray-300">Paper Type</label>
+                                    <select id="paper-type" name="paper-type" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
+                                        <option value="Gloss">Gloss</option>
+                                        <option value="Matte">Matte</option>
+                                    </select>
+                                </div>
+                            </div>
                         </div>
-                        <div>
-                            <label for="file-input" class="block text-sm font-medium text-gray-300">Proof File (PDF)</label>
-                            <input type="file" id="file-input" required accept=".pdf" class="mt-1 block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-600/20 file:text-indigo-300 hover:file:bg-indigo-600/30">
+
+                        <div class="border-t border-slate-700/50 pt-6">
+                            <div class="flex items-center">
+                                <input id="request-file-checkbox" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 bg-white/10">
+                                <label for="request-file-checkbox" class="ml-2 block text-sm text-gray-300">Request file from client</label>
+                            </div>
+                            <div class="mt-4">
+                                <label for="file-input" class="block text-sm font-medium text-gray-300">Proof File (PDF)</label>
+                                <input type="file" id="file-input" required accept=".pdf" class="mt-1 block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-600/20 file:text-indigo-300 hover:file:bg-indigo-600/30">
+                            </div>
                         </div>
+
                         <div class="pt-4">
                             <button type="submit" id="submit-button" class="w-full bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-green-800 disabled:cursor-not-allowed">
                                 Create Project
@@ -87,7 +131,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, Timestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, getDocs, Timestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
 
         const firebaseConfig = {
@@ -107,6 +151,44 @@
         const newProjectForm = document.getElementById('new-project-form');
         const submitButton = document.getElementById('submit-button');
         const statusMessage = document.getElementById('status-message');
+        const companySelect = document.getElementById('companyId');
+        const dimensionsSelect = document.getElementById('dimensions');
+        const customDimensionInput = document.getElementById('custom-dimension');
+        const requestFileCheckbox = document.getElementById('request-file-checkbox');
+        const fileInput = document.getElementById('file-input');
+
+        // Populate companies dropdown
+        async function loadCompanies() {
+            try {
+                const querySnapshot = await getDocs(collection(db, "companies"));
+                companySelect.innerHTML = '<option value="">Select a company</option>';
+                querySnapshot.forEach((doc) => {
+                    const option = document.createElement('option');
+                    option.value = doc.id;
+                    option.textContent = doc.data().companyName;
+                    companySelect.appendChild(option);
+                });
+            } catch (error) {
+                console.error("Error loading companies:", error);
+                companySelect.innerHTML = '<option value="">Could not load companies</option>';
+            }
+        }
+
+        // Event Listeners
+        dimensionsSelect.addEventListener('change', () => {
+            if (dimensionsSelect.value === 'custom') {
+                customDimensionInput.classList.remove('hidden');
+                customDimensionInput.required = true;
+            } else {
+                customDimensionInput.classList.add('hidden');
+                customDimensionInput.required = false;
+            }
+        });
+
+        requestFileCheckbox.addEventListener('change', () => {
+            fileInput.disabled = requestFileCheckbox.checked;
+            fileInput.required = !requestFileCheckbox.checked;
+        });
 
         async function handleFormSubmit(e) {
             e.preventDefault();
@@ -114,44 +196,58 @@
             statusMessage.textContent = "Creating project, please wait...";
             statusMessage.classList.add('text-yellow-400');
 
-            const projectName = newProjectForm.projectName.value;
-            const clientName = newProjectForm.clientName.value;
-            const clientId = newProjectForm.clientId.value;
-            const file = newProjectForm['file-input'].files[0];
+            const projectName = newProjectForm.projectName..value;
+            const companyId = newProjectForm.companyId.value;
+            const file = fileInput.files[0];
+            const isAwaitingUpload = requestFileCheckbox.checked;
 
-            if (!file) {
-                statusMessage.textContent = 'Please select a file to upload.';
+            const specs = {
+                dimensions: dimensionsSelect.value === 'custom' ? customDimensionInput.value : dimensionsSelect.value,
+                pageCount: parseInt(newProjectForm['page-count'].value, 10),
+                binding: newProjectForm.binding.value,
+                paperType: newProjectForm['paper-type'].value,
+            };
+
+            if (!isAwaitingUpload && !file) {
+                statusMessage.textContent = 'Please select a file to upload or request one from the client.';
                 statusMessage.className = 'text-red-400';
                 submitButton.disabled = false;
                 return;
             }
 
             try {
-                // 1. Upload file to Storage
-                const storageRef = ref(storage, `proofs/${Date.now()}_${file.name}`);
-                const uploadResult = await uploadBytes(storageRef, file);
-                const downloadURL = await getDownloadURL(uploadResult.ref);
-
-                // 2. Create project in Firestore
                 const projectData = {
                     projectName,
-                    clientName,
-                    clientId,
-                    status: 'pending',
+                    companyId,
+                    specs,
                     createdAt: Timestamp.now(),
-                    versions: [{
+                    versions: []
+                };
+
+                if (isAwaitingUpload) {
+                    projectData.status = 'awaiting_upload';
+                    projectData.isAwaitingClientUpload = true;
+                } else {
+                    // 1. Upload file to Storage
+                    const storageRef = ref(storage, `proofs/${Date.now()}_${file.name}`);
+                    const uploadResult = await uploadBytes(storageRef, file);
+                    const downloadURL = await getDownloadURL(uploadResult.ref);
+
+                    projectData.status = 'pending';
+                    projectData.isAwaitingClientUpload = false;
+                    projectData.versions.push({
                         fileName: file.name,
                         fileURL: downloadURL,
                         uploadedAt: Timestamp.now(),
                         version: 1
-                    }]
-                };
+                    });
+                }
+
                 const docRef = await addDoc(collection(db, "projects"), projectData);
 
                 statusMessage.textContent = 'Project created successfully! Redirecting...';
                 statusMessage.className = 'text-green-400';
 
-                // 3. Redirect to the new project page
                 setTimeout(() => {
                     window.location.href = `admin_project.html?id=${docRef.id}`;
                 }, 2000);
@@ -169,6 +265,7 @@
         onAuthStateChanged(auth, (user) => {
             if (user) {
                 document.getElementById('user-email').textContent = user.email;
+                loadCompanies();
             } else {
                 window.location.href = 'index.html';
             }

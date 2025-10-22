@@ -82,7 +82,7 @@
                         <thead class="bg-slate-900/50">
                             <tr>
                                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Project Name</th>
-                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Client</th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Company</th>
                                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Status</th>
                                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Created At</th>
                                 <th scope="col" class="relative px-6 py-3">
@@ -103,7 +103,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, getDocs, Timestamp, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, getDocs, doc, getDoc, Timestamp, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         const firebaseConfig = {
           apiKey: "AIzaSyApmEJdFi96QS3TwYh7GyEDSbZrCuVpBrg",
@@ -133,11 +133,12 @@
         function getStatusBadge(status) {
             status = status || 'unknown';
             let classes = "px-3 py-1 rounded-full text-xs font-medium";
-            let text = status.charAt(0).toUpperCase() + status.slice(1);
+            let text = status.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
             switch (status) {
                 case 'pending': classes += " bg-yellow-500/20 text-yellow-300"; break;
                 case 'approved': classes += " bg-green-500/20 text-green-300"; break;
-                case 'changes_requested': classes += " bg-red-500/20 text-red-300"; text = "Changes Requested"; break;
+                case 'changes_requested': classes += " bg-red-500/20 text-red-300"; break;
+                case 'awaiting_upload': classes += " bg-blue-500/20 text-blue-300"; break;
                 default: classes += " bg-gray-500/20 text-gray-300"; text = "Unknown"; break;
             }
             return `<span class="${classes}">${text}</span>`;
@@ -146,8 +147,6 @@
         async function fetchAllProjects() {
             try {
                 loadingSpinner.classList.remove('hidden');
-                emptyState.classList.add('hidden');
-                projectsTableContainer.classList.add('hidden');
 
                 const projectsRef = collection(db, "projects");
                 const q = query(projectsRef, orderBy("createdAt", "desc"));
@@ -155,30 +154,49 @@
 
                 const projects = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
+                // Create a map of company IDs to company names for efficient lookup
+                const companyIds = [...new Set(projects.map(p => p.companyId).filter(id => id))];
+                const companyPromises = companyIds.map(id => getDoc(doc(db, "companies", id)));
+                const companySnapshots = await Promise.all(companyPromises);
+                const companyMap = companySnapshots.reduce((map, snap) => {
+                    if (snap.exists()) {
+                        map[snap.id] = snap.data().companyName;
+                    }
+                    return map;
+                }, {});
+
                 loadingSpinner.classList.add('hidden');
 
                 if (projects.length === 0) {
                     emptyState.classList.remove('hidden');
                 } else {
-                    renderProjects(projects);
+                    renderProjects(projects, companyMap);
                     projectsTableContainer.classList.remove('hidden');
                 }
             } catch (error) {
                 console.error("Error fetching projects:", error);
                 loadingSpinner.classList.add('hidden');
-                emptyState.classList.remove('hidden'); // Show empty state on error
+                projectsTableContainer.innerHTML = `<p class="text-red-400 text-center py-8">Error loading projects.</p>`;
+                projectsTableContainer.classList.remove('hidden');
             }
         }
 
-        function renderProjects(projects) {
+        function renderProjects(projects, companyMap) {
             projectsList.innerHTML = '';
             projects.forEach(project => {
+                let companyName = 'N/A';
+                if (project.companyId) {
+                    companyName = companyMap[project.companyId] || 'Company Not Found';
+                } else if (project.clientName) { // Backward compatibility
+                    companyName = project.clientName;
+                }
+
                 const formattedDate = formatTimestamp(project.createdAt);
                 const statusBadge = getStatusBadge(project.status);
                 const rowHtml = `
                     <tr class="hover:bg-slate-800 transition-colors duration-150">
                         <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-white">${project.projectName || 'Untitled'}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">${project.clientName || 'N/A'}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">${companyName}</td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm">${statusBadge}</td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400">${formattedDate}</td>
                         <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
