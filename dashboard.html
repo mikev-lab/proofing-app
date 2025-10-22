@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCE Printing - Dashboard</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Load Inter font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+        /* Apply Inter font and smooth font rendering */
+        body {
+            font-family: 'Inter', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+        /* Custom gradient variable for tailwind (though we'll apply it directly) */
+        :root {
+            --tw-gradient-from-position: initial;
+            --tw-gradient-to-position: initial;
+        }
+    </style>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-[#0f172a] to-[#334155] text-gray-100">
+
+    <!-- Header Navigation -->
+    <nav class="bg-slate-800/60 backdrop-blur-sm shadow-lg">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between items-center h-16">
+                <!-- Logo/Title -->
+                <div class="flex-shrink-0 flex items-center">
+                    <h1 class="text-2xl font-bold text-white">MCE Printing</h1>
+                </div>
+                
+                <!-- User Info & Logout -->
+                <div class="flex items-center">
+                    <span id="user-email" class="text-sm text-gray-300 mr-4 hidden sm:block">Welcome...</span>
+                    <button id="logout-button" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all duration-150 ease-in-out">
+                        Sign Out
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content Area -->
+    <main>
+        <div class="max-w-7xl mx-auto py-12 px-4 sm:px-6 lg:px-8">
+            <h2 class="text-3xl font-bold text-white mb-8">Your Proofs</h2>
+
+            <!-- Loading Spinner -->
+            <div id="loading-spinner" class="text-center py-12">
+                <div class="h-12 w-12 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900 mx-auto" role="status">
+                    <span class="sr-only">Loading...</span>
+                </div>
+                <p class="mt-4 text-gray-300">Fetching your projects...</p>
+            </div>
+
+            <!-- Empty State -->
+            <div id="empty-state" class="hidden text-center bg-slate-800/60 rounded-lg p-12">
+                <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                    <path vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+                </svg>
+                <h3 class="mt-2 text-lg font-medium text-white">No projects found</h3>
+                <p class="mt-1 text-sm text-gray-400">You do not have any proofs assigned to you at this time.</p>
+            </div>
+
+            <!-- Dynamic Projects List -->
+            <div id="projects-list" class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                <!-- Project cards will be inserted here by JavaScript -->
+            </div>
+
+        </div>
+    </main>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        // Import the functions you need from the SDKs you need
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, query, where, getDocs, Timestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // -----------------------------------------------------------------
+        // TODO: Add your Firebase project configuration object here
+        // (This MUST be the same as your index.html)
+        // -----------------------------------------------------------------
+        const firebaseConfig = {
+          apiKey: "AIzaSyApmEJdFi96QS3TwYh7GyEDSbZrCuVpBrg",
+          authDomain: "proofing-application.firebaseapp.com",
+          projectId: "proofing-application",
+          storageBucket: "proofing-application.firebasestorage.app",
+          messagingSenderId: "452256252711",
+          appId: "1:452256252711:web:68795c1e5cc9438ff05f02",
+          measurementId: "G-NKYTXT0BC6"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        // Get DOM elements
+        const userEmailSpan = document.getElementById('user-email');
+        const logoutButton = document.getElementById('logout-button');
+        const loadingSpinner = document.getElementById('loading-spinner');
+        const emptyState = document.getElementById('empty-state');
+        const projectsList = document.getElementById('projects-list');
+
+        /**
+         * Formats a Firebase Timestamp into a readable date string.
+         * @param {Timestamp} fbTimestamp - The Firebase Timestamp object.
+         * @returns {string} A formatted date string (e.g., "Oct 21, 2025").
+         */
+        function formatTimestamp(fbTimestamp) {
+            if (!fbTimestamp) {
+                return "Date not set";
+            }
+            try {
+                const jsDate = fbTimestamp.toDate();
+                return jsDate.toLocaleDateString('en-US', {
+                    year: 'numeric',
+                    month: 'short',
+                    day: 'numeric',
+                });
+            } catch (error) {
+                console.error("Error formatting timestamp:", error);
+                return "Invalid Date";
+            }
+        }
+
+        /**
+         * Returns an HTML string for a status badge based on the project status.
+         * @param {string} status - The status of the project (e.g., "pending").
+         * @returns {string} HTML string for the badge.
+         */
+        function getStatusBadge(status) {
+            status = status || 'unknown';
+            let classes = "px-3 py-1 rounded-full text-xs font-medium";
+            let text = status.charAt(0).toUpperCase() + status.slice(1);
+
+            switch (status) {
+                case 'pending':
+                    classes += " bg-yellow-500/20 text-yellow-300";
+                    break;
+                case 'approved':
+                    classes += " bg-green-500/20 text-green-300";
+                    break;
+                case 'changes_requested':
+                    classes += " bg-red-500/20 text-red-300";
+                    text = "Changes Requested";
+                    break;
+                default:
+                    classes += " bg-gray-500/20 text-gray-300";
+                    text = "Unknown";
+                    break;
+            }
+            return `<span class="${classes}">${text}</span>`;
+        }
+
+        /**
+         * Fetches projects from Firestore for the given user ID.
+         * @param {string} uid - The user's unique ID from Firebase Auth.
+         */
+        async function fetchProjects(uid) {
+            try {
+                // Show loading spinner, hide other states
+                loadingSpinner.classList.remove('hidden');
+                emptyState.classList.add('hidden');
+                projectsList.classList.add('hidden');
+
+                // Create a query to find projects where 'clientId' matches the user's UID
+                const projectsRef = collection(db, "projects");
+                const q = query(projectsRef, where("clientId", "==", uid));
+
+                const querySnapshot = await getDocs(q);
+                
+                const projects = [];
+                querySnapshot.forEach((doc) => {
+                    // Get document data and add the document ID
+                    projects.push({ id: doc.id, ...doc.data() });
+                });
+
+                // Sort projects by 'createdAt' timestamp, newest first
+                projects.sort((a, b) => {
+                    const dateA = a.createdAt ? a.createdAt.toMillis() : 0;
+                    const dateB = b.createdAt ? b.createdAt.toMillis() : 0;
+                    return dateB - dateA;
+                });
+
+                // Hide loading spinner
+                loadingSpinner.classList.add('hidden');
+
+                if (projects.length === 0) {
+                    // Show empty state if no projects are found
+                    emptyState.classList.remove('hidden');
+                } else {
+                    // Render projects if found
+                    renderProjects(projects);
+                    projectsList.classList.remove('hidden');
+                }
+
+            } catch (error) {
+                console.error("Error fetching projects:", error);
+                loadingSpinner.classList.add('hidden');
+                // You might want to show an error message to the user here
+            }
+        }
+
+        /**
+         * Renders the list of project cards onto the page.
+         * @param {Array} projects - An array of project objects.
+         */
+        function renderProjects(projects) {
+            projectsList.innerHTML = ''; // Clear any existing content
+            
+            projects.forEach(project => {
+                const formattedDate = formatTimestamp(project.createdAt);
+                const statusBadge = getStatusBadge(project.status);
+                
+                // This is the clickable card for each project
+                const cardHtml = `
+                    <a href="proof.html?id=${project.id}" 
+                       class="block bg-slate-800/60 hover:bg-slate-700/80 rounded-lg shadow-xl p-6 transition-all duration-200 ease-in-out transform hover:-translate-y-1">
+                        
+                        <div class="flex justify-between items-center">
+                            <h3 class="text-xl font-semibold text-white truncate" title="${project.projectName || 'Untitled Project'}">
+                                ${project.projectName || 'Untitled Project'}
+                            </h3>
+                            ${statusBadge}
+                        </div>
+                        <p class="mt-2 text-sm text-gray-400">
+                            Created: ${formattedDate}
+                        </p>
+                    </a>
+                `;
+                projectsList.innerHTML += cardHtml;
+            });
+        }
+
+        // --- Main execution ---
+
+        // Listen for authentication state changes
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                // User is signed in.
+                console.log('User is logged in:', user.uid);
+                
+                // Show user's email
+                userEmailSpan.textContent = user.email;
+                userEmailSpan.classList.remove('hidden');
+                
+                // Fetch this user's projects
+                fetchProjects(user.uid);
+                
+            } else {
+                // User is signed out. Redirect to login page.
+                console.log('User is not logged in. Redirecting to index.html');
+                window.location.href = 'index.html';
+            }
+        });
+
+        // Add click listener for the logout button
+        logoutButton.addEventListener('click', () => {
+            signOut(auth).catch((error) => {
+                console.error('Sign out error', error);
+            });
+            // onAuthStateChanged() will automatically handle the redirect
+        });
+
+    </script>
+</body>
+</html>
