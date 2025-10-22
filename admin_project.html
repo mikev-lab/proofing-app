@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCE Printing - Project Details</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Load Inter font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+        #pdf-viewer {
+            position: relative;
+            width: 100%;
+            height: 100%;
+        }
+        #pdf-canvas {
+            width: 100%;
+            height: auto;
+            border-radius: 0.375rem; /* rounded-md */
+        }
+        #navigation-controls {
+            position: absolute;
+            bottom: 1rem;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            align-items: center;
+            background-color: rgba(15, 23, 42, 0.8); /* bg-slate-900/80 */
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem; /* rounded-lg */
+            backdrop-filter: blur(4px);
+        }
+    </style>
+
+    <!-- PDF.js Library -->
+    <script src="https://mozilla.github.io/pdf.js/build/pdf.mjs" type="module"></script>
+
+</head>
+<body class="min-h-screen bg-gradient-to-br from-[#0f172a] to-[#334155] text-gray-100">
+
+    <div class="flex h-full">
+        <!-- Sidebar -->
+        <div class="flex flex-col w-64 bg-slate-900/70 backdrop-blur-sm border-r border-slate-700/50">
+            <div class="flex items-center justify-center h-16 border-b border-slate-700/50">
+                <h1 class="text-2xl font-bold text-white">MCE Admin</h1>
+            </div>
+            <div class="flex-grow">
+                <nav class="flex-grow md:block px-4 pb-4 md:pb-0 md:overflow-y-auto">
+                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-200 rounded-lg hover:bg-slate-700/50" href="admin.html">All Projects</a>
+                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="#">Clients</a>
+                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="#">Settings</a>
+                </nav>
+            </div>
+        </div>
+
+        <!-- Main content -->
+        <div class="flex flex-col flex-1">
+            <!-- Header -->
+            <header class="flex justify-between items-center h-16 px-6 bg-slate-800/60 backdrop-blur-sm border-b border-slate-700/50">
+                <div>
+                    <h2 id="project-name-header" class="text-xl font-semibold text-white">Project Details</h2>
+                </div>
+                <div class="flex items-center">
+                    <span id="user-email" class="text-sm text-gray-300 mr-4 hidden sm:block"></span>
+                    <button id="logout-button" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all duration-150 ease-in-out">
+                        Sign Out
+                    </button>
+                </div>
+            </header>
+
+            <main class="flex-1 p-6">
+                <!-- Loading Spinner -->
+                <div id="loading-spinner" class="text-center py-12">
+                    <div class="h-12 w-12 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900 mx-auto" role="status">
+                        <span class="sr-only">Loading...</span>
+                    </div>
+                    <p class="mt-4 text-gray-300">Fetching project details...</p>
+                </div>
+
+                <!-- Project Content -->
+                <div id="project-content" class="hidden grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <!-- Left Column: Project Details & Actions -->
+                    <div class="md:col-span-1 space-y-6">
+                        <!-- Project Info -->
+                        <div class="bg-slate-800/60 p-6 rounded-lg shadow-xl border border-slate-700/50">
+                            <h3 class="text-lg font-semibold text-white mb-4">Project Details</h3>
+                            <form id="project-details-form" class="space-y-4">
+                                <div>
+                                    <label for="projectName" class="block text-sm font-medium text-gray-300">Project Name</label>
+                                    <input type="text" id="projectName" name="projectName" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
+                                </div>
+                                <div>
+                                    <label for="clientName" class="block text-sm font-medium text-gray-300">Client Name</label>
+                                    <input type="text" id="clientName" name="clientName" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
+                                </div>
+                                <div>
+                                    <label for="clientId" class="block text-sm font-medium text-gray-300">Client ID</label>
+                                    <input type="text" id="clientId" name="clientId" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
+                                </div>
+                                <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md">Save Changes</button>
+                            </form>
+                        </div>
+
+                        <!-- File Upload -->
+                        <div class="bg-slate-800/60 p-6 rounded-lg shadow-xl border border-slate-700/50">
+                            <h3 class="text-lg font-semibold text-white mb-4">Upload New Version</h3>
+                            <form id="file-upload-form">
+                                <input type="file" id="file-input" class="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-600/20 file:text-indigo-300 hover:file:bg-indigo-600/30">
+                                <button type="submit" class="w-full mt-4 bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md">Upload</button>
+                            </form>
+                        </div>
+                    </div>
+
+                    <!-- Right Column: File Preview & Comments -->
+                    <div class="md:col-span-2 space-y-6">
+                        <!-- File Preview -->
+                        <div class="bg-slate-800/60 p-6 rounded-lg shadow-xl border border-slate-700/50 min-h-[600px] flex flex-col">
+                            <h3 class="text-lg font-semibold text-white mb-4">Proof Preview</h3>
+                            <div id="pdf-viewer" class="flex-1 bg-black/20 rounded-md flex justify-center items-center overflow-auto">
+                                <canvas id="pdf-canvas"></canvas>
+                                <div id="navigation-controls" class="hidden">
+                                    <button id="prev-page" class="text-white px-2 py-1 rounded-md">&lt;</button>
+                                    <span class="text-white px-2" id="page-num"></span> / <span class="text-white px-2" id="page-count"></span>
+                                    <button id="next-page" class="text-white px-2 py-1 rounded-md">&gt;</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Comments -->
+                        <div class="bg-slate-800/60 p-6 rounded-lg shadow-xl border border-slate-700/50">
+                            <h3 class="text-lg font-semibold text-white mb-4">Comments</h3>
+                            <div id="comments-list" class="space-y-4">
+                                <!-- Comments will be dynamically inserted here -->
+                            </div>
+                            <form id="comment-form" class="mt-6 flex space-x-4">
+                                <input type="text" id="comment-input" placeholder="Add a comment..." class="flex-1 rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
+                                <button type="submit" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md">Send</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, updateDoc, collection, addDoc, query, where, getDocs, Timestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
+        import * as pdfjsLib from "https://mozilla.github.io/pdf.js/build/pdf.mjs";
+
+        pdfjsLib.GlobalWorkerOptions.workerSrc = "https://mozilla.github.io/pdf.js/build/pdf.worker.mjs";
+
+        const firebaseConfig = {
+          apiKey: "AIzaSyApmEJdFi96QS3TwYh7GyEDSbZrCuVpBrg",
+          authDomain: "proofing-application.firebaseapp.com",
+          projectId: "proofing-application",
+          storageBucket: "proofing-application.firebasestorage.app",
+          messagingSenderId: "452256252711",
+          appId: "1:452256252711:web:68795c1e5cc9438ff05f02",
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const storage = getStorage(app);
+
+        const loadingSpinner = document.getElementById('loading-spinner');
+        const projectContent = document.getElementById('project-content');
+        const projectNameHeader = document.getElementById('project-name-header');
+        const projectDetailsForm = document.getElementById('project-details-form');
+        const fileUploadForm = document.getElementById('file-upload-form');
+        const commentForm = document.getElementById('comment-form');
+
+        // Get project ID from URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const projectId = urlParams.get('id');
+
+        async function fetchProjectDetails() {
+            if (!projectId) {
+                console.error("No project ID found in URL.");
+                loadingSpinner.innerHTML = '<p class="text-red-400">Error: No project ID specified.</p>';
+                return;
+            }
+
+            try {
+                const projectRef = doc(db, "projects", projectId);
+                const projectSnap = await getDoc(projectRef);
+
+                if (projectSnap.exists()) {
+                    const project = projectSnap.data();
+                    displayProjectDetails(project);
+                    projectContent.classList.remove('hidden');
+                } else {
+                    console.error("No such project!");
+                    loadingSpinner.innerHTML = '<p class="text-red-400">Error: Project not found.</p>';
+                }
+            } catch (error) {
+                console.error("Error fetching project:", error);
+                loadingSpinner.innerHTML = '<p class="text-red-400">Error fetching project details.</p>';
+            } finally {
+                loadingSpinner.classList.add('hidden');
+            }
+        }
+
+        function displayProjectDetails(project) {
+            projectNameHeader.textContent = project.projectName || 'Project Details';
+            document.getElementById('projectName').value = project.projectName || '';
+            document.getElementById('clientName').value = project.clientName || '';
+            document.getElementById('clientId').value = project.clientId || '';
+
+            const latestVersion = project.versions[project.versions.length - 1];
+            if (latestVersion && latestVersion.fileURL) {
+                loadPdf(latestVersion.fileURL);
+            }
+        }
+
+        const pdfCanvas = document.getElementById('pdf-canvas');
+        const pageNumSpan = document.getElementById('page-num');
+        const pageCountSpan = document.getElementById('page-count');
+        const prevPageBtn = document.getElementById('prev-page');
+        const nextPageBtn = document.getElementById('next-page');
+        const navigationControls = document.getElementById('navigation-controls');
+
+        let pdfDoc = null;
+        let pageNum = 1;
+        let pageRendering = false;
+        let pageNumPending = null;
+        const scale = 1.5;
+
+        async function loadPdf(pdfUrl) {
+            try {
+                const loadingTask = pdfjsLib.getDocument(pdfUrl);
+                pdfDoc = await loadingTask.promise;
+                pageCountSpan.textContent = pdfDoc.numPages;
+                navigationControls.classList.remove('hidden');
+                renderPage(pageNum);
+            } catch (error) {
+                console.error("Error loading PDF:", error);
+            }
+        }
+
+        function renderPage(num) {
+            pageRendering = true;
+            pdfDoc.getPage(num).then((page) => {
+                const viewport = page.getViewport({ scale });
+                const context = pdfCanvas.getContext('2d');
+                pdfCanvas.height = viewport.height;
+                pdfCanvas.width = viewport.width;
+
+                const renderContext = {
+                    canvasContext: context,
+                    viewport: viewport
+                };
+                const renderTask = page.render(renderContext);
+                renderTask.promise.then(() => {
+                    pageRendering = false;
+                    if (pageNumPending !== null) {
+                        renderPage(pageNumPending);
+                        pageNumPending = null;
+                    }
+                });
+            });
+            pageNumSpan.textContent = num;
+        }
+
+        function queueRenderPage(num) {
+            if (pageRendering) {
+                pageNumPending = num;
+            } else {
+                renderPage(num);
+            }
+        }
+
+        prevPageBtn.addEventListener('click', () => {
+            if (pageNum <= 1) return;
+            pageNum--;
+            queueRenderPage(pageNum);
+        });
+
+        nextPageBtn.addEventListener('click', () => {
+            if (pageNum >= pdfDoc.numPages) return;
+            pageNum++;
+            queueRenderPage(pageNum);
+        });
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                document.getElementById('user-email').textContent = user.email;
+                fetchProjectDetails();
+            } else {
+                window.location.href = 'index.html';
+            }
+        });
+
+        document.getElementById('logout-button').addEventListener('click', () => {
+            signOut(auth);
+        });
+
+    </script>
+</body>
+</html>
