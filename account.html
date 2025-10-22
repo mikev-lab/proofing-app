@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCE Printing - Account Management</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+    </style>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-[#0f172a] to-[#334155] text-gray-100">
+
+    <nav class="bg-slate-800/60 backdrop-blur-sm shadow-lg">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between items-center h-16">
+                <div class="flex-shrink-0 flex items-center">
+                    <h1 class="text-2xl font-bold text-white">MCE Printing</h1>
+                </div>
+                <div class="flex items-center">
+                    <a href="dashboard.html" class="text-sm text-gray-300 hover:text-white mr-4">Dashboard</a>
+                    <span id="user-email" class="text-sm text-gray-300 mr-4 hidden sm:block"></span>
+                    <button id="logout-button" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm">Sign Out</button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main>
+        <div class="max-w-7xl mx-auto py-12 px-4 sm:px-6 lg:px-8">
+            <h2 class="text-3xl font-bold text-white mb-8">Account Settings</h2>
+
+            <div class="bg-slate-800/60 rounded-lg shadow-xl p-6 mb-8">
+                <h3 class="text-xl font-semibold text-white mb-4">Password Reset</h3>
+                <button id="password-reset-button" class="bg-slate-600 hover:bg-slate-500 text-white font-semibold py-2 px-4 rounded-md text-sm">Send Password Reset Email</button>
+                <p id="password-reset-message" class="text-green-400 mt-4 hidden"></p>
+            </div>
+
+            <div id="team-management-section" class="hidden">
+                <h2 class="text-3xl font-bold text-white mb-8">Team Management</h2>
+                <div class="bg-slate-800/60 rounded-lg shadow-xl p-6">
+                    <div id="team-members-list"></div>
+                    <h3 class="text-xl font-semibold text-white mt-8 mb-4">Add New Team Member</h3>
+                    <form id="add-team-member-form" class="space-y-4">
+                        <input type="text" id="new-member-name" placeholder="Full Name" class="block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white" required>
+                        <input type="email" id="new-member-email" placeholder="Email" class="block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white" required>
+                        <input type="password" id="new-member-password" placeholder="Password" class="block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white" required>
+                        <button type="submit" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm">Add Member</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, onAuthStateChanged, signOut, sendPasswordResetEmail, createUserWithEmailAndPassword } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, collection, query, where, getDocs, updateDoc, deleteDoc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const firebaseConfig = {
+          apiKey: "AIzaSyApmEJdFi96QS3TwYh7GyEDSbZrCuVpBrg",
+          authDomain: "proofing-application.firebaseapp.com",
+          projectId: "proofing-application",
+          storageBucket: "proofing-application.firebasestorage.app",
+          messagingSenderId: "452256252711",
+          appId: "1:452256252711:web:68795c1e5cc9438ff05f02",
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                document.getElementById('user-email').textContent = user.email;
+                const userDoc = await getDoc(doc(db, "users", user.uid));
+                if (userDoc.exists() && userDoc.data().companyRole === 'admin') {
+                    document.getElementById('team-management-section').classList.remove('hidden');
+                    loadTeamMembers(userDoc.data().companyId, user.uid);
+                }
+            } else {
+                window.location.href = 'index.html';
+            }
+        });
+
+        document.getElementById('logout-button').addEventListener('click', () => signOut(auth));
+        document.getElementById('password-reset-button').addEventListener('click', async () => {
+            try {
+                await sendPasswordResetEmail(auth, auth.currentUser.email);
+                const messageEl = document.getElementById('password-reset-message');
+                messageEl.textContent = 'A password reset link has been sent to your email.';
+                messageEl.classList.remove('hidden');
+            } catch (error) {
+                console.error("Password reset error:", error);
+            }
+        });
+
+        async function loadTeamMembers(companyId, currentUserId) {
+            const q = query(collection(db, "users"), where("companyId", "==", companyId));
+            const querySnapshot = await getDocs(q);
+            const teamListEl = document.getElementById('team-members-list');
+            teamListEl.innerHTML = '<h3 class="text-xl font-semibold text-white mb-4">Current Team</h3>';
+            querySnapshot.forEach(doc => {
+                const member = doc.data();
+                const isCurrentUser = doc.id === currentUserId;
+                const actions = isCurrentUser ? '' : `
+                    <button class="toggle-role-button bg-slate-500 text-xs py-1 px-2 rounded" data-uid="${doc.id}" data-role="${member.companyRole}">${member.companyRole === 'admin' ? 'Demote to Member' : 'Promote to Admin'}</button>
+                    <button class="remove-member-button bg-red-600 text-xs py-1 px-2 rounded ml-2" data-uid="${doc.id}">Remove</button>
+                `;
+                teamListEl.innerHTML += `<div class="flex justify-between items-center p-2 border-b border-slate-700"><div>${member.name} (${member.email}) - ${member.companyRole}</div><div>${actions}</div></div>`;
+            });
+
+            document.querySelectorAll('.toggle-role-button').forEach(button => button.addEventListener('click', toggleRole));
+            document.querySelectorAll('.remove-member-button').forEach(button => button.addEventListener('click', removeMember));
+        }
+
+        async function toggleRole(event) {
+            const uid = event.target.dataset.uid;
+            const currentRole = event.target.dataset.role;
+            const newRole = currentRole === 'admin' ? 'member' : 'admin';
+            await updateDoc(doc(db, "users", uid), { companyRole: newRole });
+            const userDoc = await getDoc(doc(db, "users", auth.currentUser.uid));
+            loadTeamMembers(userDoc.data().companyId, auth.currentUser.uid);
+        }
+
+        async function removeMember(event) {
+            const uid = event.target.dataset.uid;
+            if (confirm('Are you sure you want to remove this team member?')) {
+                await deleteDoc(doc(db, "users", uid));
+                const userDoc = await getDoc(doc(db, "users", auth.currentUser.uid));
+                loadTeamMembers(userDoc.data().companyId, auth.currentUser.uid);
+            }
+        }
+
+        document.getElementById('add-team-member-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const name = document.getElementById('new-member-name').value;
+            const email = document.getElementById('new-member-email').value;
+            const password = document.getElementById('new-member-password').value;
+            const userDoc = await getDoc(doc(db, "users", auth.currentUser.uid));
+            const companyId = userDoc.data().companyId;
+
+            try {
+                // This is a simplified approach. In a real app, you'd use a cloud function to create the user
+                // to avoid exposing a way to create users with any details.
+                // For this project, we'll create the user on the client.
+                const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+                await setDoc(doc(db, "users", userCredential.user.uid), {
+                    name,
+                    email,
+                    companyId,
+                    companyRole: 'member',
+                    role: 'client_user'
+                });
+                loadTeamMembers(companyId, auth.currentUser.uid);
+                e.target.reset();
+            } catch (error) {
+                console.error("Error adding team member:", error);
+                alert("Could not add team member: " + error.message);
+            }
+        });
+
+    </script>
+</body>
+</html>

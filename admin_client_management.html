@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCE Printing - Client Management</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+    </style>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-[#0f172a] to-[#334155] text-gray-100">
+
+    <div class="flex h-full">
+        <!-- Sidebar -->
+        <div class="flex flex-col w-64 bg-slate-900/70 backdrop-blur-sm border-r border-slate-700/50">
+            <div class="flex items-center justify-center h-16 border-b border-slate-700/50">
+                <h1 class="text-2xl font-bold text-white">MCE Admin</h1>
+            </div>
+            <div class="flex-grow">
+                <nav class="flex-grow md:block px-4 pb-4 md:pb-0 md:overflow-y-auto">
+                    <a href="admin.html" class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50">All Projects</a>
+                    <a href="admin_client_management.html" class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-200 bg-slate-700/50 rounded-lg hover:bg-slate-600/50">Clients</a>
+                    <a href="#" class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50">Settings</a>
+                </nav>
+            </div>
+        </div>
+
+        <!-- Main content -->
+        <div class="flex flex-col flex-1">
+            <header class="flex justify-between items-center h-16 px-6 bg-slate-800/60 backdrop-blur-sm border-b border-slate-700/50">
+                <h2 class="text-xl font-semibold text-white">Client Management</h2>
+                <div class="flex items-center">
+                    <span id="user-email" class="text-sm text-gray-300 mr-4 hidden sm:block"></span>
+                    <button id="logout-button" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm">Sign Out</button>
+                </div>
+            </header>
+
+            <main class="flex-1 p-6">
+                <!-- Companies List -->
+                <h3 class="text-2xl font-bold text-white mb-4">Companies</h3>
+                <div id="companies-table-container" class="overflow-x-auto bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 mb-8">
+                    <table class="min-w-full divide-y divide-slate-700">
+                        <thead class="bg-slate-900/50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase">Company Name</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase">Owner Email</th>
+                                <th class="px-6 py-3"></th>
+                            </tr>
+                        </thead>
+                        <tbody id="companies-list" class="divide-y divide-slate-800"></tbody>
+                    </table>
+                </div>
+
+                <!-- Users List -->
+                <h3 class="text-2xl font-bold text-white mb-4">Users</h3>
+                <div id="users-table-container" class="overflow-x-auto bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50">
+                    <table class="min-w-full divide-y divide-slate-700">
+                        <thead class="bg-slate-900/50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase">Name</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase">Email</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase">Company Name</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase">Role</th>
+                                <th class="px-6 py-3"></th>
+                            </tr>
+                        </thead>
+                        <tbody id="users-list" class="divide-y divide-slate-800"></tbody>
+                    </table>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, getDocs, doc, getDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const firebaseConfig = {
+          apiKey: "AIzaSyApmEJdFi96QS3TwYh7GyEDSbZrCuVpBrg",
+          authDomain: "proofing-application.firebaseapp.com",
+          projectId: "proofing-application",
+          storageBucket: "proofing-application.firebasestorage.app",
+          messagingSenderId: "452256252711",
+          appId: "1:452256252711:web:68795c1e5cc9438ff05f02",
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                const userDoc = await getDoc(doc(db, "users", user.uid));
+                if (!userDoc.exists() || userDoc.data().role !== 'admin') {
+                    window.location.href = 'dashboard.html';
+                    return;
+                }
+                document.getElementById('user-email').textContent = user.email;
+                loadData();
+            } else {
+                window.location.href = 'index.html';
+            }
+        });
+
+        document.getElementById('logout-button').addEventListener('click', () => signOut(auth));
+
+        async function loadData() {
+            // Load companies and users in parallel
+            const [companies, users] = await Promise.all([
+                getDocs(collection(db, "companies")),
+                getDocs(collection(db, "users"))
+            ]);
+
+            const companiesMap = new Map();
+            companies.forEach(doc => companiesMap.set(doc.id, doc.data()));
+
+            const usersMap = new Map();
+            users.forEach(doc => usersMap.set(doc.id, doc.data()));
+
+            renderCompanies(companies, usersMap);
+            renderUsers(users, companiesMap);
+        }
+
+        async function renderCompanies(companiesSnapshot, usersMap) {
+            const listEl = document.getElementById('companies-list');
+            listEl.innerHTML = '';
+            for (const doc of companiesSnapshot.docs) {
+                const company = doc.data();
+                const owner = usersMap.get(company.ownerUid);
+                const ownerEmail = owner ? owner.email : 'N/A';
+                listEl.innerHTML += `
+                    <tr class="hover:bg-slate-800">
+                        <td class="px-6 py-4 text-sm text-white">${company.companyName}</td>
+                        <td class="px-6 py-4 text-sm text-gray-300">${ownerEmail}</td>
+                        <td class="px-6 py-4 text-right">
+                            <button class="delete-company-button text-red-400 hover:text-red-300 text-sm" data-id="${doc.id}">Delete</button>
+                        </td>
+                    </tr>`;
+            }
+            document.querySelectorAll('.delete-company-button').forEach(b => b.addEventListener('click', deleteCompany));
+        }
+
+        function renderUsers(usersSnapshot, companiesMap) {
+            const listEl = document.getElementById('users-list');
+            listEl.innerHTML = '';
+            usersSnapshot.forEach(doc => {
+                const user = doc.data();
+                const company = companiesMap.get(user.companyId);
+                const companyName = company ? company.companyName : 'N/A';
+                listEl.innerHTML += `
+                    <tr class="hover:bg-slate-800">
+                        <td class="px-6 py-4 text-sm text-white">${user.name}</td>
+                        <td class="px-6 py-4 text-sm text-gray-300">${user.email}</td>
+                        <td class="px-6 py-4 text-sm text-gray-300">${companyName}</td>
+                        <td class="px-6 py-4 text-sm text-gray-300">${user.role}</td>
+                        <td class="px-6 py-4 text-right">
+                            <a href="admin_edit_user.html?id=${doc.id}" class="text-indigo-400 hover:text-indigo-300 text-sm">Edit</a>
+                            <button class="delete-user-button text-red-400 hover:text-red-300 text-sm ml-4" data-id="${doc.id}">Delete</button>
+                        </td>
+                    </tr>`;
+            });
+            document.querySelectorAll('.delete-user-button').forEach(b => b.addEventListener('click', deleteUser));
+        }
+
+        async function deleteCompany(e) {
+            const companyId = e.target.dataset.id;
+            if (confirm('Are you sure you want to delete this company? This is irreversible.')) {
+                await deleteDoc(doc(db, "companies", companyId));
+                loadData();
+            }
+        }
+
+        async function deleteUser(e) {
+            const userId = e.target.dataset.id;
+            if (confirm('Are you sure you want to delete this user? This will delete their auth account and cannot be undone.')) {
+                // In a real app, you would need a cloud function to delete the Firebase Auth user.
+                // Deleting the Firestore doc is all we can do from the client.
+                await deleteDoc(doc(db, "users", userId));
+                loadData();
+            }
+        }
+    </script>
+</body>
+</html>
