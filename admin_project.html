@@ -158,7 +158,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, getDoc, updateDoc, collection, addDoc, query, where, getDocs, Timestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, getDoc, updateDoc, collection, addDoc, query, where, getDocs, Timestamp, arrayUnion } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
         import * as pdfjsLib from "https://mozilla.github.io/pdf.js/build/pdf.mjs";
 
@@ -337,6 +337,56 @@
             signOut(auth);
         });
 
+        document.getElementById('file-upload-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const fileInput = document.getElementById('file-input');
+            const file = fileInput.files[0];
+            const submitButton = e.target.querySelector('button[type="submit"]');
+
+            if (!file) {
+                alert("Please select a file to upload.");
+                return;
+            }
+
+            const originalButtonText = submitButton.textContent;
+            submitButton.disabled = true;
+            submitButton.textContent = "Uploading...";
+
+            try {
+                const projectRef = doc(db, "projects", projectId);
+                const storageRef = ref(storage, `proofs/${projectId}/${Date.now()}_${file.name}`);
+
+                const uploadResult = await uploadBytes(storageRef, file);
+                const downloadURL = await getDownloadURL(uploadResult.ref);
+
+                const projectSnap = await getDoc(projectRef);
+                const newVersionNumber = projectSnap.data().versions.length + 1;
+
+                const newVersion = {
+                    versionNumber: newVersionNumber,
+                    fileURL: downloadURL,
+                    createdAt: Timestamp.now()
+                };
+
+                await updateDoc(projectRef, {
+                    versions: arrayUnion(newVersion),
+                    status: 'pending',
+                    isAwaitingClientUpload: false
+                });
+
+                loadPdf(downloadURL);
+                fileInput.value = null; // Clear the file input
+                alert("New version uploaded successfully!");
+
+            } catch (error) {
+                console.error("Error uploading new version:", error);
+                alert("An error occurred while uploading. Please try again.");
+            } finally {
+                submitButton.disabled = false;
+                submitButton.textContent = originalButtonText;
+            }
+        });
     </script>
 </body>
 </html>
