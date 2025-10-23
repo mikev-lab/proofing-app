@@ -41,63 +41,79 @@ export function getTrimDimensions(dimensionSpec, customDimensionValue) {
 }
 
 /**
- * Draws a centered box on the canvas.
+ * Draws a box on the canvas based on provided options.
  * @param {CanvasRenderingContext2D} ctx - The canvas rendering context.
- * @param {number} canvasWidth - The width of the canvas.
- * @param {number} canvasHeight - The height of the canvas.
- * @param {number} boxWidth - The width of the box to draw (in points).
- * @param {number} boxHeight - The height of the box to draw (in points).
- * @param {string} color - The stroke color for the box.
- * @param {number} lineWidth - The width of the line.
- * @param {number[]} [dashPattern=[]] - An array for dashed lines, e.g., [5, 5].
+ * @param {object} options - Drawing parameters.
+ * @param {number} options.x - The top-left x-coordinate of the box.
+ * @param {number} options.y - The top-left y-coordinate of the box.
+ * @param {number} options.width - The width of the box.
+ * @param {number} options.height - The height of the box.
+ * @param {string} options.color - The stroke color for the box.
+ * @param {number} [options.lineWidth=1] - The width of the line.
+ * @param {number[]} [options.dashPattern=[]] - An array for dashed lines.
  */
-function drawCenteredBox(ctx, canvasWidth, canvasHeight, boxWidth, boxHeight, color, lineWidth, dashPattern = []) {
-    const x = (canvasWidth - boxWidth) / 2;
-    const y = (canvasHeight - boxHeight) / 2;
-
+function drawBox(ctx, { x, y, width, height, color, lineWidth = 1, dashPattern = [] }) {
     ctx.save();
     ctx.strokeStyle = color;
-    ctx.lineWidth = lineWidth;
-    ctx.setLineDash(dashPattern);
-    ctx.strokeRect(x, y, boxWidth, boxHeight);
+    ctx.lineWidth = lineWidth / ctx.getTransform().a; // Descale line width
+    ctx.setLineDash(dashPattern.map(d => d / ctx.getTransform().a)); // Descale dash pattern
+    ctx.strokeRect(x, y, width, height);
     ctx.restore();
 }
 
 /**
- * Draws the trim guide.
+ * Draws the trim guide based on calculated coordinates.
  * @param {CanvasRenderingContext2D} ctx - The canvas context.
- * @param {number} canvasWidth - The width of the canvas.
- * @param {number} canvasHeight - The height of the canvas.
- * @param {{width: number, height: number}} trimDimensions - The target trim dimensions in points.
+ * @param {object} options - The drawing options object.
  */
-export function drawTrimGuide(ctx, canvasWidth, canvasHeight, trimDimensions) {
-    drawCenteredBox(ctx, canvasWidth, canvasHeight, trimDimensions.width, trimDimensions.height, 'cyan', 1);
+export function drawTrimGuide(ctx, options) {
+    // Trim guide is the exact boundary of the PDF page's image on the canvas
+    drawBox(ctx, {
+        x: options.drawX,
+        y: options.drawY,
+        width: options.drawWidth,
+        height: options.drawHeight,
+        color: 'cyan',
+        lineWidth: 1
+    });
 }
 
 /**
- * Draws the bleed guide.
+ * Draws the bleed guide based on calculated coordinates.
  * @param {CanvasRenderingContext2D} ctx - The canvas context.
- * @param {number} canvasWidth - The width of the canvas.
- * @param {number} canvasHeight - The height of the canvas.
- * @param {{width: number, height: number}} trimDimensions - The target trim dimensions in points.
+ * @param {object} options - The drawing options object.
  */
-export function drawBleedGuide(ctx, canvasWidth, canvasHeight, trimDimensions) {
-    const bleedOffset = 0.125 * INCH_TO_POINTS;
-    const bleedWidth = trimDimensions.width + (2 * bleedOffset);
-    const bleedHeight = trimDimensions.height + (2 * bleedOffset);
-    drawCenteredBox(ctx, canvasWidth, canvasHeight, bleedWidth, bleedHeight, 'magenta', 1, [5, 5]);
+export function drawBleedGuide(ctx, options) {
+    const scale = options.drawWidth / options.trimWidthPt;
+    const bleedOffset = options.bleedPt * scale;
+
+    drawBox(ctx, {
+        x: options.drawX - bleedOffset,
+        y: options.drawY - bleedOffset,
+        width: options.drawWidth + (2 * bleedOffset),
+        height: options.drawHeight + (2 * bleedOffset),
+        color: 'magenta',
+        lineWidth: 1,
+        dashPattern: [5, 5]
+    });
 }
 
 /**
- * Draws the safety guide.
+ * Draws the safety guide based on calculated coordinates.
  * @param {CanvasRenderingContext2D} ctx - The canvas context.
- * @param {number} canvasWidth - The width of the canvas.
- * @param {number} canvasHeight - The height of the canvas.
- * @param {{width: number, height: number}} trimDimensions - The target trim dimensions in points.
+ * @param {object} options - The drawing options object.
  */
-export function drawSafetyGuide(ctx, canvasWidth, canvasHeight, trimDimensions) {
-    const safetyOffset = 0.125 * INCH_TO_POINTS;
-    const safetyWidth = trimDimensions.width - (2 * safetyOffset);
-    const safetyHeight = trimDimensions.height - (2 * safetyOffset);
-    drawCenteredBox(ctx, canvasWidth, canvasHeight, safetyWidth, safetyHeight, 'yellow', 1, [5, 5]);
+export function drawSafetyGuide(ctx, options) {
+    const scale = options.drawWidth / options.trimWidthPt;
+    const safetyOffset = options.safetyPt * scale;
+
+    drawBox(ctx, {
+        x: options.drawX + safetyOffset,
+        y: options.drawY + safetyOffset,
+        width: options.drawWidth - (2 * safetyOffset),
+        height: options.drawHeight - (2 * safetyOffset),
+        color: 'yellow',
+        lineWidth: 1,
+        dashPattern: [5, 5]
+    });
 }
