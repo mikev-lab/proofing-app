@@ -380,14 +380,15 @@
                     // Initialize Viewer Controls module
                     // Pass the isPlacingAnnotation function from annotations module
                     initializeViewerControls(
-                        pdfViewer, pdfCanvas,
-                        (newTransform) => { // onTransformChange
+                        pdfViewer,          // Argument 1: viewer element
+                        pdfCanvas,          // Argument 2: canvas element
+                        (newTransform) => { // Argument 3: onTransformChange function
                             transformState = newTransform;
-                            queueRenderPage(pageNum); // Re-render needed
+                            queueRenderPage(pageNum);
                         },
-                        () => currentTool,    // getCurrentTool
-                        () => pdfRenderInfo, // getPdfRenderInfo
-                        zoomLevelDisplay     // The zoom display element
+                        () => currentTool,    // Argument 4: getCurrentTool function
+                        () => pdfRenderInfo, // Argument 5: getPdfRenderInfo function
+                        zoomLevelDisplay     // Argument 6: zoomLevelDisplay element
                     );
 
                     loadingSpinner.classList.add('hidden');
