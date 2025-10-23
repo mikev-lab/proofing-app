@@ -18,7 +18,33 @@
             -webkit-font-smoothing: antialiased;
             -moz-osx-font-smoothing: grayscale;
         }
+        #pdf-viewer {
+            position: relative;
+            width: 100%;
+            height: 100%;
+        }
+        #pdf-canvas {
+            width: 100%;
+            height: auto;
+            border-radius: 0.375rem; /* rounded-md */
+        }
+        #navigation-controls {
+            position: absolute;
+            bottom: 1rem;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            align-items: center;
+            background-color: rgba(15, 23, 42, 0.8); /* bg-slate-900/80 */
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem; /* rounded-lg */
+            backdrop-filter: blur(4px);
+        }
     </style>
+
+    <!-- PDF.js Library -->
+    <script src="https://mozilla.github.io/pdf.js/build/pdf.mjs" type="module"></script>
+
 </head>
 <body class="min-h-screen bg-gradient-to-br from-[#0f172a] to-[#334155] text-gray-100">
 
@@ -63,11 +89,15 @@
 
                 <!-- Main Grid -->
                 <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                    <!-- Left Side: Proof Image -->
-                    <div class="lg:col-span-2 bg-slate-900/50 rounded-lg overflow-hidden shadow-2xl">
-                         <div id="proof-image-container" class="h-full flex items-center justify-center p-4">
-                            <!-- Proof image will be loaded here -->
-                            <img id="proof-image" src="" alt="Proof" class="max-w-full max-h-full object-contain">
+                    <!-- Left Side: Proof Viewer -->
+                    <div class="lg:col-span-2 bg-slate-900/50 rounded-lg shadow-2xl min-h-[600px] flex flex-col p-4">
+                        <div id="pdf-viewer" class="flex-1 bg-black/20 rounded-md flex justify-center items-center overflow-auto">
+                            <canvas id="pdf-canvas"></canvas>
+                            <div id="navigation-controls" class="hidden">
+                                <button id="prev-page" class="text-white px-2 py-1 rounded-md">&lt;</button>
+                                <span class="text-white px-2" id="page-num"></span> / <span class="text-white px-2" id="page-count"></span>
+                                <button id="next-page" class="text-white px-2 py-1 rounded-md">&gt;</button>
+                            </div>
                         </div>
                     </div>
 
@@ -113,7 +143,12 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, getDoc, updateDoc, collection, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, getDoc, updateDoc, collection, getDocs, Timestamp, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import * as pdfjsLib from "https://mozilla.github.io/pdf.js/build/pdf.mjs";
+        import { initializeAnnotations } from './js/annotations.js';
+
+        // Set worker source for PDF.js
+        pdfjsLib.GlobalWorkerOptions.workerSrc = "https://mozilla.github.io/pdf.js/build/pdf.worker.mjs";
 
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
             // Fallback config
@@ -136,8 +171,6 @@
         const loadingSpinner = document.getElementById('loading-spinner');
         const proofContent = document.getElementById('proof-content');
         const projectName = document.getElementById('project-name');
-        const proofImage = document.getElementById('proof-image');
-        const proofImageContainer = document.getElementById('proof-image-container');
         const commentsSection = document.getElementById('comments-section');
         const approveButton = document.getElementById('approve-button');
         const requestChangesButton = document.getElementById('request-changes-button');
@@ -148,8 +181,24 @@
         const decisionButtons = document.getElementById('decision-buttons');
         const approvalForm = document.getElementById('approval-form');
 
+        // PDF Viewer elements
+        const pdfCanvas = document.getElementById('pdf-canvas');
+        const pageNumSpan = document.getElementById('page-num');
+        const pageCountSpan = document.getElementById('page-count');
+        const prevPageBtn = document.getElementById('prev-page');
+        const nextPageBtn = document.getElementById('next-page');
+        const navigationControls = document.getElementById('navigation-controls');
+
         let currentProjectId = null;
         let actionToConfirm = null; // 'approve' or 'request_changes'
+
+        // PDF.js state
+        let pdfDoc = null;
+        let pageNum = 1;
+        let pageRendering = false;
+        let pageNumPending = null;
+        const scale = 1.5;
+        let onPageRenderedCallback = () => {}; // Callback for drawing after page render
 
         /**
          * Fetches project details from Firestore.
@@ -163,8 +212,26 @@
                 if (docSnap.exists()) {
                     const projectData = docSnap.data();
                     projectName.textContent = projectData.projectName;
-                    renderProof(projectData.fileUrl, projectData.fileName);
-                    fetchComments(projectId);
+
+                    const latestVersion = projectData.versions && projectData.versions.length > 0 ? projectData.versions[projectData.versions.length - 1] : null;
+                    if (latestVersion && latestVersion.fileURL) {
+                        renderProof(latestVersion.fileURL, latestVersion.fileName);
+                    } else {
+                        // Fallback to old fileUrl for backward compatibility
+                        renderProof(projectData.fileUrl, projectData.fileName);
+                    }
+
+                    initializeAnnotations(
+                        db,
+                        auth,
+                        projectId,
+                        pdfCanvas,
+                        commentsSection,
+                        () => pageNum, // getCurrentPageNumber
+                        () => queueRenderPage(pageNum), // rerenderCanvas
+                        (callback) => { onPageRenderedCallback = callback; } // setOnPageRenderedCallback
+                    );
+
                     loadingSpinner.classList.add('hidden');
                     proofContent.classList.remove('hidden');
                 } else {
@@ -177,44 +244,80 @@
         }
 
         /**
-         * Fetches comments for a project and renders them.
-         * @param {string} projectId - The ID of the project.
-         */
-        async function fetchComments(projectId) {
-            try {
-                const commentsRef = collection(db, "projects", projectId, "comments");
-                const querySnapshot = await getDocs(commentsRef);
-                const comments = [];
-                querySnapshot.forEach((doc) => {
-                    comments.push(doc.data());
-                });
-
-                if (comments.length > 0) {
-                    commentsSection.innerHTML = ''; // Clear the placeholder
-                    comments.forEach(comment => {
-                        const commentEl = document.createElement('div');
-                        commentEl.classList.add('p-3', 'bg-slate-700', 'rounded-lg');
-                        commentEl.innerHTML = `<p class="text-sm text-gray-200">${comment.text}</p><p class="text-xs text-gray-400 mt-1">_by ${comment.author}</p>`;
-                        commentsSection.appendChild(commentEl);
-                    });
-                }
-            } catch (error) {
-                console.error("Error fetching comments:", error);
-            }
-        }
-
-        /**
          * Renders the proof file, handling PDF and images.
          * @param {string} fileUrl - The URL of the proof file.
          * @param {string} fileName - The name of the file.
          */
         function renderProof(fileUrl, fileName) {
             if (fileName && fileName.toLowerCase().endsWith('.pdf')) {
-                // Use an iframe to embed the PDF
-                proofImageContainer.innerHTML = `<iframe src="${fileUrl}" class="w-full h-full" style="min-height: 80vh;"></iframe>`;
+                loadPdf(fileUrl);
             } else {
-                // It's an image
-                proofImage.src = fileUrl;
+                // It's an image: hide canvas controls, show an img tag
+                navigationControls.classList.add('hidden');
+                pdfCanvas.style.display = 'none';
+                const pdfViewer = document.getElementById('pdf-viewer');
+                const img = document.createElement('img');
+                img.src = fileUrl;
+                img.alt = "Proof";
+                img.className = "max-w-full max-h-full object-contain";
+                pdfViewer.appendChild(img);
+            }
+        }
+
+        /**
+         * Loads and renders a PDF document.
+         * @param {string} pdfUrl - The URL of the PDF file.
+         */
+        async function loadPdf(pdfUrl) {
+            try {
+                const loadingTask = pdfjsLib.getDocument(pdfUrl);
+                pdfDoc = await loadingTask.promise;
+                pageCountSpan.textContent = pdfDoc.numPages;
+                navigationControls.classList.remove('hidden');
+                renderPage(pageNum);
+            } catch (error) {
+                console.error("Error loading PDF:", error);
+            }
+        }
+
+        /**
+         * Renders a specific page of the PDF.
+         * @param {number} num - The page number to render.
+         */
+        function renderPage(num) {
+            pageRendering = true;
+            pdfDoc.getPage(num).then((page) => {
+                const viewport = page.getViewport({ scale });
+                const context = pdfCanvas.getContext('2d');
+                pdfCanvas.height = viewport.height;
+                pdfCanvas.width = viewport.width;
+
+                const renderContext = {
+                    canvasContext: context,
+                    viewport: viewport
+                };
+                const renderTask = page.render(renderContext);
+                renderTask.promise.then(() => {
+                    pageRendering = false;
+                    if (pageNumPending !== null) {
+                        renderPage(pageNumPending);
+                        pageNumPending = null;
+                    }
+                    onPageRenderedCallback(); // Draw annotations
+                });
+            });
+            pageNumSpan.textContent = num;
+        }
+
+        /**
+         * Queues a page render if another is already in progress.
+         * @param {number} num - The page number to queue.
+         */
+        function queueRenderPage(num) {
+            if (pageRendering) {
+                pageNumPending = num;
+            } else {
+                renderPage(num);
             }
         }
 
@@ -275,6 +378,18 @@
             }
         });
 
+        prevPageBtn.addEventListener('click', () => {
+            if (pageNum <= 1) return;
+            pageNum--;
+            queueRenderPage(pageNum);
+        });
+
+        nextPageBtn.addEventListener('click', () => {
+            if (pageNum >= pdfDoc.numPages) return;
+            pageNum++;
+            queueRenderPage(pageNum);
+        });
+
         // --- Main execution ---
         onAuthStateChanged(auth, (user) => {
             if (user) {
@@ -301,5 +416,22 @@
             });
         });
     </script>
+
+    <!-- Annotation Modal -->
+    <div id="annotation-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center hidden z-50">
+        <div class="bg-slate-800 rounded-lg shadow-xl p-6 w-full max-w-md mx-4 border border-slate-700/50">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-xl font-semibold text-white">Add a Comment</h3>
+                <button id="modal-close-button" class="text-gray-400 hover:text-white">&times;</button>
+            </div>
+            <form id="annotation-form">
+                <textarea id="annotation-text" rows="4" class="w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500" placeholder="Type your comment..."></textarea>
+                <div class="mt-4 flex justify-end space-x-4">
+                    <button type="button" id="modal-cancel-button" class="px-4 py-2 rounded-md bg-gray-600 hover:bg-gray-500 text-white font-semibold text-sm">Cancel</button>
+                    <button type="submit" class="px-4 py-2 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm">Submit</button>
+                </div>
+            </form>
+        </div>
+    </div>
 </body>
 </html>
