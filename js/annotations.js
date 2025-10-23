@@ -9,10 +9,11 @@ import { collection, addDoc, onSnapshot, query, orderBy, serverTimestamp } from 
  * @param {HTMLElement} commentsContainer - The container for displaying comment text.
  * @param {function} getCurrentPageNumber - A function that returns the current PDF page number.
  * @param {function} rerenderCanvas - A function that forces the canvas to be re-rendered.
- * @param {function} onPageRendered - A callback to execute after a page is rendered, for drawing.
  * @param {function} setOnPageRenderedCallback - A function to register the drawing callback.
+ * @param {function} getTransformState - A function that returns the current zoom and pan state.
+ * @param {function} getPdfRenderInfo - A function that returns the PDF's last render position and dimensions.
  */
-export function initializeAnnotations(db, auth, projectId, canvas, commentsContainer, getCurrentPageNumber, rerenderCanvas, setOnPageRenderedCallback) {
+export function initializeAnnotations(db, auth, projectId, canvas, commentsContainer, getCurrentPageNumber, rerenderCanvas, setOnPageRenderedCallback, getTransformState, getPdfRenderInfo) {
     console.log("Initializing annotations for project:", projectId);
 
     const modal = document.getElementById('annotation-modal');
@@ -28,16 +29,30 @@ export function initializeAnnotations(db, auth, projectId, canvas, commentsConta
     function drawAnnotations() {
         const context = canvas.getContext('2d');
         const currentPage = getCurrentPageNumber();
+        const transform = getTransformState();
+
+        context.save();
+        // We need to apply the same transformations as the viewer to draw annotations correctly.
+        context.translate(transform.pan.x, transform.pan.y);
+        context.scale(transform.zoom, transform.zoom);
+
+        const pdfInfo = getPdfRenderInfo();
+        context.translate(pdfInfo.x, pdfInfo.y);
 
         context.fillStyle = '#FACC15'; // Tailwind yellow-400
 
         allAnnotations.forEach(annotation => {
             if (annotation.pageNumber === currentPage) {
+                // The annotation x/y are relative to the PDF page, so we just draw them.
+                // The transformation takes care of placing them correctly on the visible canvas.
                 context.beginPath();
-                context.arc(annotation.x, annotation.y, 8, 0, Math.PI * 2); // 8px radius circle
+                // The radius should appear consistent regardless of zoom.
+                context.arc(annotation.x, annotation.y, 8 / transform.zoom, 0, Math.PI * 2);
                 context.fill();
             }
         });
+
+        context.restore();
     }
 
     // Register the drawing function with the main script
@@ -58,14 +73,24 @@ export function initializeAnnotations(db, auth, projectId, canvas, commentsConta
     modalCancelButton.addEventListener('click', hideModal);
 
     // --- Canvas Interaction ---
+    // The 'click' event is now dispatched from viewerControls.js to distinguish clicks from pans.
     canvas.addEventListener('click', (event) => {
         const rect = canvas.getBoundingClientRect();
-        const x = event.clientX - rect.left;
-        const y = event.clientY - rect.top;
+        const transform = getTransformState();
+
+        // Convert click coordinates from screen space to canvas space
+        const canvasX = event.clientX - rect.left;
+        const canvasY = event.clientY - rect.top;
+
+        const pdfInfo = getPdfRenderInfo();
+
+        // Reverse the transformation to get the coordinates relative to the PDF page.
+        const pdfX = (canvasX - transform.pan.x) / transform.zoom - pdfInfo.x;
+        const pdfY = (canvasY - transform.pan.y) / transform.zoom - pdfInfo.y;
 
         newAnnotationData = {
-            x,
-            y,
+            x: pdfX,
+            y: pdfY,
             pageNumber: getCurrentPageNumber()
         };
 
