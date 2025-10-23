@@ -204,7 +204,6 @@
         import { getFirestore, doc, getDoc, updateDoc, collection, getDocs, Timestamp, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import * as pdfjsLib from "https://mozilla.github.io/pdf.js/build/pdf.mjs";
         import { initializeAnnotations } from './js/annotations.js';
-        // --- MERGE: Keep both imports ---
         import { initializeViewerControls } from './js/viewerControls.js';
 
         // Set worker source for PDF.js
@@ -225,7 +224,7 @@
         const auth = getAuth(app);
         const db = getFirestore(app);
 
-        // Get DOM elements (Ensure all new buttons are included)
+        // Get DOM elements
         const userEmailSpan = document.getElementById('user-email');
         const logoutButton = document.getElementById('logout-button');
         const loadingSpinner = document.getElementById('loading-spinner');
@@ -353,43 +352,51 @@
                     projectName.textContent = projectData.projectName;
                     projectSpecs = projectData.specs; // Store specs
 
-                                // Set default view mode based on binding
-                                const isBook = projectSpecs.binding === 'Perfect Bound' || projectSpecs.binding === 'Saddle-Stitch';
-                                if (isBook) {
-                                    viewModeSelect.value = 'spread';
-                                    currentViewMode = 'spread';
-                                }
+                    // Set default view mode based on binding
+                    const isBook = projectSpecs && (projectSpecs.binding === 'Perfect Bound' || projectSpecs.binding === 'Saddle-Stitch');
+                    if (isBook) {
+                        viewModeSelect.value = 'spread';
+                        currentViewMode = 'spread';
+                    }
 
                     const latestVersion = projectData.versions && projectData.versions.length > 0 ? projectData.versions[projectData.versions.length - 1] : null;
                     if (latestVersion && latestVersion.fileURL) {
                         renderProof(latestVersion.fileURL, latestVersion.fileName);
+                    } else if (projectData.fileUrl) { // Fallback for older projects
+                        renderProof(projectData.fileUrl, projectData.fileName);
                     } else {
-                        renderProof(projectData.fileUrl, projectData.fileName); // Fallback
+                         // Handle case where file needs upload
+                        if (projectData.isAwaitingClientUpload === true) {
+                            displayUploadInterface(projectId, projectData.companyId);
+                        } else {
+                            displayNoFileMessage();
+                        }
                     }
 
-                    // Initialize Annotations module
-                    initializeAnnotations(
-                        db, auth, projectId, pdfCanvas, commentsSection,
-                        () => pageNum, // getCurrentPageNumber
-                        () => queueRenderPage(pageNum), // rerenderCanvas
-                        (callback) => { onPageRenderedCallback = callback; }, // setOnPageRenderedCallback
-                        () => transformState, // getTransformState
-                        () => pdfRenderInfo // getPdfRenderInfo
-                    );
+                    // Initialize Annotations module IF a file exists
+                    if ((latestVersion && latestVersion.fileURL) || projectData.fileUrl) {
+                        initializeAnnotations(
+                            db, auth, projectId, pdfCanvas, commentsSection,
+                            () => pageNum, // getCurrentPageNumber (using view number)
+                            () => queueRenderPage(pageNum), // rerenderCanvas
+                            (callback) => { onPageRenderedCallback = callback; }, // setOnPageRenderedCallback
+                            () => transformState, // getTransformState
+                            () => pdfRenderInfo // getPdfRenderInfo
+                        );
 
-                    // Initialize Viewer Controls module
-                    // Pass the isPlacingAnnotation function from annotations module
-                    initializeViewerControls(
-                        pdfViewer,          // Argument 1: viewer element
-                        pdfCanvas,          // Argument 2: canvas element
-                        (newTransform) => { // Argument 3: onTransformChange function
-                            transformState = newTransform;
-                            queueRenderPage(pageNum);
-                        },
-                        () => currentTool,    // Argument 4: getCurrentTool function
-                        () => pdfRenderInfo, // Argument 5: getPdfRenderInfo function
-                        zoomLevelDisplay     // Argument 6: zoomLevelDisplay element
-                    );
+                        // Initialize Viewer Controls module IF a file exists
+                        initializeViewerControls(
+                            pdfViewer, pdfCanvas,
+                            (newTransform) => { // onTransformChange
+                                transformState = newTransform;
+                                queueRenderPage(pageNum); // Re-render needed
+                            },
+                            () => currentTool,    // getCurrentTool
+                            () => pdfRenderInfo, // getPdfRenderInfo
+                            zoomLevelDisplay     // zoomLevelDisplay element
+                        );
+                    }
+
 
                     loadingSpinner.classList.add('hidden');
                     proofContent.classList.remove('hidden');
@@ -403,32 +410,129 @@
             }
         }
 
+        // --- NEW: Function to display upload interface ---
+        function displayUploadInterface(projectId, companyId) {
+            pdfViewer.innerHTML = `
+                <div class="bg-slate-800/60 p-6 rounded-lg shadow-xl border border-slate-700/50 text-center max-w-md mx-auto">
+                    <h3 class="text-xl font-semibold text-white mb-4">Upload Your Proof File</h3>
+                    <p class="text-gray-400 mb-6">Please upload the PDF file for this project.</p>
+                    <input type="file" id="client-file-input" accept=".pdf" class="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-600/20 file:text-indigo-300 hover:file:bg-indigo-600/30 mb-4">
+                    <button id="client-upload-button" class="w-full bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-green-800 disabled:cursor-not-allowed">
+                        Upload File
+                    </button>
+                    <p id="client-upload-status" class="mt-4 text-sm"></p>
+                </div>
+            `;
+            navigationControls.classList.add('hidden');
+            guidesSection.classList.add('hidden');
+            decisionButtons.classList.add('hidden'); // Hide approval buttons
+
+            const fileInput = document.getElementById('client-file-input');
+            const uploadButton = document.getElementById('client-upload-button');
+            const statusMsg = document.getElementById('client-upload-status');
+
+            uploadButton.addEventListener('click', async () => {
+                const file = fileInput.files[0];
+                if (!file) {
+                    statusMsg.textContent = 'Please select a PDF file.';
+                    statusMsg.className = 'mt-4 text-sm text-red-400';
+                    return;
+                }
+                if (!file.name.toLowerCase().endsWith('.pdf')) {
+                    statusMsg.textContent = 'Only PDF files are allowed.';
+                    statusMsg.className = 'mt-4 text-sm text-red-400';
+                    return;
+                }
+
+                uploadButton.disabled = true;
+                uploadButton.textContent = 'Uploading...';
+                statusMsg.textContent = 'Uploading, please wait...';
+                statusMsg.className = 'mt-4 text-sm text-yellow-400';
+
+                try {
+                    // Need firebase storage module
+                    const { getStorage, ref, uploadBytes, getDownloadURL } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js");
+                    const storage = getStorage(app);
+                    const storagePath = `proofs/${companyId}/${projectId}/${Date.now()}_${file.name}`;
+                    const storageRef = ref(storage, storagePath);
+
+                    const uploadResult = await uploadBytes(storageRef, file);
+                    const downloadURL = await getDownloadURL(uploadResult.ref);
+
+                    const projectRef = doc(db, "projects", projectId);
+                    const projectSnap = await getDoc(projectRef);
+                    const currentVersions = projectSnap.data().versions || [];
+                    const newVersionNumber = currentVersions.length + 1;
+
+                    const newVersion = {
+                        fileName: file.name,
+                        fileURL: downloadURL,
+                        uploadedAt: Timestamp.now(),
+                        version: newVersionNumber,
+                        uploadedBy: auth.currentUser.uid // Track who uploaded
+                    };
+
+                    await updateDoc(projectRef, {
+                        versions: [...currentVersions, newVersion],
+                        status: 'pending', // Update status to pending review
+                        isAwaitingClientUpload: false // Flip the flag
+                    });
+
+                    statusMsg.textContent = 'Upload successful! Refreshing...';
+                    statusMsg.className = 'mt-4 text-sm text-green-400';
+
+                    // Refresh the page to show the new proof
+                    setTimeout(() => window.location.reload(), 1500);
+
+                } catch (error) {
+                    console.error("Error uploading file:", error);
+                    statusMsg.textContent = `Upload failed: ${error.message}. Please try again.`;
+                    statusMsg.className = 'mt-4 text-sm text-red-400';
+                    uploadButton.disabled = false;
+                    uploadButton.textContent = 'Upload File';
+                }
+            });
+        }
+
+        // --- NEW: Function to display message when no file is present and not awaiting upload ---
+        function displayNoFileMessage() {
+            pdfViewer.innerHTML = '<p class="text-gray-400 p-4">No proof file has been uploaded for this project yet.</p>';
+            navigationControls.classList.add('hidden');
+            guidesSection.classList.add('hidden');
+            decisionButtons.classList.add('hidden'); // Hide approval buttons if no file
+        }
+
+
         /** Renders based on file type */
         function renderProof(fileUrl, fileName) {
-            // Clear previous image if any
-            const existingImg = pdfViewer.querySelector('img');
-            if (existingImg) pdfViewer.removeChild(existingImg);
+            // Clear previous content
+            pdfViewer.innerHTML = ''; // Clear any messages or old images
+            pdfViewer.appendChild(pdfCanvas); // Re-add canvas if needed
+            pdfViewer.appendChild(renderingThrobber); // Re-add throbber
+            pdfViewer.appendChild(navigationControls); // Re-add controls
+
             pdfCanvas.style.display = 'block'; // Ensure canvas is visible
 
             if (fileName && fileName.toLowerCase().endsWith('.pdf')) {
                 loadPdf(fileUrl);
             } else {
-                // Handle non-PDF images
+                // Handle non-PDF images (or show error if unexpected type)
                 navigationControls.classList.add('hidden');
                 guidesSection.classList.add('hidden'); // Hide guides for non-PDFs
                 pdfCanvas.style.display = 'none'; // Hide canvas
+                renderingThrobber.classList.add('hidden'); // Hide throbber
                 const img = document.createElement('img');
                 img.src = fileUrl;
                 img.alt = "Proof";
                 img.className = "max-w-full max-h-full object-contain";
-                pdfViewer.appendChild(img);
-                // Maybe disable viewer controls if it's not a PDF?
+                pdfViewer.insertBefore(img, pdfCanvas); // Add image before canvas
             }
         }
 
         /** Loads PDF document */
         async function loadPdf(pdfUrl) {
             try {
+                renderingThrobber.classList.remove('hidden'); // Show throbber
                 if (pdfDoc) {
                      // Destroy previous document if exists to free memory
                     pdfDoc.destroy().catch(e => console.warn("Error destroying previous pdfDoc:", e));
@@ -443,9 +547,12 @@
                 const loadingTask = pdfjsLib.getDocument(pdfUrl);
                 pdfDoc = await loadingTask.promise;
                 if (!pdfDoc) { throw new Error("PDF document loading failed.");}
-                pageCountSpan.textContent = pdfDoc.numPages;
+
+                const totalViews = getViewCount(pdfDoc.numPages);
+                pageCountSpan.textContent = totalViews; // Use view count here
+
                 navigationControls.classList.remove('hidden');
-                pageNum = 1; // Reset to first page
+                pageNum = 1; // Reset to first view
                 transformState = { zoom: 1.0, pan: { x: 0, y: 0 } }; // Reset zoom/pan
                 // Update zoom display
                 if (zoomLevelDisplay) zoomLevelDisplay.textContent = `${Math.round(transformState.zoom * 100)}%`;
@@ -457,153 +564,177 @@
                 pdfViewer.innerHTML = `<p class="text-red-400 p-4">Error loading PDF: ${error.message}</p>`;
                 navigationControls.classList.add('hidden'); // Hide controls on error
                 guidesSection.classList.add('hidden'); // Hide guides on error
+            } finally {
+                 // Hide throbber moved to renderPage's finally block
             }
         }
 
         /** Renders PDF page(s) with transformations and overlays */
         async function renderPage(viewNumber) {
-            if (!pdfDoc || pageRendering) {
-                if (pageRendering) pageNumPending = viewNumber;
+             if (!pdfDoc || pageRendering) {
+                 if (pageRendering && viewNumber !== pageNum) pageNumPending = viewNumber; // Only queue if different view
                 return;
             };
 
             pageRendering = true;
-            renderingThrobber.classList.remove('hidden');
+            renderingThrobber.classList.remove('hidden'); // Show during render
             pageNum = viewNumber; // Update global state
 
-            const pagesToRender = getPagesForView(viewNumber, pdfDoc.numPages);
+            const pagesToRenderIndices = getPagesForView(viewNumber, pdfDoc.numPages);
             const totalViews = getViewCount(pdfDoc.numPages);
 
             // Always update navigation state regardless of render success
-            pageNumSpan.textContent = pagesToRender.join('-') || viewNumber;
+            // Display page numbers being shown (e.g., 2-3) or just the single page/view number
+            const displayedPagesStr = pagesToRenderIndices.join('-');
+            pageNumSpan.textContent = displayedPagesStr || viewNumber;
             pageCountSpan.textContent = totalViews;
             prevPageBtn.disabled = viewNumber <= 1;
             nextPageBtn.disabled = !pdfDoc || viewNumber >= totalViews;
 
-            if (pagesToRender.length === 0) {
+            if (pagesToRenderIndices.length === 0) {
                 console.warn(`No pages to render for view ${viewNumber}`);
                 pageRendering = false;
-                // Clear canvas if no pages are shown (e.g., empty last view)
+                renderingThrobber.classList.add('hidden');
+                // Clear canvas if no pages are shown
                 const visibleContext = pdfCanvas.getContext('2d');
                 if (visibleContext) visibleContext.clearRect(0, 0, pdfCanvas.width, pdfCanvas.height);
                 return;
             }
 
             try {
-                const pages = await Promise.all(pagesToRender.map(num => pdfDoc.getPage(num)));
-                const pdfRenderScale = Math.max(1.5, (window.devicePixelRatio || 1) * transformState.zoom * 0.75);
+                // Fetch PDFPageProxy objects
+                const pages = await Promise.all(pagesToRenderIndices.map(num => pdfDoc.getPage(num)));
+
+                // Determine scale for hidden canvas (higher res for clarity)
+                // Consider device pixel ratio and current zoom for optimal quality vs performance
+                const pdfRenderScale = Math.max(1.5, (window.devicePixelRatio || 1) * 0.75); // Don't scale hidden canvas by view zoom
+
                 const viewports = pages.map(p => p.getViewport({ scale: pdfRenderScale }));
                 const totalWidth = viewports.reduce((sum, vp) => sum + vp.width, 0);
                 const maxHeight = Math.max(...viewports.map(vp => vp.height));
 
+                // Resize hidden canvas and clear
                 hiddenCanvas.width = totalWidth;
                 hiddenCanvas.height = maxHeight;
                 const hiddenContext = hiddenCanvas.getContext('2d');
-                if (!hiddenContext) { pageRendering = false; return; }
+                if (!hiddenContext) throw new Error("Could not get hidden canvas context.");
                 hiddenContext.clearRect(0, 0, hiddenCanvas.width, hiddenCanvas.height);
 
+                // Render pages side-by-side onto hidden canvas
                 let currentX = 0;
                 for (let i = 0; i < pages.length; i++) {
                     const page = pages[i];
                     const viewport = viewports[i];
+                    // Center page vertically if heights differ (unlikely but possible)
+                    const offsetY = (maxHeight - viewport.height) / 2;
                     hiddenContext.save();
-                    hiddenContext.translate(currentX, 0);
+                    hiddenContext.translate(currentX, offsetY);
                     await page.render({ canvasContext: hiddenContext, viewport: viewport }).promise;
                     hiddenContext.restore();
                     currentX += viewport.width;
                 }
 
-                pageRendering = false;
-
+                // Get visible canvas context and clear
                 const visibleContext = pdfCanvas.getContext('2d');
-                if (!visibleContext) return;
-
-                pdfCanvas.height = pdfViewer.clientHeight;
-                pdfCanvas.width = pdfViewer.clientWidth;
+                if (!visibleContext) throw new Error("Could not get visible canvas context.");
+                pdfCanvas.width = pdfViewer.clientWidth * (window.devicePixelRatio || 1); // Adjust for DPI
+                pdfCanvas.height = pdfViewer.clientHeight * (window.devicePixelRatio || 1);
+                pdfCanvas.style.width = `${pdfViewer.clientWidth}px`; // Keep CSS size consistent
+                pdfCanvas.style.height = `${pdfViewer.clientHeight}px`;
                 visibleContext.clearRect(0, 0, pdfCanvas.width, pdfCanvas.height);
+                visibleContext.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1); // Scale context for DPI
 
+                // --- START: Revised Drawing Logic ---
                 visibleContext.save();
-                visibleContext.scale(transformState.zoom, transformState.zoom);
-                visibleContext.translate(transformState.pan.x, transformState.pan.y);
 
+                // 1. Calculate base scale to fit content (using original page dimensions)
                 const baseViewports = pages.map(p => p.getViewport({ scale: 1.0 }));
                 const totalBaseWidth = baseViewports.reduce((sum, vp) => sum + vp.width, 0);
                 const maxBaseHeight = Math.max(...baseViewports.map(vp => vp.height));
-                const combinedBaseViewport = { width: totalBaseWidth, height: maxBaseHeight };
 
-                const availableWidth = pdfCanvas.width / transformState.zoom;
-                const availableHeight = pdfCanvas.height / transformState.zoom;
-                pdfRenderInfo.scale = Math.min(
-                    availableWidth / combinedBaseViewport.width,
-                    availableHeight / combinedBaseViewport.height
-                ) * 0.95;
+                const availableWidth = pdfViewer.clientWidth; // Use CSS dimensions
+                const availableHeight = pdfViewer.clientHeight;
+                const baseScale = Math.min(
+                    availableWidth / totalBaseWidth,
+                    availableHeight / maxBaseHeight
+                ) * 0.95; // 0.95 for padding
 
-                pdfRenderInfo.width = combinedBaseViewport.width * pdfRenderInfo.scale;
-                pdfRenderInfo.height = combinedBaseViewport.height * pdfRenderInfo.scale;
-                pdfRenderInfo.x = (availableWidth - pdfRenderInfo.width) / 2;
-                pdfRenderInfo.y = (availableHeight - pdfRenderInfo.height) / 2;
+                const baseWidth = totalBaseWidth * baseScale;
+                const baseHeight = maxBaseHeight * baseScale;
+                const baseX = (availableWidth - baseWidth) / 2;
+                const baseY = (availableHeight - baseHeight) / 2;
 
-                visibleContext.drawImage(hiddenCanvas, pdfRenderInfo.x, pdfRenderInfo.y, pdfRenderInfo.width, pdfRenderInfo.height);
+                // Store base info needed by guides/annotations
+                pdfRenderInfo = { x: baseX, y: baseY, width: baseWidth, height: baseHeight, scale: baseScale };
 
-                // --- Draw Guides ---
+                // 2. Apply transformations: Pan first, then Scale (relative to origin)
+                visibleContext.translate(transformState.pan.x, transformState.pan.y);
+                visibleContext.scale(transformState.zoom, transformState.zoom);
+
+                // 3. Draw the high-res hidden canvas using the calculated base position/size
+                visibleContext.drawImage(hiddenCanvas, baseX, baseY, baseWidth, baseHeight);
+
+                // --- Draw Guides (Adjusted to draw relative to base) ---
                 if (projectSpecs && guidesModule) {
                     const { getTrimDimensions, drawTrimGuide, drawBleedGuide, drawSafetyGuide, INCH_TO_POINTS } = guidesModule;
-                    const trimDimensionsPt = getTrimDimensions(projectSpecs.dimensions, null);
+                    const trimDimensionsPt = getTrimDimensions(projectSpecs.dimensions, null); // Assumes 'custom' is handled or dimensionSpec is standard
                     if (trimDimensionsPt) {
-                        let currentDrawX = pdfRenderInfo.x;
+                        let currentGuideDrawX = baseX; // Start guides at base X
                         for (let i = 0; i < baseViewports.length; i++) {
                             const baseViewport = baseViewports[i];
-                            const pageDrawWidth = baseViewport.width * pdfRenderInfo.scale;
-                            const pageDrawHeight = baseViewport.height * pdfRenderInfo.scale;
-
-                            // Vertically center each page's guides within the max height
-                            const pageDrawY = pdfRenderInfo.y + (pdfRenderInfo.height - pageDrawHeight) / 2;
-
+                            const pageBaseDrawWidth = baseViewport.width * baseScale;
+                            const pageBaseDrawHeight = baseViewport.height * baseScale;
+                            // Calculate Y to vertically center this page's guides within the max base height
+                            const pageBaseDrawY = baseY + (baseHeight - pageBaseDrawHeight) / 2;
 
                             const guideDrawOptions = {
-                                drawX: currentDrawX,
-                                drawY: pageDrawY,
-                                drawWidth: pageDrawWidth,
-                                drawHeight: pageDrawHeight,
+                                drawX: currentGuideDrawX,
+                                drawY: pageBaseDrawY,
+                                drawWidth: pageBaseDrawWidth, // Use base scaled size
+                                drawHeight: pageBaseDrawHeight,// Use base scaled size
                                 trimWidthPt: trimDimensionsPt.width,
                                 trimHeightPt: trimDimensionsPt.height,
-                                bleedPt: 0.125 * INCH_TO_POINTS,
-                                safetyPt: 0.125 * INCH_TO_POINTS
+                                bleedPt: 0.125 * INCH_TO_POINTS, // Example bleed
+                                safetyPt: 0.125 * INCH_TO_POINTS // Example safety
                             };
 
+                            // Draw guides - they will be scaled/panned by the active context transform
                             if (showTrimGuideCheckbox.checked) drawTrimGuide(visibleContext, guideDrawOptions);
                             if (showBleedGuideCheckbox.checked) drawBleedGuide(visibleContext, guideDrawOptions);
                             if (showSafetyGuideCheckbox.checked) drawSafetyGuide(visibleContext, guideDrawOptions);
 
-                            currentDrawX += pageDrawWidth;
+                            currentGuideDrawX += pageBaseDrawWidth; // Move to next page's base X
                         }
                     }
                 }
                 // --- End Draw Guides ---
 
-                visibleContext.restore();
-                onPageRenderedCallback();
+                visibleContext.restore(); // Restore removes scale/translate before drawing annotations
+                // --- END: Revised Drawing Logic ---
 
+                onPageRenderedCallback(); // Draw annotations AFTER restoring (they apply own transforms)
+
+            } catch (err) {
+                console.error("Error rendering page/spread:", err);
+                pdfViewer.innerHTML = `<p class="text-red-400 p-4">Error rendering PDF: ${err.message}</p>`; // Show error in viewer
+            } finally {
+                pageRendering = false;
+                renderingThrobber.classList.add('hidden'); // Hide throbber
+                 // Render pending page if any
                 if (pageNumPending !== null) {
                     const pending = pageNumPending;
                     pageNumPending = null;
-                    renderPage(pending);
+                    queueRenderPage(pending); // Render the queued page/view
                 }
-            } catch (err) {
-                console.error("Error rendering page/spread:", err);
-                pageRendering = false;
-            } finally {
-                renderingThrobber.classList.add('hidden');
             }
         }
+
 
         /** Queues page render if another is busy */
         function queueRenderPage(num) {
             if (pageRendering) {
-                pageNumPending = num;
-                // console.log("Queueing render for page", num);
+                 if (num !== pageNum) pageNumPending = num; // Only queue if it's a different view
             } else {
-                // console.log("Rendering page", num);
                 renderPage(num);
             }
         }
@@ -711,7 +842,7 @@
         });
 
         nextPageBtn.addEventListener('click', () => {
-            const totalViews = getViewCount(pdfDoc.numPages);
+            const totalViews = getViewCount(pdfDoc ? pdfDoc.numPages : 0);
             if (!pdfDoc || pageNum >= totalViews) return;
             pageNum++;
             queueRenderPage(pageNum);
