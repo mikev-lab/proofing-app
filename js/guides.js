@@ -1,5 +1,5 @@
 export const INCH_TO_POINTS = 72;
-const MM_TO_POINTS = 2.83465;
+export const MM_TO_POINTS = 2.83465;
 
 const STANDARD_PAPER_SIZES = {
     // Millimeters for precision, will be converted to points
