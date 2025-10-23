@@ -8,6 +8,7 @@
  */
 export function initializeViewerControls(viewer, canvas, onTransformChange, getCurrentTool, getPdfRenderInfo, zoomLevelDisplay) {
     console.log('Initializing viewer controls...');
+    console.log(">>> zoomLevelDisplay received by initializeViewerControls:", zoomLevelDisplay);
 
     const zoomInButton = document.getElementById('zoom-in-button');
     const zoomOutButton = document.getElementById('zoom-out-button');
