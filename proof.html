@@ -360,7 +360,10 @@
                     }
 
                     const latestVersion = projectData.versions && projectData.versions.length > 0 ? projectData.versions[projectData.versions.length - 1] : null;
-                    if (latestVersion && latestVersion.fileURL) {
+                    if (latestVersion && latestVersion.previewURL) {
+                        renderProof(latestVersion.previewURL, latestVersion.fileName);
+                    }
+                    else if (latestVersion && latestVersion.fileURL) {
                         renderProof(latestVersion.fileURL, latestVersion.fileName);
                     } else if (projectData.fileUrl) { // Fallback for older projects
                         renderProof(projectData.fileUrl, projectData.fileName);
