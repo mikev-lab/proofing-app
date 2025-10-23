@@ -99,6 +99,11 @@
                                 <button id="prev-page" class="text-white px-2 py-1 rounded-md">&lt;</button>
                                 <span class="text-white px-2" id="page-num"></span> / <span class="text-white px-2" id="page-count"></span>
                                 <button id="next-page" class="text-white px-2 py-1 rounded-md">&gt;</button>
+                                <div class="ml-4 flex items-center border-l border-slate-600 pl-4">
+                                    <button id="zoom-out-button" title="Zoom Out" class="text-white px-2 py-1 rounded-md text-lg">-</button>
+                                    <button id="zoom-reset-button" title="Reset Zoom" class="text-white px-2 py-1 rounded-md text-sm">100%</button>
+                                    <button id="zoom-in-button" title="Zoom In" class="text-white px-2 py-1 rounded-md text-lg">+</button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -148,6 +153,7 @@
         import { getFirestore, doc, getDoc, updateDoc, collection, getDocs, Timestamp, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import * as pdfjsLib from "https://mozilla.github.io/pdf.js/build/pdf.mjs";
         import { initializeAnnotations } from './js/annotations.js';
+        import { initializeViewerControls } from './js/viewerControls.js';
 
         // Set worker source for PDF.js
         pdfjsLib.GlobalWorkerOptions.workerSrc = "https://mozilla.github.io/pdf.js/build/pdf.worker.mjs";
@@ -199,8 +205,13 @@
         let pageNum = 1;
         let pageRendering = false;
         let pageNumPending = null;
-        const scale = 1.5;
+        const scale = 1.5; // This will be replaced by the viewer controls state
         let onPageRenderedCallback = () => {}; // Callback for drawing after page render
+        let transformState = {
+            zoom: 1.0,
+            pan: { x: 0, y: 0 }
+        };
+        let pdfRenderInfo = { x: 0, y: 0, width: 0, height: 0 };
 
         /**
          * Fetches project details from Firestore.
@@ -231,7 +242,19 @@
                         commentsSection,
                         () => pageNum, // getCurrentPageNumber
                         () => queueRenderPage(pageNum), // rerenderCanvas
-                        (callback) => { onPageRenderedCallback = callback; } // setOnPageRenderedCallback
+                        (callback) => { onPageRenderedCallback = callback; }, // setOnPageRenderedCallback
+                        () => transformState, // getTransformState
+                        () => pdfRenderInfo // getPdfRenderInfo
+                    );
+
+                    initializeViewerControls(
+                        document.getElementById('pdf-viewer'),
+                        pdfCanvas,
+                        (newTransform) => {
+                            transformState = newTransform;
+                            queueRenderPage(pageNum);
+                        },
+                        () => newAnnotationData !== null // isPlacingAnnotation
                     );
 
                     loadingSpinner.classList.add('hidden');
@@ -289,13 +312,19 @@
         function renderPage(num) {
             pageRendering = true;
             pdfDoc.getPage(num).then((page) => {
-                const viewport = page.getViewport({ scale });
-                const context = pdfCanvas.getContext('2d');
-                pdfCanvas.height = viewport.height;
-                pdfCanvas.width = viewport.width;
+                // The scale for rendering the PDF page into the hidden canvas.
+                // We can use a higher value for better quality when zoomed in.
+                const pdfRenderScale = Math.max(2, window.devicePixelRatio * transformState.zoom);
+                const viewport = page.getViewport({ scale: pdfRenderScale });
+
+                // The hidden canvas is used for rendering the PDF page at high resolution.
+                const hiddenCanvas = document.createElement('canvas');
+                hiddenCanvas.height = viewport.height;
+                hiddenCanvas.width = viewport.width;
+                const hiddenContext = hiddenCanvas.getContext('2d');
 
                 const renderContext = {
-                    canvasContext: context,
+                    canvasContext: hiddenContext,
                     viewport: viewport
                 };
                 const renderTask = page.render(renderContext);
@@ -305,7 +334,28 @@
                         renderPage(pageNumPending);
                         pageNumPending = null;
                     }
-                    onPageRenderedCallback(); // Draw annotations
+
+                    // Now, draw the hidden canvas onto the visible canvas with transformations
+                    const context = pdfCanvas.getContext('2d');
+                    const viewer = document.getElementById('pdf-viewer');
+                    pdfCanvas.height = viewer.clientHeight;
+                    pdfCanvas.width = viewer.clientWidth;
+
+                    context.clearRect(0, 0, pdfCanvas.width, pdfCanvas.height);
+                    context.save();
+                    context.translate(transformState.pan.x, transformState.pan.y);
+                    context.scale(transformState.zoom, transformState.zoom);
+
+                    // Center the image initially
+                    pdfRenderInfo.width = hiddenCanvas.width / pdfRenderScale;
+                    pdfRenderInfo.height = hiddenCanvas.height / pdfRenderScale;
+                    pdfRenderInfo.x = (pdfCanvas.width / transformState.zoom - pdfRenderInfo.width) / 2;
+                    pdfRenderInfo.y = (pdfCanvas.height / transformState.zoom - pdfRenderInfo.height) / 2;
+
+                    context.drawImage(hiddenCanvas, pdfRenderInfo.x, pdfRenderInfo.y, pdfRenderInfo.width, pdfRenderInfo.height);
+                    context.restore();
+
+                    onPageRenderedCallback(); // Draw annotations over the transformed canvas
                 });
             });
             pageNumSpan.textContent = num;
