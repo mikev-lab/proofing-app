@@ -92,6 +92,8 @@ export function initializeViewerControls(viewer, canvas, onTransformChange, getC
             pan: { x: newPanX, y: newPanY }
         });
 
+        console.log("Checking zoomLevelDisplay inside zoomAtPoint:", zoomLevelDisplay);
+
         if (zoomLevelDisplay) {
             zoomLevelDisplay.textContent = `${Math.round(newZoom * 100)}%`;
         }
