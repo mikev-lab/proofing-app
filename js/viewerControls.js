@@ -6,9 +6,9 @@
  * @param {function} getCurrentTool A function that returns the currently active tool ('pan' or 'comment').
  * @param {function} getPdfRenderInfo A function that returns the PDF's last render position and dimensions.
  */
-export function initializeViewerControls(viewer, canvas, onTransformChange, getCurrentTool, getPdfRenderInfo, zoomLevelDisplay) {
+export function initializeViewerControls(viewer, canvas, onTransformChange, getCurrentTool, getPdfRenderInfo, zoomDisplaySpan) {
     console.log('Initializing viewer controls...');
-    console.log(">>> zoomLevelDisplay received by initializeViewerControls:", zoomLevelDisplay);
+    //console.log(">>> zoomLevelDisplay received by initializeViewerControls:", zoomLevelDisplay);
 
     const zoomInButton = document.getElementById('zoom-in-button');
     const zoomOutButton = document.getElementById('zoom-out-button');
@@ -93,10 +93,10 @@ export function initializeViewerControls(viewer, canvas, onTransformChange, getC
             pan: { x: newPanX, y: newPanY }
         });
 
-        console.log("Checking zoomLevelDisplay inside zoomAtPoint:", zoomLevelDisplay);
+        //console.log("Checking zoomLevelDisplay inside zoomAtPoint:", zoomLevelDisplay);
 
-        if (zoomLevelDisplay) {
-            zoomLevelDisplay.textContent = `${Math.round(newZoom * 100)}%`;
+        if (zoomDisplaySpan) {
+            zoomDisplaySpan.textContent = `${Math.round(newZoom * 100)}%`;
         }
     }
 
@@ -212,7 +212,7 @@ export function initializeViewerControls(viewer, canvas, onTransformChange, getC
 
     zoomResetButton.addEventListener('click', () => {
         updateTransform({ zoom: 1.0, pan: { x: 0, y: 0 } });
-        if (zoomLevelDisplay) zoomLevelDisplay.textContent = `100%`;
+        if (zoomDisplaySpan) zoomDisplaySpan.textContent = `100%`;
     });
 
 
