@@ -92,108 +92,78 @@
 
     <!-- Firebase SDKs -->
     <script type="module">
-        // Corrected imports: setLogLevel is now imported from firebase-app.js
-        import { initializeApp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInWithEmailAndPassword, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        
-        // -----------------------------------------------------------------
-        // Load Firebase config from global environment variables
-        // -----------------------------------------------------------------
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
-            // Fallback config (using your original data)
-            apiKey: "AIzaSyApmEJdFi96QS3TwYh7GyEDSbZrCuVpBrg",
-            authDomain: "proofing-application.firebaseapp.com",
-            projectId: "proofing-application",
-            storageBucket: "proofing-application.firebasestorage.app",
-            messagingSenderId: "452256252711",
-            appId: "1:452256252711:web:68795c1e5cc9438ff05f02",
+        import { getFirestore, doc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const firebaseConfig = {
+          apiKey: "AIzaSyApmEJdFi96QS3TwYh7GyEDSbZrCuVpBrg",
+          authDomain: "proofing-application.firebaseapp.com",
+          projectId: "proofing-application",
+          storageBucket: "proofing-application.firebasestorage.app",
+          messagingSenderId: "452256252711",
+          appId: "1:452256252711:web:68795c1e5cc9438ff05f02",
         };
-        
-        // Initialize Firebase
+
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
-
-        // Set Firebase log level for debugging (now correctly imported and enabled)
-        setLogLevel('debug');
+        const db = getFirestore(app);
 
         const loginForm = document.getElementById('login-form');
         const loginButton = document.getElementById('login-button');
         const errorMessageContainer = document.getElementById('error-message-container');
         const errorMessage = document.getElementById('error-message');
 
-        /**
-         * Shows an error message.
-         * @param {string} message - The error message to display.
-         */
         function showLoginError(message) {
             errorMessage.textContent = message;
             errorMessageContainer.classList.remove('hidden');
         }
 
-        /**
-         * Hides the error message.
-         */
         function hideLoginError() {
-            errorMessage.textContent = '';
             errorMessageContainer.classList.add('hidden');
         }
 
-        /**
-         * Handles the login form submission.
-         */
+        async function redirectUser(user) {
+            const userDocRef = doc(db, "users", user.uid);
+            const userDocSnap = await getDoc(userDocRef);
+
+            if (userDocSnap.exists() && userDocSnap.data().role === 'admin') {
+                window.location.href = 'admin.html';
+            } else {
+                window.location.href = 'dashboard.html';
+            }
+        }
+
         async function handleLogin(e) {
-            e.preventDefault(); // Prevent the form from submitting normally
+            e.preventDefault();
             hideLoginError();
-            
-            // Disable button
             loginButton.disabled = true;
             loginButton.textContent = 'Signing in...';
-            
+
             const email = loginForm.email.value;
             const password = loginForm.password.value;
-            
+
             try {
                 const userCredential = await signInWithEmailAndPassword(auth, email, password);
-                // Signed in 
-                const user = userCredential.user;
-                console.log('Login successful:', user.uid);
-                
-                // Redirect to the dashboard
-                // NOTE: In a real app, 'dashboard.html' would need to be a separate file/route.
-                // Assuming it exists for this flow.
-                window.location.href = 'dashboard.html'; 
+                await redirectUser(userCredential.user);
             } catch (error) {
                 console.error('Login error:', error.code, error.message);
-                
-                // Provide user-friendly error messages
-                let friendlyMessage = 'An unexpected error occurred. Please try again.';
-                if (error.code === 'auth/invalid-email' || error.code === 'auth/wrong-password' || error.code === 'auth/user-not-found' || error.code === 'auth/invalid-credential') {
-                    friendlyMessage = 'Invalid email or password. Please try again.';
-                }
-                
+                const friendlyMessage = (error.code === 'auth/invalid-email' || error.code === 'auth/wrong-password' || error.code === 'auth/user-not-found' || error.code === 'auth/invalid-credential')
+                    ? 'Invalid email or password. Please try again.'
+                    : 'An unexpected error occurred. Please try again.';
                 showLoginError(friendlyMessage);
-                
-                // Re-enable button
                 loginButton.disabled = false;
                 loginButton.textContent = 'Sign in';
             }
         }
 
-        // Attach event listener to the form
         loginForm.addEventListener('submit', handleLogin);
-        
-        // --- Redirect if already logged in ---
+
         onAuthStateChanged(auth, (user) => {
             if (user) {
-                // User is signed in, redirect to dashboard
-                console.log('User already signed in, redirecting...');
-                window.location.href = 'dashboard.html';
-            } else {
-                // User is signed out, do nothing (stay on login page)
-                console.log('User is not signed in.');
+                redirectUser(user);
             }
         });
-
     </script>
 </body>
 </html>
