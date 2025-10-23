@@ -166,27 +166,46 @@
 
         /**
          * Fetches projects from Firestore for the given user ID.
+         * Includes backward-compatibility for 'clientId' and a retry for new user race condition.
          * @param {string} uid - The user's unique ID from Firebase Auth.
+         * @param {number} [retryCount=0] - Internal counter for retries.
          */
-        async function fetchProjects(uid) {
+        async function fetchProjects(uid, retryCount = 0) {
             try {
                 // Show loading spinner, hide other states
                 loadingSpinner.classList.remove('hidden');
                 emptyState.classList.add('hidden');
                 projectsList.classList.add('hidden');
 
-                // Get the user's companyId
-                const userDocRef = doc(db, 'users', uid);
+                // --- ADD RETRY LOGIC: START ---
+                // Step 1: Get the user's document to find their companyId
+                const userDocRef = doc(db, "users", uid);
                 const userDocSnap = await getDoc(userDocRef);
-                let userCompanyId = null;
-                if (userDocSnap.exists()) {
-                    userCompanyId = userDocSnap.data().companyId;
+
+                // Step 2: Handle race condition for new users
+                if (!userDocSnap.exists()) {
+                    if (retryCount < 5) {
+                        // User doc isn't ready. Wait 1.5 seconds and try again.
+                        console.warn(`User doc not found for ${uid}, retrying... (${retryCount + 1}/5)`);
+                        setTimeout(() => fetchProjects(uid, retryCount + 1), 1500);
+                        return; // Exit function, wait for retry
+                    } else {
+                        // Failed after 5 retries, show empty state
+                        console.error("User doc not found after 5 retries. Cannot fetch projects.");
+                        loadingSpinner.classList.add('hidden');
+                        emptyState.classList.remove('hidden');
+                        return; // Exit function, show error state
+                    }
                 }
+
+                const userCompanyId = userDocSnap.data().companyId;
+                // --- ADD RETRY LOGIC: END ---
 
                 const projectsRef = collection(db, "projects");
                 const queries = [];
 
                 // Query 1: New projects by companyId
+                // --- MODIFY: Check if userCompanyId exists before adding query ---
                 if (userCompanyId) {
                     queries.push(getDocs(query(projectsRef, where("companyId", "==", userCompanyId))));
                 }
@@ -227,7 +246,9 @@
             } catch (error) {
                 console.error("Error fetching projects:", error);
                 loadingSpinner.classList.add('hidden');
-                // You might want to show an error message to the user here
+                // Display error message in the empty state section
+                emptyState.innerHTML = `<p class="text-red-400">Error loading projects: ${error.message}</p>`;
+                emptyState.classList.remove('hidden');
             }
         }
 

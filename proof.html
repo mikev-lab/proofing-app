@@ -19,14 +19,15 @@
             -moz-osx-font-smoothing: grayscale;
         }
         #pdf-viewer {
-            position: relative;
+            position: relative; /* Needed for absolute positioning of nav controls */
             width: 100%;
             height: 100%;
+            overflow: hidden; /* Prevent canvas overflow */
+            cursor: default; /* Base cursor */
         }
         #pdf-canvas {
-            width: 100%;
-            height: auto;
-            border-radius: 0.375rem; /* rounded-md */
+            /* Canvas itself takes full space, drawing is clipped */
+             display: block; /* Remove extra space below canvas */
         }
         #navigation-controls {
             position: absolute;
@@ -39,7 +40,11 @@
             padding: 0.5rem 1rem;
             border-radius: 0.5rem; /* rounded-lg */
             backdrop-filter: blur(4px);
+            z-index: 10; /* Ensure controls are on top */
         }
+        /* Style for grab/grabbing cursor */
+        #pdf-viewer.grabbable { cursor: grab; }
+        #pdf-viewer.grabbing { cursor: grabbing; }
     </style>
 
     <!-- PDF.js Library -->
@@ -93,17 +98,27 @@
                 <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
                     <!-- Left Side: Proof Viewer -->
                     <div class="lg:col-span-2 bg-slate-900/50 rounded-lg shadow-2xl min-h-[600px] flex flex-col p-4">
-                        <div id="pdf-viewer" class="flex-1 bg-black/20 rounded-md flex justify-center items-center overflow-auto">
+                        <!-- Container for viewer controls -->
+                        <div id="pdf-viewer" class="flex-1 bg-black/20 rounded-md flex justify-center items-center relative"> {/* Added relative positioning */}
                             <canvas id="pdf-canvas"></canvas>
                             <div id="navigation-controls" class="hidden">
-                                <button id="prev-page" class="text-white px-2 py-1 rounded-md">&lt;</button>
+                                <button id="prev-page" class="text-white px-2 py-1 rounded-md hover:bg-slate-700 disabled:opacity-50" title="Previous Page">&lt;</button>
                                 <span class="text-white px-2" id="page-num"></span> / <span class="text-white px-2" id="page-count"></span>
-                                <button id="next-page" class="text-white px-2 py-1 rounded-md">&gt;</button>
+                                <button id="next-page" class="text-white px-2 py-1 rounded-md hover:bg-slate-700 disabled:opacity-50" title="Next Page">&gt;</button>
+                                <div class="ml-4 flex items-center border-l border-slate-600 pl-4">
+                                    <button id="zoom-out-button" title="Zoom Out" class="text-white px-2 py-1 rounded-md text-lg hover:bg-slate-700 disabled:opacity-50">-</button>
+                                    {/* Updated reset button text/title */}
+                                    <button id="zoom-reset-button" title="Reset Zoom & Pan" class="text-white px-2 py-1 rounded-md text-sm hover:bg-slate-700 disabled:opacity-50">
+                                         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 2v6h6"/><path d="M21 12A9 9 0 0 0 6 5.3L3 8"/><path d="M21 22v-6h-6"/><path d="M3 12a9 9 0 0 0 15 6.7l3-2.7"/></svg>
+                                    </button>
+                                    <button id="zoom-in-button" title="Zoom In" class="text-white px-2 py-1 rounded-md text-lg hover:bg-slate-700 disabled:opacity-50">+</button>
+                                    <span id="zoom-level-display" class="text-xs text-gray-300 w-12 text-center">100%</span>
+                                </div>
                             </div>
                         </div>
                     </div>
 
-                    <!-- Right Side: Actions & Comments -->
+                    <!-- Right Side: Actions, Guides & Comments -->
                     <div class="space-y-6">
                         <div class="bg-slate-800/60 backdrop-blur-sm shadow-xl rounded-xl p-6 border border-slate-700/50">
                             <h3 class="text-xl font-semibold text-white mb-4">Actions</h3>
@@ -116,7 +131,6 @@
                                         Request Changes
                                     </button>
                                 </div>
-                                <!-- Final confirmation buttons will appear here -->
                                 <div id="confirmation-section" class="hidden mt-4">
                                      <p id="confirmation-message" class="text-center text-gray-300 mb-4"></p>
                                      <button type="submit" id="confirm-action-button" class="w-full text-center rounded-lg px-4 py-3 text-sm font-semibold text-white shadow-md transition-all duration-150 ease-in-out">
@@ -128,27 +142,27 @@
                                 </div>
                             </form>
                         </div>
+                        {/* Section for Guide Toggles */}
                         <div class="bg-slate-800/60 backdrop-blur-sm shadow-xl rounded-xl p-6 border border-slate-700/50">
                             <h3 class="text-xl font-semibold text-white mb-4">Guides</h3>
                             <div class="space-y-2">
                                 <div class="flex items-center">
-                                    <input type="checkbox" id="show-trim-guide" class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 bg-white/10">
-                                    <label for="show-trim-guide" class="ml-2 block text-sm text-gray-300">Show Trim</label>
+                                    <input type="checkbox" id="show-trim-guide" checked class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 bg-white/10 cursor-pointer">
+                                    <label for="show-trim-guide" class="ml-2 block text-sm text-gray-300 cursor-pointer">Show Trim (Black)</label>
                                 </div>
                                 <div class="flex items-center">
-                                    <input type="checkbox" id="show-bleed-guide" class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 bg-white/10">
-                                    <label for="show-bleed-guide" class="ml-2 block text-sm text-gray-300">Show Bleed</label>
+                                    <input type="checkbox" id="show-bleed-guide" checked class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 bg-white/10 cursor-pointer">
+                                    <label for="show-bleed-guide" class="ml-2 block text-sm text-gray-300 cursor-pointer">Show Bleed (Red)</label>
                                 </div>
                                 <div class="flex items-center">
-                                    <input type="checkbox" id="show-safety-guide" class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 bg-white/10">
-                                    <label for="show-safety-guide" class="ml-2 block text-sm text-gray-300">Show Safety</label>
+                                    <input type="checkbox" id="show-safety-guide" checked class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 bg-white/10 cursor-pointer">
+                                    <label for="show-safety-guide" class="ml-2 block text-sm text-gray-300 cursor-pointer">Show Safety (Green)</label>
                                 </div>
                             </div>
                         </div>
                         <div class="bg-slate-800/60 backdrop-blur-sm shadow-xl rounded-xl p-6 border border-slate-700/50">
                             <h3 class="text-xl font-semibold text-white mb-4">Comments</h3>
-                            <div id="comments-section" class="space-y-4">
-                                <!-- Comments will be loaded here -->
+                            <div id="comments-section" class="space-y-4 max-h-60 overflow-y-auto pr-2"> {/* Added max-height and scroll */}
                                 <p class="text-gray-400">No comments yet.</p>
                             </div>
                         </div>
@@ -164,8 +178,10 @@
         import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, getDoc, updateDoc, collection, getDocs, Timestamp, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import * as pdfjsLib from "https://mozilla.github.io/pdf.js/build/pdf.mjs";
-        import { initializeAnnotations } from './js/annotations.js';
-        import { getTrimDimensions, drawTrimGuide, drawBleedGuide, drawSafetyGuide } from './js/guides.js';
+        import { initializeAnnotations, isPlacingAnnotation } from './js/annotations.js'; // Import isPlacingAnnotation
+        // --- MERGE: Keep both imports ---
+        import { getTrimDimensions, drawTrimGuide, drawBleedGuide, drawSafetyGuide, INCH_TO_POINTS } from './js/guides.js';
+        import { initializeViewerControls } from './js/viewerControls.js';
 
         // Set worker source for PDF.js
         pdfjsLib.GlobalWorkerOptions.workerSrc = "https://mozilla.github.io/pdf.js/build/pdf.worker.mjs";
@@ -185,7 +201,7 @@
         const auth = getAuth(app);
         const db = getFirestore(app);
 
-        // Get DOM elements
+        // Get DOM elements (Ensure all new buttons are included)
         const userEmailSpan = document.getElementById('user-email');
         const logoutButton = document.getElementById('logout-button');
         const loadingSpinner = document.getElementById('loading-spinner');
@@ -202,12 +218,18 @@
         const approvalForm = document.getElementById('approval-form');
 
         // PDF Viewer elements
+        const pdfViewer = document.getElementById('pdf-viewer');
         const pdfCanvas = document.getElementById('pdf-canvas');
         const pageNumSpan = document.getElementById('page-num');
         const pageCountSpan = document.getElementById('page-count');
         const prevPageBtn = document.getElementById('prev-page');
         const nextPageBtn = document.getElementById('next-page');
         const navigationControls = document.getElementById('navigation-controls');
+        const zoomOutButton = document.getElementById('zoom-out-button');
+        const zoomResetButton = document.getElementById('zoom-reset-button');
+        const zoomInButton = document.getElementById('zoom-in-button');
+        const zoomLevelDisplay = document.getElementById('zoom-level-display');
+
 
         // Guide UI elements
         const showTrimGuideCheckbox = document.getElementById('show-trim-guide');
@@ -216,20 +238,23 @@
 
         let currentProjectId = null;
         let projectSpecs = null;
-        let actionToConfirm = null; // 'approve' or 'request_changes'
+        let actionToConfirm = null;
 
         // PDF.js state
         let pdfDoc = null;
         let pageNum = 1;
         let pageRendering = false;
         let pageNumPending = null;
-        const scale = 1.5;
-        let onPageRenderedCallback = () => {}; // Callback for drawing after page render
+        let onPageRenderedCallback = () => {};
 
-        /**
-         * Fetches project details from Firestore.
-         * @param {string} projectId - The ID of the project to fetch.
-         */
+        // State managed by viewerControls
+        let transformState = { zoom: 1.0, pan: { x: 0, y: 0 } };
+        // Holds info about the PDF's position/scale on VISIBLE canvas
+        let pdfRenderInfo = { x: 0, y: 0, width: 0, height: 0, scale: 1.0 };
+        // Offscreen canvas for high-res PDF rendering
+        let hiddenCanvas = document.createElement('canvas');
+
+        /** Fetches project details */
         async function fetchProjectDetails(projectId) {
             try {
                 const docRef = doc(db, "projects", projectId);
@@ -244,174 +269,258 @@
                     if (latestVersion && latestVersion.fileURL) {
                         renderProof(latestVersion.fileURL, latestVersion.fileName);
                     } else {
-                        // Fallback to old fileUrl for backward compatibility
-                        renderProof(projectData.fileUrl, projectData.fileName);
+                        renderProof(projectData.fileUrl, projectData.fileName); // Fallback
                     }
 
+                    // Initialize Annotations module
                     initializeAnnotations(
-                        db,
-                        auth,
-                        projectId,
-                        pdfCanvas,
-                        commentsSection,
+                        db, auth, projectId, pdfCanvas, commentsSection,
                         () => pageNum, // getCurrentPageNumber
                         () => queueRenderPage(pageNum), // rerenderCanvas
-                        (callback) => {
-                            onPageRenderedCallback = callback;
-                        }
+                        (callback) => { onPageRenderedCallback = callback; }, // setOnPageRenderedCallback
+                        () => transformState, // getTransformState
+                        () => pdfRenderInfo // getPdfRenderInfo
+                    );
+
+                    // Initialize Viewer Controls module
+                    // Pass the isPlacingAnnotation function from annotations module
+                    initializeViewerControls(
+                        pdfViewer, pdfCanvas,
+                        (newTransform) => { // onTransformChange
+                            transformState = newTransform;
+                            queueRenderPage(pageNum); // Re-render needed
+                        },
+                        isPlacingAnnotation, // Pass the function reference
+                        zoomOutButton, zoomInButton, zoomResetButton, zoomLevelDisplay // Pass button elements
                     );
 
                     loadingSpinner.classList.add('hidden');
                     proofContent.classList.remove('hidden');
                 } else {
                     console.error("No such document!");
-                    // Handle error, e.g., show a "not found" message
+                    loadingSpinner.innerHTML = '<p class="text-red-400">Error: Project not found.</p>';
                 }
             } catch (error) {
                 console.error("Error fetching project details:", error);
+                loadingSpinner.innerHTML = '<p class="text-red-400">Error fetching project details.</p>';
             }
         }
 
-        /**
-         * Renders the proof file, handling PDF and images.
-         * @param {string} fileUrl - The URL of the proof file.
-         * @param {string} fileName - The name of the file.
-         */
+        /** Renders based on file type */
         function renderProof(fileUrl, fileName) {
+            // Clear previous image if any
+            const existingImg = pdfViewer.querySelector('img');
+            if (existingImg) pdfViewer.removeChild(existingImg);
+            pdfCanvas.style.display = 'block'; // Ensure canvas is visible
+
             if (fileName && fileName.toLowerCase().endsWith('.pdf')) {
                 loadPdf(fileUrl);
             } else {
-                // It's an image: hide canvas controls, show an img tag
+                // Handle non-PDF images
                 navigationControls.classList.add('hidden');
-                pdfCanvas.style.display = 'none';
-                const pdfViewer = document.getElementById('pdf-viewer');
+                pdfCanvas.style.display = 'none'; // Hide canvas
                 const img = document.createElement('img');
                 img.src = fileUrl;
                 img.alt = "Proof";
                 img.className = "max-w-full max-h-full object-contain";
                 pdfViewer.appendChild(img);
+                // Maybe disable viewer controls if it's not a PDF?
             }
         }
 
-        /**
-         * Loads and renders a PDF document.
-         * @param {string} pdfUrl - The URL of the PDF file.
-         */
+        /** Loads PDF document */
         async function loadPdf(pdfUrl) {
             try {
+                if (pdfDoc) {
+                     // Destroy previous document if exists to free memory
+                    pdfDoc.destroy().catch(e => console.warn("Error destroying previous pdfDoc:", e));
+                    pdfDoc = null;
+                }
                 const loadingTask = pdfjsLib.getDocument(pdfUrl);
                 pdfDoc = await loadingTask.promise;
+                if (!pdfDoc) { throw new Error("PDF document loading failed.");}
                 pageCountSpan.textContent = pdfDoc.numPages;
                 navigationControls.classList.remove('hidden');
-                renderPage(pageNum);
+                pageNum = 1; // Reset to first page
+                transformState = { zoom: 1.0, pan: { x: 0, y: 0 } }; // Reset zoom/pan
+                // Update zoom display
+                if (zoomLevelDisplay) zoomLevelDisplay.textContent = `${Math.round(transformState.zoom * 100)}%`;
+                queueRenderPage(pageNum);
             } catch (error) {
                 console.error("Error loading PDF:", error);
+                pdfDoc = null; // Ensure pdfDoc is null on error
+                 // Display error to user
+                pdfViewer.innerHTML = `<p class="text-red-400 p-4">Error loading PDF: ${error.message}</p>`;
+                navigationControls.classList.add('hidden'); // Hide controls on error
             }
         }
 
-        /**
-         * Renders a specific page of the PDF.
-         * @param {number} num - The page number to render.
-         */
+        /** Renders PDF page with transformations and overlays */
         function renderPage(num) {
+            if (!pdfDoc || pageRendering) {
+                if(pageRendering) pageNumPending = num; // Queue if already rendering
+                return;
+            };
             pageRendering = true;
             pdfDoc.getPage(num).then((page) => {
-                const viewport = page.getViewport({ scale });
-                const context = pdfCanvas.getContext('2d');
-                pdfCanvas.height = viewport.height;
-                pdfCanvas.width = viewport.width;
+                // Determine render scale for hidden canvas (higher quality)
+                const pdfRenderScale = Math.max(1.5, (window.devicePixelRatio || 1) * transformState.zoom * 0.75); // Adjusted scale factor
+                const viewport = page.getViewport({ scale: pdfRenderScale });
 
-                const renderContext = {
-                    canvasContext: context,
-                    viewport: viewport
-                };
+                // Render PDF page to the hidden canvas
+                hiddenCanvas.height = viewport.height;
+                hiddenCanvas.width = viewport.width;
+                const hiddenContext = hiddenCanvas.getContext('2d');
+                if (!hiddenContext) { pageRendering = false; return; } // Exit if context fails
+
+                const renderContext = { canvasContext: hiddenContext, viewport: viewport };
                 const renderTask = page.render(renderContext);
 
                 renderTask.promise.then(() => {
-                    pageRendering = false;
+                    pageRendering = false; // Mark rendering as complete *before* drawing
 
-                    // Draw guides if specs are available
+                    // Get visible canvas context and clear it
+                    const visibleContext = pdfCanvas.getContext('2d');
+                    if (!visibleContext) return; // Exit if context fails
+
+                    // Resize visible canvas to fit container (important for correct drawing)
+                    pdfCanvas.height = pdfViewer.clientHeight;
+                    pdfCanvas.width = pdfViewer.clientWidth;
+                    visibleContext.clearRect(0, 0, pdfCanvas.width, pdfCanvas.height);
+
+                    // Apply zoom and pan transformations FOR DRAWING PDF IMAGE
+                    visibleContext.save();
+                    visibleContext.translate(transformState.pan.x, transformState.pan.y);
+                    visibleContext.scale(transformState.zoom, transformState.zoom);
+
+                    // Calculate position and scale to draw the PDF centered initially (before pan)
+                    const basePdfViewport = page.getViewport({ scale: 1.0 }); // Use scale 1 for original dimensions
+
+                    // Calculate scale to fit PDF within the canvas *at current zoom level*
+                     const availableWidth = pdfCanvas.width / transformState.zoom;
+                     const availableHeight = pdfCanvas.height / transformState.zoom;
+                     pdfRenderInfo.scale = Math.min(
+                         availableWidth / basePdfViewport.width,
+                         availableHeight / basePdfViewport.height
+                     ) * 0.95; // Add some padding
+
+                    pdfRenderInfo.width = basePdfViewport.width * pdfRenderInfo.scale;
+                    pdfRenderInfo.height = basePdfViewport.height * pdfRenderInfo.scale;
+                    // Calculate centering position based on available space AT CURRENT ZOOM
+                    pdfRenderInfo.x = (availableWidth - pdfRenderInfo.width) / 2;
+                    pdfRenderInfo.y = (availableHeight - pdfRenderInfo.height) / 2;
+
+                    // Draw the high-res hidden canvas onto the visible canvas, using calculated position and scale
+                    visibleContext.drawImage(hiddenCanvas, pdfRenderInfo.x, pdfRenderInfo.y, pdfRenderInfo.width, pdfRenderInfo.height);
+
+
+                    // --- Draw Guides ---
                     if (projectSpecs) {
-                        const trimDimensions = getTrimDimensions(projectSpecs.dimensions, projectSpecs.customDimension);
-                        if (trimDimensions) {
-                            // Scale dimensions to the current viewport
-                            const scaledTrimWidth = trimDimensions.width * scale;
-                            const scaledTrimHeight = trimDimensions.height * scale;
+                        const trimDimensionsPt = getTrimDimensions(projectSpecs.dimensions, null); // Assuming customDimension is not needed here yet
+                        if (trimDimensionsPt) {
+                            // Guides are drawn in the *transformed* coordinate space.
+                            // Pass necessary info for guides.js functions to draw correctly.
+                            const guideDrawOptions = {
+                                drawX: pdfRenderInfo.x, // Top-left corner of PDF image in *un-panned, 1x zoomed* space
+                                drawY: pdfRenderInfo.y,
+                                drawWidth: pdfRenderInfo.width, // Width of PDF image in *un-panned, 1x zoomed* space
+                                drawHeight: pdfRenderInfo.height,
+                                pdfOriginalWidth: basePdfViewport.width, // Original PDF width in points
+                                pdfOriginalHeight: basePdfViewport.height,
+                                trimWidthPt: trimDimensionsPt.width, // Target trim width in points
+                                trimHeightPt: trimDimensionsPt.height,
+                                bleedPt: 0.125 * INCH_TO_POINTS, // Hardcoded
+                                safetyPt: 0.125 * INCH_TO_POINTS // Hardcoded
+                            };
 
+                            // Pass the visible context which already has zoom/pan applied
                             if (showTrimGuideCheckbox.checked) {
-                                drawTrimGuide(context, pdfCanvas.width, pdfCanvas.height, { width: scaledTrimWidth, height: scaledTrimHeight });
+                                drawTrimGuide(visibleContext, guideDrawOptions);
                             }
                             if (showBleedGuideCheckbox.checked) {
-                                drawBleedGuide(context, pdfCanvas.width, pdfCanvas.height, { width: scaledTrimWidth, height: scaledTrimHeight });
+                                drawBleedGuide(visibleContext, guideDrawOptions);
                             }
                             if (showSafetyGuideCheckbox.checked) {
-                                drawSafetyGuide(context, pdfCanvas.width, pdfCanvas.height, { width: scaledTrimWidth, height: scaledTrimHeight });
+                                drawSafetyGuide(visibleContext, guideDrawOptions);
                             }
                         }
                     }
+                    // --- End Draw Guides ---
 
+                    // Restore context AFTER drawing PDF and guides
+                    visibleContext.restore();
+
+                    // Draw annotations (annotations.js handles its own transformations based on stored data + current view)
+                    onPageRenderedCallback();
+
+                    // Check if another page render was queued
                     if (pageNumPending !== null) {
-                        renderPage(pageNumPending);
-                        pageNumPending = null;
+                        const pending = pageNumPending;
+                        pageNumPending = null; // Clear before recursive call
+                        renderPage(pending);
                     }
-                    onPageRenderedCallback(); // Draw annotations over the guides
+                }).catch(err => {
+                    console.error("Error during PDF render task:", err);
+                    pageRendering = false; // Ensure rendering can be retried on error
+                    // Re-enable controls if needed, show error message?
                 });
+            }).catch(err => {
+                console.error("Error getting PDF page:", err);
+                pageRendering = false; // Ensure rendering can be retried on error
             });
             pageNumSpan.textContent = num;
+
+            // Update button states
+            prevPageBtn.disabled = num <= 1;
+            nextPageBtn.disabled = !pdfDoc || num >= pdfDoc.numPages;
         }
 
-        /**
-         * Queues a page render if another is already in progress.
-         * @param {number} num - The page number to queue.
-         */
+        /** Queues page render if another is busy */
         function queueRenderPage(num) {
             if (pageRendering) {
                 pageNumPending = num;
+                // console.log("Queueing render for page", num);
             } else {
+                // console.log("Rendering page", num);
                 renderPage(num);
             }
         }
 
-        /**
-         * Updates the project status in Firestore.
-         * @param {string} projectId - The ID of the project to update.
-         * @param {string} status - The new status ('approved' or 'changes_requested').
-         */
+        /** Updates project status */
         async function updateProjectStatus(projectId, status) {
             const projectRef = doc(db, "projects", projectId);
             try {
-                await updateDoc(projectRef, {
-                    status: status
-                });
+                await updateDoc(projectRef, { status: status });
                 console.log("Project status updated successfully");
-                // Redirect back to dashboard after a short delay
-                setTimeout(() => {
-                    window.location.href = 'dashboard.html';
-                }, 1500);
+                confirmActionButton.textContent = 'Success!'; // Give feedback
+                setTimeout(() => { window.location.href = 'dashboard.html'; }, 1000); // Shorter delay
             } catch (error) {
                 console.error("Error updating project status:", error);
+                confirmationMessage.textContent = `Error: ${error.message}`; // Show error
+                confirmActionButton.disabled = false; // Re-enable button
+                confirmActionButton.textContent = actionToConfirm === 'approve' ? 'Confirm Approval' : 'Confirm Request';
             }
         }
 
+        /** Shows approval confirmation UI */
         function showConfirmation(action) {
             actionToConfirm = action;
             decisionButtons.classList.add('hidden');
             confirmationSection.classList.remove('hidden');
-            if (action === 'approve') {
-                confirmationMessage.textContent = 'Are you sure you want to approve this proof?';
-                confirmActionButton.textContent = 'Confirm Approval';
-                confirmActionButton.className = confirmActionButton.className.replace(/bg-[\w-]+/g, 'bg-green-600 hover:bg-green-500');
-            } else {
-                confirmationMessage.textContent = 'Are you sure you want to request changes?';
-                confirmActionButton.textContent = 'Confirm Request';
-                confirmActionButton.className = confirmActionButton.className.replace(/bg-[\w-]+/g, 'bg-red-600 hover:bg-red-500');
-            }
+            confirmationMessage.textContent = action === 'approve'
+                ? 'Are you sure you want to approve this proof?'
+                : 'Are you sure you want to request changes?';
+             confirmActionButton.textContent = action === 'approve' ? 'Confirm Approval' : 'Confirm Request';
+             confirmActionButton.className = confirmActionButton.className.replace(/bg-[\w-]+-\d+/g, action === 'approve' ? 'bg-green-600 hover:bg-green-500' : 'bg-red-600 hover:bg-red-500');
+             confirmActionButton.disabled = false; // Ensure button is enabled
         }
 
+        /** Hides approval confirmation UI */
         function hideConfirmation() {
             actionToConfirm = null;
             decisionButtons.classList.remove('hidden');
             confirmationSection.classList.add('hidden');
+            confirmActionButton.disabled = false; // Ensure button is enabled if cancelled
         }
 
         // --- Event Listeners ---
@@ -419,6 +528,7 @@
         requestChangesButton.addEventListener('click', () => showConfirmation('request_changes'));
         cancelActionButton.addEventListener('click', hideConfirmation);
 
+        // Re-render when guide visibility changes
         showTrimGuideCheckbox.addEventListener('change', () => queueRenderPage(pageNum));
         showBleedGuideCheckbox.addEventListener('change', () => queueRenderPage(pageNum));
         showSafetyGuideCheckbox.addEventListener('change', () => queueRenderPage(pageNum));
@@ -427,9 +537,9 @@
             e.preventDefault();
             if (actionToConfirm && currentProjectId) {
                 const newStatus = actionToConfirm === 'approve' ? 'approved' : 'changes_requested';
-                updateProjectStatus(currentProjectId, newStatus);
                 confirmActionButton.disabled = true;
                 confirmActionButton.textContent = 'Submitting...';
+                updateProjectStatus(currentProjectId, newStatus);
             }
         });
 
@@ -440,7 +550,7 @@
         });
 
         nextPageBtn.addEventListener('click', () => {
-            if (pageNum >= pdfDoc.numPages) return;
+            if (!pdfDoc || pageNum >= pdfDoc.numPages) return;
             pageNum++;
             queueRenderPage(pageNum);
         });
@@ -458,7 +568,7 @@
                     fetchProjectDetails(currentProjectId);
                 } else {
                     console.error("No project ID found in URL");
-                    // Handle error, maybe redirect to dashboard
+                    loadingSpinner.innerHTML = '<p class="text-red-400">Error: No project ID specified in URL.</p>';
                 }
             } else {
                 window.location.href = 'index.html';
@@ -474,19 +584,19 @@
 
     <!-- Annotation Modal -->
     <div id="annotation-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center hidden z-50">
-        <div class="bg-slate-800 rounded-lg shadow-xl p-6 w-full max-w-md mx-4 border border-slate-700/50">
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="text-xl font-semibold text-white">Add a Comment</h3>
-                <button id="modal-close-button" class="text-gray-400 hover:text-white">&times;</button>
-            </div>
-            <form id="annotation-form">
-                <textarea id="annotation-text" rows="4" class="w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500" placeholder="Type your comment..."></textarea>
-                <div class="mt-4 flex justify-end space-x-4">
-                    <button type="button" id="modal-cancel-button" class="px-4 py-2 rounded-md bg-gray-600 hover:bg-gray-500 text-white font-semibold text-sm">Cancel</button>
-                    <button type="submit" class="px-4 py-2 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm">Submit</button>
-                </div>
-            </form>
-        </div>
+       <div class="bg-slate-800 rounded-lg shadow-xl p-6 w-full max-w-md mx-4 border border-slate-700/50">
+           <div class="flex justify-between items-center mb-4">
+               <h3 class="text-xl font-semibold text-white">Add a Comment</h3>
+               <button id="modal-close-button" class="text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
+           </div>
+           <form id="annotation-form">
+               <textarea id="annotation-text" rows="4" class="w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500" placeholder="Type your comment..."></textarea>
+               <div class="mt-4 flex justify-end space-x-4">
+                   <button type="button" id="modal-cancel-button" class="px-4 py-2 rounded-md bg-gray-600 hover:bg-gray-500 text-white font-semibold text-sm">Cancel</button>
+                   <button type="submit" class="px-4 py-2 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm">Submit</button>
+               </div>
+           </form>
+       </div>
     </div>
 </body>
 </html>
