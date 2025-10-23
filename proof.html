@@ -129,6 +129,23 @@
                             </form>
                         </div>
                         <div class="bg-slate-800/60 backdrop-blur-sm shadow-xl rounded-xl p-6 border border-slate-700/50">
+                            <h3 class="text-xl font-semibold text-white mb-4">Guides</h3>
+                            <div class="space-y-2">
+                                <div class="flex items-center">
+                                    <input type="checkbox" id="show-trim-guide" class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 bg-white/10">
+                                    <label for="show-trim-guide" class="ml-2 block text-sm text-gray-300">Show Trim</label>
+                                </div>
+                                <div class="flex items-center">
+                                    <input type="checkbox" id="show-bleed-guide" class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 bg-white/10">
+                                    <label for="show-bleed-guide" class="ml-2 block text-sm text-gray-300">Show Bleed</label>
+                                </div>
+                                <div class="flex items-center">
+                                    <input type="checkbox" id="show-safety-guide" class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 bg-white/10">
+                                    <label for="show-safety-guide" class="ml-2 block text-sm text-gray-300">Show Safety</label>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="bg-slate-800/60 backdrop-blur-sm shadow-xl rounded-xl p-6 border border-slate-700/50">
                             <h3 class="text-xl font-semibold text-white mb-4">Comments</h3>
                             <div id="comments-section" class="space-y-4">
                                 <!-- Comments will be loaded here -->
@@ -148,6 +165,7 @@
         import { getFirestore, doc, getDoc, updateDoc, collection, getDocs, Timestamp, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import * as pdfjsLib from "https://mozilla.github.io/pdf.js/build/pdf.mjs";
         import { initializeAnnotations } from './js/annotations.js';
+        import { getTrimDimensions, drawTrimGuide, drawBleedGuide, drawSafetyGuide } from './js/guides.js';
 
         // Set worker source for PDF.js
         pdfjsLib.GlobalWorkerOptions.workerSrc = "https://mozilla.github.io/pdf.js/build/pdf.worker.mjs";
@@ -191,7 +209,13 @@
         const nextPageBtn = document.getElementById('next-page');
         const navigationControls = document.getElementById('navigation-controls');
 
+        // Guide UI elements
+        const showTrimGuideCheckbox = document.getElementById('show-trim-guide');
+        const showBleedGuideCheckbox = document.getElementById('show-bleed-guide');
+        const showSafetyGuideCheckbox = document.getElementById('show-safety-guide');
+
         let currentProjectId = null;
+        let projectSpecs = null;
         let actionToConfirm = null; // 'approve' or 'request_changes'
 
         // PDF.js state
@@ -214,6 +238,7 @@
                 if (docSnap.exists()) {
                     const projectData = docSnap.data();
                     projectName.textContent = projectData.projectName;
+                    projectSpecs = projectData.specs; // Store specs
 
                     const latestVersion = projectData.versions && projectData.versions.length > 0 ? projectData.versions[projectData.versions.length - 1] : null;
                     if (latestVersion && latestVersion.fileURL) {
@@ -231,7 +256,9 @@
                         commentsSection,
                         () => pageNum, // getCurrentPageNumber
                         () => queueRenderPage(pageNum), // rerenderCanvas
-                        (callback) => { onPageRenderedCallback = callback; } // setOnPageRenderedCallback
+                        (callback) => {
+                            onPageRenderedCallback = callback;
+                        }
                     );
 
                     loadingSpinner.classList.add('hidden');
@@ -299,13 +326,35 @@
                     viewport: viewport
                 };
                 const renderTask = page.render(renderContext);
+
                 renderTask.promise.then(() => {
                     pageRendering = false;
+
+                    // Draw guides if specs are available
+                    if (projectSpecs) {
+                        const trimDimensions = getTrimDimensions(projectSpecs.dimensions, projectSpecs.customDimension);
+                        if (trimDimensions) {
+                            // Scale dimensions to the current viewport
+                            const scaledTrimWidth = trimDimensions.width * scale;
+                            const scaledTrimHeight = trimDimensions.height * scale;
+
+                            if (showTrimGuideCheckbox.checked) {
+                                drawTrimGuide(context, pdfCanvas.width, pdfCanvas.height, { width: scaledTrimWidth, height: scaledTrimHeight });
+                            }
+                            if (showBleedGuideCheckbox.checked) {
+                                drawBleedGuide(context, pdfCanvas.width, pdfCanvas.height, { width: scaledTrimWidth, height: scaledTrimHeight });
+                            }
+                            if (showSafetyGuideCheckbox.checked) {
+                                drawSafetyGuide(context, pdfCanvas.width, pdfCanvas.height, { width: scaledTrimWidth, height: scaledTrimHeight });
+                            }
+                        }
+                    }
+
                     if (pageNumPending !== null) {
                         renderPage(pageNumPending);
                         pageNumPending = null;
                     }
-                    onPageRenderedCallback(); // Draw annotations
+                    onPageRenderedCallback(); // Draw annotations over the guides
                 });
             });
             pageNumSpan.textContent = num;
@@ -369,6 +418,10 @@
         approveButton.addEventListener('click', () => showConfirmation('approve'));
         requestChangesButton.addEventListener('click', () => showConfirmation('request_changes'));
         cancelActionButton.addEventListener('click', hideConfirmation);
+
+        showTrimGuideCheckbox.addEventListener('change', () => queueRenderPage(pageNum));
+        showBleedGuideCheckbox.addEventListener('change', () => queueRenderPage(pageNum));
+        showSafetyGuideCheckbox.addEventListener('change', () => queueRenderPage(pageNum));
 
         approvalForm.addEventListener('submit', (e) => {
             e.preventDefault();
