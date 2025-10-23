@@ -3,9 +3,9 @@
  * @param {HTMLDivElement} viewer The main container for the PDF viewer.
  * @param {HTMLCanvasElement} canvas The canvas element for PDF rendering.
  * @param {function} onTransformChange A function to call to re-render the canvas with new transformations.
- * @param {function} isPlacingAnnotation A function that returns true if the user is currently placing an annotation.
+ * @param {function} getCurrentTool A function that returns the currently active tool ('pan' or 'comment').
  */
-export function initializeViewerControls(viewer, canvas, onTransformChange, isPlacingAnnotation) {
+export function initializeViewerControls(viewer, canvas, onTransformChange, getCurrentTool) {
     console.log('Initializing viewer controls...');
 
     const zoomInButton = document.getElementById('zoom-in-button');
@@ -33,26 +33,37 @@ export function initializeViewerControls(viewer, canvas, onTransformChange, isPl
     }
 
     function updateCursor() {
-        if (transform.zoom > 1) {
+        const tool = getCurrentTool();
+        if (tool === 'pan') {
             canvas.style.cursor = isPointerDown ? 'grabbing' : 'grab';
+        } else if (tool === 'comment') {
+            canvas.style.cursor = 'crosshair';
         } else {
-            canvas.style.cursor = 'crosshair'; // Default for annotations
+            canvas.style.cursor = 'default';
         }
     }
+    // Expose updateCursor globally so the main script can call it
+    window.updateCursor = updateCursor;
 
     // --- Zoom Logic ---
     function handleWheelZoom(event) {
         event.preventDefault();
         const rect = viewer.getBoundingClientRect();
+        // Mouse position relative to the viewer
         const mouseX = event.clientX - rect.left;
         const mouseY = event.clientY - rect.top;
+
+        // The point on the canvas that the mouse is over
+        const canvasX = (mouseX / transform.zoom) - transform.pan.x;
+        const canvasY = (mouseY / transform.zoom) - transform.pan.y;
 
         const zoomFactor = event.deltaY < 0 ? 1.1 : 1 / 1.1;
         const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, transform.zoom * zoomFactor));
 
-        // Pan to keep the mouse position stable
-        const newPanX = transform.pan.x - (mouseX - transform.pan.x) * (newZoom / transform.zoom - 1);
-        const newPanY = transform.pan.y - (mouseY - transform.pan.y) * (newZoom / transform.zoom - 1);
+        // New pan is calculated to keep the same canvas point under the mouse
+        const newPanX = (mouseX / newZoom) - canvasX;
+        const newPanY = (mouseY / newZoom) - canvasY;
+
 
         updateTransform({
             zoom: newZoom,
@@ -83,15 +94,17 @@ export function initializeViewerControls(viewer, canvas, onTransformChange, isPl
             updateTransform({
                 zoom: transform.zoom,
                 pan: {
-                    x: lastPanPoint.x + dx,
-                    y: lastPanPoint.y + dy
+                    // Pan needs to be scaled by the current zoom level
+                    x: lastPanPoint.x + dx / transform.zoom,
+                    y: lastPanPoint.y + dy / transform.zoom
                 }
             });
         }
     }
 
     function handlePointerUp(event) {
-        if (!isPanning) {
+        // Only dispatch a click for annotation if the comment tool is active and it wasn't a pan
+        if (!isPanning && getCurrentTool() === 'comment') {
             // It's a click, not a drag. Dispatch a custom event for annotations.
             const annotationClickEvent = new MouseEvent('click', {
                 bubbles: true,
@@ -178,7 +191,6 @@ export function initializeViewerControls(viewer, canvas, onTransformChange, isPl
     viewer.addEventListener('mousedown', handlePointerDown);
     viewer.addEventListener('mousemove', handlePointerMove);
     viewer.addEventListener('mouseup', handlePointerUp);
-    viewer.addEventListener('mouseleave', handlePointerUp); // End pan if mouse leaves viewer
 
     // Touch Events
     viewer.addEventListener('touchstart', handleTouchStart, { passive: false });

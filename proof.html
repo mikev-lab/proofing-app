@@ -99,15 +99,27 @@
                     <!-- Left Side: Proof Viewer -->
                     <div class="lg:col-span-2 bg-slate-900/50 rounded-lg shadow-2xl min-h-[600px] flex flex-col p-4">
                         <!-- Container for viewer controls -->
-                        <div id="pdf-viewer" class="flex-1 bg-black/20 rounded-md flex justify-center items-center relative"> {/* Added relative positioning */}
+                        <div id="pdf-viewer" class="flex-1 bg-black/20 rounded-md flex justify-center items-center relative">
                             <canvas id="pdf-canvas"></canvas>
                             <div id="navigation-controls" class="hidden">
+                                 <!-- Page Navigation -->
                                 <button id="prev-page" class="text-white px-2 py-1 rounded-md hover:bg-slate-700 disabled:opacity-50" title="Previous Page">&lt;</button>
                                 <span class="text-white px-2" id="page-num"></span> / <span class="text-white px-2" id="page-count"></span>
                                 <button id="next-page" class="text-white px-2 py-1 rounded-md hover:bg-slate-700 disabled:opacity-50" title="Next Page">&gt;</button>
+
+                                <!-- Tool Selector -->
+                                <div id="tool-selector" class="ml-4 flex items-center border-l border-slate-600 pl-4 space-x-1">
+                                    <button id="tool-pan" title="Pan Tool" class="text-white p-2 rounded-md hover:bg-slate-700 bg-slate-600">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 11.5a2.5 2.5 0 0 1 5 0Z"/><path d="M4 5.5a2.5 2.5 0 0 1 5 0Z"/><path d="M12 5.5a2.5 2.5 0 0 1 5 0Z"/><path d="M15 11.5a2.5 2.5 0 0 1 5 0Z"/><path d="M5 17.5a2.5 2.5 0 0 1 5 0Z"/><path d="m17 22 5-5"/><path d="m2 7 5 5"/></svg>
+                                    </button>
+                                    <button id="tool-comment" title="Comment Tool" class="text-white p-2 rounded-md hover:bg-slate-700">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 21 1.9-5.7a8.5 8.5 0 1 1 3.8 3.8z"/></svg>
+                                    </button>
+                                </div>
+
+                                <!-- Zoom Controls -->
                                 <div class="ml-4 flex items-center border-l border-slate-600 pl-4">
                                     <button id="zoom-out-button" title="Zoom Out" class="text-white px-2 py-1 rounded-md text-lg hover:bg-slate-700 disabled:opacity-50">-</button>
-                                    {/* Updated reset button text/title */}
                                     <button id="zoom-reset-button" title="Reset Zoom & Pan" class="text-white px-2 py-1 rounded-md text-sm hover:bg-slate-700 disabled:opacity-50">
                                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 2v6h6"/><path d="M21 12A9 9 0 0 0 6 5.3L3 8"/><path d="M21 22v-6h-6"/><path d="M3 12a9 9 0 0 0 15 6.7l3-2.7"/></svg>
                                     </button>
@@ -142,8 +154,7 @@
                                 </div>
                             </form>
                         </div>
-                        {/* Section for Guide Toggles */}
-                        <div class="bg-slate-800/60 backdrop-blur-sm shadow-xl rounded-xl p-6 border border-slate-700/50">
+                        <div id="guides-section" class="bg-slate-800/60 backdrop-blur-sm shadow-xl rounded-xl p-6 border border-slate-700/50 hidden">
                             <h3 class="text-xl font-semibold text-white mb-4">Guides</h3>
                             <div class="mb-4">
                                 <label for="view-mode-select" class="block text-sm font-medium text-gray-300">View Mode</label>
@@ -185,9 +196,8 @@
         import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, getDoc, updateDoc, collection, getDocs, Timestamp, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import * as pdfjsLib from "https://mozilla.github.io/pdf.js/build/pdf.mjs";
-        import { initializeAnnotations, isPlacingAnnotation } from './js/annotations.js'; // Import isPlacingAnnotation
+        import { initializeAnnotations } from './js/annotations.js';
         // --- MERGE: Keep both imports ---
-        import { getTrimDimensions, drawTrimGuide, drawBleedGuide, drawSafetyGuide, INCH_TO_POINTS } from './js/guides.js';
         import { initializeViewerControls } from './js/viewerControls.js';
 
         // Set worker source for PDF.js
@@ -236,13 +246,20 @@
         const zoomResetButton = document.getElementById('zoom-reset-button');
         const zoomInButton = document.getElementById('zoom-in-button');
         const zoomLevelDisplay = document.getElementById('zoom-level-display');
+        const toolPanButton = document.getElementById('tool-pan');
+        const toolCommentButton = document.getElementById('tool-comment');
+        const modal = document.getElementById('annotation-modal');
 
 
         // Guide UI elements
+        const guidesSection = document.getElementById('guides-section');
         const viewModeSelect = document.getElementById('view-mode-select');
         const showTrimGuideCheckbox = document.getElementById('show-trim-guide');
         const showBleedGuideCheckbox = document.getElementById('show-bleed-guide');
         const showSafetyGuideCheckbox = document.getElementById('show-safety-guide');
+
+        // Dynamically imported module
+        let guidesModule = null;
 
         let currentProjectId = null;
         let projectSpecs = null;
@@ -255,6 +272,9 @@
         let pageRendering = false;
         let pageNumPending = null;
         let onPageRenderedCallback = () => {};
+
+        // App state
+        let currentTool = 'pan'; // 'pan' or 'comment'
 
         /**
          * Determines which page numbers to display for a given view.
@@ -357,7 +377,7 @@
                             transformState = newTransform;
                             queueRenderPage(pageNum); // Re-render needed
                         },
-                        isPlacingAnnotation, // Pass the function reference
+                        () => currentTool, // Pass function to get current tool
                         zoomOutButton, zoomInButton, zoomResetButton, zoomLevelDisplay // Pass button elements
                     );
 
@@ -385,6 +405,7 @@
             } else {
                 // Handle non-PDF images
                 navigationControls.classList.add('hidden');
+                guidesSection.classList.add('hidden'); // Hide guides for non-PDFs
                 pdfCanvas.style.display = 'none'; // Hide canvas
                 const img = document.createElement('img');
                 img.src = fileUrl;
@@ -403,6 +424,12 @@
                     pdfDoc.destroy().catch(e => console.warn("Error destroying previous pdfDoc:", e));
                     pdfDoc = null;
                 }
+                 // Dynamically import guides module if it hasn't been already
+                if (!guidesModule) {
+                    guidesModule = await import('./js/guides.js');
+                }
+                guidesSection.classList.remove('hidden'); // Show guides for PDFs
+
                 const loadingTask = pdfjsLib.getDocument(pdfUrl);
                 pdfDoc = await loadingTask.promise;
                 if (!pdfDoc) { throw new Error("PDF document loading failed.");}
@@ -419,6 +446,7 @@
                  // Display error to user
                 pdfViewer.innerHTML = `<p class="text-red-400 p-4">Error loading PDF: ${error.message}</p>`;
                 navigationControls.classList.add('hidden'); // Hide controls on error
+                guidesSection.classList.add('hidden'); // Hide guides on error
             }
         }
 
@@ -484,8 +512,8 @@
                 visibleContext.clearRect(0, 0, pdfCanvas.width, pdfCanvas.height);
 
                 visibleContext.save();
-                visibleContext.translate(transformState.pan.x, transformState.pan.y);
                 visibleContext.scale(transformState.zoom, transformState.zoom);
+                visibleContext.translate(transformState.pan.x, transformState.pan.y);
 
                 const baseViewports = pages.map(p => p.getViewport({ scale: 1.0 }));
                 const totalBaseWidth = baseViewports.reduce((sum, vp) => sum + vp.width, 0);
@@ -507,7 +535,8 @@
                 visibleContext.drawImage(hiddenCanvas, pdfRenderInfo.x, pdfRenderInfo.y, pdfRenderInfo.width, pdfRenderInfo.height);
 
                 // --- Draw Guides ---
-                if (projectSpecs) {
+                if (projectSpecs && guidesModule) {
+                    const { getTrimDimensions, drawTrimGuide, drawBleedGuide, drawSafetyGuide, INCH_TO_POINTS } = guidesModule;
                     const trimDimensionsPt = getTrimDimensions(projectSpecs.dimensions, null);
                     if (trimDimensionsPt) {
                         let currentDrawX = pdfRenderInfo.x;
@@ -603,10 +632,43 @@
             confirmActionButton.disabled = false; // Ensure button is enabled if cancelled
         }
 
+        // This function is also defined in annotations.js, but we need it here for the Escape key listener
+        function hideModal() {
+            if(modal) modal.classList.add('hidden');
+            const annotationText = document.getElementById('annotation-text');
+            if(annotationText) annotationText.value = '';
+            // We don't null out newAnnotationData here as that's handled within annotations.js
+        }
+
+
+        /** Sets the active tool and updates UI accordingly */
+        function setActiveTool(tool) {
+            currentTool = tool;
+
+            // Update button styles
+            toolPanButton.classList.toggle('bg-slate-600', tool === 'pan');
+            toolCommentButton.classList.toggle('bg-slate-600', tool === 'comment');
+
+            // Update cursor style (will be handled by viewerControls)
+            // This is a good place to trigger a cursor update if needed.
+             if (typeof window.updateCursor === 'function') {
+                window.updateCursor();
+            }
+        }
+
         // --- Event Listeners ---
+        toolPanButton.addEventListener('click', () => setActiveTool('pan'));
+        toolCommentButton.addEventListener('click', () => setActiveTool('comment'));
         approveButton.addEventListener('click', () => showConfirmation('approve'));
         requestChangesButton.addEventListener('click', () => showConfirmation('request_changes'));
         cancelActionButton.addEventListener('click', hideConfirmation);
+
+        // Add Escape key listener to close modal
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && !modal.classList.contains('hidden')) {
+                hideModal();
+            }
+        });
 
         viewModeSelect.addEventListener('change', (e) => {
             currentViewMode = e.target.value;
