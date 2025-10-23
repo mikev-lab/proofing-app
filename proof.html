@@ -284,6 +284,12 @@
             if (page2 <= totalPages) {
                 pages.push(page2);
             }
+
+            // If RTL, reverse the pages in the spread
+            if (projectSpecs && projectSpecs.readingDirection === 'rtl' && pages.length > 1) {
+                return pages.reverse();
+            }
+
             return pages;
         }
 
