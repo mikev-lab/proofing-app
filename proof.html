@@ -385,8 +385,9 @@
                             transformState = newTransform;
                             queueRenderPage(pageNum); // Re-render needed
                         },
-                        () => currentTool, // Pass function to get current tool
-                        zoomOutButton, zoomInButton, zoomResetButton, zoomLevelDisplay // Pass button elements
+                        () => currentTool,    // getCurrentTool
+                        () => pdfRenderInfo, // getPdfRenderInfo
+                        zoomLevelDisplay     // The zoom display element
                     );
 
                     loadingSpinner.classList.add('hidden');
