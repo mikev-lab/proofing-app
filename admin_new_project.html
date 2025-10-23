@@ -44,8 +44,24 @@
                 <div>
                     <h2 class="text-xl font-semibold text-white">Create New Project</h2>
                 </div>
-                <div class="flex items-center">
-                    <span id="user-email" class="text-sm text-gray-300 mr-4 hidden sm:block"></span>
+                <div class="flex items-center space-x-4">
+                    <div class="relative">
+                        <button id="notification-bell" class="relative text-gray-400 hover:text-white">
+                            <svg class="h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
+                            </svg>
+                            <span id="notification-indicator" class="hidden absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-red-500"></span>
+                        </button>
+                        <div id="notification-panel" class="hidden absolute right-0 mt-2 w-80 bg-slate-800 rounded-lg shadow-lg border border-slate-700/50 z-10">
+                            <div class="p-3 border-b border-slate-700/50">
+                                <h3 class="font-semibold text-white">Notifications</h3>
+                            </div>
+                            <div id="notification-list" class="py-1 max-h-96 overflow-y-auto">
+                                <p class="px-4 py-2 text-sm text-gray-400">No new notifications</p>
+                            </div>
+                        </div>
+                    </div>
+                    <span id="user-email" class="text-sm text-gray-300 hidden sm:block"></span>
                     <button id="logout-button" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all duration-150 ease-in-out">
                         Sign Out
                     </button>
@@ -157,12 +173,19 @@
 
         const newProjectForm = document.getElementById('new-project-form');
         const submitButton = document.getElementById('submit-button');
+        const notificationBell = document.getElementById('notification-bell');
+        const notificationPanel = document.getElementById('notification-panel');
         const statusMessage = document.getElementById('status-message');
         const companySelect = document.getElementById('companyId');
         const dimensionsSelect = document.getElementById('dimensions');
         const customDimensionInput = document.getElementById('custom-dimension');
         const requestFileCheckbox = document.getElementById('request-file-checkbox');
         const fileInput = document.getElementById('file-input');
+
+        function fetchNotifications() {
+            // Placeholder function for fetching notifications
+            console.log("Fetching notifications...");
+        }
 
         // Populate companies dropdown
         async function loadCompanies() {
@@ -274,6 +297,7 @@
             if (user) {
                 document.getElementById('user-email').textContent = user.email;
                 loadCompanies();
+                fetchNotifications();
             } else {
                 window.location.href = 'index.html';
             }
@@ -281,6 +305,17 @@
 
         document.getElementById('logout-button').addEventListener('click', () => {
             signOut(auth);
+        });
+
+        notificationBell.addEventListener('click', () => {
+            notificationPanel.classList.toggle('hidden');
+        });
+
+        // Hide panel if clicking outside
+        document.addEventListener('click', function(event) {
+            if (!notificationBell.contains(event.target) && !notificationPanel.contains(event.target)) {
+                notificationPanel.classList.add('hidden');
+            }
         });
     </script>
 </body>
