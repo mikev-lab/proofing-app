@@ -361,16 +361,18 @@
                 const downloadURL = await getDownloadURL(uploadResult.ref);
 
                 const projectSnap = await getDoc(projectRef);
-                const newVersionNumber = projectSnap.data().versions.length + 1;
+                const currentVersions = projectSnap.data().versions || [];
+                const newVersionNumber = currentVersions.length +1;
 
                 const newVersion = {
-                    versionNumber: newVersionNumber,
+                    fileName: file.name,
                     fileURL: downloadURL,
-                    createdAt: Timestamp.now()
+                    uploadedAt: Timestamp.now(),
+                    version: newVersionNumber
                 };
 
                 await updateDoc(projectRef, {
-                    versions: arrayUnion(newVersion),
+                    versions: [...currentVersions, newVersion],
                     status: 'pending',
                     isAwaitingClientUpload: false
                 });
