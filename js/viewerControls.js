@@ -6,7 +6,7 @@
  * @param {function} getCurrentTool A function that returns the currently active tool ('pan' or 'comment').
  * @param {function} getPdfRenderInfo A function that returns the PDF's last render position and dimensions.
  */
-export function initializeViewerControls(viewer, canvas, onTransformChange, getCurrentTool, getPdfRenderInfo) {
+export function initializeViewerControls(viewer, canvas, onTransformChange, getCurrentTool, getPdfRenderInfo, zoomLevelDisplay) {
     console.log('Initializing viewer controls...');
 
     const zoomInButton = document.getElementById('zoom-in-button');
