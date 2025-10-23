@@ -145,6 +145,13 @@
                         {/* Section for Guide Toggles */}
                         <div class="bg-slate-800/60 backdrop-blur-sm shadow-xl rounded-xl p-6 border border-slate-700/50">
                             <h3 class="text-xl font-semibold text-white mb-4">Guides</h3>
+                            <div class="mb-4">
+                                <label for="view-mode-select" class="block text-sm font-medium text-gray-300">View Mode</label>
+                                <select id="view-mode-select" name="view-mode-select" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500 sm:text-sm sm:leading-6">
+                                    <option value="single">Single Page</option>
+                                    <option value="spread">Spread (Book)</option>
+                                </select>
+                            </div>
                             <div class="space-y-2">
                                 <div class="flex items-center">
                                     <input type="checkbox" id="show-trim-guide" checked class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 bg-white/10 cursor-pointer">
@@ -232,6 +239,7 @@
 
 
         // Guide UI elements
+        const viewModeSelect = document.getElementById('view-mode-select');
         const showTrimGuideCheckbox = document.getElementById('show-trim-guide');
         const showBleedGuideCheckbox = document.getElementById('show-bleed-guide');
         const showSafetyGuideCheckbox = document.getElementById('show-safety-guide');
@@ -242,10 +250,56 @@
 
         // PDF.js state
         let pdfDoc = null;
-        let pageNum = 1;
+        let pageNum = 1; // Represents the current page OR view number
+        let currentViewMode = 'single'; // Default view mode
         let pageRendering = false;
         let pageNumPending = null;
         let onPageRenderedCallback = () => {};
+
+        /**
+         * Determines which page numbers to display for a given view.
+         * In 'single' mode, it's always one page.
+         * In 'spread' mode, it follows book pagination (1, 2-3, 4-5, ...).
+         * @param {number} viewNumber - The view to calculate for (1-based).
+         * @param {number} totalPages - The total number of pages in the PDF.
+         * @returns {number[]} An array of page numbers to render.
+         */
+        function getPagesForView(viewNumber, totalPages) {
+            if (currentViewMode === 'single' || !totalPages) {
+                return [viewNumber];
+            }
+
+            // Spread view logic
+            if (viewNumber === 1) {
+                return [1]; // Cover page is always alone
+            }
+
+            const page1 = (viewNumber - 2) * 2 + 2;
+            const page2 = page1 + 1;
+
+            const pages = [];
+            if (page1 <= totalPages) {
+                pages.push(page1);
+            }
+            if (page2 <= totalPages) {
+                pages.push(page2);
+            }
+            return pages;
+        }
+
+        /**
+         * Calculates the total number of views based on the current mode.
+         * @param {number} totalPages - Total pages in the PDF.
+         * @returns {number} The total number of views.
+         */
+        function getViewCount(totalPages) {
+            if (currentViewMode === 'single' || !totalPages) {
+                return totalPages;
+            }
+            // Spread view: Cover + remaining pages paired up
+            return totalPages > 1 ? 1 + Math.ceil((totalPages - 1) / 2) : 1;
+        }
+
 
         // State managed by viewerControls
         let transformState = { zoom: 1.0, pan: { x: 0, y: 0 } };
@@ -264,6 +318,13 @@
                     const projectData = docSnap.data();
                     projectName.textContent = projectData.projectName;
                     projectSpecs = projectData.specs; // Store specs
+
+                                // Set default view mode based on binding
+                                const isBook = projectSpecs.binding === 'Perfect Bound' || projectSpecs.binding === 'Saddle-Stitch';
+                                if (isBook) {
+                                    viewModeSelect.value = 'spread';
+                                    currentViewMode = 'spread';
+                                }
 
                     const latestVersion = projectData.versions && projectData.versions.length > 0 ? projectData.versions[projectData.versions.length - 1] : null;
                     if (latestVersion && latestVersion.fileURL) {
@@ -355,124 +416,137 @@
             }
         }
 
-        /** Renders PDF page with transformations and overlays */
-        function renderPage(num) {
+        /** Renders PDF page(s) with transformations and overlays */
+        async function renderPage(viewNumber) {
             if (!pdfDoc || pageRendering) {
-                if(pageRendering) pageNumPending = num; // Queue if already rendering
+                if (pageRendering) pageNumPending = viewNumber;
                 return;
             };
+
             pageRendering = true;
-            pdfDoc.getPage(num).then((page) => {
-                // Determine render scale for hidden canvas (higher quality)
-                const pdfRenderScale = Math.max(1.5, (window.devicePixelRatio || 1) * transformState.zoom * 0.75); // Adjusted scale factor
-                const viewport = page.getViewport({ scale: pdfRenderScale });
+            pageNum = viewNumber; // Update global state
 
-                // Render PDF page to the hidden canvas
-                hiddenCanvas.height = viewport.height;
-                hiddenCanvas.width = viewport.width;
+            const pagesToRender = getPagesForView(viewNumber, pdfDoc.numPages);
+            const totalViews = getViewCount(pdfDoc.numPages);
+
+            // Always update navigation state regardless of render success
+            pageNumSpan.textContent = pagesToRender.join('-') || viewNumber;
+            pageCountSpan.textContent = totalViews;
+            prevPageBtn.disabled = viewNumber <= 1;
+            nextPageBtn.disabled = !pdfDoc || viewNumber >= totalViews;
+
+            if (pagesToRender.length === 0) {
+                console.warn(`No pages to render for view ${viewNumber}`);
+                pageRendering = false;
+                // Clear canvas if no pages are shown (e.g., empty last view)
+                const visibleContext = pdfCanvas.getContext('2d');
+                if (visibleContext) visibleContext.clearRect(0, 0, pdfCanvas.width, pdfCanvas.height);
+                return;
+            }
+
+            try {
+                const pages = await Promise.all(pagesToRender.map(num => pdfDoc.getPage(num)));
+                const pdfRenderScale = Math.max(1.5, (window.devicePixelRatio || 1) * transformState.zoom * 0.75);
+                const viewports = pages.map(p => p.getViewport({ scale: pdfRenderScale }));
+                const totalWidth = viewports.reduce((sum, vp) => sum + vp.width, 0);
+                const maxHeight = Math.max(...viewports.map(vp => vp.height));
+
+                hiddenCanvas.width = totalWidth;
+                hiddenCanvas.height = maxHeight;
                 const hiddenContext = hiddenCanvas.getContext('2d');
-                if (!hiddenContext) { pageRendering = false; return; } // Exit if context fails
+                if (!hiddenContext) { pageRendering = false; return; }
+                hiddenContext.clearRect(0, 0, hiddenCanvas.width, hiddenCanvas.height);
 
-                const renderContext = { canvasContext: hiddenContext, viewport: viewport };
-                const renderTask = page.render(renderContext);
+                let currentX = 0;
+                for (let i = 0; i < pages.length; i++) {
+                    const page = pages[i];
+                    const viewport = viewports[i];
+                    hiddenContext.save();
+                    hiddenContext.translate(currentX, 0);
+                    await page.render({ canvasContext: hiddenContext, viewport: viewport }).promise;
+                    hiddenContext.restore();
+                    currentX += viewport.width;
+                }
 
-                renderTask.promise.then(() => {
-                    pageRendering = false; // Mark rendering as complete *before* drawing
+                pageRendering = false;
 
-                    // Get visible canvas context and clear it
-                    const visibleContext = pdfCanvas.getContext('2d');
-                    if (!visibleContext) return; // Exit if context fails
+                const visibleContext = pdfCanvas.getContext('2d');
+                if (!visibleContext) return;
 
-                    // Resize visible canvas to fit container (important for correct drawing)
-                    pdfCanvas.height = pdfViewer.clientHeight;
-                    pdfCanvas.width = pdfViewer.clientWidth;
-                    visibleContext.clearRect(0, 0, pdfCanvas.width, pdfCanvas.height);
+                pdfCanvas.height = pdfViewer.clientHeight;
+                pdfCanvas.width = pdfViewer.clientWidth;
+                visibleContext.clearRect(0, 0, pdfCanvas.width, pdfCanvas.height);
 
-                    // Apply zoom and pan transformations FOR DRAWING PDF IMAGE
-                    visibleContext.save();
-                    visibleContext.translate(transformState.pan.x, transformState.pan.y);
-                    visibleContext.scale(transformState.zoom, transformState.zoom);
+                visibleContext.save();
+                visibleContext.translate(transformState.pan.x, transformState.pan.y);
+                visibleContext.scale(transformState.zoom, transformState.zoom);
 
-                    // Calculate position and scale to draw the PDF centered initially (before pan)
-                    const basePdfViewport = page.getViewport({ scale: 1.0 }); // Use scale 1 for original dimensions
+                const baseViewports = pages.map(p => p.getViewport({ scale: 1.0 }));
+                const totalBaseWidth = baseViewports.reduce((sum, vp) => sum + vp.width, 0);
+                const maxBaseHeight = Math.max(...baseViewports.map(vp => vp.height));
+                const combinedBaseViewport = { width: totalBaseWidth, height: maxBaseHeight };
 
-                    // Calculate scale to fit PDF within the canvas *at current zoom level*
-                     const availableWidth = pdfCanvas.width / transformState.zoom;
-                     const availableHeight = pdfCanvas.height / transformState.zoom;
-                     pdfRenderInfo.scale = Math.min(
-                         availableWidth / basePdfViewport.width,
-                         availableHeight / basePdfViewport.height
-                     ) * 0.95; // Add some padding
+                const availableWidth = pdfCanvas.width / transformState.zoom;
+                const availableHeight = pdfCanvas.height / transformState.zoom;
+                pdfRenderInfo.scale = Math.min(
+                    availableWidth / combinedBaseViewport.width,
+                    availableHeight / combinedBaseViewport.height
+                ) * 0.95;
 
-                    pdfRenderInfo.width = basePdfViewport.width * pdfRenderInfo.scale;
-                    pdfRenderInfo.height = basePdfViewport.height * pdfRenderInfo.scale;
-                    // Calculate centering position based on available space AT CURRENT ZOOM
-                    pdfRenderInfo.x = (availableWidth - pdfRenderInfo.width) / 2;
-                    pdfRenderInfo.y = (availableHeight - pdfRenderInfo.height) / 2;
+                pdfRenderInfo.width = combinedBaseViewport.width * pdfRenderInfo.scale;
+                pdfRenderInfo.height = combinedBaseViewport.height * pdfRenderInfo.scale;
+                pdfRenderInfo.x = (availableWidth - pdfRenderInfo.width) / 2;
+                pdfRenderInfo.y = (availableHeight - pdfRenderInfo.height) / 2;
 
-                    // Draw the high-res hidden canvas onto the visible canvas, using calculated position and scale
-                    visibleContext.drawImage(hiddenCanvas, pdfRenderInfo.x, pdfRenderInfo.y, pdfRenderInfo.width, pdfRenderInfo.height);
+                visibleContext.drawImage(hiddenCanvas, pdfRenderInfo.x, pdfRenderInfo.y, pdfRenderInfo.width, pdfRenderInfo.height);
+
+                // --- Draw Guides ---
+                if (projectSpecs) {
+                    const trimDimensionsPt = getTrimDimensions(projectSpecs.dimensions, null);
+                    if (trimDimensionsPt) {
+                        let currentDrawX = pdfRenderInfo.x;
+                        for (let i = 0; i < baseViewports.length; i++) {
+                            const baseViewport = baseViewports[i];
+                            const pageDrawWidth = baseViewport.width * pdfRenderInfo.scale;
+                            const pageDrawHeight = baseViewport.height * pdfRenderInfo.scale;
+
+                            // Vertically center each page's guides within the max height
+                            const pageDrawY = pdfRenderInfo.y + (pdfRenderInfo.height - pageDrawHeight) / 2;
 
 
-                    // --- Draw Guides ---
-                    if (projectSpecs) {
-                        const trimDimensionsPt = getTrimDimensions(projectSpecs.dimensions, null); // Assuming customDimension is not needed here yet
-                        if (trimDimensionsPt) {
-                            // Guides are drawn in the *transformed* coordinate space.
-                            // Pass necessary info for guides.js functions to draw correctly.
                             const guideDrawOptions = {
-                                drawX: pdfRenderInfo.x, // Top-left corner of PDF image in *un-panned, 1x zoomed* space
-                                drawY: pdfRenderInfo.y,
-                                drawWidth: pdfRenderInfo.width, // Width of PDF image in *un-panned, 1x zoomed* space
-                                drawHeight: pdfRenderInfo.height,
-                                pdfOriginalWidth: basePdfViewport.width, // Original PDF width in points
-                                pdfOriginalHeight: basePdfViewport.height,
-                                trimWidthPt: trimDimensionsPt.width, // Target trim width in points
+                                drawX: currentDrawX,
+                                drawY: pageDrawY,
+                                drawWidth: pageDrawWidth,
+                                drawHeight: pageDrawHeight,
+                                trimWidthPt: trimDimensionsPt.width,
                                 trimHeightPt: trimDimensionsPt.height,
-                                bleedPt: 0.125 * INCH_TO_POINTS, // Hardcoded
-                                safetyPt: 0.125 * INCH_TO_POINTS // Hardcoded
+                                bleedPt: 0.125 * INCH_TO_POINTS,
+                                safetyPt: 0.125 * INCH_TO_POINTS
                             };
 
-                            // Pass the visible context which already has zoom/pan applied
-                            if (showTrimGuideCheckbox.checked) {
-                                drawTrimGuide(visibleContext, guideDrawOptions);
-                            }
-                            if (showBleedGuideCheckbox.checked) {
-                                drawBleedGuide(visibleContext, guideDrawOptions);
-                            }
-                            if (showSafetyGuideCheckbox.checked) {
-                                drawSafetyGuide(visibleContext, guideDrawOptions);
-                            }
+                            if (showTrimGuideCheckbox.checked) drawTrimGuide(visibleContext, guideDrawOptions);
+                            if (showBleedGuideCheckbox.checked) drawBleedGuide(visibleContext, guideDrawOptions);
+                            if (showSafetyGuideCheckbox.checked) drawSafetyGuide(visibleContext, guideDrawOptions);
+
+                            currentDrawX += pageDrawWidth;
                         }
                     }
-                    // --- End Draw Guides ---
+                }
+                // --- End Draw Guides ---
 
-                    // Restore context AFTER drawing PDF and guides
-                    visibleContext.restore();
+                visibleContext.restore();
+                onPageRenderedCallback();
 
-                    // Draw annotations (annotations.js handles its own transformations based on stored data + current view)
-                    onPageRenderedCallback();
-
-                    // Check if another page render was queued
-                    if (pageNumPending !== null) {
-                        const pending = pageNumPending;
-                        pageNumPending = null; // Clear before recursive call
-                        renderPage(pending);
-                    }
-                }).catch(err => {
-                    console.error("Error during PDF render task:", err);
-                    pageRendering = false; // Ensure rendering can be retried on error
-                    // Re-enable controls if needed, show error message?
-                });
-            }).catch(err => {
-                console.error("Error getting PDF page:", err);
-                pageRendering = false; // Ensure rendering can be retried on error
-            });
-            pageNumSpan.textContent = num;
-
-            // Update button states
-            prevPageBtn.disabled = num <= 1;
-            nextPageBtn.disabled = !pdfDoc || num >= pdfDoc.numPages;
+                if (pageNumPending !== null) {
+                    const pending = pageNumPending;
+                    pageNumPending = null;
+                    renderPage(pending);
+                }
+            } catch (err) {
+                console.error("Error rendering page/spread:", err);
+                pageRendering = false;
+            }
         }
 
         /** Queues page render if another is busy */
@@ -528,6 +602,12 @@
         requestChangesButton.addEventListener('click', () => showConfirmation('request_changes'));
         cancelActionButton.addEventListener('click', hideConfirmation);
 
+        viewModeSelect.addEventListener('change', (e) => {
+            currentViewMode = e.target.value;
+            // Reset to the first view when mode changes
+            queueRenderPage(1);
+        });
+
         // Re-render when guide visibility changes
         showTrimGuideCheckbox.addEventListener('change', () => queueRenderPage(pageNum));
         showBleedGuideCheckbox.addEventListener('change', () => queueRenderPage(pageNum));
@@ -550,7 +630,8 @@
         });
 
         nextPageBtn.addEventListener('click', () => {
-            if (!pdfDoc || pageNum >= pdfDoc.numPages) return;
+            const totalViews = getViewCount(pdfDoc.numPages);
+            if (!pdfDoc || pageNum >= totalViews) return;
             pageNum++;
             queueRenderPage(pageNum);
         });
