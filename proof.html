@@ -63,10 +63,26 @@
                 </div>
 
                 <!-- User Info & Logout -->
-                <div class="flex items-center">
-                    <a href="dashboard.html" class="text-sm font-semibold text-white hover:text-gray-200 mr-4">Dashboard</a>
-                    <a href="account.html" class="text-sm font-semibold text-white hover:text-gray-200 mr-4">My Account</a>
-                    <span id="user-email" class="text-sm text-gray-300 mr-4 hidden sm:block">Welcome...</span>
+                <div class="flex items-center space-x-4">
+                    <a href="dashboard.html" class="text-sm font-semibold text-white hover:text-gray-200">Dashboard</a>
+                    <a href="account.html" class="text-sm font-semibold text-white hover:text-gray-200">My Account</a>
+                    <div class="relative">
+                        <button id="notification-bell" class="relative text-gray-400 hover:text-white">
+                            <svg class="h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
+                            </svg>
+                            <span id="notification-indicator" class="hidden absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-red-500"></span>
+                        </button>
+                        <div id="notification-panel" class="hidden absolute right-0 mt-2 w-80 bg-slate-800 rounded-lg shadow-lg border border-slate-700/50 z-10">
+                            <div class="p-3 border-b border-slate-700/50">
+                                <h3 class="font-semibold text-white">Notifications</h3>
+                            </div>
+                            <div id="notification-list" class="py-1 max-h-96 overflow-y-auto">
+                                <p class="px-4 py-2 text-sm text-gray-400">No new notifications</p>
+                            </div>
+                        </div>
+                    </div>
+                    <span id="user-email" class="text-sm text-gray-300 hidden sm:block">Welcome...</span>
                     <button id="logout-button" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all duration-150 ease-in-out">
                         Sign Out
                     </button>
@@ -234,6 +250,8 @@
         // Get DOM elements
         const userEmailSpan = document.getElementById('user-email');
         const logoutButton = document.getElementById('logout-button');
+        const notificationBell = document.getElementById('notification-bell');
+        const notificationPanel = document.getElementById('notification-panel');
         const loadingSpinner = document.getElementById('loading-spinner');
         const proofContent = document.getElementById('proof-content');
         const projectName = document.getElementById('project-name');
@@ -291,6 +309,11 @@
 
         // App state
         let currentTool = 'pan'; // 'pan' or 'comment'
+
+        function fetchNotifications() {
+            // Placeholder function for fetching notifications
+            console.log("Fetching notifications...");
+        }
 
         /**
          * Determines which page numbers to display for a given view.
@@ -1023,6 +1046,7 @@
             if (user) {
                 userEmailSpan.textContent = user.email;
                 userEmailSpan.classList.remove('hidden');
+                fetchNotifications();
 
                 const urlParams = new URLSearchParams(window.location.search);
                 currentProjectId = urlParams.get('id');
@@ -1042,6 +1066,17 @@
             signOut(auth).catch((error) => {
                 console.error('Sign out error', error);
             });
+        });
+
+        notificationBell.addEventListener('click', () => {
+            notificationPanel.classList.toggle('hidden');
+        });
+
+        // Hide panel if clicking outside
+        document.addEventListener('click', function(event) {
+            if (!notificationBell.contains(event.target) && !notificationPanel.contains(event.target)) {
+                notificationPanel.classList.add('hidden');
+            }
         });
     </script>
 

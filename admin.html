@@ -44,8 +44,24 @@
                 <div>
                     <h2 class="text-xl font-semibold text-white">All Projects</h2>
                 </div>
-                <div class="flex items-center">
-                    <span id="user-email" class="text-sm text-gray-300 mr-4 hidden sm:block"></span>
+                <div class="flex items-center space-x-4">
+                    <div class="relative">
+                        <button id="notification-bell" class="relative text-gray-400 hover:text-white">
+                            <svg class="h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
+                            </svg>
+                            <span id="notification-indicator" class="hidden absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-red-500"></span>
+                        </button>
+                        <div id="notification-panel" class="hidden absolute right-0 mt-2 w-80 bg-slate-800 rounded-lg shadow-lg border border-slate-700/50 z-10">
+                            <div class="p-3 border-b border-slate-700/50">
+                                <h3 class="font-semibold text-white">Notifications</h3>
+                            </div>
+                            <div id="notification-list" class="py-1 max-h-96 overflow-y-auto">
+                                <p class="px-4 py-2 text-sm text-gray-400">No new notifications</p>
+                            </div>
+                        </div>
+                    </div>
+                    <span id="user-email" class="text-sm text-gray-300 hidden sm:block"></span>
                     <button id="logout-button" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all duration-150 ease-in-out">
                         Sign Out
                     </button>
@@ -74,6 +90,31 @@
                     </svg>
                     <h3 class="mt-2 text-lg font-medium text-white">No projects found</h3>
                     <p class="mt-1 text-sm text-gray-400">Get started by creating a new project.</p>
+                </div>
+
+                <!-- Filter and Sort Controls -->
+                <div class="flex justify-between items-center mb-6">
+                    <div class="flex space-x-4">
+                        <div>
+                            <label for="status-filter" class="block text-sm font-medium text-gray-400">Status</label>
+                            <select id="status-filter" name="status-filter" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-600 bg-slate-700/50 text-white focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md">
+                                <option>All</option>
+                                <option>Pending</option>
+                                <option>Approved</option>
+                                <option>Changes Requested</option>
+                                <option>Awaiting Upload</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label for="sort-by" class="block text-sm font-medium text-gray-400">Sort By</label>
+                            <select id="sort-by" name="sort-by" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-600 bg-slate-700/50 text-white focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md">
+                                <option value="createdAt-desc">Date Created (Newest)</option>
+                                <option value="createdAt-asc">Date Created (Oldest)</option>
+                                <option value="projectName-asc">Project Name (A-Z)</option>
+                                <option value="companyName-asc">Company Name (A-Z)</option>
+                            </select>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Projects Table -->
@@ -124,6 +165,10 @@
         const emptyState = document.getElementById('empty-state');
         const projectsTableContainer = document.getElementById('projects-table-container');
         const projectsList = document.getElementById('projects-list');
+        const statusFilter = document.getElementById('status-filter');
+        const sortBy = document.getElementById('sort-by');
+        const notificationBell = document.getElementById('notification-bell');
+        const notificationPanel = document.getElementById('notification-panel');
 
         function formatTimestamp(fbTimestamp) {
             if (!fbTimestamp) return "Date not set";
@@ -144,15 +189,49 @@
             return `<span class="${classes}">${text}</span>`;
         }
 
+        function fetchNotifications() {
+            // Placeholder function for fetching notifications
+            console.log("Fetching notifications...");
+        }
+
         async function fetchAllProjects() {
             try {
                 loadingSpinner.classList.remove('hidden');
+                emptyState.classList.add('hidden');
+                projectsTableContainer.classList.add('hidden');
+                projectsList.innerHTML = ''; // Clear previous results
 
-                const projectsRef = collection(db, "projects");
-                const q = query(projectsRef, orderBy("createdAt", "desc"));
+                const selectedStatus = statusFilter.value;
+                const [sortField, sortDirection] = sortBy.value.split('-');
+
+                let projectsRef = collection(db, "projects");
+                let q;
+
+                const statusValueMap = {
+                    "Changes Requested": "changes_requested",
+                    "Awaiting Upload": "awaiting_upload"
+                };
+                const dbStatus = statusValueMap[selectedStatus] || (selectedStatus !== "All" ? selectedStatus.toLowerCase() : null);
+
+                // Base query
+                let queries = [];
+                if (dbStatus) {
+                    queries.push(where("status", "==", dbStatus));
+                }
+
+                // Sorting - cannot sort by company name on the server directly
+                if (sortField !== 'companyName') {
+                    queries.push(orderBy(sortField, sortDirection));
+                } else {
+                    // Default sort when sorting by company name client-side
+                    queries.push(orderBy("createdAt", "desc"));
+                }
+
+                q = query(projectsRef, ...queries);
+
                 const querySnapshot = await getDocs(q);
 
-                const projects = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                let projects = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
                 // Create a map of company IDs to company names for efficient lookup
                 const companyIds = [...new Set(projects.map(p => p.companyId).filter(id => id))];
@@ -164,6 +243,29 @@
                     }
                     return map;
                 }, {});
+
+                // Add companyName to each project object for sorting
+                projects.forEach(p => {
+                    if (p.companyId && companyMap[p.companyId]) {
+                        p.companyName = companyMap[p.companyId];
+                    } else if (p.clientName) { // Backward compatibility
+                        p.companyName = p.clientName;
+                    } else {
+                        p.companyName = 'N/A';
+                    }
+                });
+
+                // Client-side sort for company name
+                if (sortField === 'companyName') {
+                    projects.sort((a, b) => {
+                        const nameA = a.companyName.toUpperCase();
+                        const nameB = b.companyName.toUpperCase();
+                        if (nameA < nameB) return -1;
+                        if (nameA > nameB) return 1;
+                        return 0;
+                    });
+                }
+
 
                 loadingSpinner.classList.add('hidden');
 
@@ -184,13 +286,7 @@
         function renderProjects(projects, companyMap) {
             projectsList.innerHTML = '';
             projects.forEach(project => {
-                let companyName = 'N/A';
-                if (project.companyId) {
-                    companyName = companyMap[project.companyId] || 'Company Not Found';
-                } else if (project.clientName) { // Backward compatibility
-                    companyName = project.clientName;
-                }
-
+                const companyName = project.companyName || 'N/A'; // Use pre-fetched company name
                 const formattedDate = formatTimestamp(project.createdAt);
                 const statusBadge = getStatusBadge(project.status);
                 const rowHtml = `
@@ -213,6 +309,7 @@
                 userEmailSpan.textContent = user.email;
                 userEmailSpan.classList.remove('hidden');
                 fetchAllProjects();
+                fetchNotifications(); // Call the placeholder
             } else {
                 window.location.href = 'index.html';
             }
@@ -222,6 +319,20 @@
 
         logoutButton.addEventListener('click', () => {
             signOut(auth).catch((error) => console.error('Sign out error', error));
+        });
+
+        // Event Listeners for controls
+        statusFilter.addEventListener('change', fetchAllProjects);
+        sortBy.addEventListener('change', fetchAllProjects);
+        notificationBell.addEventListener('click', () => {
+            notificationPanel.classList.toggle('hidden');
+        });
+
+        // Hide panel if clicking outside
+        document.addEventListener('click', function(event) {
+            if (!notificationBell.contains(event.target) && !notificationPanel.contains(event.target)) {
+                notificationPanel.classList.add('hidden');
+            }
         });
     </script>
 </body>
