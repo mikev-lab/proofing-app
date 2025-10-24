@@ -334,7 +334,7 @@
             signOut(auth).catch((error) => {
                 console.error('Sign out error', error);
             });
-            // onAuthStateChanged() will automatically handle the redirect
+            window.location.href = 'index.html';
         });
 
         notificationBell.addEventListener('click', () => {

@@ -127,7 +127,10 @@
             }
         });
 
-        document.getElementById('logout-button').addEventListener('click', () => signOut(auth));
+        document.getElementById('logout-button').addEventListener('click', () => {
+            signOut(auth);
+            window.location.href = 'index.html';
+        });
 
         notificationBell.addEventListener('click', () => {
             notificationPanel.classList.toggle('hidden');
