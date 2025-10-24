@@ -83,22 +83,7 @@
     </div>
 
     <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, getDoc, updateDoc, collection, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
-        const firebaseConfig = {
-          apiKey: "AIzaSyApmEJdFi96QS3TwYh7GyEDSbZrCuVpBrg",
-          authDomain: "proofing-application.firebaseapp.com",
-          projectId: "proofing-application",
-          storageBucket: "proofing-application.firebasestorage.app",
-          messagingSenderId: "452256252711",
-          appId: "1:452256252711:web:68795c1e5cc9438ff05f02",
-        };
-
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
+        import { auth, db, onAuthStateChanged, signOut, doc, getDoc, updateDoc, collection, getDocs } from './js/firebase-init.js';
 
         const urlParams = new URLSearchParams(window.location.search);
         const userId = urlParams.get('id');
