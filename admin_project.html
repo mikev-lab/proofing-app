@@ -312,7 +312,10 @@
             }
         });
 
-        document.getElementById('logout-button').addEventListener('click', () => signOut(auth));
+        document.getElementById('logout-button').addEventListener('click', () => {
+            signOut(auth);
+            window.location.href = 'index.html';
+        });
 
         // Notification Bell Logic
         const notificationBell = document.getElementById('notification-bell');
