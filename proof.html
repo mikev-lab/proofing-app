@@ -224,16 +224,10 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, onSnapshot, updateDoc, collection, getDocs, Timestamp, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import * as pdfjsLib from "https://mozilla.github.io/pdf.js/build/pdf.mjs";
-        import { initializeAnnotations } from './js/annotations.js';
-        import { initializeViewerControls } from './js/viewerControls.js';
-
-        // Set worker source for PDF.js
-        pdfjsLib.GlobalWorkerOptions.workerSrc = "https://mozilla.github.io/pdf.js/build/pdf.worker.mjs";
+        import { getFirestore, doc, onSnapshot, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { initializeSharedViewer } from './js/viewer.js';
 
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
-            // Fallback config
             apiKey: "AIzaSyApmEJdFi96QS3TwYh7GyEDSbZrCuVpBrg",
             authDomain: "proofing-application.firebaseapp.com",
             projectId: "proofing-application",
@@ -242,837 +236,70 @@
             appId: "1:452256252711:web:68795c1e5cc9438ff05f02",
         };
 
-        // Initialize Firebase
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
 
-        // Get DOM elements
         const userEmailSpan = document.getElementById('user-email');
         const logoutButton = document.getElementById('logout-button');
-        const notificationBell = document.getElementById('notification-bell');
-        const notificationPanel = document.getElementById('notification-panel');
         const loadingSpinner = document.getElementById('loading-spinner');
         const proofContent = document.getElementById('proof-content');
         const projectName = document.getElementById('project-name');
-        const commentsSection = document.getElementById('comments-section');
-        const approveButton = document.getElementById('approve-button');
-        const requestChangesButton = document.getElementById('request-changes-button');
-        const confirmationSection = document.getElementById('confirmation-section');
-        const confirmationMessage = document.getElementById('confirmation-message');
-        const confirmActionButton = document.getElementById('confirm-action-button');
-        const cancelActionButton = document.getElementById('cancel-action-button');
-        const decisionButtons = document.getElementById('decision-buttons');
         const approvalForm = document.getElementById('approval-form');
-
-        // PDF Viewer elements
-        const pdfViewer = document.getElementById('pdf-viewer');
-        const pdfCanvas = document.getElementById('pdf-canvas');
-        const pageNumSpan = document.getElementById('page-num');
-        const pageCountSpan = document.getElementById('page-count');
-        const prevPageBtn = document.getElementById('prev-page');
-        const nextPageBtn = document.getElementById('next-page');
-        const navigationControls = document.getElementById('navigation-controls');
-        const zoomOutButton = document.getElementById('zoom-out-button');
-        const zoomResetButton = document.getElementById('zoom-reset-button');
-        const zoomInButton = document.getElementById('zoom-in-button');
-        const zoomLevelDisplay = document.getElementById('zoom-level-display');
-        const toolPanButton = document.getElementById('tool-pan');
-        const toolCommentButton = document.getElementById('tool-comment');
-        const modal = document.getElementById('annotation-modal');
-        const renderingThrobber = document.getElementById('rendering-throbber');
-
-
-        // Guide UI elements
-        const guidesSection = document.getElementById('guides-section');
-        const viewModeSelect = document.getElementById('view-mode-select');
-        const showTrimGuideCheckbox = document.getElementById('show-trim-guide');
-        const showBleedGuideCheckbox = document.getElementById('show-bleed-guide');
-        const showSafetyGuideCheckbox = document.getElementById('show-safety-guide');
-
-        // Dynamically imported module
-        let guidesModule = null;
+        const decisionButtons = document.getElementById('decision-buttons');
+        const confirmationSection = document.getElementById('confirmation-section');
 
         let currentProjectId = null;
-        let projectSpecs = null;
         let actionToConfirm = null;
+        let unsubscribeProjectListener = null;
 
-        // PDF.js state
-        let pdfDoc = null;
-        let pageNum = 1; // Represents the current page OR view number
-        let currentViewMode = 'single'; // Default view mode
-        let pageRendering = false;
-        let pageNumPending = null;
-        let onPageRenderedCallback = () => {};
-        const pdfPageCache = {}; // Cache for PDFPageProxy objects
-        const renderedThumbnails = new Set(); // Keep track of rendered thumbnails
-
-        // App state
-        let currentTool = 'pan'; // 'pan' or 'comment'
-
-        function fetchNotifications() {
-            // Placeholder function for fetching notifications
-            console.log("Fetching notifications...");
+        function updateProjectStatus(status) {
+            const projectRef = doc(db, "projects", currentProjectId);
+            updateDoc(projectRef, { status: status })
+                .then(() => {
+                    window.location.href = 'dashboard.html';
+                })
+                .catch(error => console.error("Error updating status:", error));
         }
-
-        /**
-         * Determines which page numbers to display for a given view.
-         * In 'single' mode, it's always one page.
-         * In 'spread' mode, it follows book pagination (1, 2-3, 4-5, ...).
-         * @param {number} viewNumber - The view to calculate for (1-based).
-         * @param {number} totalPages - The total number of pages in the PDF.
-         * @returns {number[]} An array of page numbers to render.
-         */
-        function getPagesForView(viewNumber, totalPages) {
-            if (currentViewMode === 'single' || !totalPages) {
-                return [viewNumber];
-            }
-
-            // Spread view logic
-            if (viewNumber === 1) {
-                return [1]; // Cover page is always alone
-            }
-
-            const page1 = (viewNumber - 2) * 2 + 2;
-            const page2 = page1 + 1;
-
-            const pages = [];
-            if (page1 <= totalPages) {
-                pages.push(page1);
-            }
-            if (page2 <= totalPages) {
-                pages.push(page2);
-            }
-
-            // If RTL, reverse the pages in the spread
-            if (projectSpecs && projectSpecs.readingDirection === 'rtl' && pages.length > 1) {
-                return pages.reverse();
-            }
-
-            return pages;
-        }
-
-        /**
-         * Calculates the total number of views based on the current mode.
-         * @param {number} totalPages - Total pages in the PDF.
-         * @returns {number} The total number of views.
-         */
-        function getViewCount(totalPages) {
-            if (currentViewMode === 'single' || !totalPages) {
-                return totalPages;
-            }
-            // Spread view: Cover + remaining pages paired up
-            return totalPages > 1 ? 1 + Math.ceil((totalPages - 1) / 2) : 1;
-        }
-
-
-        // State managed by viewerControls
-        let transformState = { zoom: 1.0, pan: { x: 0, y: 0 } };
-        // Holds info about the PDF's position/scale on VISIBLE canvas
-        let pdfRenderInfo = { x: 0, y: 0, width: 0, height: 0, scale: 1.0 };
-        // Offscreen canvas for high-res PDF rendering
-        let hiddenCanvas = document.createElement('canvas');
-        let currentlyLoadedURL = null; // To prevent re-rendering the same URL
-        let unsubscribeProjectListener = null; // To hold the listener cleanup function
-
-        /** Sets up a real-time listener for project details */
-        function setupProjectListener(projectId) {
-            // If a listener is already active, unsubscribe first
-            if (unsubscribeProjectListener) {
-                unsubscribeProjectListener();
-            }
-
-            const docRef = doc(db, "projects", projectId);
-            unsubscribeProjectListener = onSnapshot(docRef, (docSnap) => {
-                if (docSnap.exists()) {
-                    const projectData = docSnap.data();
-
-                    // --- UI Setup (only needs to run once) ---
-                    if (projectName.textContent !== projectData.projectName) {
-                        projectName.textContent = projectData.projectName;
-                        projectSpecs = projectData.specs; // Store specs
-
-                        const isBook = projectSpecs && (projectSpecs.binding === 'Perfect Bound' || projectSpecs.binding === 'Saddle-Stitch');
-                        if (isBook) {
-                            viewModeSelect.value = 'spread';
-                            currentViewMode = 'spread';
-                        }
-
-                        // Initialize Viewer Controls and Annotations once on first load
-                        initializeAnnotations(
-                            db, auth, projectId, pdfCanvas, commentsSection,
-                            () => pageNum,
-                            () => queueRenderPage(pageNum),
-                            (callback) => { onPageRenderedCallback = callback; },
-                            () => transformState,
-                            () => pdfRenderInfo
-                        );
-                        initializeViewerControls(
-                            pdfViewer, pdfCanvas,
-                            (newTransform) => {
-                                transformState = newTransform;
-                                queueRenderPage(pageNum);
-                            },
-                            () => currentTool,
-                            () => pdfRenderInfo,
-                            zoomLevelDisplay
-                        );
-                    }
-
-                    // --- Determine which file URL to load ---
-                    const latestVersion = projectData.versions && projectData.versions.length > 0 ? projectData.versions[projectData.versions.length - 1] : null;
-                    let urlToLoad = null;
-                    let nameToLoad = null;
-
-                    if (latestVersion && latestVersion.previewURL) {
-                        urlToLoad = latestVersion.previewURL;
-                        nameToLoad = latestVersion.fileName;
-                    } else if (latestVersion && latestVersion.fileURL) {
-                        urlToLoad = latestVersion.fileURL;
-                        nameToLoad = latestVersion.fileName;
-                    } else if (projectData.fileUrl) { // Fallback for older projects
-                        urlToLoad = projectData.fileUrl;
-                        nameToLoad = projectData.fileName;
-                    }
-
-                    // --- Load or update the proof ---
-                    if (urlToLoad && urlToLoad !== currentlyLoadedURL) {
-                        currentlyLoadedURL = urlToLoad; // Update the tracking variable
-                        renderProof(urlToLoad, nameToLoad);
-                    } else if (!urlToLoad) {
-                        // Handle case where there is no file at all
-                        currentlyLoadedURL = null;
-                        if (projectData.isAwaitingClientUpload === true) {
-                            displayUploadInterface(projectId, projectData.companyId);
-                        } else {
-                            displayNoFileMessage();
-                        }
-                    }
-
-                    loadingSpinner.classList.add('hidden');
-                    proofContent.classList.remove('hidden');
-
-                } else {
-                    console.error("No such document!");
-                    loadingSpinner.innerHTML = '<p class="text-red-400">Error: Project not found.</p>';
-                }
-            }, (error) => {
-                console.error("Error in project listener:", error);
-                loadingSpinner.innerHTML = '<p class="text-red-400">Error listening for project updates.</p>';
-            });
-        }
-
-        /**
-         * Renders the list of thumbnails in the left column.
-         * Creates placeholders and sets up lazy loading.
-         */
-        async function renderThumbnailList() {
-            const thumbnailContainer = document.getElementById('thumbnail-list');
-            if (!pdfDoc || !thumbnailContainer) return;
-
-            thumbnailContainer.innerHTML = ''; // Clear previous thumbnails
-            renderedThumbnails.clear();
-            const totalViews = getViewCount(pdfDoc.numPages);
-
-            // Get the first page to determine the aspect ratio for all thumbnails
-            const firstPage = await pdfDoc.getPage(1);
-            const viewport = firstPage.getViewport({ scale: 1.0 });
-            const aspectRatio = viewport.width / viewport.height;
-
-            for (let i = 1; i <= totalViews; i++) {
-                const pages = getPagesForView(i, pdfDoc.numPages).join('-');
-                const thumbItem = document.createElement('div');
-                thumbItem.className = 'thumbnail-item p-2 rounded-md border-2 border-transparent hover:border-indigo-400 cursor-pointer';
-                thumbItem.dataset.view = i;
-
-                thumbItem.innerHTML = `
-                    <div class="bg-black/20 flex items-center justify-center rounded-sm" style="aspect-ratio: ${aspectRatio}">
-                         <canvas class="w-full h-full object-contain"></canvas>
-                    </div>
-                    <p class="text-center text-xs mt-2">Page ${pages}</p>
-                `;
-                thumbnailContainer.appendChild(thumbItem);
-            }
-
-            // Debounce the scroll handler
-            let scrollTimeout;
-            thumbnailContainer.addEventListener('scroll', () => {
-                clearTimeout(scrollTimeout);
-                scrollTimeout = setTimeout(loadVisibleThumbnails, 100);
-            });
-
-            loadVisibleThumbnails(); // Initial load
-        }
-
-        /**
-         * Checks which thumbnails are visible in the scrollable container
-         * and triggers their rendering.
-         */
-        function loadVisibleThumbnails() {
-            const thumbnailContainer = document.getElementById('thumbnail-list');
-            const items = thumbnailContainer.querySelectorAll('.thumbnail-item');
-            const containerTop = thumbnailContainer.scrollTop;
-            const containerBottom = containerTop + thumbnailContainer.clientHeight;
-
-            items.forEach(item => {
-                const view = parseInt(item.dataset.view, 10);
-                if (item.offsetTop < containerBottom + 200 && item.offsetTop + item.offsetHeight > containerTop - 200) {
-                     if (!renderedThumbnails.has(view)) {
-                        loadAndRenderThumbnail(view);
-                    }
-                }
-            });
-        }
-
-
-        /**
-         * Loads the PDF page(s) for a specific thumbnail view and renders it.
-         * @param {number} viewNumber - The view number to render.
-         */
-        async function loadAndRenderThumbnail(viewNumber) {
-            if (!pdfDoc || renderedThumbnails.has(viewNumber)) return;
-
-            renderedThumbnails.add(viewNumber); // Mark as rendering
-            const thumbItem = document.querySelector(`.thumbnail-item[data-view='${viewNumber}']`);
-            if (!thumbItem) return;
-
-            const canvas = thumbItem.querySelector('canvas');
-            const context = canvas.getContext('2d');
-            const pagesToRenderIndices = getPagesForView(viewNumber, pdfDoc.numPages);
-
-            try {
-                const pagePromises = pagesToRenderIndices.map(num => {
-                    if (pdfPageCache[num]) {
-                        return Promise.resolve(pdfPageCache[num]);
-                    }
-                    return pdfDoc.getPage(num).then(page => {
-                        pdfPageCache[num] = page; // Cache the page
-                        return page;
-                    });
-                });
-                const pages = await Promise.all(pagePromises);
-                const viewports = pages.map(p => p.getViewport({ scale: 1.0 })); // Base scale
-                const totalWidth = viewports.reduce((sum, vp) => sum + vp.width, 0);
-                const maxHeight = Math.max(...viewports.map(vp => vp.height));
-
-                const scale = Math.min(150 / totalWidth, 150 / maxHeight); // Scale to fit a ~150px box
-                const scaledViewports = pages.map(p => p.getViewport({ scale }));
-
-                canvas.width = scaledViewports.reduce((sum, vp) => sum + vp.width, 0);
-                canvas.height = Math.max(...scaledViewports.map(vp => vp.height));
-
-                let currentX = 0;
-                for (let i = 0; i < pages.length; i++) {
-                    const page = pages[i];
-                    const viewport = scaledViewports[i];
-                    const offsetY = (canvas.height - viewport.height) / 2;
-                    await page.render({
-                        canvasContext: context,
-                        viewport: viewport,
-                        transform: [1, 0, 0, 1, currentX, offsetY]
-                    }).promise;
-                    currentX += viewport.width;
-                }
-            } catch (error) {
-                console.error(`Failed to render thumbnail for view ${viewNumber}:`, error);
-                renderedThumbnails.delete(viewNumber); // Allow re-rendering on error
-            }
-        }
-
-        // --- NEW: Function to display upload interface ---
-        function displayUploadInterface(projectId, companyId) {
-            pdfViewer.innerHTML = `
-                <div class="bg-slate-800/60 p-6 rounded-lg shadow-xl border border-slate-700/50 text-center max-w-md mx-auto">
-                    <h3 class="text-xl font-semibold text-white mb-4">Upload Your Proof File</h3>
-                    <p class="text-gray-400 mb-6">Please upload the PDF file for this project.</p>
-                    <input type="file" id="client-file-input" accept=".pdf" class="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-600/20 file:text-indigo-300 hover:file:bg-indigo-600/30 mb-4">
-                    <button id="client-upload-button" class="w-full bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-green-800 disabled:cursor-not-allowed">
-                        Upload File
-                    </button>
-                    <p id="client-upload-status" class="mt-4 text-sm"></p>
-                </div>
-            `;
-            navigationControls.classList.add('hidden');
-            guidesSection.classList.add('hidden');
-            decisionButtons.classList.add('hidden'); // Hide approval buttons
-
-            const fileInput = document.getElementById('client-file-input');
-            const uploadButton = document.getElementById('client-upload-button');
-            const statusMsg = document.getElementById('client-upload-status');
-
-            uploadButton.addEventListener('click', async () => {
-                const file = fileInput.files[0];
-                if (!file) {
-                    statusMsg.textContent = 'Please select a PDF file.';
-                    statusMsg.className = 'mt-4 text-sm text-red-400';
-                    return;
-                }
-                if (!file.name.toLowerCase().endsWith('.pdf')) {
-                    statusMsg.textContent = 'Only PDF files are allowed.';
-                    statusMsg.className = 'mt-4 text-sm text-red-400';
-                    return;
-                }
-
-                uploadButton.disabled = true;
-                uploadButton.textContent = 'Uploading...';
-                statusMsg.textContent = 'Uploading, please wait...';
-                statusMsg.className = 'mt-4 text-sm text-yellow-400';
-
-                try {
-                    // Need firebase storage module
-                    const { getStorage, ref, uploadBytes, getDownloadURL } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js");
-                    const storage = getStorage(app);
-                    const storagePath = `proofs/${companyId}/${projectId}/${Date.now()}_${file.name}`;
-                    const storageRef = ref(storage, storagePath);
-
-                    const uploadResult = await uploadBytes(storageRef, file);
-                    const downloadURL = await getDownloadURL(uploadResult.ref);
-
-                    const projectRef = doc(db, "projects", projectId);
-                    const projectSnap = await getDoc(projectRef);
-                    const currentVersions = projectSnap.data().versions || [];
-                    const newVersionNumber = currentVersions.length + 1;
-
-                    const newVersion = {
-                        fileName: file.name,
-                        fileURL: downloadURL,
-                        uploadedAt: Timestamp.now(),
-                        version: newVersionNumber,
-                        uploadedBy: auth.currentUser.uid // Track who uploaded
-                    };
-
-                    await updateDoc(projectRef, {
-                        versions: [...currentVersions, newVersion],
-                        status: 'pending', // Update status to pending review
-                        isAwaitingClientUpload: false // Flip the flag
-                    });
-
-                    statusMsg.textContent = 'Upload successful! Refreshing...';
-                    statusMsg.className = 'mt-4 text-sm text-green-400';
-
-                    // Refresh the page to show the new proof
-                    setTimeout(() => window.location.reload(), 1500);
-
-                } catch (error) {
-                    console.error("Error uploading file:", error);
-                    statusMsg.textContent = `Upload failed: ${error.message}. Please try again.`;
-                    statusMsg.className = 'mt-4 text-sm text-red-400';
-                    uploadButton.disabled = false;
-                    uploadButton.textContent = 'Upload File';
-                }
-            });
-        }
-
-        // --- NEW: Function to display message when no file is present and not awaiting upload ---
-        function displayNoFileMessage() {
-            pdfViewer.innerHTML = '<p class="text-gray-400 p-4">No proof file has been uploaded for this project yet.</p>';
-            navigationControls.classList.add('hidden');
-            guidesSection.classList.add('hidden');
-            decisionButtons.classList.add('hidden'); // Hide approval buttons if no file
-        }
-
-
-        /** Renders based on file type */
-        function renderProof(fileUrl, fileName) {
-            // Clear previous content
-            pdfViewer.innerHTML = ''; // Clear any messages or old images
-            pdfViewer.appendChild(pdfCanvas); // Re-add canvas if needed
-            pdfViewer.appendChild(renderingThrobber); // Re-add throbber
-            pdfViewer.appendChild(navigationControls); // Re-add controls
-
-            pdfCanvas.style.display = 'block'; // Ensure canvas is visible
-
-            if (fileName && fileName.toLowerCase().endsWith('.pdf')) {
-                loadPdf(fileUrl);
-            } else {
-                // Handle non-PDF images (or show error if unexpected type)
-                navigationControls.classList.add('hidden');
-                guidesSection.classList.add('hidden'); // Hide guides for non-PDFs
-                pdfCanvas.style.display = 'none'; // Hide canvas
-                renderingThrobber.classList.add('hidden'); // Hide throbber
-                const img = document.createElement('img');
-                img.src = fileUrl;
-                img.alt = "Proof";
-                img.className = "max-w-full max-h-full object-contain";
-                pdfViewer.insertBefore(img, pdfCanvas); // Add image before canvas
-            }
-        }
-
-        /** Loads PDF document */
-        async function loadPdf(pdfUrl) {
-            try {
-                renderingThrobber.classList.remove('hidden'); // Show throbber
-                if (pdfDoc) {
-                     // Destroy previous document if exists to free memory
-                    pdfDoc.destroy().catch(e => console.warn("Error destroying previous pdfDoc:", e));
-                    pdfDoc = null;
-                }
-                 // Dynamically import guides module if it hasn't been already
-                if (!guidesModule) {
-                    guidesModule = await import('./js/guides.js');
-                }
-                guidesSection.classList.remove('hidden'); // Show guides for PDFs
-
-                const loadingTask = pdfjsLib.getDocument(pdfUrl);
-                pdfDoc = await loadingTask.promise;
-                if (!pdfDoc) { throw new Error("PDF document loading failed.");}
-
-                const totalViews = getViewCount(pdfDoc.numPages);
-                pageCountSpan.textContent = totalViews; // Use view count here
-
-                navigationControls.classList.remove('hidden');
-                pageNum = 1; // Reset to first view
-                transformState = { zoom: 1.0, pan: { x: 0, y: 0 } }; // Reset zoom/pan
-                // Update zoom display
-                if (zoomLevelDisplay) zoomLevelDisplay.textContent = `${Math.round(transformState.zoom * 100)}%`;
-
-                renderThumbnailList(); // New function call
-                queueRenderPage(pageNum);
-            } catch (error) {
-                console.error("Error loading PDF:", error);
-                pdfDoc = null; // Ensure pdfDoc is null on error
-                 // Display error to user
-                pdfViewer.innerHTML = `<p class="text-red-400 p-4">Error loading PDF: ${error.message}</p>`;
-                navigationControls.classList.add('hidden'); // Hide controls on error
-                guidesSection.classList.add('hidden'); // Hide guides on error
-            } finally {
-                 // Hide throbber moved to renderPage's finally block
-            }
-        }
-
-        /** Renders PDF page(s) with transformations and overlays */
-        async function renderPage(viewNumber) {
-             if (!pdfDoc || pageRendering) {
-                 if (pageRendering && viewNumber !== pageNum) pageNumPending = viewNumber; // Only queue if different view
-                return;
-            };
-
-            pageRendering = true;
-            renderingThrobber.classList.remove('hidden'); // Show during render
-            pageNum = viewNumber; // Update global state
-            updateActiveThumbnail(viewNumber);
-
-            const pagesToRenderIndices = getPagesForView(viewNumber, pdfDoc.numPages);
-            const totalViews = getViewCount(pdfDoc.numPages);
-
-            // Always update navigation state regardless of render success
-            // Display page numbers being shown (e.g., 2-3) or just the single page/view number
-            const displayedPagesStr = pagesToRenderIndices.join('-');
-            pageNumSpan.textContent = displayedPagesStr || viewNumber;
-            pageCountSpan.textContent = totalViews;
-            prevPageBtn.disabled = viewNumber <= 1;
-            nextPageBtn.disabled = !pdfDoc || viewNumber >= totalViews;
-
-            if (pagesToRenderIndices.length === 0) {
-                console.warn(`No pages to render for view ${viewNumber}`);
-                pageRendering = false;
-                renderingThrobber.classList.add('hidden');
-                // Clear canvas if no pages are shown
-                const visibleContext = pdfCanvas.getContext('2d');
-                if (visibleContext) visibleContext.clearRect(0, 0, pdfCanvas.width, pdfCanvas.height);
-                return;
-            }
-
-            try {
-                // Fetch PDFPageProxy objects from cache or document
-                const pagePromises = pagesToRenderIndices.map(num => {
-                    if (pdfPageCache[num]) {
-                        return Promise.resolve(pdfPageCache[num]);
-                    }
-                    return pdfDoc.getPage(num).then(page => {
-                        pdfPageCache[num] = page; // Cache the page
-                        return page;
-                    });
-                });
-                const pages = await Promise.all(pagePromises);
-
-                // Determine scale for hidden canvas (higher res for clarity)
-                // Consider device pixel ratio and current zoom for optimal quality vs performance
-                const pdfRenderScale = Math.max(1.5, (window.devicePixelRatio || 1) * 0.75); // Don't scale hidden canvas by view zoom
-
-                const viewports = pages.map(p => p.getViewport({ scale: pdfRenderScale }));
-                const totalWidth = viewports.reduce((sum, vp) => sum + vp.width, 0);
-                const maxHeight = Math.max(...viewports.map(vp => vp.height));
-
-                // Resize hidden canvas and clear
-                hiddenCanvas.width = totalWidth;
-                hiddenCanvas.height = maxHeight;
-                const hiddenContext = hiddenCanvas.getContext('2d');
-                if (!hiddenContext) throw new Error("Could not get hidden canvas context.");
-                hiddenContext.clearRect(0, 0, hiddenCanvas.width, hiddenCanvas.height);
-
-                // Render pages side-by-side onto hidden canvas
-                let currentX = 0;
-                for (let i = 0; i < pages.length; i++) {
-                    const page = pages[i];
-                    const viewport = viewports[i];
-                    // Center page vertically if heights differ (unlikely but possible)
-                    const offsetY = (maxHeight - viewport.height) / 2;
-                    hiddenContext.save();
-                    hiddenContext.translate(currentX, offsetY);
-                    await page.render({ canvasContext: hiddenContext, viewport: viewport }).promise;
-                    hiddenContext.restore();
-                    currentX += viewport.width;
-                }
-
-                // Get visible canvas context and clear
-                const visibleContext = pdfCanvas.getContext('2d');
-                if (!visibleContext) throw new Error("Could not get visible canvas context.");
-                pdfCanvas.width = pdfViewer.clientWidth * (window.devicePixelRatio || 1); // Adjust for DPI
-                pdfCanvas.height = pdfViewer.clientHeight * (window.devicePixelRatio || 1);
-                pdfCanvas.style.width = `${pdfViewer.clientWidth}px`; // Keep CSS size consistent
-                pdfCanvas.style.height = `${pdfViewer.clientHeight}px`;
-                visibleContext.clearRect(0, 0, pdfCanvas.width, pdfCanvas.height);
-                visibleContext.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1); // Scale context for DPI
-
-                // --- START: Revised Drawing Logic ---
-                visibleContext.save();
-
-                // 1. Calculate base scale to fit content (using original page dimensions)
-                const baseViewports = pages.map(p => p.getViewport({ scale: 1.0 }));
-                const totalBaseWidth = baseViewports.reduce((sum, vp) => sum + vp.width, 0);
-                const maxBaseHeight = Math.max(...baseViewports.map(vp => vp.height));
-
-                const availableWidth = pdfViewer.clientWidth; // Use CSS dimensions
-                const availableHeight = pdfViewer.clientHeight;
-                const baseScale = Math.min(
-                    availableWidth / totalBaseWidth,
-                    availableHeight / maxBaseHeight
-                ) * 0.95; // 0.95 for padding
-
-                const baseWidth = totalBaseWidth * baseScale;
-                const baseHeight = maxBaseHeight * baseScale;
-                const baseX = (availableWidth - baseWidth) / 2;
-                const baseY = (availableHeight - baseHeight) / 2;
-
-                // Store base info needed by guides/annotations
-                pdfRenderInfo = { x: baseX, y: baseY, width: baseWidth, height: baseHeight, scale: baseScale };
-
-                // 2. Apply transformations: Pan first, then Scale (relative to origin)
-                visibleContext.translate(transformState.pan.x, transformState.pan.y);
-                visibleContext.scale(transformState.zoom, transformState.zoom);
-
-                // 3. Draw the high-res hidden canvas using the calculated base position/size
-                visibleContext.drawImage(hiddenCanvas, baseX, baseY, baseWidth, baseHeight);
-
-                // --- Draw Guides (Adjusted to draw relative to base) ---
-                if (projectSpecs && guidesModule) {
-                    const { getTrimDimensions, drawTrimGuide, drawBleedGuide, drawSafetyGuide, INCH_TO_POINTS } = guidesModule;
-                    const trimDimensionsPt = getTrimDimensions(projectSpecs.dimensions, null); // Assumes 'custom' is handled or dimensionSpec is standard
-                    if (trimDimensionsPt) {
-                        let currentGuideDrawX = baseX; // Start guides at base X
-                        for (let i = 0; i < baseViewports.length; i++) {
-                            const baseViewport = baseViewports[i];
-                            const pageBaseDrawWidth = baseViewport.width * baseScale;
-                            const pageBaseDrawHeight = baseViewport.height * baseScale;
-                            // Calculate Y to vertically center this page's guides within the max base height
-                            const pageBaseDrawY = baseY + (baseHeight - pageBaseDrawHeight) / 2;
-
-                            const guideDrawOptions = {
-                                drawX: currentGuideDrawX,
-                                drawY: pageBaseDrawY,
-                                drawWidth: pageBaseDrawWidth, // Use base scaled size
-                                drawHeight: pageBaseDrawHeight,// Use base scaled size
-                                trimWidthPt: trimDimensionsPt.width,
-                                trimHeightPt: trimDimensionsPt.height,
-                                bleedPt: 0.125 * INCH_TO_POINTS, // Example bleed
-                                safetyPt: 0.125 * INCH_TO_POINTS // Example safety
-                            };
-
-                            // Draw guides - they will be scaled/panned by the active context transform
-                            if (showTrimGuideCheckbox.checked) drawTrimGuide(visibleContext, guideDrawOptions);
-                            if (showBleedGuideCheckbox.checked) drawBleedGuide(visibleContext, guideDrawOptions);
-                            if (showSafetyGuideCheckbox.checked) drawSafetyGuide(visibleContext, guideDrawOptions);
-
-                            currentGuideDrawX += pageBaseDrawWidth; // Move to next page's base X
-                        }
-                    }
-                }
-                // --- End Draw Guides ---
-
-                visibleContext.restore(); // Restore removes scale/translate before drawing annotations
-                // --- END: Revised Drawing Logic ---
-
-                onPageRenderedCallback(); // Draw annotations AFTER restoring (they apply own transforms)
-
-            } catch (err) {
-                console.error("Error rendering page/spread:", err);
-                pdfViewer.innerHTML = `<p class="text-red-400 p-4">Error rendering PDF: ${err.message}</p>`; // Show error in viewer
-            } finally {
-                pageRendering = false;
-                renderingThrobber.classList.add('hidden'); // Hide throbber
-                 // Render pending page if any
-                if (pageNumPending !== null) {
-                    const pending = pageNumPending;
-                    pageNumPending = null;
-                    queueRenderPage(pending); // Render the queued page/view
-                }
-            }
-        }
-        /**
-         * Updates the active thumbnail in the list to highlight the current view.
-         * @param {number} currentView - The view number that is currently active.
-         */
-        function updateActiveThumbnail(currentView) {
-            const thumbnailContainer = document.getElementById('thumbnail-list');
-            const items = thumbnailContainer.querySelectorAll('.thumbnail-item');
-            items.forEach(item => {
-                const view = parseInt(item.dataset.view, 10);
-                if (view === currentView) {
-                    item.classList.add('border-indigo-400');
-                    item.classList.remove('border-transparent');
-                    // Scroll the active thumbnail into view if it's not visible
-                    item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-                } else {
-                    item.classList.remove('border-indigo-400');
-                    item.classList.add('border-transparent');
-                }
-            });
-        }
-
-
-        /** Queues page render if another is busy */
-        function queueRenderPage(num) {
-            if (pageRendering) {
-                 if (num !== pageNum) pageNumPending = num; // Only queue if it's a different view
-            } else {
-                renderPage(num);
-            }
-        }
-
-        /** Updates project status */
-        async function updateProjectStatus(projectId, status) {
-            const projectRef = doc(db, "projects", projectId);
-            try {
-                await updateDoc(projectRef, { status: status });
-                console.log("Project status updated successfully");
-                confirmActionButton.textContent = 'Success!'; // Give feedback
-                setTimeout(() => { window.location.href = 'dashboard.html'; }, 1000); // Shorter delay
-            } catch (error) {
-                console.error("Error updating project status:", error);
-                confirmationMessage.textContent = `Error: ${error.message}`; // Show error
-                confirmActionButton.disabled = false; // Re-enable button
-                confirmActionButton.textContent = actionToConfirm === 'approve' ? 'Confirm Approval' : 'Confirm Request';
-            }
-        }
-
-        /** Shows approval confirmation UI */
-        function showConfirmation(action) {
-            actionToConfirm = action;
-            decisionButtons.classList.add('hidden');
-            confirmationSection.classList.remove('hidden');
-            confirmationMessage.textContent = action === 'approve'
-                ? 'Are you sure you want to approve this proof?'
-                : 'Are you sure you want to request changes?';
-             confirmActionButton.textContent = action === 'approve' ? 'Confirm Approval' : 'Confirm Request';
-             confirmActionButton.className = confirmActionButton.className.replace(/bg-[\w-]+-\d+/g, action === 'approve' ? 'bg-green-600 hover:bg-green-500' : 'bg-red-600 hover:bg-red-500');
-             confirmActionButton.disabled = false; // Ensure button is enabled
-        }
-
-        /** Hides approval confirmation UI */
-        function hideConfirmation() {
-            actionToConfirm = null;
-            decisionButtons.classList.remove('hidden');
-            confirmationSection.classList.add('hidden');
-            confirmActionButton.disabled = false; // Ensure button is enabled if cancelled
-        }
-
-        // This function is also defined in annotations.js, but we need it here for the Escape key listener
-        function hideModal() {
-            if(modal) modal.classList.add('hidden');
-            const annotationText = document.getElementById('annotation-text');
-            if(annotationText) annotationText.value = '';
-            // We don't null out newAnnotationData here as that's handled within annotations.js
-        }
-
-
-        /** Sets the active tool and updates UI accordingly */
-        function setActiveTool(tool) {
-            currentTool = tool;
-
-            // Update button styles
-            toolPanButton.classList.toggle('bg-slate-600', tool === 'pan');
-            toolCommentButton.classList.toggle('bg-slate-600', tool === 'comment');
-
-            // Update cursor style (will be handled by viewerControls)
-            // This is a good place to trigger a cursor update if needed.
-             if (typeof window.updateCursor === 'function') {
-                window.updateCursor();
-            }
-        }
-
-        // --- Event Listeners ---
-        document.getElementById('thumbnail-list').addEventListener('click', (e) => {
-            const item = e.target.closest('.thumbnail-item');
-            if (item && item.dataset.view) {
-                const viewNumber = parseInt(item.dataset.view, 10);
-                if (!isNaN(viewNumber)) {
-                    queueRenderPage(viewNumber);
-                }
-            }
-        });
-        toolPanButton.addEventListener('click', () => setActiveTool('pan'));
-        toolCommentButton.addEventListener('click', () => setActiveTool('comment'));
-        approveButton.addEventListener('click', () => showConfirmation('approve'));
-        requestChangesButton.addEventListener('click', () => showConfirmation('request_changes'));
-        cancelActionButton.addEventListener('click', hideConfirmation);
-
-        // Add Escape key listener to close modal
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && !modal.classList.contains('hidden')) {
-                hideModal();
-            }
-        });
-
-        viewModeSelect.addEventListener('change', (e) => {
-            currentViewMode = e.target.value;
-            // Reset to the first view when mode changes
-            queueRenderPage(1);
-        });
-
-        // Re-render when guide visibility changes
-        showTrimGuideCheckbox.addEventListener('change', () => queueRenderPage(pageNum));
-        showBleedGuideCheckbox.addEventListener('change', () => queueRenderPage(pageNum));
-        showSafetyGuideCheckbox.addEventListener('change', () => queueRenderPage(pageNum));
 
         approvalForm.addEventListener('submit', (e) => {
             e.preventDefault();
-            if (actionToConfirm && currentProjectId) {
-                const newStatus = actionToConfirm === 'approve' ? 'approved' : 'changes_requested';
-                confirmActionButton.disabled = true;
-                confirmActionButton.textContent = 'Submitting...';
-                updateProjectStatus(currentProjectId, newStatus);
+            if (actionToConfirm) {
+                updateProjectStatus(actionToConfirm === 'approve' ? 'approved' : 'changes_requested');
             }
         });
 
-        prevPageBtn.addEventListener('click', () => {
-            if (pageNum <= 1) return;
-            pageNum--;
-            queueRenderPage(pageNum);
-        });
-
-        nextPageBtn.addEventListener('click', () => {
-            const totalViews = getViewCount(pdfDoc ? pdfDoc.numPages : 0);
-            if (!pdfDoc || pageNum >= totalViews) return;
-            pageNum++;
-            queueRenderPage(pageNum);
-        });
-
-        // --- Main execution ---
         onAuthStateChanged(auth, (user) => {
             if (user) {
                 userEmailSpan.textContent = user.email;
                 userEmailSpan.classList.remove('hidden');
-                fetchNotifications();
 
                 const urlParams = new URLSearchParams(window.location.search);
                 currentProjectId = urlParams.get('id');
 
                 if (currentProjectId) {
-                    setupProjectListener(currentProjectId);
+                    const projectRef = doc(db, "projects", currentProjectId);
+                    unsubscribeProjectListener = onSnapshot(projectRef, (docSnap) => {
+                        if (docSnap.exists()) {
+                            const projectData = docSnap.data();
+                            projectName.textContent = projectData.projectName;
+
+                            initializeSharedViewer({
+                                db,
+                                auth,
+                                projectId: currentProjectId,
+                                projectData: projectData,
+                                isAdmin: false
+                            });
+
+                            loadingSpinner.classList.add('hidden');
+                            proofContent.classList.remove('hidden');
+                        } else {
+                            loadingSpinner.innerHTML = '<p class="text-red-400">Error: Project not found.</p>';
+                        }
+                    });
                 } else {
-                    console.error("No project ID found in URL");
-                    loadingSpinner.innerHTML = '<p class="text-red-400">Error: No project ID specified in URL.</p>';
+                    loadingSpinner.innerHTML = '<p class="text-red-400">Error: No project ID specified.</p>';
                 }
             } else {
                 window.location.href = 'index.html';
@@ -1080,17 +307,19 @@
         });
 
         logoutButton.addEventListener('click', () => {
-            signOut(auth).catch((error) => {
-                console.error('Sign out error', error);
-            });
+            signOut(auth);
         });
+
+        // Notification Bell Logic
+        const notificationBell = document.getElementById('notification-bell');
+        const notificationPanel = document.getElementById('notification-panel');
 
         notificationBell.addEventListener('click', () => {
             notificationPanel.classList.toggle('hidden');
         });
 
-        // Hide panel if clicking outside
-        document.addEventListener('click', function(event) {
+        // Close notification panel if clicked outside
+        document.addEventListener('click', (event) => {
             if (!notificationBell.contains(event.target) && !notificationPanel.contains(event.target)) {
                 notificationPanel.classList.add('hidden');
             }
