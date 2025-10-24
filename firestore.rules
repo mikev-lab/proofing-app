@@ -1,0 +1,127 @@
+rules_version = '2';
+service cloud.firestore {
+match /databases/{database}/documents {
+
+// --- Helper Functions ---
+function isAdmin() {
+// Check if user is authenticated AND their role is 'admin' in their user document
+return request.auth != null &&
+exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+}
+
+function getUserData(userId) {
+// Get the data document for a specific user ID
+return get(/databases/$(database)/documents/users/$(userId)).data;
+}
+
+function getProject(projectId) {
+// Get the data document for a specific project ID
+return get(/databases/$(database)/documents/projects/$(projectId)).data;
+}
+
+function isCompanyMember(companyId) {
+// Check if the requesting user exists and belongs to the specified company
+return request.auth != null &&
+exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+getUserData(request.auth.uid).companyId == companyId;
+}
+
+// --- Rules for 'users' Collection ---
+match /users/{userId} {
+// Allow creation for:
+// 1. A user creating their own doc (register.html)
+// 2. An MCE Admin (admin_client_management.html)
+// 3. A Company Admin adding a user *to their own company* (account.html)
+allow create: if request.auth.uid == userId || isAdmin() ||
+(
+request.auth != null &&
+exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+getUserData(request.auth.uid).companyRole == 'admin' &&
+request.resource.data.companyId == getUserData(request.auth.uid).companyId &&
+request.resource.data.role == 'client_user'
+);
+
+// User can read/update their own doc, Admin can read/update any
+allow read, update: if request.auth.uid == userId || isAdmin();
+// Only Admin can delete
+allow delete: if isAdmin();
+}
+
+// --- Rules for 'companies' Collection ---
+match /companies/{companyId} {
+// Allow authenticated user to create if they are the owner specified in the new doc
+allow create: if request.auth != null &&
+request.resource.data.ownerUid == request.auth.uid;
+
+// Allow read if user is a member of the company or an Admin
+allow read: if isCompanyMember(companyId) || isAdmin();
+
+// Allow update if user is owner, a company admin, or an MCE Admin
+allow update: if request.auth != null && (
+request.auth.uid == resource.data.ownerUid ||
+(isCompanyMember(companyId) && getUserData(request.auth.uid).companyRole == 'admin') ||
+isAdmin()
+);
+
+// Only Admin can delete
+allow delete: if isAdmin();
+}
+
+// --- Rules for 'projects' Collection ---
+match /projects/{projectId} {
+// ** Admins have full access **
+allow read, write: if isAdmin(); // Combines get, list, create, update, delete for Admin
+
+// ** Client Access **
+// Allow client 'read' if companyId matches (new) OR if clientId matches (old)
+allow read: if request.auth != null &&
+exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+(
+getUserData(request.auth.uid).companyId == resource.data.companyId ||
+request.auth.uid == resource.data.clientId // Backward Compatibility
+);
+
+
+
+// Client 'update' (for status changes or file uploads)
+allow update: if request.auth != null &&
+exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+getUserData(request.auth.uid).companyId == resource.data.companyId && // User belongs to the project's company
+(
+// Case 1: Standard status update (only status field changes)
+(request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])) ||
+// Case 2: Client uploading requested file (specific fields change)
+(resource.data.isAwaitingClientUpload == true &&
+request.resource.data.isAwaitingClientUpload == false &&
+request.resource.data.status == 'pending' &&
+request.resource.data.versions.size() == resource.data.versions.size() + 1 &&
+// Ensure other essential fields remain unchanged during upload update
+request.resource.data.companyId == resource.data.companyId &&
+request.resource.data.projectName == resource.data.projectName &&
+request.resource.data.specs == resource.data.specs
+)
+);
+}
+
+// --- Rules for 'annotations' Sub-collection ---
+// (Removed duplicate block and kept the more specific one)
+match /projects/{projectId}/annotations/{annotationId} {
+// Admin full control
+allow read, create, update, delete: if isAdmin();
+
+// (Backward Compatibility):
+// Allow client 'read/create' if they are part of the project's company (new)
+// OR if their UID matches the project's clientId (old)
+allow read, create: if request.auth != null &&
+exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+(
+getUserData(request.auth.uid).companyId == getProject(projectId).companyId ||
+request.auth.uid == getProject(projectId).clientId
+);
+
+// Author can update/delete their own annotations
+allow update, delete: if request.auth != null && request.auth.uid == resource.data.authorUid;
+}
+}
+}
