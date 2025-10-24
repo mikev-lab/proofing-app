@@ -182,6 +182,7 @@
         import { getFirestore, doc, getDoc, updateDoc, collection, addDoc, query, where, getDocs, Timestamp, arrayUnion } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
         import * as pdfjsLib from "https://mozilla.github.io/pdf.js/build/pdf.mjs";
+        import { STANDARD_PAPER_SIZES } from './js/guides.js';
 
         pdfjsLib.GlobalWorkerOptions.workerSrc = "https://mozilla.github.io/pdf.js/build/pdf.worker.mjs";
 
@@ -264,8 +265,19 @@
             const specsList = document.getElementById('specs-list');
             const specsContainer = document.getElementById('specs-container');
             if (project.specs) {
+                let dimensionString = 'N/A';
+                const dimSpec = project.specs.dimensions;
+                if (typeof dimSpec === 'object' && dimSpec !== null) {
+                    dimensionString = `Custom: ${dimSpec.width} x ${dimSpec.height} ${dimSpec.units}`;
+                } else if (typeof dimSpec === 'string' && STANDARD_PAPER_SIZES[dimSpec]) {
+                    const size = STANDARD_PAPER_SIZES[dimSpec];
+                    dimensionString = `${size.name} (${size.width_mm} x ${size.height_mm} mm)`;
+                } else if (typeof dimSpec === 'string') {
+                    dimensionString = dimSpec; // Legacy support
+                }
+
                 specsList.innerHTML = `
-                    <li class='mt-2'><strong class='text-gray-300'>Dimensions:</strong> <span id='spec-dimensions'>${project.specs.dimensions || 'N/A'}</span></li>
+                    <li class='mt-2'><strong class='text-gray-300'>Dimensions:</strong> <span id='spec-dimensions'>${dimensionString}</span></li>
                     <li class='mt-2'><strong class='text-gray-300'>Page Count:</strong> <span id='spec-pages'>${project.specs.pageCount || 'N/A'}</span></li>
                     <li class='mt-2'><strong class='text-gray-300'>Binding:</strong> <span id='spec-binding'>${project.specs.binding || 'N/A'}</span></li>
                     <li class='mt-2'><strong class='text-gray-300'>Paper Type:</strong> <span id='spec-paper'>${project.specs.paperType || 'N/A'}</span></li>
