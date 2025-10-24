@@ -107,12 +107,18 @@ export async function initializeSharedViewer(config) {
         renderedThumbnails.clear();
         const totalViews = getViewCount(pdfDoc.numPages);
 
-        const firstPage = await pdfDoc.getPage(1);
-        const viewport = firstPage.getViewport({ scale: 1.0 });
-        const aspectRatio = viewport.width / viewport.height;
-
         for (let i = 1; i <= totalViews; i++) {
-            const pages = getPagesForView(i, pdfDoc.numPages).join('-');
+            const pagesIndices = getPagesForView(i, pdfDoc.numPages);
+            const pagesStr = pagesIndices.join('-');
+
+            // Dynamically determine aspect ratio for the placeholder
+            const pagePromises = pagesIndices.map(num => pdfDoc.getPage(num));
+            const pages = await Promise.all(pagePromises);
+            const viewports = pages.map(p => p.getViewport({ scale: 1.0 }));
+            const totalWidth = viewports.reduce((sum, vp) => sum + vp.width, 0);
+            const maxHeight = Math.max(...viewports.map(vp => vp.height));
+            const aspectRatio = totalWidth / maxHeight;
+
             const thumbItem = document.createElement('div');
             thumbItem.className = 'thumbnail-item p-2 rounded-md border-2 border-transparent hover:border-indigo-400 cursor-pointer';
             thumbItem.dataset.view = i;
@@ -121,7 +127,7 @@ export async function initializeSharedViewer(config) {
                 <div class="bg-black/20 flex items-center justify-center rounded-sm" style="aspect-ratio: ${aspectRatio}">
                      <canvas class="w-full h-full object-contain"></canvas>
                 </div>
-                <p class="text-center text-xs mt-2">Page ${pages}</p>
+                <p class="text-center text-xs mt-2">Page ${pagesStr}</p>
             `;
             thumbnailList.appendChild(thumbItem);
         }
@@ -176,7 +182,7 @@ export async function initializeSharedViewer(config) {
             const viewports = pages.map(p => p.getViewport({ scale: 1.0 }));
             const totalWidth = viewports.reduce((sum, vp) => sum + vp.width, 0);
             const maxHeight = Math.max(...viewports.map(vp => vp.height));
-            const scale = Math.min(150 / totalWidth, 150 / maxHeight);
+            const scale = Math.min(105 / totalWidth, 105 / maxHeight);
             const scaledViewports = pages.map(p => p.getViewport({ scale }));
             canvas.width = scaledViewports.reduce((sum, vp) => sum + vp.width, 0);
             canvas.height = Math.max(...scaledViewports.map(vp => vp.height));
@@ -427,8 +433,11 @@ export async function initializeSharedViewer(config) {
     nextPageBtn.addEventListener('click', () => { if (pageNum < getViewCount(pdfDoc.numPages)) queueRenderPage(pageNum + 1); });
 
     if (viewModeSelect) {
-        viewModeSelect.addEventListener('change', (e) => {
+        viewModeSelect.addEventListener('change', async (e) => {
             currentViewMode = e.target.value;
+            // Regenerate the thumbnail list to match the new view mode
+            await renderThumbnailList();
+            // Render the first view of the new mode
             queueRenderPage(1);
         });
     }
