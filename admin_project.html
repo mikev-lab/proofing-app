@@ -179,7 +179,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, getDoc, updateDoc, collection, addDoc, query, where, getDocs, Timestamp, arrayUnion } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, onSnapshot, getDoc, updateDoc, collection, addDoc, query, where, getDocs, Timestamp, arrayUnion } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
         import * as pdfjsLib from "https://mozilla.github.io/pdf.js/build/pdf.mjs";
         import { STANDARD_PAPER_SIZES } from './js/guides.js';
@@ -209,37 +209,39 @@
         const projectId = urlParams.get('id');
         const notificationBell = document.getElementById('notification-bell');
         const notificationPanel = document.getElementById('notification-panel');
+        let currentlyLoadedURL = null;
+        let unsubscribeProjectListener = null;
 
         function fetchNotifications() {
             // Placeholder function for fetching notifications
             console.log("Fetching notifications...");
         }
 
-        async function fetchProjectDetails() {
-            if (!projectId) {
+        function setupProjectListener() {
+             if (!projectId) {
                 console.error("No project ID found in URL.");
                 loadingSpinner.innerHTML = '<p class="text-red-400">Error: No project ID specified.</p>';
                 return;
             }
+            if (unsubscribeProjectListener) {
+                unsubscribeProjectListener();
+            }
 
-            try {
-                const projectRef = doc(db, "projects", projectId);
-                const projectSnap = await getDoc(projectRef);
-
+            const projectRef = doc(db, "projects", projectId);
+            unsubscribeProjectListener = onSnapshot(projectRef, async (projectSnap) => {
                 if (projectSnap.exists()) {
                     const project = projectSnap.data();
                     await displayProjectDetails(project);
                     projectContent.classList.remove('hidden');
+                    loadingSpinner.classList.add('hidden');
                 } else {
                     console.error("No such project!");
                     loadingSpinner.innerHTML = '<p class="text-red-400">Error: Project not found.</p>';
                 }
-            } catch (error) {
-                console.error("Error fetching project:", error);
-                loadingSpinner.innerHTML = '<p class="text-red-400">Error fetching project details.</p>';
-            } finally {
-                loadingSpinner.classList.add('hidden');
-            }
+            }, (error) => {
+                console.error("Error in project listener:", error);
+                loadingSpinner.innerHTML = '<p class="text-red-400">Error listening for project updates.</p>';
+            });
         }
 
         async function displayProjectDetails(project) {
@@ -289,15 +291,23 @@
 
             const latestVersion = project.versions && project.versions.length > 0 ? project.versions[project.versions.length - 1] : null;
             const downloadBtn = document.getElementById('download-original-button');
+            let urlToLoad = null;
 
             if (latestVersion && latestVersion.previewURL) {
-                loadPdf(latestVersion.previewURL);
+                urlToLoad = latestVersion.previewURL;
             } else if (latestVersion && latestVersion.fileURL) {
-                loadPdf(latestVersion.fileURL);
-            } else {
+                urlToLoad = latestVersion.fileURL;
+            }
+
+            if (urlToLoad && urlToLoad !== currentlyLoadedURL) {
+                currentlyLoadedURL = urlToLoad;
+                loadPdf(urlToLoad);
+            } else if (!urlToLoad) {
+                currentlyLoadedURL = null;
                 document.getElementById('pdf-viewer').innerHTML = '<p class="text-gray-400">No file uploaded for this project yet.</p>';
             }
 
+            // Keep original download button logic
             if (latestVersion && latestVersion.fileURL) {
                 downloadBtn.href = latestVersion.fileURL;
                 downloadBtn.classList.remove('hidden');
@@ -378,7 +388,7 @@
         onAuthStateChanged(auth, (user) => {
             if (user) {
                 document.getElementById('user-email').textContent = user.email;
-                fetchProjectDetails();
+                setupProjectListener();
                 fetchNotifications();
             } else {
                 window.location.href = 'index.html';
