@@ -22,11 +22,11 @@
             position: relative;
             width: 100%;
             height: 100%;
+            overflow: hidden;
+            cursor: default;
         }
         #pdf-canvas {
-            width: 100%;
-            height: auto;
-            border-radius: 0.375rem; /* rounded-md */
+             display: block;
         }
         #navigation-controls {
             position: absolute;
@@ -35,10 +35,11 @@
             transform: translateX(-50%);
             display: flex;
             align-items: center;
-            background-color: rgba(15, 23, 42, 0.8); /* bg-slate-900/80 */
+            background-color: rgba(15, 23, 42, 0.8);
             padding: 0.5rem 1rem;
-            border-radius: 0.5rem; /* rounded-lg */
+            border-radius: 0.5rem;
             backdrop-filter: blur(4px);
+            z-index: 10;
         }
     </style>
 
@@ -103,33 +104,24 @@
                     <p class="mt-4 text-gray-300">Fetching project details...</p>
                 </div>
 
-                <!-- Project Content -->
-                <div id="project-content" class="hidden grid grid-cols-1 md:grid-cols-3 gap-6">
-                    <!-- Left Column: Project Details & Actions -->
-                    <div class="md:col-span-1 space-y-6">
-                        <!-- Project Info -->
+                <!-- Main Grid for Viewer -->
+                <div id="proof-content" class="hidden grid grid-cols-1 lg:grid-cols-4 gap-8">
+                    <!-- Left Column: Thumbnails & Project Info -->
+                    <div class="lg:col-span-1 space-y-6">
+                         <div class="bg-slate-900/50 rounded-lg shadow-2xl p-4 min-h-[300px] max-h-[40vh] overflow-y-auto">
+                            <h3 class="text-xl font-semibold text-white mb-4 sticky top-0 bg-slate-900/50 backdrop-blur-sm z-10 py-2">Pages</h3>
+                            <div id="thumbnail-list" class="space-y-4"></div>
+                        </div>
                         <div class="bg-slate-800/60 p-6 rounded-lg shadow-xl border border-slate-700/50">
                             <h3 class="text-lg font-semibold text-white mb-4">Project Details</h3>
-                            <div class="space-y-4">
-                                <div>
-                                    <label class="block text-sm font-medium text-gray-400">Project Name</label>
-                                    <p id="project-name" class="mt-1 text-white"></p>
-                                </div>
-                                <div>
-                                    <label class="block text-sm font-medium text-gray-400">Company Name</label>
-                                    <p id="company-name" class="mt-1 text-white"></p>
-                                </div>
-                                <div id="specs-container" class="border-t border-slate-700/50 pt-4 mt-4">
-                                    <h4 class="text-md font-semibold text-white mb-2">Print Specifications</h4>
-                                    <ul id="specs-list" class="space-y-2">
-                                        <!-- Specs will be dynamically inserted here -->
-                                    </ul>
-                                </div>
+                             <p class="mt-1 text-white"><strong class="text-gray-400">Project:</strong> <span id="project-name"></span></p>
+                             <p class="mt-1 text-white"><strong class="text-gray-400">Company:</strong> <span id="company-name"></span></p>
+                             <div id="specs-container" class="border-t border-slate-700/50 pt-4 mt-4">
+                                <h4 class="text-md font-semibold text-white mb-2">Print Specifications</h4>
+                                <ul id="specs-list" class="space-y-2"></ul>
                             </div>
                         </div>
-
-                        <!-- File Upload -->
-                        <div class="bg-slate-800/60 p-6 rounded-lg shadow-xl border border-slate-700/50">
+                         <div class="bg-slate-800/60 p-6 rounded-lg shadow-xl border border-slate-700/50">
                             <h3 class="text-lg font-semibold text-white mb-4">Upload New Version</h3>
                             <form id="file-upload-form">
                                 <input type="file" id="file-input" class="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-600/20 file:text-indigo-300 hover:file:bg-indigo-600/30">
@@ -138,36 +130,68 @@
                         </div>
                     </div>
 
-                    <!-- Right Column: File Preview & Comments -->
-                    <div class="md:col-span-2 space-y-6">
-                        <!-- File Preview -->
-                        <div class="bg-slate-800/60 p-6 rounded-lg shadow-xl border border-slate-700/50 min-h-[600px] flex flex-col">
-                            <div class="flex justify-between items-center mb-4">
-                                <h3 class="text-lg font-semibold text-white">Proof Preview</h3>
-                                <a id="download-original-button" href="#" target="_blank" class="hidden text-sm bg-blue-600 hover:bg-blue-500 text-white font-semibold py-1 px-3 rounded-md transition-colors">
-                                    Download Print-Ready PDF
-                                </a>
+                    <!-- Center Column: Proof Viewer -->
+                    <div class="lg:col-span-2 bg-slate-900/50 rounded-lg shadow-2xl min-h-[600px] flex flex-col p-4 max-h-[85vh]">
+                        <div id="pdf-viewer" class="flex-1 bg-black/20 rounded-md flex justify-center items-center relative">
+                            <canvas id="pdf-canvas"></canvas>
+                            <div id="rendering-throbber" class="hidden absolute inset-0 bg-slate-900/50 backdrop-blur-sm flex flex-col items-center justify-center z-20">
+                                <div class="h-10 w-10 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900" role="status"></div>
+                                <p class="mt-3 text-gray-300 text-sm">Rendering PDF...</p>
                             </div>
-                            <div id="pdf-viewer" class="flex-1 bg-black/20 rounded-md flex justify-center items-center overflow-auto">
-                                <canvas id="pdf-canvas"></canvas>
-                                <div id="navigation-controls" class="hidden">
-                                    <button id="prev-page" class="text-white px-2 py-1 rounded-md">&lt;</button>
-                                    <span class="text-white px-2" id="page-num"></span> / <span class="text-white px-2" id="page-count"></span>
-                                    <button id="next-page" class="text-white px-2 py-1 rounded-md">&gt;</button>
+                            <div id="navigation-controls" class="hidden">
+                                <button id="prev-page" class="text-white px-2 py-1 rounded-md hover:bg-slate-700" title="Previous Page">&lt;</button>
+                                <span class="text-white px-2" id="page-num"></span> / <span class="text-white px-2" id="page-count"></span>
+                                <button id="next-page" class="text-white px-2 py-1 rounded-md hover:bg-slate-700" title="Next Page">&gt;</button>
+                                <div id="tool-selector" class="ml-4 flex items-center border-l border-slate-600 pl-4 space-x-1">
+                                    <button id="tool-pan" title="Pan Tool" class="text-white p-2 rounded-md hover:bg-slate-700 bg-slate-600">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 11.5a2.5 2.5 0 0 1 5 0Z"/><path d="M4 5.5a2.5 2.5 0 0 1 5 0Z"/><path d="M12 5.5a2.5 2.5 0 0 1 5 0Z"/><path d="M15 11.5a2.5 2.5 0 0 1 5 0Z"/><path d="M5 17.5a2.5 2.5 0 0 1 5 0Z"/><path d="m17 22 5-5"/><path d="m2 7 5 5"/></svg>
+                                    </button>
+                                    <button id="tool-comment" title="Comment Tool" class="text-white p-2 rounded-md hover:bg-slate-700">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 21 1.9-5.7a8.5 8.5 0 1 1 3.8 3.8z"/></svg>
+                                    </button>
+                                </div>
+                                <div class="ml-4 flex items-center border-l border-slate-600 pl-4">
+                                    <button id="zoom-out-button" title="Zoom Out" class="text-white px-2 py-1 rounded-md text-lg hover:bg-slate-700">-</button>
+                                    <button id="zoom-reset-button" title="Reset Zoom & Pan" class="text-white px-2 py-1 rounded-md text-sm hover:bg-slate-700">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 2v6h6"/><path d="M21 12A9 9 0 0 0 6 5.3L3 8"/><path d="M21 22v-6h-6"/><path d="M3 12a9 9 0 0 0 15 6.7l3-2.7"/></svg>
+                                    </button>
+                                    <button id="zoom-in-button" title="Zoom In" class="text-white px-2 py-1 rounded-md text-lg hover:bg-slate-700">+</button>
+                                    <span id="zoom-level-display" class="text-xs text-gray-300 w-12 text-center">100%</span>
                                 </div>
                             </div>
                         </div>
+                    </div>
 
-                        <!-- Comments -->
-                        <div class="bg-slate-800/60 p-6 rounded-lg shadow-xl border border-slate-700/50">
-                            <h3 class="text-lg font-semibold text-white mb-4">Comments</h3>
-                            <div id="comments-list" class="space-y-4">
-                                <!-- Comments will be dynamically inserted here -->
+                    <!-- Right Column: Guides & Comments -->
+                    <div class="lg:col-span-1 space-y-6">
+                        <div id="guides-section" class="bg-slate-800/60 backdrop-blur-sm shadow-xl rounded-xl p-6 border border-slate-700/50">
+                            <h3 class="text-xl font-semibold text-white mb-4">Options</h3>
+                            <div class="mb-4">
+                                <label for="version-selector" class="block text-sm font-medium text-gray-300">Proof Version</label>
+                                <select id="version-selector" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10"></select>
                             </div>
-                            <form id="comment-form" class="mt-6 flex space-x-4">
-                                <input type="text" id="comment-input" placeholder="Add a comment..." class="flex-1 rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
-                                <button type="submit" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md">Send</button>
-                            </form>
+                            <div class="mb-4 pt-4 border-t border-slate-700/50">
+                                <label for="view-mode-select" class="block text-sm font-medium text-gray-300">View Mode</label>
+                                <select id="view-mode-select" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10"></select>
+                            </div>
+                            <div class="space-y-2 pt-4 border-t border-slate-700/50">
+                                <div class="flex items-center">
+                                    <input type="checkbox" id="show-trim-guide" checked class="h-4 w-4 rounded border-gray-300 text-indigo-600 bg-white/10">
+                                    <label for="show-trim-guide" class="ml-2 block text-sm text-gray-300">Show Trim</label>
+                                </div>
+                                <div class="flex items-center">
+                                    <input type="checkbox" id="show-bleed-guide" checked class="h-4 w-4 rounded border-gray-300 text-indigo-600 bg-white/10">
+                                    <label for="show-bleed-guide" class="ml-2 block text-sm text-gray-300">Show Bleed</label>
+                                </div>
+                                <div class="flex items-center">
+                                    <input type="checkbox" id="show-safety-guide" checked class="h-4 w-4 rounded border-gray-300 text-indigo-600 bg-white/10">
+                                    <label for="show-safety-guide" class="ml-2 block text-sm text-gray-300">Show Safety</label>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="bg-slate-800/60 backdrop-blur-sm shadow-xl rounded-xl p-6 border border-slate-700/50">
+                            <h3 class="text-xl font-semibold text-white mb-4">Comments</h3>
+                            <div id="comments-section" class="space-y-4 max-h-60 overflow-y-auto pr-2"></div>
                         </div>
                     </div>
                 </div>
@@ -175,16 +199,31 @@
         </div>
     </div>
 
+    <!-- Annotation Modal -->
+     <div id="annotation-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center hidden z-50">
+       <div class="bg-slate-800 rounded-lg shadow-xl p-6 w-full max-w-md mx-4 border border-slate-700/50">
+           <div class="flex justify-between items-center mb-4">
+               <h3 class="text-xl font-semibold text-white">Add a Comment</h3>
+               <button id="modal-close-button" class="text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
+           </div>
+           <form id="annotation-form">
+               <textarea id="annotation-text" rows="4" class="w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white" placeholder="Type your comment..."></textarea>
+               <div class="mt-4 flex justify-end space-x-4">
+                   <button type="button" id="modal-cancel-button" class="px-4 py-2 rounded-md bg-gray-600 hover:bg-gray-500 text-white font-semibold text-sm">Cancel</button>
+                   <button type="submit" class="px-4 py-2 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm">Submit</button>
+               </div>
+           </form>
+       </div>
+    </div>
+
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, onSnapshot, getDoc, updateDoc, collection, addDoc, query, where, getDocs, Timestamp, arrayUnion } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, onSnapshot, getDoc, updateDoc, Timestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
-        import * as pdfjsLib from "https://mozilla.github.io/pdf.js/build/pdf.mjs";
+        import { initializeSharedViewer } from './js/viewer.js';
         import { STANDARD_PAPER_SIZES } from './js/guides.js';
-
-        pdfjsLib.GlobalWorkerOptions.workerSrc = "https://mozilla.github.io/pdf.js/build/pdf.worker.mjs";
 
         const firebaseConfig = {
           apiKey: "AIzaSyApmEJdFi96QS3TwYh7GyEDSbZrCuVpBrg",
@@ -201,210 +240,84 @@
         const storage = getStorage(app);
 
         const loadingSpinner = document.getElementById('loading-spinner');
-        const projectContent = document.getElementById('project-content');
+        const proofContent = document.getElementById('proof-content');
         const projectNameHeader = document.getElementById('project-name-header');
 
-        // Get project ID from URL
         const urlParams = new URLSearchParams(window.location.search);
         const projectId = urlParams.get('id');
-        const notificationBell = document.getElementById('notification-bell');
-        const notificationPanel = document.getElementById('notification-panel');
-        let currentlyLoadedURL = null;
-        let unsubscribeProjectListener = null;
-
-        function fetchNotifications() {
-            // Placeholder function for fetching notifications
-            console.log("Fetching notifications...");
-        }
-
-        function setupProjectListener() {
-             if (!projectId) {
-                console.error("No project ID found in URL.");
-                loadingSpinner.innerHTML = '<p class="text-red-400">Error: No project ID specified.</p>';
-                return;
-            }
-            if (unsubscribeProjectListener) {
-                unsubscribeProjectListener();
-            }
-
-            const projectRef = doc(db, "projects", projectId);
-            unsubscribeProjectListener = onSnapshot(projectRef, async (projectSnap) => {
-                if (projectSnap.exists()) {
-                    const project = projectSnap.data();
-                    await displayProjectDetails(project);
-                    projectContent.classList.remove('hidden');
-                    loadingSpinner.classList.add('hidden');
-                } else {
-                    console.error("No such project!");
-                    loadingSpinner.innerHTML = '<p class="text-red-400">Error: Project not found.</p>';
-                }
-            }, (error) => {
-                console.error("Error in project listener:", error);
-                loadingSpinner.innerHTML = '<p class="text-red-400">Error listening for project updates.</p>';
-            });
-        }
-
-        async function displayProjectDetails(project) {
-            projectNameHeader.textContent = project.projectName || 'Project Details';
-            document.getElementById('project-name').textContent = project.projectName || 'N/A';
-
-            // Fetch and display company name
-            if (project.companyId) {
-                const companyRef = doc(db, "companies", project.companyId);
-                const companySnap = await getDoc(companyRef);
-                if (companySnap.exists()) {
-                    document.getElementById('company-name').textContent = companySnap.data().companyName;
-                } else {
-                    document.getElementById('company-name').textContent = 'Company Not Found';
-                }
-            } else if (project.clientName) { // Backward compatibility
-                document.getElementById('company-name').textContent = project.clientName;
-            } else {
-                document.getElementById('company-name').textContent = 'N/A';
-            }
-
-            // Display specs
-            const specsList = document.getElementById('specs-list');
-            const specsContainer = document.getElementById('specs-container');
-            if (project.specs) {
-                let dimensionString = 'N/A';
-                const dimSpec = project.specs.dimensions;
-                if (typeof dimSpec === 'object' && dimSpec !== null) {
-                    dimensionString = `Custom: ${dimSpec.width} x ${dimSpec.height} ${dimSpec.units}`;
-                } else if (typeof dimSpec === 'string' && STANDARD_PAPER_SIZES[dimSpec]) {
-                    const size = STANDARD_PAPER_SIZES[dimSpec];
-                    dimensionString = `${size.name} (${size.width_mm} x ${size.height_mm} mm)`;
-                } else if (typeof dimSpec === 'string') {
-                    dimensionString = dimSpec; // Legacy support
-                }
-
-                specsList.innerHTML = `
-                    <li class='mt-2'><strong class='text-gray-300'>Dimensions:</strong> <span id='spec-dimensions'>${dimensionString}</span></li>
-                    <li class='mt-2'><strong class='text-gray-300'>Page Count:</strong> <span id='spec-pages'>${project.specs.pageCount || 'N/A'}</span></li>
-                    <li class='mt-2'><strong class='text-gray-300'>Binding:</strong> <span id='spec-binding'>${project.specs.binding || 'N/A'}</span></li>
-                    <li class='mt-2'><strong class='text-gray-300'>Paper Type:</strong> <span id='spec-paper'>${project.specs.paperType || 'N/A'}</span></li>
-                `;
-                specsContainer.classList.remove('hidden');
-            } else {
-                specsContainer.classList.add('hidden');
-            }
-
-            const latestVersion = project.versions && project.versions.length > 0 ? project.versions[project.versions.length - 1] : null;
-            const downloadBtn = document.getElementById('download-original-button');
-            let urlToLoad = null;
-
-            if (latestVersion && latestVersion.previewURL) {
-                urlToLoad = latestVersion.previewURL;
-            } else if (latestVersion && latestVersion.fileURL) {
-                urlToLoad = latestVersion.fileURL;
-            }
-
-            if (urlToLoad && urlToLoad !== currentlyLoadedURL) {
-                currentlyLoadedURL = urlToLoad;
-                loadPdf(urlToLoad);
-            } else if (!urlToLoad) {
-                currentlyLoadedURL = null;
-                document.getElementById('pdf-viewer').innerHTML = '<p class="text-gray-400">No file uploaded for this project yet.</p>';
-            }
-
-            // Keep original download button logic
-            if (latestVersion && latestVersion.fileURL) {
-                downloadBtn.href = latestVersion.fileURL;
-                downloadBtn.classList.remove('hidden');
-            } else {
-                downloadBtn.classList.add('hidden');
-            }
-        }
-
-        const pdfCanvas = document.getElementById('pdf-canvas');
-        const pageNumSpan = document.getElementById('page-num');
-        const pageCountSpan = document.getElementById('page-count');
-        const prevPageBtn = document.getElementById('prev-page');
-        const nextPageBtn = document.getElementById('next-page');
-        const navigationControls = document.getElementById('navigation-controls');
-
-        let pdfDoc = null;
-        let pageNum = 1;
-        let pageRendering = false;
-        let pageNumPending = null;
-        const scale = 1.5;
-
-        async function loadPdf(pdfUrl) {
-            try {
-                const loadingTask = pdfjsLib.getDocument(pdfUrl);
-                pdfDoc = await loadingTask.promise;
-                pageCountSpan.textContent = pdfDoc.numPages;
-                navigationControls.classList.remove('hidden');
-                renderPage(pageNum);
-            } catch (error) {
-                console.error("Error loading PDF:", error);
-            }
-        }
-
-        function renderPage(num) {
-            pageRendering = true;
-            pdfDoc.getPage(num).then((page) => {
-                const viewport = page.getViewport({ scale });
-                const context = pdfCanvas.getContext('2d');
-                pdfCanvas.height = viewport.height;
-                pdfCanvas.width = viewport.width;
-
-                const renderContext = {
-                    canvasContext: context,
-                    viewport: viewport
-                };
-                const renderTask = page.render(renderContext);
-                renderTask.promise.then(() => {
-                    pageRendering = false;
-                    if (pageNumPending !== null) {
-                        renderPage(pageNumPending);
-                        pageNumPending = null;
-                    }
-                });
-            });
-            pageNumSpan.textContent = num;
-        }
-
-        function queueRenderPage(num) {
-            if (pageRendering) {
-                pageNumPending = num;
-            } else {
-                renderPage(num);
-            }
-        }
-
-        prevPageBtn.addEventListener('click', () => {
-            if (pageNum <= 1) return;
-            pageNum--;
-            queueRenderPage(pageNum);
-        });
-
-        nextPageBtn.addEventListener('click', () => {
-            if (pageNum >= pdfDoc.numPages) return;
-            pageNum++;
-            queueRenderPage(pageNum);
-        });
 
         onAuthStateChanged(auth, (user) => {
             if (user) {
                 document.getElementById('user-email').textContent = user.email;
-                setupProjectListener();
-                fetchNotifications();
+                if (projectId) {
+                    const projectRef = doc(db, "projects", projectId);
+                    onSnapshot(projectRef, async (docSnap) => {
+                        if (docSnap.exists()) {
+                            const projectData = docSnap.data();
+                            projectNameHeader.textContent = projectData.projectName;
+                            document.getElementById('project-name').textContent = projectData.projectName;
+
+                            if (projectData.companyId) {
+                                const companySnap = await getDoc(doc(db, "companies", projectData.companyId));
+                                if (companySnap.exists()) {
+                                    document.getElementById('company-name').textContent = companySnap.data().companyName;
+                                }
+                            }
+
+                            const specsList = document.getElementById('specs-list');
+                            if (projectData.specs) {
+                                let dimensionString = 'N/A';
+                                const dimSpec = projectData.specs.dimensions;
+                                if (typeof dimSpec === 'object' && dimSpec !== null) {
+                                    dimensionString = `Custom: ${dimSpec.width} x ${dimSpec.height} ${dimSpec.units}`;
+                                } else if (typeof dimSpec === 'string' && STANDARD_PAPER_SIZES[dimSpec]) {
+                                    const size = STANDARD_PAPER_SIZES[dimSpec];
+                                    dimensionString = `${size.name} (${size.width_mm} x ${size.height_mm} mm)`;
+                                } else if (typeof dimSpec === 'string') {
+                                    dimensionString = dimSpec;
+                                }
+
+                                specsList.innerHTML = `
+                                    <li class='mt-2'><strong class='text-gray-300'>Dimensions:</strong> <span id='spec-dimensions'>${dimensionString}</span></li>
+                                    <li class='mt-2'><strong class='text-gray-300'>Page Count:</strong> <span id='spec-pages'>${projectData.specs.pageCount || 'N/A'}</span></li>
+                                    <li class='mt-2'><strong class='text-gray-300'>Binding:</strong> <span id='spec-binding'>${projectData.specs.binding || 'N/A'}</span></li>
+                                    <li class='mt-2'><strong class='text-gray-300'>Paper Type:</strong> <span id='spec-paper'>${projectData.specs.paperType || 'N/A'}</span></li>
+                                `;
+                            }
+
+
+                            initializeSharedViewer({
+                                db,
+                                auth,
+                                projectId,
+                                projectData,
+                                isAdmin: true
+                            });
+
+                            loadingSpinner.classList.add('hidden');
+                            proofContent.classList.remove('hidden');
+                        } else {
+                             loadingSpinner.innerHTML = '<p class="text-red-400">Error: Project not found.</p>';
+                        }
+                    });
+                }
             } else {
                 window.location.href = 'index.html';
             }
         });
 
-        document.getElementById('logout-button').addEventListener('click', () => {
-            signOut(auth);
-        });
+        document.getElementById('logout-button').addEventListener('click', () => signOut(auth));
+
+        // Notification Bell Logic
+        const notificationBell = document.getElementById('notification-bell');
+        const notificationPanel = document.getElementById('notification-panel');
 
         notificationBell.addEventListener('click', () => {
             notificationPanel.classList.toggle('hidden');
         });
 
-        // Hide panel if clicking outside
-        document.addEventListener('click', function(event) {
+        // Close notification panel if clicked outside
+        document.addEventListener('click', (event) => {
             if (!notificationBell.contains(event.target) && !notificationPanel.contains(event.target)) {
                 notificationPanel.classList.add('hidden');
             }
@@ -412,55 +325,28 @@
 
         document.getElementById('file-upload-form').addEventListener('submit', async (e) => {
             e.preventDefault();
-
             const fileInput = document.getElementById('file-input');
             const file = fileInput.files[0];
-            const submitButton = e.target.querySelector('button[type="submit"]');
+            if (!file) return;
 
-            if (!file) {
-                alert("Please select a file to upload.");
-                return;
-            }
+            const projectRef = doc(db, "projects", projectId);
+            const storageRef = ref(storage, `proofs/${projectId}/${Date.now()}_${file.name}`);
+            const uploadResult = await uploadBytes(storageRef, file);
+            const downloadURL = await getDownloadURL(uploadResult.ref);
 
-            const originalButtonText = submitButton.textContent;
-            submitButton.disabled = true;
-            submitButton.textContent = "Uploading...";
+            const projectSnap = await getDoc(projectRef);
+            const currentVersions = projectSnap.data().versions || [];
+            const newVersion = {
+                fileName: file.name,
+                fileURL: downloadURL,
+                uploadedAt: Timestamp.now(),
+                version: currentVersions.length + 1
+            };
 
-            try {
-                const projectRef = doc(db, "projects", projectId);
-                const storageRef = ref(storage, `proofs/${projectId}/${Date.now()}_${file.name}`);
-
-                const uploadResult = await uploadBytes(storageRef, file);
-                const downloadURL = await getDownloadURL(uploadResult.ref);
-
-                const projectSnap = await getDoc(projectRef);
-                const currentVersions = projectSnap.data().versions || [];
-                const newVersionNumber = currentVersions.length +1;
-
-                const newVersion = {
-                    fileName: file.name,
-                    fileURL: downloadURL,
-                    uploadedAt: Timestamp.now(),
-                    version: newVersionNumber
-                };
-
-                await updateDoc(projectRef, {
-                    versions: [...currentVersions, newVersion],
-                    status: 'pending',
-                    isAwaitingClientUpload: false
-                });
-
-                loadPdf(downloadURL);
-                fileInput.value = null; // Clear the file input
-                alert("New version uploaded successfully!");
-
-            } catch (error) {
-                console.error("Error uploading new version:", error);
-                alert("An error occurred while uploading. Please try again.");
-            } finally {
-                submitButton.disabled = false;
-                submitButton.textContent = originalButtonText;
-            }
+            await updateDoc(projectRef, {
+                versions: [...currentVersions, newVersion],
+                status: 'pending',
+            });
         });
     </script>
 </body>
