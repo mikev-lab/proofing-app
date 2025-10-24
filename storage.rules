@@ -1,34 +1,9 @@
 rules_version = '2';
-
 service firebase.storage {
   match /b/{bucket}/o {
-    // Deny all reads and writes by default.
-    match /{allPaths=**} {
-      allow read, write: if false;
-    }
-
-    // Allow access to the proofs directory based on specific rules.
-    match /proofs/{companyId}/{projectId}/{fileName} {
-
-      // Users can read files if they are an admin or if they belong to the company
-      // associated with the file.
-      allow read: if request.auth != null &&
-                   (get(/databases/(default)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
-                    get(/databases/(default)/documents/users/$(request.auth.uid)).data.companyId == companyId);
-
-      // Users can upload (create) files if they are an admin, or if they are a client
-      // user for a project that is specifically awaiting a file upload.
-      allow create: if request.auth != null &&
-                     (get(/databases/(default)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
-                      (get(/databases/(default)/documents/users/$(request.auth.uid)).data.companyId == companyId &&
-                       get(/databases/(default)/documents/projects/$(projectId)).data.isAwaitingClientUpload == true));
-
-      // Only admins can delete files.
-      allow delete: if request.auth != null &&
-                     get(/databases/(default)/documents/users/$(request.auth.uid)).data.role == 'admin';
-
-      // Explicitly deny updates to prevent overwriting files. New versions should be new files.
-      allow update: if false;
+    // Only allow authenticated users to read and write files
+    match /{userId}/{allPaths=**} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
     }
   }
 }
