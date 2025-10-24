@@ -104,29 +104,33 @@
                     <p class="mt-4 text-gray-300">Fetching project details...</p>
                 </div>
 
+                <!-- Project Info Header -->
+                <div id="project-info-header" class="hidden grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+                    <div class="md:col-span-2 bg-slate-800/60 p-6 rounded-lg shadow-xl border border-slate-700/50">
+                        <h3 class="text-lg font-semibold text-white mb-4">Project Details</h3>
+                        <p class="mt-1 text-white"><strong class="text-gray-400">Project:</strong> <span id="project-name"></span></p>
+                        <p class="mt-1 text-white"><strong class="text-gray-400">Company:</strong> <span id="company-name"></span></p>
+                        <div id="specs-container" class="border-t border-slate-700/50 pt-4 mt-4">
+                            <h4 class="text-md font-semibold text-white mb-2">Print Specifications</h4>
+                            <ul id="specs-list" class="space-y-2"></ul>
+                        </div>
+                    </div>
+                    <div class="bg-slate-800/60 p-6 rounded-lg shadow-xl border border-slate-700/50">
+                        <h3 class="text-lg font-semibold text-white mb-4">Upload New Version</h3>
+                        <form id="file-upload-form">
+                            <input type="file" id="file-input" class="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-600/20 file:text-indigo-300 hover:file:bg-indigo-600/30">
+                            <button type="submit" class="w-full mt-4 bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md">Upload</button>
+                        </form>
+                    </div>
+                </div>
+
                 <!-- Main Grid for Viewer -->
                 <div id="proof-content" class="hidden grid grid-cols-1 lg:grid-cols-4 gap-8">
-                    <!-- Left Column: Thumbnails & Project Info -->
+                    <!-- Left Column: Thumbnails -->
                     <div class="lg:col-span-1 space-y-6">
                          <div class="bg-slate-900/50 rounded-lg shadow-2xl p-4 min-h-[300px] max-h-[40vh] overflow-y-auto">
                             <h3 class="text-xl font-semibold text-white mb-4 sticky top-0 bg-slate-900/50 backdrop-blur-sm z-10 py-2">Pages</h3>
                             <div id="thumbnail-list" class="space-y-4"></div>
-                        </div>
-                        <div class="bg-slate-800/60 p-6 rounded-lg shadow-xl border border-slate-700/50">
-                            <h3 class="text-lg font-semibold text-white mb-4">Project Details</h3>
-                             <p class="mt-1 text-white"><strong class="text-gray-400">Project:</strong> <span id="project-name"></span></p>
-                             <p class="mt-1 text-white"><strong class="text-gray-400">Company:</strong> <span id="company-name"></span></p>
-                             <div id="specs-container" class="border-t border-slate-700/50 pt-4 mt-4">
-                                <h4 class="text-md font-semibold text-white mb-2">Print Specifications</h4>
-                                <ul id="specs-list" class="space-y-2"></ul>
-                            </div>
-                        </div>
-                         <div class="bg-slate-800/60 p-6 rounded-lg shadow-xl border border-slate-700/50">
-                            <h3 class="text-lg font-semibold text-white mb-4">Upload New Version</h3>
-                            <form id="file-upload-form">
-                                <input type="file" id="file-input" class="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-600/20 file:text-indigo-300 hover:file:bg-indigo-600/30">
-                                <button type="submit" class="w-full mt-4 bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md">Upload</button>
-                            </form>
                         </div>
                     </div>
 
@@ -241,6 +245,7 @@
 
         const loadingSpinner = document.getElementById('loading-spinner');
         const proofContent = document.getElementById('proof-content');
+        const projectInfoHeader = document.getElementById('project-info-header');
         const projectNameHeader = document.getElementById('project-name-header');
 
         const urlParams = new URLSearchParams(window.location.search);
@@ -296,6 +301,7 @@
 
                             loadingSpinner.classList.add('hidden');
                             proofContent.classList.remove('hidden');
+                            projectInfoHeader.classList.remove('hidden');
                         } else {
                              loadingSpinner.innerHTML = '<p class="text-red-400">Error: Project not found.</p>';
                         }

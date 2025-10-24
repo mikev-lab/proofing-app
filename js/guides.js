@@ -126,6 +126,50 @@ export function drawTrimGuide(ctx, options) {
 }
 
 /**
+ * Main function to draw all selected guides onto the canvas.
+ * @param {CanvasRenderingContext2D} ctx - The canvas context.
+ * @param {object} specs - The project's print specifications.
+ * @param {object} renderInfo - Information about the PDF's rendered position and size.
+ * @param {object} transformState - The current zoom and pan state.
+ * @param {string} viewMode - The current view mode ('single' or 'spread').
+ * @param {number} pageNum - The current page or view number.
+ * @param {number} numPagesInView - The number of pages in the current view (1 or 2).
+ * @param {PDFPageViewport} page1Viewport - The viewport for the first page in the view.
+ * @param {PDFPageViewport} [page2Viewport=null] - The viewport for the second page in the view.
+ * @param {object} guideOptions - An object indicating which guides to show.
+ * @param {boolean} guideOptions.trim - Whether to show the trim guide.
+ * @param {boolean} guideOptions.bleed - Whether to show the bleed guide.
+ * @param {boolean} guideOptions.safety - Whether to show the safety guide.
+ */
+export function drawGuides(ctx, specs, renderInfo, guideOptions) {
+    if (!specs || !renderInfo) return;
+
+    const trimDimensions = getTrimDimensions(specs.dimensions);
+    if (!trimDimensions) return;
+
+    const options = {
+        drawX: renderInfo.x,
+        drawY: renderInfo.y,
+        drawWidth: renderInfo.width,
+        drawHeight: renderInfo.height,
+        trimWidthPt: trimDimensions.width,
+        trimHeightPt: trimDimensions.height,
+        bleedPt: specs.bleedInches ? specs.bleedInches * INCH_TO_POINTS : (specs.bleedMillimeters ? specs.bleedMillimeters * MM_TO_POINTS : 0),
+        safetyPt: specs.safetyInches ? specs.safetyInches * INCH_TO_POINTS : (specs.safetyMillimeters ? specs.safetyMillimeters * MM_TO_POINTS : 0),
+    };
+
+    if (guideOptions.trim) {
+        drawTrimGuide(ctx, options);
+    }
+    if (guideOptions.bleed && options.bleedPt > 0) {
+        drawBleedGuide(ctx, options);
+    }
+    if (guideOptions.safety && options.safetyPt > 0) {
+        drawSafetyGuide(ctx, options);
+    }
+}
+
+/**
  * Draws the bleed guide based on calculated coordinates.
  * @param {CanvasRenderingContext2D} ctx - The canvas context.
  * @param {object} options - The drawing options object.

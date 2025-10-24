@@ -322,7 +322,7 @@ export async function initializeSharedViewer(config) {
                     bleed: showBleedGuideCheckbox.checked,
                     safety: showSafetyGuideCheckbox.checked
                 };
-                guidesModule.drawGuides(visibleContext, projectSpecs, pdfRenderInfo, transformState, currentViewMode, pageNum, pages.length, pages[0].getViewport({ scale: 1.0 }), pages.length > 1 ? pages[1].getViewport({ scale: 1.0 }) : null);
+                guidesModule.drawGuides(visibleContext, projectSpecs, pdfRenderInfo, guideOptions);
             }
 
             visibleContext.restore();
