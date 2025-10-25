@@ -73,8 +73,13 @@ exports.optimizePdf = onObjectFinalized({
     await bucket.file(filePath).download({ destination: tempFilePath });
     logger.log('File downloaded locally to', tempFilePath);
 
-    // Optimize the PDF using Ghostscript
+    // --- Preflight Checks ---
     const { spawn } = require('child-process-promise');
+    const preflightResults = await runPreflightChecks(tempFilePath, logger);
+    logger.log('Preflight checks completed.', preflightResults);
+
+
+    // Optimize the PDF using Ghostscript
     await spawn('gs', [
       '-sDEVICE=pdfwrite',
       '-dCompatibilityLevel=1.4',
@@ -124,6 +129,8 @@ exports.optimizePdf = onObjectFinalized({
       versions[versionIndex].previewURL = signedUrl;
       versions[versionIndex].processingStatus = 'complete';
       versions[versionIndex].processingError = null; // Clear any previous error
+      versions[versionIndex].preflightStatus = preflightResults.preflightStatus;
+      versions[versionIndex].preflightResults = preflightResults.preflightResults;
       transaction.update(projectRef, { versions: versions });
       logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with previewURL and status 'complete'.`);
     });
@@ -168,6 +175,118 @@ exports.optimizePdf = onObjectFinalized({
 
   return null;
 });
+
+
+// --- Helper Function for Preflight Checks ---
+async function runPreflightChecks(filePath, logger) {
+    const { spawn } = require('child-process-promise');
+    const results = {
+        dpiCheck: { status: 'passed', details: 'No low-resolution images detected.' },
+        colorSpaceCheck: { status: 'passed', details: 'Colors appear to be CMYK.' },
+        fontCheck: { status: 'passed', details: 'All fonts appear to be embedded.' }
+    };
+    let overallStatus = 'passed';
+
+    try {
+        // 1. DPI Check Heuristic (using pdfimages)
+        // This is a HEURISTIC. It can't calculate the *actual* DPI without knowing the
+        // physical size of the image on the page. Instead, we identify images that are
+        // physically large on the page but have low pixel dimensions.
+        const imageListPromise = spawn('pdfimages', ['-list', filePath], { capture: ['stdout', 'stderr'] });
+        const imageListResult = await imageListPromise;
+        const imageListOutput = imageListResult.stdout.toString();
+        const lines = imageListOutput.split('\n').slice(2);
+
+        let lowResImages = [];
+        // A4 paper size in points. An image covering a significant portion of a page
+        // should have a correspondingly high pixel count.
+        const LARGE_DIMENSION_THRESHOLD_PT = 420; // Approx 5.8 inches
+        const MIN_PIXEL_DIMENSION_FOR_LARGE_IMAGE = 875; // 5.8 inches * 150 DPI
+
+        for (const line of lines) {
+            if (line.trim() === '') continue;
+            const columns = line.trim().split(/\s+/);
+            const widthPx = parseInt(columns[3], 10);
+            const heightPx = parseInt(columns[4], 10);
+            const widthPt = parseFloat(columns[9]);
+            const heightPt = parseFloat(columns[10]);
+
+            if ([widthPx, heightPx, widthPt, heightPt].some(isNaN)) continue;
+
+            // Check if the image is physically large but has a low pixel count
+            if ((widthPt > LARGE_DIMENSION_THRESHOLD_PT || heightPt > LARGE_DIMENSION_THRESHOLD_PT) &&
+                (widthPx < MIN_PIXEL_DIMENSION_FOR_LARGE_IMAGE || heightPx < MIN_PIXEL_DIMENSION_FOR_LARGE_IMAGE)) {
+                lowResImages.push(`page ${columns[0]}: ${widthPx}x${heightPx}px (at ${widthPt.toFixed(0)}x${heightPt.toFixed(0)}pt)`);
+            }
+        }
+
+        if (lowResImages.length > 0) {
+            results.dpiCheck.status = 'warning';
+            results.dpiCheck.details = `Found ${lowResImages.length} image(s) that may be low resolution: ${lowResImages.join(', ')}.`;
+            overallStatus = 'warning';
+        }
+
+    } catch (error) {
+        logger.error('Error during DPI check:', error.stderr || error.message);
+        results.dpiCheck.status = 'failed';
+        results.dpiCheck.details = 'Failed to analyze image resolutions.';
+        overallStatus = 'failed';
+    }
+
+    try {
+        // 2. Color Space & Font Check (using exiftool)
+        const exiftoolPromise = spawn('exiftool', ['-json', '-G', '-S', filePath], { capture: ['stdout', 'stderr'] });
+        const exiftoolResult = await exiftoolPromise;
+        const exiftoolOutput = JSON.parse(exiftoolResult.stdout.toString())[0];
+
+        // Color Space Check
+        const colorIssues = [];
+        const hasRGB = Object.values(exiftoolOutput).some(val => typeof val === 'string' && val.includes('RGB'));
+        const hasSpot = Object.values(exiftoolOutput).some(val => typeof val === 'string' && val.includes('Separation'));
+
+        if (hasRGB) colorIssues.push('File contains RGB color spaces.');
+        if (hasSpot) colorIssues.push('File contains Spot colors.');
+
+        if (colorIssues.length > 0) {
+            results.colorSpaceCheck.status = 'warning';
+            results.colorSpaceCheck.details = colorIssues.join(' ');
+            if (overallStatus !== 'failed') overallStatus = 'warning';
+        }
+
+        // Font Check - more reliable
+        const allFonts = Object.keys(exiftoolOutput)
+            .filter(k => k.startsWith('FontName-'))
+            .map(k => exiftoolOutput[k]);
+
+        const unembeddedFonts = allFonts.filter(font =>
+            typeof font === 'string' && !(font.includes('(Embedded') || font.includes('Subset)'))
+        );
+
+        if (allFonts.length === 0) {
+             results.fontCheck.status = 'warning';
+             results.fontCheck.details = 'No font information was found. Text may not render correctly.';
+             if (overallStatus !== 'failed') overallStatus = 'warning';
+        } else if (unembeddedFonts.length > 0) {
+            results.fontCheck.status = 'warning';
+            results.fontCheck.details = `Found ${unembeddedFonts.length} font(s) that may not be embedded: ${unembeddedFonts.join(', ')}.`;
+            if (overallStatus !== 'failed') overallStatus = 'warning';
+        }
+
+    } catch (error) {
+        logger.error('Error during exiftool check:', error.stderr || error.message);
+        results.colorSpaceCheck.status = 'failed';
+        results.colorSpaceCheck.details = 'Failed to analyze color spaces.';
+        results.fontCheck.status = 'failed';
+        results.fontCheck.details = 'Failed to analyze font embedding.';
+        overallStatus = 'failed';
+    }
+
+    return {
+        preflightStatus: overallStatus,
+        preflightResults: results
+    };
+}
+
 
 // --- NEW Callable Function for Generating Guest Links ---
 exports.generateGuestLink = onCall({ region: 'us-central1' }, async (request) => {
