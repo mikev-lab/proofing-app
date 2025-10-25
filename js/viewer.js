@@ -81,6 +81,13 @@ export async function initializeSharedViewer(config) {
             return [viewNumber];
         }
         if (viewNumber === 1) return [1]; // First page/cover is always single
+        // Special case for the last page if total pages (excluding cover) is odd
+        const isLastView = viewNumber === getViewCount(totalPages);
+        const hasOddPages = (totalPages - 1) % 2 !== 0;
+        if (isLastView && hasOddPages) {
+            return [totalPages]; // Last page is single if odd number of pages after cover
+        }
+
         const page1 = (viewNumber - 2) * 2 + 2; // Calculate the first page of the spread
         const page2 = page1 + 1; // Calculate the second page of the spread
         const pages = [];
@@ -92,6 +99,7 @@ export async function initializeSharedViewer(config) {
         }
         return pages;
     }
+
 
     /**
      * Calculates the total number of views based on the current mode.
@@ -272,33 +280,68 @@ export async function initializeSharedViewer(config) {
 
             // Determine the combined viewport of the pages to be rendered
             const viewportsUnscaled = pages.map(p => p.getViewport({ scale: 1.0 }));
-            const totalWidthUnscaled = viewportsUnscaled.reduce((sum, vp) => sum + vp.width, 0);
+            // Adjust total width calculation for bleed removal in spreads
+            const bleedPt = (projectSpecs?.bleedInches || 0) * 72;
+            const isSpread = currentViewMode === 'spread' && pages.length > 1 && viewNumber !== 1;
+            let totalWidthUnscaled = viewportsUnscaled.reduce((sum, vp) => sum + vp.width, 0);
+            if(isSpread) {
+                 totalWidthUnscaled -= (2 * bleedPt); // Subtract both inner bleeds for aspect ratio
+            }
+
             const maxHeightUnscaled = Math.max(...viewportsUnscaled.map(vp => vp.height));
-            if (totalWidthUnscaled === 0 || maxHeightUnscaled === 0) return; // Skip if dimensions are zero
+            if (totalWidthUnscaled <= 0 || maxHeightUnscaled <= 0) {
+                 console.warn(`Calculated unscaled dimensions are zero or negative for view ${viewNumber}. Width: ${totalWidthUnscaled}, Height: ${maxHeightUnscaled}`);
+                 renderedThumbnails.delete(viewNumber); // Allow retry
+                 return; // Skip if dimensions are zero or negative
+             }
 
             // Calculate scale to fit within the placeholder
             const scale = Math.min(targetWidth / totalWidthUnscaled, targetHeight / maxHeightUnscaled);
+            if (scale <= 0) {
+                console.warn(`Calculated scale is zero or negative for view ${viewNumber}. Scale: ${scale}`);
+                renderedThumbnails.delete(viewNumber); // Allow retry
+                return; // Skip rendering if scale is invalid
+            }
             const scaledViewports = pages.map(p => p.getViewport({ scale })); // Viewports scaled for the final layout
+
 
             // --- Render each page to a temporary canvas ---
             const tempCanvases = await Promise.all(pages.map(async (page, index) => {
                 const targetViewport = scaledViewports[index]; // Use the viewport calculated for fitting
                 const tempCanvas = document.createElement('canvas');
                 const pixelRatio = window.devicePixelRatio || 1;
+                const scaledBleed = bleedPt * scale * pixelRatio; // Bleed scaled for temp canvas rendering
+
+                // Calculate source and destination dimensions, clipping inner bleed for spreads
+                let sourceX = 0;
+                let sourceWidth = Math.max(1, Math.round(targetViewport.width * pixelRatio));
+                let destWidth = targetViewport.width; // Width in final layout
+
+                if (isSpread) {
+                    sourceWidth -= scaledBleed;
+                    destWidth -= (bleedPt * scale);
+                    if (index === 1) { // Right page of spread, clip from left
+                        sourceX = scaledBleed;
+                    }
+                }
+
                 // Set drawing size considering pixel ratio
-                tempCanvas.width = Math.max(1, Math.round(targetViewport.width * pixelRatio)); // Ensure non-zero
+                tempCanvas.width = sourceWidth;
                 tempCanvas.height = Math.max(1, Math.round(targetViewport.height * pixelRatio)); // Ensure non-zero
                 const tempContext = tempCanvas.getContext('2d');
                  if (!tempContext) throw new Error("Could not get 2D context for temp canvas");
                 tempContext.scale(pixelRatio, pixelRatio); // Scale context for high-res
 
-                // Get viewport scaled for rendering onto the temp canvas
-                // Ensure scale isn't zero or negative
+                // Get viewport scaled for rendering onto the temp canvas, adjusting translate for clipped area
                 const renderScale = Math.max(0.01, targetViewport.scale * pixelRatio);
-                const renderViewport = page.getViewport({ scale: renderScale });
+                const renderViewport = page.getViewport({
+                     scale: renderScale,
+                     offsetX: -sourceX / pixelRatio // Adjust offsetX for clipping
+                });
+
 
                 await page.render({ canvasContext: tempContext, viewport: renderViewport }).promise;
-                return { canvas: tempCanvas, viewport: targetViewport }; // Return canvas and final layout info
+                return { canvas: tempCanvas, destWidth: destWidth, destHeight: targetViewport.height }; // Return canvas and final layout info
             }));
 
             // --- Draw temporary canvases onto the main thumbnail canvas ---
@@ -308,22 +351,23 @@ export async function initializeSharedViewer(config) {
             context.scale(finalPixelRatio, finalPixelRatio);
             context.clearRect(0, 0, targetWidth, targetHeight); // Clear the main canvas
 
-            // Recalculate centering offset based on the sum of final viewport widths
-            const totalRenderWidth = tempCanvases.reduce((sum, item) => sum + item.viewport.width, 0);
+            // Recalculate centering offset based on the sum of final DESTINATION widths
+            const totalRenderWidth = tempCanvases.reduce((sum, item) => sum + item.destWidth, 0);
             let currentX = (targetWidth - totalRenderWidth) / 2; // Center horizontally
 
             for (const item of tempCanvases) {
                 const tempCanvas = item.canvas;
-                const viewport = item.viewport;
-                const offsetY = (targetHeight - viewport.height) / 2; // Center vertically
+                const destWidth = item.destWidth;
+                const destHeight = item.destHeight;
+                const offsetY = (targetHeight - destHeight) / 2; // Center vertically
 
                 // Draw the rendered temp canvas onto the main canvas
                  if (tempCanvas.width > 0 && tempCanvas.height > 0) { // Avoid drawing 0-size images
-                    context.drawImage(tempCanvas, currentX, offsetY, viewport.width, viewport.height);
+                    context.drawImage(tempCanvas, currentX, offsetY, destWidth, destHeight);
                  } else {
                      console.warn(`Skipping drawing temp canvas for view ${viewNumber} due to zero dimensions.`);
                  }
-                currentX += viewport.width; // Move to the next position
+                currentX += destWidth; // Move to the next position based on destination width
             }
 
         } catch (error) {
@@ -441,33 +485,45 @@ export async function initializeSharedViewer(config) {
             const viewports = pages.map(p => p.getViewport({ scale: pdfRenderScale }));
 
             // --- SPREAD MASKING LOGIC ---
-            const isSpread = currentViewMode === 'spread' && pages.length > 1;
+            // A "spread" in rendering means viewMode is spread, it's not the first view, AND there are two pages.
+            const isSpreadView = currentViewMode === 'spread' && viewNumber !== 1 && pages.length === 2;
             const bleedPt = (projectSpecs?.bleedInches || 0) * 72; // 72 points per inch
-            const scaledBleed = bleedPt * pdfRenderScale;
+            const scaledBleed = bleedPt * pdfRenderScale; // Bleed scaled to the temporary canvas size
 
             // Render each page to a temporary canvas, then composite them onto the main hidden canvas.
-            // This allows us to clip the inside bleed for spreads.
             const pageCanvases = await Promise.all(pages.map(async (page, i) => {
                 const viewport = viewports[i];
                 const tempCanvas = document.createElement('canvas');
-                tempCanvas.width = viewport.width;
-                tempCanvas.height = viewport.height;
-                const tempCtx = tempCanvas.getContext('2d');
-                await page.render({ canvasContext: tempCtx, viewport: viewport }).promise;
 
+                // Determine the source clipping and final dimensions on the hidden canvas
                 let sourceX = 0;
                 let sourceWidth = viewport.width;
-                if (isSpread) {
+                let destWidth = viewport.width; // Width on the hidden canvas
+
+                if (isSpreadView) {
                     sourceWidth -= scaledBleed;
+                    destWidth -= scaledBleed;
                     if (i === 1) { // Right page of spread, clip from left
                         sourceX = scaledBleed;
                     }
                 }
+
+                tempCanvas.width = sourceWidth;
+                tempCanvas.height = viewport.height;
+                const tempCtx = tempCanvas.getContext('2d');
+                await page.render({
+                     canvasContext: tempCtx,
+                     viewport: page.getViewport({
+                        scale: pdfRenderScale,
+                        offsetX: -sourceX // Translate rendering left for right page to clip
+                     })
+                }).promise;
+
                 return {
                     canvas: tempCanvas,
-                    sourceX,
-                    sourceWidth,
-                    destWidth: sourceWidth, // How much space it takes in the final composition
+                    sourceX: 0, // Always draw from the start of the temp canvas
+                    sourceWidth: sourceWidth,
+                    destWidth: destWidth, // Use clipped width for destination
                     destHeight: viewport.height
                 };
             }));
@@ -511,13 +567,10 @@ export async function initializeSharedViewer(config) {
 
             // --- Calculate base scale and position for the entire view ---
             const baseViewports = pages.map(p => p.getViewport({ scale: 1.0 }));
-            const baseBleed = (projectSpecs?.bleedInches || 0) * 72;
-            let totalBaseWidth;
-            if (isSpread) {
-                // For spreads, the base width is the sum of page widths minus the inside bleeds that are being masked.
-                totalBaseWidth = baseViewports.reduce((sum, vp) => sum + vp.width, 0) - (2 * baseBleed);
-            } else {
-                totalBaseWidth = baseViewports.reduce((sum, vp) => sum + vp.width, 0);
+            let totalBaseWidth = baseViewports.reduce((sum, vp) => sum + vp.width, 0);
+            if (isSpreadView) {
+                 // For spreads, the base width is the sum of page widths minus the inside bleeds.
+                totalBaseWidth -= (2 * bleedPt);
             }
 
             const maxBaseHeight = Math.max(...baseViewports.map(vp => vp.height));
@@ -539,41 +592,44 @@ export async function initializeSharedViewer(config) {
             visibleContext.scale(transformState.zoom, transformState.zoom);
 
             // --- Draw the pre-rendered content from the hidden canvas ---
-            // The hidden canvas is already the correct final width, so we use `viewWidth` here.
             visibleContext.drawImage(hiddenCanvas, viewX, viewY, viewWidth, viewHeight);
 
-            // --- Calculate individual page render info ---
+            // --- Calculate individual page render info FOR GUIDES ---
             pageRenderInfos = []; // Reset the array
             let currentPageX = viewX; // Start at the beginning of the view's x position
             for (let i = 0; i < baseViewports.length; i++) {
                 const pageBaseViewport = baseViewports[i];
-                const scaledBaseBleed = baseBleed * baseScale;
-                let pageRenderWidth = pageBaseViewport.width * baseScale;
-                let trimOffset = 0; // For adjusting guide centering
+                const scaledBaseBleed = bleedPt * baseScale;
 
-                if (isSpread) {
-                    pageRenderWidth -= scaledBaseBleed;
-                    if (i === 0) { // Left page: trim box is shifted left relative to its visible area
-                        trimOffset = -scaledBaseBleed / 2;
-                    } else { // Right page: trim box is shifted right
-                        trimOffset = scaledBaseBleed / 2;
-                    }
+                // Determine width for this page in the final view
+                let pageRenderWidth = pageBaseViewport.width * baseScale;
+                if (isSpreadView) {
+                    pageRenderWidth -= scaledBaseBleed; // Subtract inner bleed
                 }
 
                 const pageRenderHeight = pageBaseViewport.height * baseScale;
-                const pageY = viewY + (viewHeight - pageRenderHeight) / 2;
+                const pageY = viewY + (viewHeight - pageRenderHeight) / 2; // Center vertically
+
+                // Determine if this is the left or right page in a spread context
+                // Handle RTL
+                const isRTL = projectSpecs?.readingDirection === 'rtl';
+                let pageIsLeftInSpread = false;
+                if (isSpreadView) {
+                    pageIsLeftInSpread = (isRTL && i === 1) || (!isRTL && i === 0);
+                }
+
 
                 pageRenderInfos.push({
-                    x: currentPageX,
+                    x: currentPageX, // The X position where this page *starts* in the combined view
                     y: pageY,
-                    width: pageRenderWidth,
+                    width: pageRenderWidth, // The width this page occupies in the combined view
                     height: pageRenderHeight,
-                    scale: baseScale,
-                    trimOffset: trimOffset // Pass offset to guide renderer
+                    scale: baseScale, // The overall scale used for the view
+                    isSpread: isSpreadView, // Is this part of a 2-page spread?
+                    isLeftPage: pageIsLeftInSpread // Is it the left-hand page of that spread?
                 });
                 currentPageX += pageRenderWidth; // Move to the next page's horizontal position
             }
-
 
             // Draw guides if applicable and module is loaded
             if (projectSpecs && guidesModule) {
@@ -751,6 +807,8 @@ export async function initializeSharedViewer(config) {
     if (viewModeSelect) {
         viewModeSelect.addEventListener('change', async (e) => {
             currentViewMode = e.target.value;
+            // Clear page cache as viewports might change relative positioning
+            Object.keys(pdfPageCache).forEach(key => delete pdfPageCache[key]);
             // Regenerate the thumbnail list to match the new view mode
             await renderThumbnailList();
             // Render the first view of the new mode
