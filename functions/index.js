@@ -6,6 +6,7 @@
 // Gen 2 Imports:
 const { onObjectFinalized } = require('firebase-functions/v2/storage');
 const { onCall, HttpsError } = require('firebase-functions/v2/https'); // <-- Import for callable function
+const { onSchedule } = require("firebase-functions/v2/scheduler");
 const logger = require('firebase-functions/logger');
 const crypto = require('crypto'); // <-- Import for token generation
 
@@ -208,4 +209,61 @@ exports.generateGuestLink = onCall({ region: 'us-central1' }, async (request) =>
     logger.error('Error creating guest link document in Firestore:', error);
     throw new HttpsError('internal', 'Failed to create the guest link.');
   }
+});
+
+// Scheduled function to delete projects marked for deletion.
+exports.scheduledProjectDeletion = onSchedule("every day 03:00", async (event) => {
+  logger.log("Running scheduled project deletion job.");
+  const now = admin.firestore.Timestamp.now();
+  const query = db.collection('projects').where('deleteAt', '<=', now);
+
+  const projectsToDelete = await query.get();
+
+  if (projectsToDelete.empty) {
+    logger.log("No projects found for deletion.");
+    return null;
+  }
+
+  const promises = [];
+  projectsToDelete.forEach(doc => {
+    const projectId = doc.id;
+    const projectData = doc.data();
+    logger.log(`Starting deletion for project: ${projectId}`);
+
+    // Delete all associated data
+    const deletePromise = (async () => {
+      // 1. Delete files from Cloud Storage
+      const bucket = storage.bucket();
+      const prefix = `proofs/${projectId}/`;
+      try {
+        await bucket.deleteFiles({ prefix: prefix });
+        logger.log(`Successfully deleted files in gs://${bucket.name}/${prefix}`);
+      } catch (error) {
+        logger.error(`Failed to delete files for project ${projectId}`, error);
+        // Continue to Firestore deletion even if storage deletion fails
+      }
+
+      // 2. Delete all subcollections from Firestore
+      const subcollections = ['comments', 'annotations', 'guestLinks'];
+      for (const subcollection of subcollections) {
+        const subcollectionRef = db.collection('projects').doc(projectId).collection(subcollection);
+        const snapshot = await subcollectionRef.get();
+        const batch = db.batch();
+        snapshot.docs.forEach(subDoc => {
+          batch.delete(subDoc.ref);
+        });
+        await batch.commit();
+        logger.log(`Deleted subcollection ${subcollection} for project ${projectId}`);
+      }
+
+      // 3. Delete the main project document
+      await db.collection('projects').doc(projectId).delete();
+      logger.log(`Successfully deleted project document ${projectId}`);
+    })();
+    promises.push(deletePromise);
+  });
+
+  await Promise.all(promises);
+  logger.log(`Deletion job finished. Processed ${projectsToDelete.size} projects.`);
+  return null;
 });

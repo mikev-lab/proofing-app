@@ -75,7 +75,11 @@
         #specs-form .form-group {
             margin-bottom: 1rem; /* Add spacing between groups */
         }
-
+        .accordion-content {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease-out;
+        }
     </style>
 
     <!-- PDF.js Library -->
@@ -139,113 +143,8 @@
                     <p class="mt-4 text-gray-300">Fetching project details...</p>
                 </div>
 
-                <!-- Project Info Header -->
-                <div id="project-info-header" class="hidden grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-                    <div class="md:col-span-2 bg-slate-800/60 p-6 rounded-lg shadow-xl border border-slate-700/50">
-                        <h3 class="text-lg font-semibold text-white mb-4">Project Details</h3>
-                        <p class="mt-1 text-white"><strong class="text-gray-400">Project:</strong> <span id="project-name"></span></p>
-                        <p class="mt-1 text-white mb-4"><strong class="text-gray-400">Company:</strong> <span id="company-name"></span></p>
-
-                        <!-- Editable Print Specifications Form -->
-                        <form id="specs-form" class="border-t border-slate-700/50 pt-4 mt-4">
-                            <h4 class="text-md font-semibold text-white mb-4">Print Specifications</h4>
-                            <div class="space-y-4">
-                                <!-- Dimensions -->
-                                <div class="form-group">
-                                    <label for="dimensions">Dimensions</label>
-                                    <select id="dimensions" name="dimensions">
-                                        <!-- Options populated by JS -->
-                                        <option value="custom">Custom</option>
-                                    </select>
-                                    <div id="custom-dimension-inputs" class="hidden mt-2 space-y-2">
-                                        <input type="number" id="custom-width" name="custom-width" placeholder="Width" step="any">
-                                        <input type="number" id="custom-height" name="custom-height" placeholder="Height" step="any">
-                                        <select id="custom-units" name="custom-units">
-                                            <option value="in">Inches (in)</option>
-                                            <option value="mm">Millimeters (mm)</option>
-                                        </select>
-                                    </div>
-                                </div>
-                                <!-- Bleed -->
-                                <div class="form-group">
-                                    <label for="bleedInches">Bleed (inches)</label>
-                                    <input type="number" id="bleedInches" name="bleedInches" value="0.125" step="0.001" required>
-                                </div>
-                                <!-- Safety -->
-                                <div class="form-group">
-                                    <label for="safetyInches">Safety Margin (inches)</label>
-                                    <input type="number" id="safetyInches" name="safetyInches" value="0.125" step="0.001" required>
-                                </div>
-                                <!-- Page Count -->
-                                <div class="form-group">
-                                    <label for="page-count">Page Count</label>
-                                    <input type="number" id="page-count" name="page-count" required>
-                                </div>
-                                <!-- Binding -->
-                                <div class="form-group">
-                                    <label for="binding">Binding</label>
-                                    <select id="binding" name="binding">
-                                        <option value="Perfect Bound">Perfect Bound</option>
-                                        <option value="Saddle-Stitch">Saddle-Stitch</option>
-                                        <option value="Coil Bound">Coil Bound</option>
-                                        <option value="None">None (Flat Sheets)</option>
-                                    </select>
-                                </div>
-                                <!-- Reading Direction -->
-                                <div class="form-group">
-                                    <label for="readingDirection">Reading Direction</label>
-                                    <select id="readingDirection" name="readingDirection">
-                                        <option value="ltr">Left-to-Right</option>
-                                        <option value="rtl">Right-to-Left</option>
-                                    </select>
-                                </div>
-                                <!-- Paper Type -->
-                                <div class="form-group">
-                                    <label for="paper-type">Paper Type</label>
-                                    <select id="paper-type" name="paper-type">
-                                        <option value="Gloss">Gloss</option>
-                                        <option value="Matte">Matte</option>
-                                        <option value="Uncoated">Uncoated</option>
-                                    </select>
-                                </div>
-                            </div>
-                             <!-- Save Button and Status Message -->
-                            <div class="mt-6 border-t border-slate-700/50 pt-4">
-                                <button type="submit" id="save-specs-button" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-blue-800 disabled:cursor-not-allowed">
-                                    Save Specification Changes
-                                </button>
-                                <p id="specs-status-message" class="mt-2 text-center text-sm"></p>
-                            </div>
-                        </form>
-                    </div>
-                    <!-- Upload New Version -->
-                    <div class="bg-slate-800/60 p-6 rounded-lg shadow-xl border border-slate-700/50">
-                        <h3 class="text-lg font-semibold text-white mb-4">Upload New Version</h3>
-                        <form id="file-upload-form">
-                            <input type="file" id="file-input" accept=".pdf" class="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-600/20 file:text-indigo-300 hover:file:bg-indigo-600/30">
-                            <button type="submit" class="w-full mt-4 bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-green-800 disabled:cursor-not-allowed">
-                                Upload New Version
-                            </button>
-                        </form>
-                    </div>
-                     <!-- Share Project -->
-                    <div class="bg-slate-800/60 p-6 rounded-lg shadow-xl border border-slate-700/50">
-                        <h3 class="text-lg font-semibold text-white mb-4">Share Project</h3>
-                        <p class="text-sm text-gray-400 mb-4">Generate a shareable link for guests to view this proof without logging in.</p>
-                        <button id="share-button" class="w-full mt-4 bg-purple-600 hover:bg-purple-500 text-white font-semibold py-2 px-4 rounded-md">
-                            Generate Guest Link
-                        </button>
-                        <div id="guest-links-container" class="mt-6 border-t border-slate-700/50 pt-4">
-                            <h4 class="text-md font-semibold text-white mb-2">Generated Links</h4>
-                            <div id="guest-links-list" class="space-y-3 max-h-48 overflow-y-auto">
-                                <p class="text-sm text-gray-500">No links generated yet.</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
                 <!-- Main Grid for Viewer -->
-                <div id="proof-content" class="hidden grid grid-cols-1 lg:grid-cols-4 gap-8">
+                <div id="proof-content" class="hidden grid grid-cols-1 lg:grid-cols-4 gap-8 mb-6">
                     <!-- Left Column: Thumbnails -->
                     <div class="lg:col-span-1 space-y-6">
                          <div class="bg-slate-900/50 rounded-lg shadow-2xl p-4 min-h-[300px] max-h-[40vh] overflow-y-auto">
@@ -316,6 +215,134 @@
                         <div class="bg-slate-800/60 backdrop-blur-sm shadow-xl rounded-xl p-6 border border-slate-700/50">
                             <h3 class="text-xl font-semibold text-white mb-4">Comments</h3>
                             <div id="comments-section" class="space-y-4 max-h-60 overflow-y-auto pr-2"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Accordion for Project Details -->
+                <div id="project-details-accordion" class="hidden space-y-4">
+                    <!-- Project Details Section -->
+                    <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50">
+                        <button class="accordion-header w-full flex justify-between items-center p-6 text-left">
+                            <h3 class="text-lg font-semibold text-white">Project Details</h3>
+                            <svg class="w-6 h-6 text-gray-400 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                        </button>
+                        <div class="accordion-content p-6 border-t border-slate-700/50">
+                            <p class="mt-1 text-white"><strong class="text-gray-400">Project:</strong> <span id="project-name"></span></p>
+                            <p class="mt-1 text-white mb-4"><strong class="text-gray-400">Company:</strong> <span id="company-name"></span></p>
+                        </div>
+                    </div>
+                    <!-- Print Specifications Section -->
+                    <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50">
+                        <button class="accordion-header w-full flex justify-between items-center p-6 text-left">
+                            <h3 class="text-lg font-semibold text-white">Print Specifications</h3>
+                            <svg class="w-6 h-6 text-gray-400 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                        </button>
+                        <div class="accordion-content p-6 border-t border-slate-700/50">
+                            <form id="specs-form">
+                                <div class="space-y-4">
+                                    <!-- Dimensions -->
+                                    <div class="form-group">
+                                        <label for="dimensions">Dimensions</label>
+                                        <select id="dimensions" name="dimensions">
+                                            <!-- Options populated by JS -->
+                                            <option value="custom">Custom</option>
+                                        </select>
+                                        <div id="custom-dimension-inputs" class="hidden mt-2 space-y-2">
+                                            <input type="number" id="custom-width" name="custom-width" placeholder="Width" step="any">
+                                            <input type="number" id="custom-height" name="custom-height" placeholder="Height" step="any">
+                                            <select id="custom-units" name="custom-units">
+                                                <option value="in">Inches (in)</option>
+                                                <option value="mm">Millimeters (mm)</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <!-- Bleed -->
+                                    <div class="form-group">
+                                        <label for="bleedInches">Bleed (inches)</label>
+                                        <input type="number" id="bleedInches" name="bleedInches" value="0.125" step="0.001" required>
+                                    </div>
+                                    <!-- Safety -->
+                                    <div class="form-group">
+                                        <label for="safetyInches">Safety Margin (inches)</label>
+                                        <input type="number" id="safetyInches" name="safetyInches" value="0.125" step="0.001" required>
+                                    </div>
+                                    <!-- Page Count -->
+                                    <div class="form-group">
+                                        <label for="page-count">Page Count</label>
+                                        <input type="number" id="page-count" name="page-count" required>
+                                    </div>
+                                    <!-- Binding -->
+                                    <div class="form-group">
+                                        <label for="binding">Binding</label>
+                                        <select id="binding" name="binding">
+                                            <option value="Perfect Bound">Perfect Bound</option>
+                                            <option value="Saddle-Stitch">Saddle-Stitch</option>
+                                            <option value="Coil Bound">Coil Bound</option>
+                                            <option value="None">None (Flat Sheets)</option>
+                                        </select>
+                                    </div>
+                                    <!-- Reading Direction -->
+                                    <div class="form-group">
+                                        <label for="readingDirection">Reading Direction</label>
+                                        <select id="readingDirection" name="readingDirection">
+                                            <option value="ltr">Left-to-Right</option>
+                                            <option value="rtl">Right-to-Left</option>
+                                        </select>
+                                    </div>
+                                    <!-- Paper Type -->
+                                    <div class="form-group">
+                                        <label for="paper-type">Paper Type</label>
+                                        <select id="paper-type" name="paper-type">
+                                            <option value="Gloss">Gloss</option>
+                                            <option value="Matte">Matte</option>
+                                            <option value="Uncoated">Uncoated</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                 <!-- Save Button and Status Message -->
+                                <div class="mt-6 border-t border-slate-700/50 pt-4">
+                                    <button type="submit" id="save-specs-button" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-blue-800 disabled:cursor-not-allowed">
+                                        Save Specification Changes
+                                    </button>
+                                    <p id="specs-status-message" class="mt-2 text-center text-sm"></p>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                    <!-- Upload/Share Section -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50">
+                            <button class="accordion-header w-full flex justify-between items-center p-6 text-left">
+                                <h3 class="text-lg font-semibold text-white">Upload New Version</h3>
+                                <svg class="w-6 h-6 text-gray-400 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                            </button>
+                            <div class="accordion-content p-6 border-t border-slate-700/50">
+                                <form id="file-upload-form">
+                                    <input type="file" id="file-input" accept=".pdf" class="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-600/20 file:text-indigo-300 hover:file:bg-indigo-600/30">
+                                    <button type="submit" class="w-full mt-4 bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-green-800 disabled:cursor-not-allowed">
+                                        Upload New Version
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+                        <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50">
+                            <button class="accordion-header w-full flex justify-between items-center p-6 text-left">
+                                <h3 class="text-lg font-semibold text-white">Share Project</h3>
+                                <svg class="w-6 h-6 text-gray-400 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                            </button>
+                            <div class="accordion-content p-6 border-t border-slate-700/50">
+                                <p class="text-sm text-gray-400 mb-4">Generate a shareable link for guests to view this proof without logging in.</p>
+                                <button id="share-button" class="w-full mt-4 bg-purple-600 hover:bg-purple-500 text-white font-semibold py-2 px-4 rounded-md">
+                                    Generate Guest Link
+                                </button>
+                                <div id="guest-links-container" class="mt-6 border-t border-slate-700/50 pt-4">
+                                    <h4 class="text-md font-semibold text-white mb-2">Generated Links</h4>
+                                    <div id="guest-links-list" class="space-y-3 max-h-48 overflow-y-auto">
+                                        <p class="text-sm text-gray-500">No links generated yet.</p>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -422,7 +449,7 @@
 
         const loadingSpinner = document.getElementById('loading-spinner');
         const proofContent = document.getElementById('proof-content');
-        const projectInfoHeader = document.getElementById('project-info-header');
+        const projectDetailsAccordion = document.getElementById('project-details-accordion');
         const projectNameHeader = document.getElementById('project-name-header');
         const fileUploadForm = document.getElementById('file-upload-form');
         const fileInput = document.getElementById('file-input');
@@ -644,7 +671,7 @@
 
                             loadingSpinner.classList.add('hidden');
                             proofContent.classList.remove('hidden');
-                            projectInfoHeader.classList.remove('hidden');
+                            projectDetailsAccordion.classList.remove('hidden');
                         } else {
                              loadingSpinner.innerHTML = '<p class="text-red-400">Error: Project not found.</p>';
                         }
@@ -818,6 +845,21 @@
             });
         }
 
+        // Accordion Logic
+        document.querySelectorAll('.accordion-header').forEach(header => {
+            header.addEventListener('click', () => {
+                const content = header.nextElementSibling;
+                const icon = header.querySelector('svg');
+
+                if (content.style.maxHeight) {
+                    content.style.maxHeight = null;
+                    icon.classList.remove('rotate-180');
+                } else {
+                    content.style.maxHeight = content.scrollHeight + "px";
+                    icon.classList.add('rotate-180');
+                }
+            });
+        });
     </script>
 </body>
 </html>
