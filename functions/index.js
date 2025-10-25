@@ -63,9 +63,10 @@ exports.optimizePdf = onObjectFinalized({
 
 
   const bucket = storage.bucket(fileBucket);
-  const tempFilePath = path.join(os.tmpdir(), fullFileName); // Use fullFileName for temp download
-  const previewFileName = `${path.basename(fullFileName, '.pdf')}_preview.pdf`; // Use fullFileName for preview name base
+  const tempFilePath = path.join(os.tmpdir(), fullFileName);
+  const previewFileName = `${path.basename(fullFileName, '.pdf')}_preview.pdf`;
   const tempPreviewPath = path.join(os.tmpdir(), previewFileName);
+  const projectRef = db.collection('projects').doc(projectId);
 
   try {
     // Download the file
@@ -104,37 +105,57 @@ exports.optimizePdf = onObjectFinalized({
       expires: '03-09-2491'
     });
 
-    // Update Firestore using a transaction
-    const projectRef = db.collection('projects').doc(projectId);
+    // --- Update Firestore with SUCCESS status ---
     await db.runTransaction(async (transaction) => {
       const projectDoc = await transaction.get(projectRef);
       if (!projectDoc.exists) {
         throw new Error(`Project ${projectId} not found in Firestore.`);
       }
-
       const projectData = projectDoc.data();
       const versions = projectData.versions || [];
-
-      // --- Use filePath for matching ---
-      logger.log(`Attempting to find version index matching filePath: "${filePath}"`);
-      // The filePath from the event trigger *is* the storage object path
       const versionIndex = versions.findIndex(v => v.filePath === filePath);
-      logger.log(`Result of findIndex: ${versionIndex}`);
-      // --- End Match Logic ---
 
       if (versionIndex === -1) {
-        logger.warn(`No version found matching filePath "${filePath}" in project ${projectId}. Check if filePath was stored correctly during upload. Versions found: ${JSON.stringify(versions.map(v => ({ fileName: v.fileName, fileURL: v.fileURL, filePath: v.filePath })))}`);
-        return; // Exit transaction gracefully
+        logger.warn(`No version found matching filePath "${filePath}" in project ${projectId}.`);
+        return;
       }
 
-      // Update the found version with the previewURL
+      // Update the found version with the previewURL and status
       versions[versionIndex].previewURL = signedUrl;
+      versions[versionIndex].processingStatus = 'complete';
+      versions[versionIndex].processingError = null; // Clear any previous error
       transaction.update(projectRef, { versions: versions });
-      logger.log(`Firestore updated for project ${projectId}, version index ${versionIndex} with previewURL.`);
+      logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with previewURL and status 'complete'.`);
     });
 
   } catch (error) {
     logger.error('Error processing PDF:', error);
+    // --- Update Firestore with ERROR status ---
+    try {
+      await db.runTransaction(async (transaction) => {
+        const projectDoc = await transaction.get(projectRef);
+        if (!projectDoc.exists) {
+          logger.error(`Project ${projectId} not found. Cannot update with error status.`);
+          return;
+        }
+        const projectData = projectDoc.data();
+        const versions = projectData.versions || [];
+        const versionIndex = versions.findIndex(v => v.filePath === filePath);
+
+        if (versionIndex === -1) {
+          logger.warn(`No version found matching filePath "${filePath}" in project ${projectId} to update with error status.`);
+          return;
+        }
+
+        versions[versionIndex].processingStatus = 'error';
+        versions[versionIndex].processingError = error.message || 'An unknown error occurred during processing.';
+        transaction.update(projectRef, { versions: versions });
+        logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with status 'error'.`);
+      });
+    } catch (dbError) {
+      logger.error('FATAL: Could not update Firestore with error state.', dbError);
+    }
+
   } finally {
     // Clean up temporary files
     if (fs.existsSync(tempFilePath)) {

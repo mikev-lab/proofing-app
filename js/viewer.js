@@ -657,6 +657,49 @@ export async function initializeSharedViewer(config) {
             console.error("Version not found:", versionNumber);
             return;
         }
+
+        // --- NEW: Check processing status ---
+        const status = versionData.processingStatus;
+
+        // Clear viewer and hide controls initially
+        if (pdfViewer) pdfViewer.innerHTML = '';
+        if (pdfCanvas) pdfCanvas.classList.add('hidden');
+        if (navigationControls) navigationControls.classList.add('hidden');
+        if (guidesSection) guidesSection.classList.add('hidden');
+        if (renderingThrobber) renderingThrobber.classList.remove('hidden');
+
+
+        if (status === 'processing') {
+            renderingThrobber.innerHTML = `
+                <div class="h-10 w-10 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900" role="status"></div>
+                <p class="mt-3 text-gray-300 text-sm">Optimizing PDF for web viewing... This may take a moment.</p>
+            `;
+            // The onSnapshot listener will eventually trigger a reload when the status changes.
+            return;
+        }
+
+        if (status === 'error') {
+            renderingThrobber.classList.add('hidden');
+            pdfViewer.innerHTML = `
+                <div class="text-center p-4">
+                    <h3 class="text-lg font-semibold text-red-400">Processing Failed</h3>
+                    <p class="text-gray-300 mt-2">There was an error while preparing this PDF.</p>
+                    <p class="text-xs text-gray-500 mt-1">${versionData.processingError || 'No error details available.'}</p>
+                </div>
+            `;
+            return;
+        }
+
+        // --- END: Status check ---
+
+        // If status is 'complete' or absent (legacy data), proceed to load
+        renderingThrobber.innerHTML = `
+             <div class="h-10 w-10 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900" role="status"></div>
+             <p class="mt-3 text-gray-300 text-sm">Rendering PDF...</p>
+        `;
+        if(pdfCanvas) pdfCanvas.classList.remove('hidden');
+
+
         let urlToLoad = versionData.previewURL || versionData.fileURL;
         if (urlToLoad && urlToLoad !== currentlyLoadedURL) {
             console.log(`Switching to version ${versionNumber}. Loading URL: ${urlToLoad.substring(0, 100)}...`);
@@ -668,6 +711,10 @@ export async function initializeSharedViewer(config) {
              if (guidesSection) guidesSection.classList.add('hidden');
         } else {
              console.log(`Version ${versionNumber} selected, but URL is the same as currently loaded. No reload.`);
+             // If URL is the same, we still need to ensure the UI is visible
+             renderingThrobber.classList.add('hidden');
+             if (navigationControls) navigationControls.classList.remove('hidden');
+             if (guidesSection) guidesSection.classList.remove('hidden');
         }
     }
 
@@ -782,32 +829,67 @@ export async function initializeSharedViewer(config) {
 
     // --- Initial PDF Load ---
     let versionToLoad = null;
-    let targetUrlToLoad = null;
     if (projectData && projectData.versions && projectData.versions.length > 0) {
         let targetVersionNumber;
         if (isAdmin && versionSelector && versionSelector.value) {
-             try { targetVersionNumber = parseInt(versionSelector.value, 10); }
-             catch (e) { targetVersionNumber = Math.max(...projectData.versions.map(v => v.version)); }
+            try { targetVersionNumber = parseInt(versionSelector.value, 10); }
+            catch (e) { targetVersionNumber = Math.max(...projectData.versions.map(v => v.version)); }
         } else {
             targetVersionNumber = Math.max(...projectData.versions.map(v => v.version));
         }
         versionToLoad = projectData.versions.find(v => v.version === targetVersionNumber);
         if (!versionToLoad && projectData.versions.length > 0) {
-             versionToLoad = projectData.versions.reduce((latest, current) => (current.version > latest.version ? current : latest), projectData.versions[0]);
+            versionToLoad = projectData.versions.reduce((latest, current) => (current.version > latest.version ? current : latest), projectData.versions[0]);
         }
-        if (versionToLoad) targetUrlToLoad = versionToLoad.previewURL || versionToLoad.fileURL;
     }
 
-    if (targetUrlToLoad && targetUrlToLoad !== currentlyLoadedURL) {
-        loadPdf(targetUrlToLoad);
-    } else if (!targetUrlToLoad && !currentlyLoadedURL) {
+    if (versionToLoad) {
+        const status = versionToLoad.processingStatus;
+        if (status === 'processing') {
+            if (renderingThrobber) {
+                renderingThrobber.classList.remove('hidden');
+                renderingThrobber.innerHTML = `
+                    <div class="h-10 w-10 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900" role="status"></div>
+                    <p class="mt-3 text-gray-300 text-sm">Optimizing PDF for web viewing... This may take a moment.</p>
+                `;
+            }
+            if (pdfViewer) pdfViewer.innerHTML = '';
+            if (pdfCanvas) pdfCanvas.classList.add('hidden');
+            if (navigationControls) navigationControls.classList.add('hidden');
+            if (guidesSection) guidesSection.classList.add('hidden');
+            return; // Stop further execution
+        }
+
+        if (status === 'error') {
+            if (renderingThrobber) renderingThrobber.classList.add('hidden');
+            if (pdfViewer) {
+                pdfViewer.innerHTML = `
+                    <div class="text-center p-4">
+                        <h3 class="text-lg font-semibold text-red-400">Processing Failed</h3>
+                        <p class="text-gray-300 mt-2">There was an error while preparing this PDF.</p>
+                        <p class="text-xs text-gray-500 mt-1">${versionToLoad.processingError || 'No error details available.'}</p>
+                    </div>
+                `;
+            }
+            return; // Stop further execution
+        }
+
+        // If status is complete or missing, proceed to load.
+        const targetUrlToLoad = versionToLoad.previewURL || versionToLoad.fileURL;
+        if (targetUrlToLoad && targetUrlToLoad !== currentlyLoadedURL) {
+            loadPdf(targetUrlToLoad);
+        } else if (!targetUrlToLoad) {
+             if (renderingThrobber) renderingThrobber.classList.add('hidden');
+             if (pdfViewer) pdfViewer.innerHTML = '<p class="text-gray-400 p-4">No proof file available for this project yet.</p>';
+             if (navigationControls) navigationControls.classList.add('hidden');
+             if (guidesSection) guidesSection.classList.add('hidden');
+        } else {
+             if (!pageRendering && renderingThrobber) renderingThrobber.classList.add('hidden');
+        }
+    } else { // No versions at all
         if (renderingThrobber) renderingThrobber.classList.add('hidden');
         if (pdfViewer) pdfViewer.innerHTML = '<p class="text-gray-400 p-4">No proof file available for this project yet.</p>';
         if (navigationControls) navigationControls.classList.add('hidden');
         if (guidesSection) guidesSection.classList.add('hidden');
-    } else if (!targetUrlToLoad && currentlyLoadedURL) {
-         if (renderingThrobber) renderingThrobber.classList.add('hidden');
-    } else {
-         if (!pageRendering && renderingThrobber) renderingThrobber.classList.add('hidden');
     }
 }

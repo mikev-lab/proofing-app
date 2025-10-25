@@ -734,7 +734,8 @@
                     fileURL: downloadURL,
                     filePath: storagePath,
                     uploadedAt: Timestamp.now(),
-                    version: currentVersions.length + 1
+                    version: currentVersions.length + 1,
+                    processingStatus: 'processing'
                 };
 
                 await updateDoc(projectRef, {
