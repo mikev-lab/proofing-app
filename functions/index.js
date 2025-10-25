@@ -23,13 +23,13 @@ const db = admin.firestore();
 // Use the correct onObjectFinalized (with a 'd')
 exports.optimizePdf = onObjectFinalized({
   region: 'us-central1', // Specify your region
-  memory: '1GiB',      // More memory for Ghostscript
+  memory: '4GiB',      // *** INCREASED MEMORY TO 4GiB ***
   cpu: 2,                // More CPU for Ghostscript
   timeoutSeconds: 540,   // Longer timeout for processing
   // NOTE: Gen 2 functions use the default Compute Engine service account.
   // Ensure it has permissions for Storage (Storage Object Admin) and Firestore (Cloud Datastore User).
 }, async (event) => {
-  
+
   // The 'object' is now 'event.data'
   const file = event.data;
   const filePath = file.name;
@@ -42,19 +42,24 @@ exports.optimizePdf = onObjectFinalized({
   }
 
   // Extract projectId, versionNumber from the file path
-  // Expected path: proofs/{projectId}/{fileName}
+  // Expected path: proofs/{projectId}/{fileName} or proofs/{projectId}/{timestamp}_{fileName}
   const parts = filePath.split('/');
-  if (parts.length < 3 || parts[0] !== 'proofs') {
+  if (parts.length < 2 || parts[0] !== 'proofs') {
       return logger.log(`File path does not match expected structure proofs/{projectId}/{fileName}. Got: ${filePath}`);
   }
   const projectId = parts[1];
-  const fileName = path.basename(filePath);
+  // Extract the original filename, handling potential timestamp prefixes like '1729867990433_Test Book v1.pdf'
+  const fullFileName = parts[parts.length - 1]; // Get the last part (the actual filename)
+  // Check if there's a timestamp prefix (assuming it's numeric followed by _)
+  const matchTimestamp = fullFileName.match(/^(\d+_)(\S.+)$/);
+  const originalFileName = matchTimestamp ? matchTimestamp[2] : fullFileName; // Use the part after the timestamp_ or the full name
 
-  logger.log(`Processing file: ${fileName} for project: ${projectId}`);
+  logger.log(`Processing file: ${fullFileName} (original: ${originalFileName}) for project: ${projectId}`);
+
 
   const bucket = storage.bucket(fileBucket);
-  const tempFilePath = path.join(os.tmpdir(), fileName);
-  const previewFileName = `${path.basename(fileName, '.pdf')}_preview.pdf`;
+  const tempFilePath = path.join(os.tmpdir(), fullFileName); // Use fullFileName for temp download
+  const previewFileName = `${path.basename(fullFileName, '.pdf')}_preview.pdf`; // Use fullFileName for preview name base
   const tempPreviewPath = path.join(os.tmpdir(), previewFileName);
 
   try {
@@ -67,7 +72,9 @@ exports.optimizePdf = onObjectFinalized({
     await spawn('gs', [
       '-sDEVICE=pdfwrite',
       '-dCompatibilityLevel=1.4',
-      '-dPDFSETTINGS=/ebook',
+      '-dPDFSETTINGS=/ebook', // Use /ebook for smaller size, suitable for screen viewing
+      '-dDetectDuplicateImages=true', // Try to reduce size further
+      '-dConvertCMYKImagesToRGB=true', // Convert colorspaces if needed for screen
       '-dNOPAUSE',
       '-dQUIET',
       '-dBATCH',
@@ -99,28 +106,31 @@ exports.optimizePdf = onObjectFinalized({
       const projectData = projectDoc.data();
       const versions = projectData.versions || [];
 
-      // Find the version by matching the fileURL
-      // We must encode the original filePath to match how it might be stored
-      const encodedFilePath = encodeURIComponent(filePath);
-      const versionIndex = versions.findIndex(v => v.fileURL && v.fileURL.includes(encodedFilePath));
+      // *** CHANGE: Find the version by matching the original fileName ***
+      const versionIndex = versions.findIndex(v => v.fileName === originalFileName);
 
       if (versionIndex === -1) {
         // Log the error but don't throw, to prevent retries on a non-existent entry
-        logger.warn(`No version found for file path ${filePath} in project ${projectId}. URL in db might not match.`);
+        logger.warn(`No version found matching fileName "${originalFileName}" in project ${projectId}. Versions found: ${JSON.stringify(versions.map(v => v.fileName))}`);
         return; // Exit transaction gracefully
       }
 
+      // Update the found version with the previewURL
       versions[versionIndex].previewURL = signedUrl;
       transaction.update(projectRef, { versions: versions });
-      logger.log(`Firestore updated for project ${projectId}, version index ${versionIndex}`);
+      logger.log(`Firestore updated for project ${projectId}, version index ${versionIndex} with previewURL.`);
     });
 
   } catch (error) {
     logger.error('Error processing PDF:', error);
   } finally {
     // Clean up temporary files
-    if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
-    if (fs.existsSync(tempPreviewPath)) fs.unlinkSync(tempPreviewPath);
+    if (fs.existsSync(tempFilePath)) {
+      try { fs.unlinkSync(tempFilePath); } catch (e) { logger.warn('Failed to delete temp file:', tempFilePath, e); }
+    }
+    if (fs.existsSync(tempPreviewPath)) {
+      try { fs.unlinkSync(tempPreviewPath); } catch (e) { logger.warn('Failed to delete temp preview file:', tempPreviewPath, e); }
+    }
   }
 
   return null;

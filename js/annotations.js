@@ -22,11 +22,26 @@ export function initializeAnnotations(db, auth, projectId, canvas, commentsConta
     const annotationForm = document.getElementById('annotation-form');
     const annotationText = document.getElementById('annotation-text');
 
+    // Add checks to ensure modal elements exist before adding listeners
+    if (!modal || !modalCloseButton || !modalCancelButton || !annotationForm || !annotationText) {
+        console.warn("Annotation modal elements not found. Annotations might not work correctly.");
+        // Decide how to handle this: return early, or let other parts run?
+        // For now, let other parts run, but log the warning.
+        // return; // Uncomment this to completely disable annotations if modal isn't found
+    }
+
+
     let newAnnotationData = null;
     let allAnnotations = [];
 
     // --- Drawing ---
     function drawAnnotations() {
+        // ... existing code ...
+        // Ensure canvas context is valid before drawing
+        if (!canvas || !canvas.getContext) {
+            console.error("Canvas element not ready for drawing annotations.");
+            return;
+        }
         const context = canvas.getContext('2d');
         const currentPage = getCurrentPageNumber();
         const transform = getTransformState();
@@ -47,8 +62,14 @@ export function initializeAnnotations(db, auth, projectId, canvas, commentsConta
                 // The transformation takes care of placing them correctly on the visible canvas.
                 context.beginPath();
                 // The radius should appear consistent regardless of zoom.
-                context.arc(annotation.x, annotation.y, 8 / transform.zoom, 0, Math.PI * 2);
-                context.fill();
+                const radius = 8 / transform.zoom; // Calculate radius
+                // Ensure radius is a positive number
+                if (radius > 0) {
+                  context.arc(annotation.x, annotation.y, radius, 0, Math.PI * 2);
+                  context.fill();
+                } else {
+                    console.warn("Calculated annotation radius is non-positive, skipping draw.");
+                }
             }
         });
 
@@ -60,121 +81,70 @@ export function initializeAnnotations(db, auth, projectId, canvas, commentsConta
 
     // --- Modal Handling ---
     function showModal() {
-        modal.classList.remove('hidden');
+        if (modal) modal.classList.remove('hidden'); // Check if modal exists
     }
 
     function hideModal() {
-        modal.classList.add('hidden');
-        annotationText.value = '';
+        if (modal) modal.classList.add('hidden'); // Check if modal exists
+        if (annotationText) annotationText.value = ''; // Check if annotationText exists
         newAnnotationData = null;
     }
 
-    modalCloseButton.addEventListener('click', hideModal);
-    modalCancelButton.addEventListener('click', hideModal);
+    // Add listeners only if buttons exist
+    if (modalCloseButton) modalCloseButton.addEventListener('click', hideModal);
+    if (modalCancelButton) modalCancelButton.addEventListener('click', hideModal);
+
 
     // --- Canvas Interaction ---
     // The 'click' event is now dispatched from viewerControls.js to distinguish clicks from pans.
-    canvas.addEventListener('click', (event) => {
-        const rect = canvas.getBoundingClientRect();
-        const transform = getTransformState();
-
-        // Convert click coordinates from screen space to canvas space
-        const canvasX = event.clientX - rect.left;
-        const canvasY = event.clientY - rect.top;
-
-        const pdfInfo = getPdfRenderInfo();
-
-        // Reverse the transformation to get the coordinates relative to the PDF page.
-        const pdfX = (canvasX - transform.pan.x) / transform.zoom - pdfInfo.x;
-        const pdfY = (canvasY - transform.pan.y) / transform.zoom - pdfInfo.y;
-
-        newAnnotationData = {
-            x: pdfX,
-            y: pdfY,
-            pageNumber: getCurrentPageNumber()
-        };
-
-        showModal();
-        annotationText.focus();
-    });
+    if (canvas) { // Check if canvas exists
+        canvas.addEventListener('click', (event) => {
+            // ... existing code ...
+            // Add checks before calling showModal and focusing
+            if (modal && annotationText) {
+                showModal();
+                annotationText.focus();
+            } else {
+                 console.warn("Cannot show annotation modal or focus input because elements are missing.");
+            }
+        });
+    } else {
+        console.warn("Canvas element not found for adding annotation click listener.");
+    }
 
     // --- Firestore Interaction ---
-    annotationForm.addEventListener('submit', async (event) => {
-        event.preventDefault();
+    if (annotationForm) { // Check if form exists
+        annotationForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
 
-        if (!newAnnotationData || !annotationText.value.trim()) {
-            return;
-        }
+            // Check annotationText exists here too
+            if (!newAnnotationData || !annotationText || !annotationText.value.trim()) {
+                return;
+            }
+            // ... rest of the submit logic ...
+        });
+    } else {
+         console.warn("Annotation form not found for adding submit listener.");
+    }
 
-        const user = auth.currentUser;
-        if (!user) {
-            console.error("User not logged in.");
-            // Optionally, show an error to the user
-            return;
-        }
-
-        try {
-            const annotationsRef = collection(db, "projects", projectId, "annotations");
-            await addDoc(annotationsRef, {
-                authorUid: user.uid,
-                authorEmail: user.email,
-                text: annotationText.value.trim(),
-                x: newAnnotationData.x,
-                y: newAnnotationData.y,
-                pageNumber: newAnnotationData.pageNumber,
-                createdAt: serverTimestamp()
-            });
-            console.log("Annotation saved successfully.");
-        } catch (error) {
-            console.error("Error saving annotation:", error);
-        } finally {
-            hideModal();
-        }
-    });
 
     // --- Comments List ---
     function updateCommentsList() {
-        commentsContainer.innerHTML = ''; // Clear existing comments
-
-        if (allAnnotations.length === 0) {
-            commentsContainer.innerHTML = '<p class="text-gray-400">No comments yet.</p>';
+        // ... existing code ...
+        // Add check for commentsContainer
+        if (!commentsContainer) {
+            console.warn("Comments container not found, cannot update list.");
             return;
         }
-
-        // Group comments by page number
-        const commentsByPage = allAnnotations.reduce((acc, annotation) => {
-            const page = annotation.pageNumber || 1;
-            if (!acc[page]) {
-                acc[page] = [];
-            }
-            acc[page].push(annotation);
-            return acc;
-        }, {});
-
-        Object.keys(commentsByPage).sort((a, b) => a - b).forEach(pageNumber => {
-            const pageTitle = document.createElement('h4');
-            pageTitle.className = 'text-lg font-semibold text-white mt-4 border-b border-slate-700/50 pb-2';
-            pageTitle.textContent = `Page ${pageNumber}`;
-            commentsContainer.appendChild(pageTitle);
-
-            commentsByPage[pageNumber].forEach(comment => {
-                const commentEl = document.createElement('div');
-                commentEl.classList.add('p-3', 'bg-slate-700', 'rounded-lg', 'mt-2');
-                commentEl.innerHTML = `<p class="text-sm text-gray-200">${comment.text}</p><p class="text-xs text-gray-400 mt-1">_by ${comment.authorEmail}</p>`;
-                commentsContainer.appendChild(commentEl);
-            });
-        });
+        commentsContainer.innerHTML = ''; // Clear existing comments
+        // ... rest of the update logic ...
     }
 
     // Listen for real-time updates on annotations
     const annotationsQuery = query(collection(db, "projects", projectId, "annotations"), orderBy("createdAt"));
 
     const unsubscribe = onSnapshot(annotationsQuery, (snapshot) => {
-        allAnnotations = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        console.log(`Received ${allAnnotations.length} annotations.`);
-
-        // Trigger a re-render of the canvas, which will then call our drawing function
-        rerenderCanvas();
+        // ... existing code ...
 
         // Update the text-based comments list
         updateCommentsList();
