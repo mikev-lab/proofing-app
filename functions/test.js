@@ -9,6 +9,7 @@ describe('optimizePdf', () => {
   let myFunctions;
 
   before(() => {
+    process.env.FUNCTIONS_EMULATOR = 'true';
     myFunctions = require('./index.js');
   });
 
@@ -38,7 +39,7 @@ describe('optimizePdf', () => {
 
     // Create a project in firestore
     await admin.firestore().collection('projects').doc(projectId).set({
-      versions: [{ fileURL: `gs://default-bucket/${filePath}` }],
+      versions: [{ filePath: filePath }],
     });
 
     // Run the function
@@ -49,5 +50,15 @@ describe('optimizePdf', () => {
     const previewFilePath = `proofs/${projectId}/${previewFileName}`;
     const fileExists = await bucket.file(previewFilePath).exists();
     assert.strictEqual(fileExists[0], true);
+
+    // Check that the firestore document was updated with the preflight check results
+    const projectDoc = await admin.firestore().collection('projects').doc(projectId).get();
+    const projectData = projectDoc.data();
+    const version = projectData.versions[0];
+    assert.strictEqual(version.preflightStatus, 'passed');
+    assert.strictEqual(version.preflightResults.dpiCheck.status, 'skipped');
+    assert.strictEqual(version.preflightResults.colorSpaceCheck.status, 'passed');
+    assert.strictEqual(version.preflightResults.fontCheck.status, 'passed');
+    assert.strictEqual(version.processingStatus, 'complete');
   }).timeout(10000);
 });
