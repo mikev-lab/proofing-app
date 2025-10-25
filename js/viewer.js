@@ -105,19 +105,39 @@ export async function initializeSharedViewer(config) {
 
         thumbnailList.innerHTML = '';
         renderedThumbnails.clear();
-        const totalViews = getViewCount(pdfDoc.numPages);
+
+        // For spread view, ensure we have an even number of pages for consistent spreads
+        let effectiveNumPages = pdfDoc.numPages;
+        if (currentViewMode === 'spread' && effectiveNumPages % 2 !== 0) {
+            effectiveNumPages += 1;
+        }
+        const totalViews = getViewCount(effectiveNumPages);
+
+        // Determine a standard aspect ratio for all thumbnails in spread mode for consistency
+        let standardAspectRatio = 1.0; // Default fallback
+        if (currentViewMode === 'spread' && pdfDoc.numPages > 1) {
+            const page1 = await pdfDoc.getPage(1);
+            const page2 = await pdfDoc.getPage(2);
+            const vp1 = page1.getViewport({ scale: 1 });
+            const vp2 = page2.getViewport({ scale: 1 });
+            standardAspectRatio = (vp1.width + vp2.width) / Math.max(vp1.height, vp2.height);
+        }
 
         for (let i = 1; i <= totalViews; i++) {
-            const pagesIndices = getPagesForView(i, pdfDoc.numPages);
-            const pagesStr = pagesIndices.join('-');
+            const pagesIndices = getPagesForView(i, effectiveNumPages);
+            if (pagesIndices.length === 0 || pagesIndices[0] > pdfDoc.numPages) continue;
 
-            // Dynamically determine aspect ratio for the placeholder
-            const pagePromises = pagesIndices.map(num => pdfDoc.getPage(num));
-            const pages = await Promise.all(pagePromises);
-            const viewports = pages.map(p => p.getViewport({ scale: 1.0 }));
-            const totalWidth = viewports.reduce((sum, vp) => sum + vp.width, 0);
-            const maxHeight = Math.max(...viewports.map(vp => vp.height));
-            const aspectRatio = totalWidth / maxHeight;
+            const pagesStr = pagesIndices.filter(p => p <= pdfDoc.numPages).join('-');
+
+            let aspectRatio;
+            if (currentViewMode === 'spread') {
+                aspectRatio = standardAspectRatio;
+            } else {
+                // For single view, calculate dynamically
+                const page = await pdfDoc.getPage(pagesIndices[0]);
+                const viewport = page.getViewport({ scale: 1.0 });
+                aspectRatio = viewport.width / viewport.height;
+            }
 
             const thumbItem = document.createElement('div');
             thumbItem.className = 'thumbnail-item p-2 rounded-md border-2 border-transparent hover:border-indigo-400 cursor-pointer';
@@ -127,17 +147,19 @@ export async function initializeSharedViewer(config) {
                 <div class="bg-black/20 flex items-center justify-center rounded-sm" style="aspect-ratio: ${aspectRatio}">
                      <canvas class="w-full h-full object-contain"></canvas>
                 </div>
-                <p class="text-center text-xs mt-2">Page ${pagesStr}</p>
+                <p class="text-center text-xs mt-2">Page ${pagesStr || 'Blank'}</p>
             `;
             thumbnailList.appendChild(thumbItem);
         }
 
+        // Debounced scroll handler for loading visible thumbnails
         let scrollTimeout;
         thumbnailList.addEventListener('scroll', () => {
             clearTimeout(scrollTimeout);
             scrollTimeout = setTimeout(loadVisibleThumbnails, 100);
         });
 
+        // Initial load of visible thumbnails
         loadVisibleThumbnails();
     }
 
@@ -174,29 +196,55 @@ export async function initializeSharedViewer(config) {
         const pagesToRenderIndices = getPagesForView(viewNumber, pdfDoc.numPages);
 
         try {
-            const pagePromises = pagesToRenderIndices.map(num => {
-                if (pdfPageCache[num]) return Promise.resolve(pdfPageCache[num]);
-                return pdfDoc.getPage(num).then(page => (pdfPageCache[num] = page, page));
-            });
-            const pages = await Promise.all(pagePromises);
+            const pages = await Promise.all(
+                pagesToRenderIndices.map(num => {
+                    if (pdfPageCache[num]) return Promise.resolve(pdfPageCache[num]);
+                    return pdfDoc.getPage(num).then(page => (pdfPageCache[num] = page, page));
+                })
+            );
+
+            // Use the placeholder's client rect for sizing, ensuring consistency
+            const placeholder = thumbItem.querySelector('div[style*="aspect-ratio"]');
+            const targetWidth = placeholder.clientWidth;
+            const targetHeight = placeholder.clientHeight;
+
+            // Determine the combined viewport of the pages to be rendered
             const viewports = pages.map(p => p.getViewport({ scale: 1.0 }));
-            const totalWidth = viewports.reduce((sum, vp) => sum + vp.width, 0);
-            const maxHeight = Math.max(...viewports.map(vp => vp.height));
-            const scale = Math.min(105 / totalWidth, 105 / maxHeight);
+            const totalWidthUnscaled = viewports.reduce((sum, vp) => sum + vp.width, 0);
+            const maxHeightUnscaled = Math.max(...viewports.map(vp => vp.height));
+            if (totalWidthUnscaled === 0 || maxHeightUnscaled === 0) return;
+
+
+            // Scale to fit within the placeholder
+            const scale = Math.min(targetWidth / totalWidthUnscaled, targetHeight / maxHeightUnscaled);
             const scaledViewports = pages.map(p => p.getViewport({ scale }));
-            canvas.width = scaledViewports.reduce((sum, vp) => sum + vp.width, 0);
-            canvas.height = Math.max(...scaledViewports.map(vp => vp.height));
+
+            canvas.width = targetWidth * (window.devicePixelRatio || 1);
+            canvas.height = targetHeight * (window.devicePixelRatio || 1);
+            context.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
+
             let currentX = 0;
+            const totalRenderWidth = scaledViewports.reduce((sum, vp) => sum + vp.width, 0);
+
+            // Center the whole spread/page in the canvas
+            currentX = (targetWidth - totalRenderWidth) / 2;
+
+
             for (let i = 0; i < pages.length; i++) {
                 const page = pages[i];
                 const viewport = scaledViewports[i];
-                const offsetY = (canvas.height - viewport.height) / 2;
-                await page.render({ canvasContext: context, viewport: viewport, transform: [1, 0, 0, 1, currentX, offsetY] }).promise;
+                const offsetY = (targetHeight - viewport.height) / 2;
+                const renderContext = {
+                    canvasContext: context,
+                    viewport: viewport,
+                    transform: [1, 0, 0, 1, currentX, offsetY],
+                };
+                await page.render(renderContext).promise;
                 currentX += viewport.width;
             }
         } catch (error) {
             console.error(`Failed to render thumbnail for view ${viewNumber}:`, error);
-            renderedThumbnails.delete(viewNumber);
+            renderedThumbnails.delete(viewNumber); // Allow retrying
         }
     }
 
