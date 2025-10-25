@@ -661,13 +661,33 @@
                             // Populate the specs form
                             populateSpecsForm(currentProjectData.specs);
 
+                            // --- Real-time Update Logic ---
+                            // Check which version is currently selected in the dropdown
+                            const versionSelector = document.getElementById('version-selector');
+                            const selectedVersion = versionSelector ? parseInt(versionSelector.value, 10) : null;
+
+                            // Re-initialize the viewer. The logic inside viewer.js will now handle
+                            // the different processing states based on the fresh `currentProjectData`.
+                            // This ensures that if the status of the *currently viewed* version
+                            // changes (e.g., from 'processing' to 'complete'), the view will auto-update.
                             initializeSharedViewer({
                                 db,
                                 auth,
                                 projectId,
-                                projectData: currentProjectData, // Pass current data
+                                projectData: currentProjectData,
                                 isAdmin: true
                             });
+
+                            // After initialization, ensure the dropdown reflects the correct version if it exists.
+                            // The viewer's internal logic selects the latest, but we might need to respect the dropdown.
+                            if (versionSelector && selectedVersion) {
+                                // Find if the selected version still exists in the new data
+                                const versionExists = currentProjectData.versions.some(v => v.version === selectedVersion);
+                                if (versionExists) {
+                                     versionSelector.value = selectedVersion;
+                                }
+                            }
+                            // --- End Real-time Update Logic ---
 
                             loadingSpinner.classList.add('hidden');
                             proofContent.classList.remove('hidden');

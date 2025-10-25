@@ -645,6 +645,96 @@ export async function initializeSharedViewer(config) {
     }
 
     /**
+     * Handles the logic for loading a specific version, including checking its processing status.
+     * This function manipulates the DOM to show loading/error states or triggers the PDF load.
+     * @param {object | null} versionData - The version object from Firestore, or null if no version exists.
+     */
+    function loadVersion(versionData) {
+        // This function centralizes the logic for handling all possible version states.
+
+        if (!versionData) {
+            // Case where no versions exist for the project.
+            if (renderingThrobber) {
+                // To avoid destroying the canvas, we use the throbber overlay for this message too.
+                renderingThrobber.innerHTML = '<p class="text-gray-400 p-4">No proof file available for this project yet.</p>';
+                renderingThrobber.classList.remove('hidden');
+            }
+            if (pdfCanvas) pdfCanvas.classList.add('hidden');
+            if (navigationControls) navigationControls.classList.add('hidden');
+            if (guidesSection) guidesSection.classList.add('hidden');
+            return;
+        }
+
+        const status = versionData.processingStatus;
+        const errorMsg = versionData.processingError;
+
+        // Case 1: PDF is processing. Show a persistent loading message.
+        if (status === 'processing') {
+            if (renderingThrobber) {
+                renderingThrobber.innerHTML = `
+                    <div class="h-10 w-10 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900" role="status"></div>
+                    <p class="mt-3 text-gray-300 text-sm">Optimizing PDF for viewing, please wait...</p>
+                `;
+                renderingThrobber.classList.remove('hidden');
+            }
+            if (pdfCanvas) pdfCanvas.classList.add('hidden');
+            if (navigationControls) navigationControls.classList.add('hidden');
+            if (guidesSection) guidesSection.classList.add('hidden');
+            return; // The onSnapshot listener will trigger a reload when status changes.
+        }
+
+        // Case 2: PDF processing resulted in an error. Show the error message.
+        if (status === 'error') {
+            if (renderingThrobber) {
+                renderingThrobber.innerHTML = `
+                    <div class="text-center p-4">
+                        <h3 class="text-lg font-semibold text-red-400">Error: PDF processing failed.</h3>
+                        <p class="text-gray-300 mt-2">Details: ${errorMsg || 'No error details available.'}</p>
+                    </div>
+                `;
+                renderingThrobber.classList.remove('hidden');
+            }
+            if (pdfCanvas) pdfCanvas.classList.add('hidden');
+            if (navigationControls) navigationControls.classList.add('hidden');
+            if (guidesSection) guidesSection.classList.add('hidden');
+            return;
+        }
+
+        // Case 3: Status is 'complete' or missing (legacy). Proceed to load the PDF.
+        if (pdfCanvas) pdfCanvas.classList.remove('hidden');
+        if (renderingThrobber) renderingThrobber.classList.add('hidden'); // Ensure any previous message is gone.
+
+        const urlToLoad = versionData.previewURL || versionData.fileURL;
+
+        if (urlToLoad && urlToLoad !== currentlyLoadedURL) {
+            console.log(`Loading URL for version ${versionData.version}: ${urlToLoad.substring(0, 100)}...`);
+            loadPdf(urlToLoad);
+        } else if (!urlToLoad) {
+            console.error("No URL found for version:", versionData.version);
+            if (renderingThrobber) {
+                renderingThrobber.innerHTML = `
+                    <div class="text-center p-4">
+                        <h3 class="text-lg font-semibold text-yellow-400">File Not Found</h3>
+                        <p class="text-gray-300 mt-2">A file URL for this version does not exist.</p>
+                    </div>
+                `;
+                renderingThrobber.classList.remove('hidden');
+            }
+            if (pdfCanvas) pdfCanvas.classList.add('hidden');
+            if (navigationControls) navigationControls.classList.add('hidden');
+            if (guidesSection) guidesSection.classList.add('hidden');
+        } else {
+            console.log(`Version ${versionData.version} selected, but URL is the same as currently loaded. No reload needed.`);
+            // If URL is the same, just ensure the main UI is visible.
+            if (!pageRendering && renderingThrobber) renderingThrobber.classList.add('hidden');
+            if (pdfCanvas) pdfCanvas.classList.remove('hidden');
+            if (navigationControls) navigationControls.classList.remove('hidden');
+            if (guidesSection) guidesSection.classList.remove('hidden');
+        }
+    }
+
+
+    /**
      * Loads a specific version of the proof based on version number.
      */
     function loadProofByVersion(versionNumber) {
@@ -657,65 +747,8 @@ export async function initializeSharedViewer(config) {
             console.error("Version not found:", versionNumber);
             return;
         }
-
-        // --- NEW: Check processing status ---
-        const status = versionData.processingStatus;
-
-        // Clear viewer and hide controls initially
-        if (pdfViewer) pdfViewer.innerHTML = '';
-        if (pdfCanvas) pdfCanvas.classList.add('hidden');
-        if (navigationControls) navigationControls.classList.add('hidden');
-        if (guidesSection) guidesSection.classList.add('hidden');
-        if (renderingThrobber) renderingThrobber.classList.remove('hidden');
-
-
-        if (status === 'processing') {
-            renderingThrobber.innerHTML = `
-                <div class="h-10 w-10 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900" role="status"></div>
-                <p class="mt-3 text-gray-300 text-sm">Optimizing PDF for web viewing... This may take a moment.</p>
-            `;
-            // The onSnapshot listener will eventually trigger a reload when the status changes.
-            return;
-        }
-
-        if (status === 'error') {
-            renderingThrobber.classList.add('hidden');
-            pdfViewer.innerHTML = `
-                <div class="text-center p-4">
-                    <h3 class="text-lg font-semibold text-red-400">Processing Failed</h3>
-                    <p class="text-gray-300 mt-2">There was an error while preparing this PDF.</p>
-                    <p class="text-xs text-gray-500 mt-1">${versionData.processingError || 'No error details available.'}</p>
-                </div>
-            `;
-            return;
-        }
-
-        // --- END: Status check ---
-
-        // If status is 'complete' or absent (legacy data), proceed to load
-        renderingThrobber.innerHTML = `
-             <div class="h-10 w-10 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900" role="status"></div>
-             <p class="mt-3 text-gray-300 text-sm">Rendering PDF...</p>
-        `;
-        if(pdfCanvas) pdfCanvas.classList.remove('hidden');
-
-
-        let urlToLoad = versionData.previewURL || versionData.fileURL;
-        if (urlToLoad && urlToLoad !== currentlyLoadedURL) {
-            console.log(`Switching to version ${versionNumber}. Loading URL: ${urlToLoad.substring(0, 100)}...`);
-            loadPdf(urlToLoad);
-        } else if (!urlToLoad) {
-             console.error("No URL found for version:", versionNumber);
-             if (pdfViewer) pdfViewer.innerHTML = `<p class="text-red-400 p-4">Could not find file for version ${versionNumber}.</p>`;
-             if (navigationControls) navigationControls.classList.add('hidden');
-             if (guidesSection) guidesSection.classList.add('hidden');
-        } else {
-             console.log(`Version ${versionNumber} selected, but URL is the same as currently loaded. No reload.`);
-             // If URL is the same, we still need to ensure the UI is visible
-             renderingThrobber.classList.add('hidden');
-             if (navigationControls) navigationControls.classList.remove('hidden');
-             if (guidesSection) guidesSection.classList.remove('hidden');
-        }
+        // Delegate all further logic to the new centralized function.
+        loadVersion(versionData);
     }
 
     // --- Initialization ---
@@ -830,66 +863,30 @@ export async function initializeSharedViewer(config) {
     // --- Initial PDF Load ---
     let versionToLoad = null;
     if (projectData && projectData.versions && projectData.versions.length > 0) {
+        // Find the most recent version to load by default.
+        // If the admin is viewing, respect the version selector's current value.
         let targetVersionNumber;
         if (isAdmin && versionSelector && versionSelector.value) {
-            try { targetVersionNumber = parseInt(versionSelector.value, 10); }
-            catch (e) { targetVersionNumber = Math.max(...projectData.versions.map(v => v.version)); }
+            try {
+                targetVersionNumber = parseInt(versionSelector.value, 10);
+            } catch (e) {
+                // Fallback to max version if parsing fails
+                targetVersionNumber = Math.max(...projectData.versions.map(v => v.version));
+            }
         } else {
+            // For clients or if selector isn't ready, just get the latest version number.
             targetVersionNumber = Math.max(...projectData.versions.map(v => v.version));
         }
+
         versionToLoad = projectData.versions.find(v => v.version === targetVersionNumber);
-        if (!versionToLoad && projectData.versions.length > 0) {
-            versionToLoad = projectData.versions.reduce((latest, current) => (current.version > latest.version ? current : latest), projectData.versions[0]);
+
+        // Fallback just in case find fails but versions exist.
+        if (!versionToLoad) {
+             versionToLoad = projectData.versions.reduce((latest, current) => (current.version > latest.version ? current : latest), projectData.versions[0]);
         }
     }
 
-    if (versionToLoad) {
-        const status = versionToLoad.processingStatus;
-        if (status === 'processing') {
-            if (renderingThrobber) {
-                renderingThrobber.classList.remove('hidden');
-                renderingThrobber.innerHTML = `
-                    <div class="h-10 w-10 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900" role="status"></div>
-                    <p class="mt-3 text-gray-300 text-sm">Optimizing PDF for web viewing... This may take a moment.</p>
-                `;
-            }
-            if (pdfViewer) pdfViewer.innerHTML = '';
-            if (pdfCanvas) pdfCanvas.classList.add('hidden');
-            if (navigationControls) navigationControls.classList.add('hidden');
-            if (guidesSection) guidesSection.classList.add('hidden');
-            return; // Stop further execution
-        }
-
-        if (status === 'error') {
-            if (renderingThrobber) renderingThrobber.classList.add('hidden');
-            if (pdfViewer) {
-                pdfViewer.innerHTML = `
-                    <div class="text-center p-4">
-                        <h3 class="text-lg font-semibold text-red-400">Processing Failed</h3>
-                        <p class="text-gray-300 mt-2">There was an error while preparing this PDF.</p>
-                        <p class="text-xs text-gray-500 mt-1">${versionToLoad.processingError || 'No error details available.'}</p>
-                    </div>
-                `;
-            }
-            return; // Stop further execution
-        }
-
-        // If status is complete or missing, proceed to load.
-        const targetUrlToLoad = versionToLoad.previewURL || versionToLoad.fileURL;
-        if (targetUrlToLoad && targetUrlToLoad !== currentlyLoadedURL) {
-            loadPdf(targetUrlToLoad);
-        } else if (!targetUrlToLoad) {
-             if (renderingThrobber) renderingThrobber.classList.add('hidden');
-             if (pdfViewer) pdfViewer.innerHTML = '<p class="text-gray-400 p-4">No proof file available for this project yet.</p>';
-             if (navigationControls) navigationControls.classList.add('hidden');
-             if (guidesSection) guidesSection.classList.add('hidden');
-        } else {
-             if (!pageRendering && renderingThrobber) renderingThrobber.classList.add('hidden');
-        }
-    } else { // No versions at all
-        if (renderingThrobber) renderingThrobber.classList.add('hidden');
-        if (pdfViewer) pdfViewer.innerHTML = '<p class="text-gray-400 p-4">No proof file available for this project yet.</p>';
-        if (navigationControls) navigationControls.classList.add('hidden');
-        if (guidesSection) guidesSection.classList.add('hidden');
-    }
+    // Delegate the entire rendering logic to the centralized function.
+    // It handles all cases, including when versionToLoad is null.
+    loadVersion(versionToLoad);
 }
