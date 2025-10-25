@@ -111,16 +111,15 @@ function drawBox(ctx, { x, y, width, height, color, lineWidth = 1, dashPattern =
 /**
  * Draws the trim guide based on calculated coordinates.
  * @param {CanvasRenderingContext2D} ctx - The canvas context.
- * @param {object} options - The drawing options object.
+ * @param {object} params - The drawing parameters object.
  */
-export function drawTrimGuide(ctx, options) {
-    // Trim guide is the exact boundary of the PDF page's image on the canvas
+function drawTrimGuide(ctx, params) {
     drawBox(ctx, {
-        x: options.drawX,
-        y: options.drawY,
-        width: options.drawWidth,
-        height: options.drawHeight,
-        color: 'cyan',
+        x: params.trimX,
+        y: params.trimY,
+        width: params.trimWidth,
+        height: params.trimHeight,
+        color: 'black',
         lineWidth: 1
     });
 }
@@ -130,16 +129,7 @@ export function drawTrimGuide(ctx, options) {
  * @param {CanvasRenderingContext2D} ctx - The canvas context.
  * @param {object} specs - The project's print specifications.
  * @param {object} renderInfo - Information about the PDF's rendered position and size.
- * @param {object} transformState - The current zoom and pan state.
- * @param {string} viewMode - The current view mode ('single' or 'spread').
- * @param {number} pageNum - The current page or view number.
- * @param {number} numPagesInView - The number of pages in the current view (1 or 2).
- * @param {PDFPageViewport} page1Viewport - The viewport for the first page in the view.
- * @param {PDFPageViewport} [page2Viewport=null] - The viewport for the second page in the view.
  * @param {object} guideOptions - An object indicating which guides to show.
- * @param {boolean} guideOptions.trim - Whether to show the trim guide.
- * @param {boolean} guideOptions.bleed - Whether to show the bleed guide.
- * @param {boolean} guideOptions.safety - Whether to show the safety guide.
  */
 export function drawGuides(ctx, specs, renderInfo, guideOptions) {
     if (!specs || !renderInfo) return;
@@ -147,43 +137,52 @@ export function drawGuides(ctx, specs, renderInfo, guideOptions) {
     const trimDimensions = getTrimDimensions(specs.dimensions);
     if (!trimDimensions) return;
 
-    const options = {
-        drawX: renderInfo.x,
-        drawY: renderInfo.y,
-        drawWidth: renderInfo.width,
-        drawHeight: renderInfo.height,
-        trimWidthPt: trimDimensions.width,
-        trimHeightPt: trimDimensions.height,
-        bleedPt: specs.bleedInches ? specs.bleedInches * INCH_TO_POINTS : (specs.bleedMillimeters ? specs.bleedMillimeters * MM_TO_POINTS : 0),
-        safetyPt: specs.safetyInches ? specs.safetyInches * INCH_TO_POINTS : (specs.safetyMillimeters ? specs.safetyMillimeters * MM_TO_POINTS : 0),
+    const bleedPt = specs.bleedInches ? specs.bleedInches * INCH_TO_POINTS : (specs.bleedMillimeters ? specs.bleedMillimeters * MM_TO_POINTS : 0);
+    const safetyPt = specs.safetyInches ? specs.safetyInches * INCH_TO_POINTS : (specs.safetyMillimeters ? specs.safetyMillimeters * MM_TO_POINTS : 0);
+
+    const pageTotalWidthPt = trimDimensions.width + (2 * bleedPt);
+    if (pageTotalWidthPt <= 0) return;
+
+    const scale = renderInfo.width / pageTotalWidthPt;
+
+    const trimDrawX = renderInfo.x + (bleedPt * scale);
+    const trimDrawY = renderInfo.y + (bleedPt * scale);
+    const trimDrawWidth = trimDimensions.width * scale;
+    const trimDrawHeight = trimDimensions.height * scale;
+
+    const guideParams = {
+        trimX: trimDrawX,
+        trimY: trimDrawY,
+        trimWidth: trimDrawWidth,
+        trimHeight: trimDrawHeight,
+        bleedPx: bleedPt * scale,
+        safetyPx: safetyPt * scale,
     };
 
     if (guideOptions.trim) {
-        drawTrimGuide(ctx, options);
+        drawTrimGuide(ctx, guideParams);
     }
-    if (guideOptions.bleed && options.bleedPt > 0) {
-        drawBleedGuide(ctx, options);
+    if (guideOptions.bleed && bleedPt > 0) {
+        drawBleedGuide(ctx, guideParams);
     }
-    if (guideOptions.safety && options.safetyPt > 0) {
-        drawSafetyGuide(ctx, options);
+    if (guideOptions.safety && safetyPt > 0) {
+        drawSafetyGuide(ctx, guideParams);
     }
 }
+
 
 /**
  * Draws the bleed guide based on calculated coordinates.
  * @param {CanvasRenderingContext2D} ctx - The canvas context.
- * @param {object} options - The drawing options object.
+ * @param {object} params - The drawing parameters object.
  */
-export function drawBleedGuide(ctx, options) {
-    const scale = options.drawWidth / options.trimWidthPt;
-    const bleedOffset = options.bleedPt * scale;
-
+function drawBleedGuide(ctx, params) {
     drawBox(ctx, {
-        x: options.drawX - bleedOffset,
-        y: options.drawY - bleedOffset,
-        width: options.drawWidth + (2 * bleedOffset),
-        height: options.drawHeight + (2 * bleedOffset),
-        color: 'magenta',
+        x: params.trimX - params.bleedPx,
+        y: params.trimY - params.bleedPx,
+        width: params.trimWidth + (2 * params.bleedPx),
+        height: params.trimHeight + (2 * params.bleedPx),
+        color: 'red',
         lineWidth: 1,
         dashPattern: [5, 5]
     });
@@ -192,18 +191,15 @@ export function drawBleedGuide(ctx, options) {
 /**
  * Draws the safety guide based on calculated coordinates.
  * @param {CanvasRenderingContext2D} ctx - The canvas context.
- * @param {object} options - The drawing options object.
+ * @param {object} params - The drawing parameters object.
  */
-export function drawSafetyGuide(ctx, options) {
-    const scale = options.drawWidth / options.trimWidthPt;
-    const safetyOffset = options.safetyPt * scale;
-
+function drawSafetyGuide(ctx, params) {
     drawBox(ctx, {
-        x: options.drawX + safetyOffset,
-        y: options.drawY + safetyOffset,
-        width: options.drawWidth - (2 * safetyOffset),
-        height: options.drawHeight - (2 * safetyOffset),
-        color: 'yellow',
+        x: params.trimX + params.safetyPx,
+        y: params.trimY + params.safetyPx,
+        width: params.trimWidth - (2 * params.safetyPx),
+        height: params.trimHeight - (2 * params.safetyPx),
+        color: 'green',
         lineWidth: 1,
         dashPattern: [5, 5]
     });
