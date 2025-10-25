@@ -32,29 +32,32 @@ exports.optimizePdf = onObjectFinalized({
 
   // The 'object' is now 'event.data'
   const file = event.data;
-  const filePath = file.name;
+  const filePath = file.name; // This is the object path, e.g., proofs/projectId/timestamp_filename.pdf
   const contentType = file.contentType;
   const fileBucket = file.bucket;
 
-  // Exit if the file is not a PDF or is already a preview
-  if (!contentType.startsWith('application/pdf') || filePath.endsWith('_preview.pdf')) {
-    return logger.log('Not a target file or already processed.');
+  logger.log('Function triggered for file:', filePath, 'Content-Type:', contentType);
+
+  // Exit if this is the preview file we generated
+  if (filePath.endsWith('_preview.pdf')) {
+    return logger.log('This is a preview file, skipping.');
   }
 
-  // Extract projectId, versionNumber from the file path
-  // Expected path: proofs/{projectId}/{fileName} or proofs/{projectId}/{timestamp}_{fileName}
+  // Exit if the file is not a PDF
+  if (!contentType || !contentType.startsWith('application/pdf')) {
+    return logger.log(`File is not a PDF (contentType: ${contentType}), skipping.`);
+  }
+
+
+  // Extract projectId from the file path
   const parts = filePath.split('/');
   if (parts.length < 2 || parts[0] !== 'proofs') {
       return logger.log(`File path does not match expected structure proofs/{projectId}/{fileName}. Got: ${filePath}`);
   }
   const projectId = parts[1];
-  // Extract the original filename, handling potential timestamp prefixes like '1729867990433_Test Book v1.pdf'
-  const fullFileName = parts[parts.length - 1]; // Get the last part (the actual filename)
-  // Check if there's a timestamp prefix (assuming it's numeric followed by _)
-  const matchTimestamp = fullFileName.match(/^(\d+_)(\S.+)$/);
-  const originalFileName = matchTimestamp ? matchTimestamp[2] : fullFileName; // Use the part after the timestamp_ or the full name
+  const fullFileName = parts[parts.length - 1]; // Filename including timestamp prefix
 
-  logger.log(`Processing file: ${fullFileName} (original: ${originalFileName}) for project: ${projectId}`);
+  logger.log(`Processing storage file: ${fullFileName} for project: ${projectId}`);
 
 
   const bucket = storage.bucket(fileBucket);
@@ -72,9 +75,9 @@ exports.optimizePdf = onObjectFinalized({
     await spawn('gs', [
       '-sDEVICE=pdfwrite',
       '-dCompatibilityLevel=1.4',
-      '-dPDFSETTINGS=/ebook', // Use /ebook for smaller size, suitable for screen viewing
-      '-dDetectDuplicateImages=true', // Try to reduce size further
-      '-dConvertCMYKImagesToRGB=true', // Convert colorspaces if needed for screen
+      '-dPDFSETTINGS=/ebook',
+      '-dDetectDuplicateImages=true',
+      '-dConvertCMYKImagesToRGB=true',
       '-dNOPAUSE',
       '-dQUIET',
       '-dBATCH',
@@ -92,7 +95,7 @@ exports.optimizePdf = onObjectFinalized({
     const previewFile = bucket.file(destination);
     const [signedUrl] = await previewFile.getSignedUrl({
       action: 'read',
-      expires: '03-09-2491' // A far-future expiration date
+      expires: '03-09-2491'
     });
 
     // Update Firestore using a transaction
@@ -106,12 +109,15 @@ exports.optimizePdf = onObjectFinalized({
       const projectData = projectDoc.data();
       const versions = projectData.versions || [];
 
-      // *** CHANGE: Find the version by matching the original fileName ***
-      const versionIndex = versions.findIndex(v => v.fileName === originalFileName);
+      // --- Use filePath for matching ---
+      logger.log(`Attempting to find version index matching filePath: "${filePath}"`);
+      // The filePath from the event trigger *is* the storage object path
+      const versionIndex = versions.findIndex(v => v.filePath === filePath);
+      logger.log(`Result of findIndex: ${versionIndex}`);
+      // --- End Match Logic ---
 
       if (versionIndex === -1) {
-        // Log the error but don't throw, to prevent retries on a non-existent entry
-        logger.warn(`No version found matching fileName "${originalFileName}" in project ${projectId}. Versions found: ${JSON.stringify(versions.map(v => v.fileName))}`);
+        logger.warn(`No version found matching filePath "${filePath}" in project ${projectId}. Check if filePath was stored correctly during upload. Versions found: ${JSON.stringify(versions.map(v => ({ fileName: v.fileName, fileURL: v.fileURL, filePath: v.filePath })))}`);
         return; // Exit transaction gracefully
       }
 
