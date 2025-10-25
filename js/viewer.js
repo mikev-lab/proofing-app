@@ -438,9 +438,42 @@ export async function initializeSharedViewer(config) {
 
             // Determine render scale based on device pixel ratio for clarity
             const pdfRenderScale = Math.max(1.5, (window.devicePixelRatio || 1) * 1); // Adjust multiplier as needed
-            // Get viewports scaled for high-resolution rendering to hidden canvas
             const viewports = pages.map(p => p.getViewport({ scale: pdfRenderScale }));
-            const totalWidth = viewports.reduce((sum, vp) => sum + vp.width, 0);
+
+            // --- SPREAD MASKING LOGIC ---
+            const isSpread = currentViewMode === 'spread' && pages.length > 1;
+            const bleedPt = (projectSpecs?.bleedInches || 0) * 72; // 72 points per inch
+            const scaledBleed = bleedPt * pdfRenderScale;
+
+            // Render each page to a temporary canvas, then composite them onto the main hidden canvas.
+            // This allows us to clip the inside bleed for spreads.
+            const pageCanvases = await Promise.all(pages.map(async (page, i) => {
+                const viewport = viewports[i];
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = viewport.width;
+                tempCanvas.height = viewport.height;
+                const tempCtx = tempCanvas.getContext('2d');
+                await page.render({ canvasContext: tempCtx, viewport: viewport }).promise;
+
+                let sourceX = 0;
+                let sourceWidth = viewport.width;
+                if (isSpread) {
+                    sourceWidth -= scaledBleed;
+                    if (i === 1) { // Right page of spread, clip from left
+                        sourceX = scaledBleed;
+                    }
+                }
+                return {
+                    canvas: tempCanvas,
+                    sourceX,
+                    sourceWidth,
+                    destWidth: sourceWidth, // How much space it takes in the final composition
+                    destHeight: viewport.height
+                };
+            }));
+
+            // Calculate final hidden canvas dimensions from the (potentially clipped) page canvases
+            const totalWidth = pageCanvases.reduce((sum, pc) => sum + pc.destWidth, 0);
             const maxHeight = Math.max(...viewports.map(vp => vp.height));
 
             // Set hidden canvas dimensions
@@ -449,18 +482,18 @@ export async function initializeSharedViewer(config) {
             const hiddenContext = hiddenCanvas.getContext('2d');
             hiddenContext.clearRect(0, 0, hiddenCanvas.width, hiddenCanvas.height); // Clear hidden canvas
 
-            // Render pages side-by-side onto the hidden canvas
+            // Draw the clipped page canvases onto the main hidden canvas
             let currentX = 0;
-            for (let i = 0; i < pages.length; i++) {
-                const page = pages[i];
-                const viewport = viewports[i];
-                // Center vertically if pages have different heights (less common)
-                const offsetY = (maxHeight - viewport.height) / 2;
-                hiddenContext.save();
-                hiddenContext.translate(currentX, offsetY);
-                await page.render({ canvasContext: hiddenContext, viewport: viewport }).promise;
-                hiddenContext.restore();
-                currentX += viewport.width; // Move to next page position
+            for (const pageCanvasInfo of pageCanvases) {
+                const offsetY = (maxHeight - pageCanvasInfo.destHeight) / 2;
+                hiddenContext.drawImage(
+                    pageCanvasInfo.canvas,
+                    pageCanvasInfo.sourceX, 0, // source x, y
+                    pageCanvasInfo.sourceWidth, pageCanvasInfo.destHeight, // source w, h
+                    currentX, offsetY, // dest x, y
+                    pageCanvasInfo.destWidth, pageCanvasInfo.destHeight // dest w, h
+                );
+                currentX += pageCanvasInfo.destWidth;
             }
 
             // --- Render hidden canvas onto the visible canvas ---
@@ -478,7 +511,15 @@ export async function initializeSharedViewer(config) {
 
             // --- Calculate base scale and position for the entire view ---
             const baseViewports = pages.map(p => p.getViewport({ scale: 1.0 }));
-            const totalBaseWidth = baseViewports.reduce((sum, vp) => sum + vp.width, 0);
+            const baseBleed = (projectSpecs?.bleedInches || 0) * 72;
+            let totalBaseWidth;
+            if (isSpread) {
+                // For spreads, the base width is the sum of page widths minus the inside bleeds that are being masked.
+                totalBaseWidth = baseViewports.reduce((sum, vp) => sum + vp.width, 0) - (2 * baseBleed);
+            } else {
+                totalBaseWidth = baseViewports.reduce((sum, vp) => sum + vp.width, 0);
+            }
+
             const maxBaseHeight = Math.max(...baseViewports.map(vp => vp.height));
             const availableWidth = pdfViewer.clientWidth;
             const availableHeight = pdfViewer.clientHeight;
@@ -498,6 +539,7 @@ export async function initializeSharedViewer(config) {
             visibleContext.scale(transformState.zoom, transformState.zoom);
 
             // --- Draw the pre-rendered content from the hidden canvas ---
+            // The hidden canvas is already the correct final width, so we use `viewWidth` here.
             visibleContext.drawImage(hiddenCanvas, viewX, viewY, viewWidth, viewHeight);
 
             // --- Calculate individual page render info ---
@@ -505,19 +547,31 @@ export async function initializeSharedViewer(config) {
             let currentPageX = viewX; // Start at the beginning of the view's x position
             for (let i = 0; i < baseViewports.length; i++) {
                 const pageBaseViewport = baseViewports[i];
-                const pageWidth = pageBaseViewport.width * baseScale;
-                const pageHeight = pageBaseViewport.height * baseScale;
-                // Center each page vertically within the max height of the view
-                const pageY = viewY + (viewHeight - pageHeight) / 2;
+                const scaledBaseBleed = baseBleed * baseScale;
+                let pageRenderWidth = pageBaseViewport.width * baseScale;
+                let trimOffset = 0; // For adjusting guide centering
+
+                if (isSpread) {
+                    pageRenderWidth -= scaledBaseBleed;
+                    if (i === 0) { // Left page: trim box is shifted left relative to its visible area
+                        trimOffset = -scaledBaseBleed / 2;
+                    } else { // Right page: trim box is shifted right
+                        trimOffset = scaledBaseBleed / 2;
+                    }
+                }
+
+                const pageRenderHeight = pageBaseViewport.height * baseScale;
+                const pageY = viewY + (viewHeight - pageRenderHeight) / 2;
 
                 pageRenderInfos.push({
                     x: currentPageX,
                     y: pageY,
-                    width: pageWidth,
-                    height: pageHeight,
-                    scale: baseScale // Use the same base scale for guides
+                    width: pageRenderWidth,
+                    height: pageRenderHeight,
+                    scale: baseScale,
+                    trimOffset: trimOffset // Pass offset to guide renderer
                 });
-                currentPageX += pageWidth; // Move to the next page's horizontal position
+                currentPageX += pageRenderWidth; // Move to the next page's horizontal position
             }
 
 

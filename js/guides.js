@@ -208,7 +208,8 @@ function drawGuidesForPage(ctx, specs, pageRenderInfo, guideOptions) {
     const trimDrawHeight = trimDimensions.height * scale;
 
     // Calculate the top-left corner (x, y) of the trim box, centered within the pageRenderInfo area
-    const trimDrawX = pageRenderInfo.x + (pageRenderInfo.width - trimDrawWidth) / 2;
+    // Apply the trimOffset if it exists (for masked spreads) to ensure guides are centered correctly
+    const trimDrawX = pageRenderInfo.x + (pageRenderInfo.width - trimDrawWidth) / 2 + (pageRenderInfo.trimOffset || 0);
     const trimDrawY = pageRenderInfo.y + (pageRenderInfo.height - trimDrawHeight) / 2;
 
      console.log(`drawGuidesForPage - Trim Box - x: ${trimDrawX.toFixed(2)}, y: ${trimDrawY.toFixed(2)}, w: ${trimDrawWidth.toFixed(2)}, h: ${trimDrawHeight.toFixed(2)}`);
