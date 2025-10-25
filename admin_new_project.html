@@ -365,8 +365,10 @@
                     companyId,
                     specs, // Now includes bleed and safety
                     createdAt: Timestamp.now(),
-                    versions: [] // Start with empty versions
-                    // Status and isAwaitingClientUpload determined later
+                    versions: [], // Start with empty versions
+                    status: 'active', // Default status
+                    deleteAt: null // Default deleteAt
+                    // isAwaitingClientUpload determined later
                 };
 
                 // Create the project doc FIRST to get its ID
