@@ -9,9 +9,11 @@ WORKDIR /workspace
 # RUN apt-get update && apt-get install -y --no-install-recommends ghostscript
 # Update: Use the fullchain image provided by Google, which has build tools
 # We need this step to ensure the underlying OS has package lists updated and installs gs
-RUN apt-get update && apt-get install -y --no-install-recommends ghostscript && \
-    # Clean up apt cache to reduce image size
-    rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ghostscript \
+    poppler-utils \
+    libimage-exiftool-perl \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy package.json and package-lock.json first to leverage Docker cache
 COPY package*.json ./
