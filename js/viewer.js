@@ -46,6 +46,12 @@ export async function initializeSharedViewer(config) {
     // Version switching dropdown for admin
     const versionSelector = document.getElementById('version-selector');
 
+    // Preflight check UI elements
+    const preflightResultsContainer = document.getElementById('preflight-results-container');
+    const preflightStatusMessage = document.getElementById('preflight-status-message');
+    const preflightIssuesList = document.getElementById('preflight-issues-list');
+    const preflightDataList = document.getElementById('preflight-data-list');
+
     // Dynamically imported module
     let guidesModule = null;
 
@@ -751,6 +757,82 @@ export async function initializeSharedViewer(config) {
         loadVersion(versionData);
     }
 
+    /**
+     * Displays the preflight check results for a given version.
+     * @param {object | null} versionData - The version object from Firestore.
+     */
+    function displayPreflightResults(versionData) {
+        if (!isAdmin || !preflightResultsContainer) return; // Only run for admins on the correct page
+
+        // Clear previous results
+        preflightStatusMessage.textContent = '';
+        preflightIssuesList.innerHTML = '';
+        preflightDataList.innerHTML = '';
+
+        if (!versionData || !versionData.preflightStatus) {
+            preflightStatusMessage.textContent = 'No preflight data available for this version.';
+            return;
+        }
+
+        const { preflightStatus, preflightResults } = versionData;
+
+        // Display issues for warnings or failures
+        if ((preflightStatus === 'warning' || preflightStatus === 'failed') && preflightResults) {
+            const issues = [];
+            for (const key in preflightResults) {
+                if (preflightResults[key].status === 'warning' || preflightResults[key].status === 'failed') {
+                    issues.push(preflightResults[key].details);
+                }
+            }
+            if (issues.length > 0) {
+                issues.forEach(issue => {
+                    const li = document.createElement('li');
+                    li.textContent = issue;
+                    preflightIssuesList.appendChild(li);
+                });
+            } else {
+                preflightStatusMessage.textContent = 'Preflight check ran, but no specific issues were reported.';
+            }
+        } else if (preflightStatus === 'passed') {
+            preflightStatusMessage.textContent = 'All preflight checks passed successfully.';
+        }
+
+        // Display all preflight data in a key-value format
+        if (preflightResults) {
+            for (const key in preflightResults) {
+                const result = preflightResults[key];
+                const dataElement = document.createElement('div');
+                dataElement.className = 'text-sm';
+
+                let statusIcon = '';
+                let statusColor = 'text-gray-400';
+                if (result.status === 'passed') {
+                    statusIcon = '✅';
+                    statusColor = 'text-green-400';
+                } else if (result.status === 'warning') {
+                    statusIcon = '⚠️';
+                    statusColor = 'text-yellow-400';
+                } else if (result.status === 'failed') {
+                    statusIcon = '❌';
+                    statusColor = 'text-red-400';
+                }
+
+                // Create a more readable title from the camelCase key
+                const title = key.replace(/([A-Z])/g, ' $1').replace(/^./, (str) => str.toUpperCase());
+
+                dataElement.innerHTML = `
+                    <div>
+                        <strong class="text-gray-300">${title}:</strong>
+                        <span class="${statusColor} font-semibold">${statusIcon} ${result.status}</span>
+                    </div>
+                    <div class="pl-4 text-gray-400 text-xs">${result.details || ''}</div>
+                `;
+                preflightDataList.appendChild(dataElement);
+            }
+        }
+    }
+
+
     // --- Initialization ---
 
     // Set up initial view mode based on project specs
@@ -841,8 +923,18 @@ export async function initializeSharedViewer(config) {
             projectData.versions.sort((a,b) => b.version - a.version).forEach(v => {
                 const option = document.createElement('option');
                 option.value = v.version;
+
+                let statusIcon = '';
+                if (v.preflightStatus === 'passed') {
+                    statusIcon = '✅ ';
+                } else if (v.preflightStatus === 'warning') {
+                    statusIcon = '⚠️ ';
+                } else if (v.preflightStatus === 'failed') {
+                    statusIcon = '❌ ';
+                }
+
                 const isLatest = v.version === Math.max(...projectData.versions.map(ver => ver.version));
-                option.textContent = `Version ${v.version}${isLatest ? ' (Latest)' : ''}`;
+                option.textContent = `${statusIcon}Version ${v.version}${isLatest ? ' (Latest)' : ''}`;
                 versionSelector.appendChild(option);
             });
         } else {
@@ -852,7 +944,9 @@ export async function initializeSharedViewer(config) {
              try {
                  const selectedVersion = parseInt(e.target.value, 10);
                  if (!isNaN(selectedVersion)) {
+                     const versionData = projectData.versions.find(v => v.version === selectedVersion);
                      loadProofByVersion(selectedVersion);
+                     displayPreflightResults(versionData); // Update preflight details on change
                  }
              } catch (err) {
                  console.error("Error handling version change:", err);
@@ -889,4 +983,5 @@ export async function initializeSharedViewer(config) {
     // Delegate the entire rendering logic to the centralized function.
     // It handles all cases, including when versionToLoad is null.
     loadVersion(versionToLoad);
+    displayPreflightResults(versionToLoad); // Also display preflight for initial load
 }

@@ -310,6 +310,19 @@
                             </form>
                         </div>
                     </div>
+                    <!-- Preflight Check Results Section -->
+                    <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50">
+                        <button class="accordion-header w-full flex justify-between items-center p-6 text-left">
+                            <h3 class="text-lg font-semibold text-white">Preflight Check Results</h3>
+                            <svg class="w-6 h-6 text-gray-400 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                        </button>
+                        <div id="preflight-results-container" class="accordion-content p-6 border-t border-slate-700/50">
+                            <!-- Content will be dynamically populated by js/viewer.js -->
+                            <div id="preflight-status-message" class="text-gray-400"></div>
+                            <ul id="preflight-issues-list" class="space-y-2 list-disc list-inside text-red-400"></ul>
+                            <div id="preflight-data-list" class="mt-4 space-y-2"></div>
+                        </div>
+                    </div>
                     <!-- Upload/Share Section -->
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50">
