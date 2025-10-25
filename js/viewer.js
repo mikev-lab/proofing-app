@@ -70,7 +70,7 @@ export async function initializeSharedViewer(config) {
     let transformState = { zoom: 1.0, pan: { x: 0, y: 0 } };
     let viewRenderInfo = { x: 0, y: 0, width: 0, height: 0, scale: 1.0 }; // Overall info for the current view
     let pageRenderInfos = []; // Array of render info for *each page* within the current view
-    let hiddenCanvas = document.createElement('canvas');
+    let hiddenCanvas = document.createElement('canvas'); // Used for main rendering compositing
     let currentlyLoadedURL = null; // Keep track of the currently loaded URL
 
     /**
@@ -129,13 +129,15 @@ export async function initializeSharedViewer(config) {
              try {
                 // Use pages 2 and 3 if available, otherwise 1 and 2, or just 1
                 const page1Idx = pdfDoc.numPages >= 2 ? 2 : 1;
-                const page2Idx = pdfDoc.numPages >= 3 ? 3 : (pdfDoc.numPages >= 2 ? 2 : 1); // Use page 2 if >=2, else 1
+                const page2Idx = pdfDoc.numPages >= 3 ? 3 : (pdfDoc.numPages >= 2 ? 2 : 1);
                 const page1 = await pdfDoc.getPage(page1Idx);
                 const page2 = await pdfDoc.getPage(page2Idx);
                 const vp1 = page1.getViewport({ scale: 1 });
                 const vp2 = page2.getViewport({ scale: 1 });
                  if (page1Idx !== page2Idx) { // If we have two different pages for the spread
-                    standardSpreadAspectRatio = (vp1.width + vp2.width) / Math.max(vp1.height, vp2.height);
+                    const bleedPt = (projectSpecs?.bleedInches || 0) * 72;
+                    // Aspect ratio based on *visual* width (subtracting inner bleeds)
+                    standardSpreadAspectRatio = (vp1.width + vp2.width - 2 * bleedPt) / Math.max(vp1.height, vp2.height);
                  } else { // If only one page available for aspect ratio calculation
                     standardSpreadAspectRatio = vp1.width / vp1.height;
                  }
@@ -146,16 +148,13 @@ export async function initializeSharedViewer(config) {
 
 
         for (let i = 1; i <= totalViews; i++) {
-            // Get page indices for the current view
             const pagesIndices = getPagesForView(i, pdfDoc.numPages);
-            // Skip if view is invalid or represents pages beyond the actual document length
             if (pagesIndices.length === 0 || pagesIndices[0] > pdfDoc.numPages) continue;
 
-            const pagesStr = pagesIndices.join('-'); // Create string like "1" or "2-3"
+            const pagesStr = pagesIndices.join('-');
 
             let aspectRatio;
             if (currentViewMode === 'spread') {
-                 // --- Simplified spread aspect ratio logic ---
                  if (i === 1 && pagesIndices.length === 1) { // Single cover page
                      const page = await pdfDoc.getPage(1);
                      const viewport = page.getViewport({ scale: 1.0 });
@@ -163,20 +162,16 @@ export async function initializeSharedViewer(config) {
                  } else { // All other spreads (or single last page treated as spread)
                      aspectRatio = standardSpreadAspectRatio; // Use precalculated spread ratio
                  }
-                 // --- End simplified logic ---
             } else {
-                // For single view, calculate dynamically for each page
                 const page = await pdfDoc.getPage(pagesIndices[0]);
                 const viewport = page.getViewport({ scale: 1.0 });
                 aspectRatio = viewport.width / viewport.height;
             }
 
-            // Create thumbnail item container
             const thumbItem = document.createElement('div');
             thumbItem.className = 'thumbnail-item p-2 rounded-md border-2 border-transparent hover:border-indigo-400 cursor-pointer';
-            thumbItem.dataset.view = i; // Store view number
+            thumbItem.dataset.view = i;
 
-            // Set inner HTML with placeholder div and canvas
             thumbItem.innerHTML = `
                 <div class="bg-black/20 flex items-center justify-center rounded-sm overflow-hidden" style="aspect-ratio: ${aspectRatio || 1}">
                      <canvas class="w-full h-full object-contain"></canvas>
@@ -186,14 +181,12 @@ export async function initializeSharedViewer(config) {
             thumbnailList.appendChild(thumbItem);
         }
 
-        // Add debounced scroll handler for loading visible thumbnails
         let scrollTimeout;
         thumbnailList.addEventListener('scroll', () => {
             clearTimeout(scrollTimeout);
-            scrollTimeout = setTimeout(loadVisibleThumbnails, 150); // Slightly longer debounce
+            scrollTimeout = setTimeout(loadVisibleThumbnails, 150);
         });
 
-        // Initial load of visible thumbnails
         loadVisibleThumbnails();
     }
 
@@ -207,172 +200,142 @@ export async function initializeSharedViewer(config) {
 
         items.forEach(item => {
             const view = parseInt(item.dataset.view, 10);
-            // Load thumbnails slightly outside the viewport for smoother scrolling
             const buffer = 200;
             if (item.offsetTop < containerBottom + buffer && item.offsetTop + item.offsetHeight > containerTop - buffer) {
                  if (!renderedThumbnails.has(view)) {
-                    loadAndRenderThumbnail(view); // Trigger rendering if not already rendered
+                    loadAndRenderThumbnail(view);
                 }
             }
         });
     }
 
     /**
-     * Loads and renders a specific thumbnail view using temporary canvases.
+     * Loads and renders a specific thumbnail view using temporary canvases, reusing main render logic.
      */
     async function loadAndRenderThumbnail(viewNumber) {
-        if (!pdfDoc || renderedThumbnails.has(viewNumber)) return; // Skip if already rendered or no PDF
+        if (!pdfDoc || renderedThumbnails.has(viewNumber)) return;
 
-        renderedThumbnails.add(viewNumber); // Mark as rendering started
+        renderedThumbnails.add(viewNumber);
         const thumbItem = thumbnailList.querySelector(`.thumbnail-item[data-view='${viewNumber}']`);
-        if (!thumbItem) return; // Skip if item not found
+        if (!thumbItem) return;
 
-        const canvas = thumbItem.querySelector('canvas');
-        if (!canvas) return; // Skip if canvas not found
-        const context = canvas.getContext('2d');
+        const canvas = thumbItem.querySelector('canvas'); // The target canvas in the DOM
+        if (!canvas) return;
+        const targetContext = canvas.getContext('2d');
         const pagesToRenderIndices = getPagesForView(viewNumber, pdfDoc.numPages);
+
         if (pagesToRenderIndices.length === 0 || pagesToRenderIndices[0] > pdfDoc.numPages) {
-            // If it's an 'empty' page placeholder (e.g., for even spread count), don't try to render
-             renderedThumbnails.add(viewNumber); // Still mark as 'rendered' to avoid retries
-             return;
+            renderedThumbnails.add(viewNumber); // Mark as 'rendered' even if blank
+            return;
         }
 
-
         try {
-            // Fetch PDFPageProxy objects, using cache if available
             const pages = await Promise.all(
                 pagesToRenderIndices.map(num => {
-                    if (num > pdfDoc.numPages) return null; // Handle potential request beyond actual page count
+                    if (num > pdfDoc.numPages) return null;
                     if (pdfPageCache[num]) return Promise.resolve(pdfPageCache[num]);
-                    return pdfDoc.getPage(num).then(page => {
-                        pdfPageCache[num] = page; // Cache the page
-                        return page;
-                    });
+                    return pdfDoc.getPage(num).then(page => (pdfPageCache[num] = page, page));
                 })
-            ).then(results => results.filter(p => p !== null)); // Filter out nulls if a page index was invalid
+            ).then(results => results.filter(p => p !== null));
 
-             if (pages.length === 0) {
-                 console.warn(`No valid pages found to render for view ${viewNumber}`);
-                 return; // Exit if no valid pages were retrieved
-             }
+            if (pages.length === 0) {
+                console.warn(`No valid pages for thumbnail view ${viewNumber}`);
+                return;
+            }
 
-
-            // Use the placeholder's client rect for sizing, ensuring consistency
             const placeholder = thumbItem.querySelector('div[style*="aspect-ratio"]');
-            if (!placeholder) return; // Skip if placeholder not found
-            // Ensure placeholder has dimensions before proceeding
+            if (!placeholder) return;
             let targetWidth = placeholder.clientWidth;
             let targetHeight = placeholder.clientHeight;
-
-            // If dimensions are 0, try getting them after a short delay (layout might still be happening)
+             // Retry getting dimensions if initially zero
             if (targetWidth <= 0 || targetHeight <= 0) {
-                await new Promise(resolve => setTimeout(resolve, 50)); // Wait 50ms
+                await new Promise(resolve => setTimeout(resolve, 50));
                 targetWidth = placeholder.clientWidth;
                 targetHeight = placeholder.clientHeight;
             }
-
-             if (targetWidth <= 0 || targetHeight <= 0) {
-                 console.warn(`Placeholder for view ${viewNumber} still has zero dimensions after delay.`);
+            if (targetWidth <= 0 || targetHeight <= 0) {
+                 console.warn(`Placeholder for thumbnail view ${viewNumber} still has zero dimensions.`);
                  renderedThumbnails.delete(viewNumber); // Allow retry
                  return;
-             }
+            }
 
+            // Determine render scale for high quality rendering onto the intermediate canvas
+            // We aim for roughly double the target display size for sharpness
+            const THUMBNAIL_RENDER_SCALE_FACTOR = 2.0;
+            const tempRenderScale = THUMBNAIL_RENDER_SCALE_FACTOR; // Render at a higher resolution initially
 
-            // Determine the combined viewport of the pages to be rendered
-            const viewportsUnscaled = pages.map(p => p.getViewport({ scale: 1.0 }));
-            // Adjust total width calculation for bleed removal in spreads
+            const viewports = pages.map(p => p.getViewport({ scale: tempRenderScale }));
+            const isSpread = currentViewMode === 'spread' && pages.length > 1;
             const bleedPt = (projectSpecs?.bleedInches || 0) * 72;
-            const isSpread = currentViewMode === 'spread' && pages.length > 1 && viewNumber !== 1;
-            let totalWidthUnscaled = viewportsUnscaled.reduce((sum, vp) => sum + vp.width, 0);
-            if(isSpread) {
-                 totalWidthUnscaled -= (2 * bleedPt); // Subtract both inner bleeds for aspect ratio
-            }
+            const scaledBleed = bleedPt * tempRenderScale; // Bleed scaled for the temp render
 
-            const maxHeightUnscaled = Math.max(...viewportsUnscaled.map(vp => vp.height));
-            if (totalWidthUnscaled <= 0 || maxHeightUnscaled <= 0) {
-                 console.warn(`Calculated unscaled dimensions are zero or negative for view ${viewNumber}. Width: ${totalWidthUnscaled}, Height: ${maxHeightUnscaled}`);
-                 renderedThumbnails.delete(viewNumber); // Allow retry
-                 return; // Skip if dimensions are zero or negative
-             }
+            // --- Render pages with clipping onto an intermediate canvas (like hiddenCanvas in renderPage) ---
+            const pageCanvases = await Promise.all(pages.map(async (page, i) => {
+                const viewport = viewports[i];
+                const pageCanvas = document.createElement('canvas'); // Temp canvas per page
+                pageCanvas.width = viewport.width;
+                pageCanvas.height = viewport.height;
+                const pageCtx = pageCanvas.getContext('2d');
+                await page.render({ canvasContext: pageCtx, viewport: viewport }).promise;
 
-            // Calculate scale to fit within the placeholder
-            const scale = Math.min(targetWidth / totalWidthUnscaled, targetHeight / maxHeightUnscaled);
-            if (scale <= 0) {
-                console.warn(`Calculated scale is zero or negative for view ${viewNumber}. Scale: ${scale}`);
-                renderedThumbnails.delete(viewNumber); // Allow retry
-                return; // Skip rendering if scale is invalid
-            }
-            const scaledViewports = pages.map(p => p.getViewport({ scale })); // Viewports scaled for the final layout
-
-
-            // --- Render each page to a temporary canvas ---
-            const tempCanvases = await Promise.all(pages.map(async (page, index) => {
-                const targetViewport = scaledViewports[index]; // Use the viewport calculated for fitting
-                const tempCanvas = document.createElement('canvas');
-                const pixelRatio = window.devicePixelRatio || 1;
-                const scaledBleed = bleedPt * scale * pixelRatio; // Bleed scaled for temp canvas rendering
-
-                // Calculate source and destination dimensions, clipping inner bleed for spreads
                 let sourceX = 0;
-                let sourceWidth = Math.max(1, Math.round(targetViewport.width * pixelRatio));
-                let destWidth = targetViewport.width; // Width in final layout
-
+                let sourceWidth = viewport.width;
                 if (isSpread) {
                     sourceWidth -= scaledBleed;
-                    destWidth -= (bleedPt * scale);
-                    if (index === 1) { // Right page of spread, clip from left
+                    if (i === 1) { // Right page
                         sourceX = scaledBleed;
                     }
                 }
-
-                // Set drawing size considering pixel ratio
-                tempCanvas.width = sourceWidth;
-                tempCanvas.height = Math.max(1, Math.round(targetViewport.height * pixelRatio)); // Ensure non-zero
-                const tempContext = tempCanvas.getContext('2d');
-                 if (!tempContext) throw new Error("Could not get 2D context for temp canvas");
-                tempContext.scale(pixelRatio, pixelRatio); // Scale context for high-res
-
-                // Get viewport scaled for rendering onto the temp canvas, adjusting translate for clipped area
-                const renderScale = Math.max(0.01, targetViewport.scale * pixelRatio);
-                const renderViewport = page.getViewport({
-                     scale: renderScale,
-                     offsetX: -sourceX / pixelRatio // Adjust offsetX for clipping
-                });
-
-
-                await page.render({ canvasContext: tempContext, viewport: renderViewport }).promise;
-                return { canvas: tempCanvas, destWidth: destWidth, destHeight: targetViewport.height }; // Return canvas and final layout info
+                return { canvas: pageCanvas, sourceX, sourceWidth, destWidth: sourceWidth, destHeight: viewport.height };
             }));
 
-            // --- Draw temporary canvases onto the main thumbnail canvas ---
-            const finalPixelRatio = window.devicePixelRatio || 1;
-            canvas.width = targetWidth * finalPixelRatio;
-            canvas.height = targetHeight * finalPixelRatio;
-            context.scale(finalPixelRatio, finalPixelRatio);
-            context.clearRect(0, 0, targetWidth, targetHeight); // Clear the main canvas
+            // Composite onto a single intermediate canvas
+            const intermediateTotalWidth = pageCanvases.reduce((sum, pc) => sum + pc.destWidth, 0);
+            const intermediateMaxHeight = Math.max(...viewports.map(vp => vp.height));
+            const intermediateCanvas = document.createElement('canvas');
+            intermediateCanvas.width = intermediateTotalWidth;
+            intermediateCanvas.height = intermediateMaxHeight;
+            const intermediateContext = intermediateCanvas.getContext('2d');
+            intermediateContext.clearRect(0, 0, intermediateCanvas.width, intermediateCanvas.height);
 
-            // Recalculate centering offset based on the sum of final DESTINATION widths
-            const totalRenderWidth = tempCanvases.reduce((sum, item) => sum + item.destWidth, 0);
-            let currentX = (targetWidth - totalRenderWidth) / 2; // Center horizontally
+            let currentX = 0;
+            for (const pageCanvasInfo of pageCanvases) {
+                const offsetY = (intermediateMaxHeight - pageCanvasInfo.destHeight) / 2;
+                intermediateContext.drawImage(
+                    pageCanvasInfo.canvas,
+                    pageCanvasInfo.sourceX, 0, pageCanvasInfo.sourceWidth, pageCanvasInfo.destHeight,
+                    currentX, offsetY, pageCanvasInfo.destWidth, pageCanvasInfo.destHeight
+                );
+                currentX += pageCanvasInfo.destWidth;
+            }
+            // --- End intermediate canvas rendering ---
 
-            for (const item of tempCanvases) {
-                const tempCanvas = item.canvas;
-                const destWidth = item.destWidth;
-                const destHeight = item.destHeight;
-                const offsetY = (targetHeight - destHeight) / 2; // Center vertically
 
-                // Draw the rendered temp canvas onto the main canvas
-                 if (tempCanvas.width > 0 && tempCanvas.height > 0) { // Avoid drawing 0-size images
-                    context.drawImage(tempCanvas, currentX, offsetY, destWidth, destHeight);
-                 } else {
-                     console.warn(`Skipping drawing temp canvas for view ${viewNumber} due to zero dimensions.`);
-                 }
-                currentX += destWidth; // Move to the next position based on destination width
+            // --- Draw the intermediate canvas onto the final thumbnail canvas, scaled to fit ---
+            const finalScale = Math.min(targetWidth / (intermediateTotalWidth / tempRenderScale), targetHeight / (intermediateMaxHeight / tempRenderScale));
+            const finalWidth = (intermediateTotalWidth / tempRenderScale) * finalScale;
+            const finalHeight = (intermediateMaxHeight / tempRenderScale) * finalScale;
+
+            const pixelRatio = window.devicePixelRatio || 1;
+            canvas.width = targetWidth * pixelRatio;
+            canvas.height = targetHeight * pixelRatio;
+            targetContext.scale(pixelRatio, pixelRatio);
+            targetContext.clearRect(0, 0, targetWidth, targetHeight);
+
+            const finalDrawX = (targetWidth - finalWidth) / 2;
+            const finalDrawY = (targetHeight - finalHeight) / 2;
+
+            if (intermediateCanvas.width > 0 && intermediateCanvas.height > 0) {
+                 targetContext.drawImage(intermediateCanvas,
+                                    0, 0, intermediateCanvas.width, intermediateCanvas.height, // Source: full intermediate canvas
+                                    finalDrawX, finalDrawY, finalWidth, finalHeight); // Destination: scaled and centered
+            } else {
+                 console.warn(`Skipping final draw for thumbnail view ${viewNumber} due to zero intermediate canvas dimensions.`);
             }
 
         } catch (error) {
             console.error(`Failed to render thumbnail for view ${viewNumber}:`, error);
-            renderedThumbnails.delete(viewNumber); // Allow retrying if rendering failed
+            renderedThumbnails.delete(viewNumber);
         }
     }
 
@@ -485,46 +448,34 @@ export async function initializeSharedViewer(config) {
             const viewports = pages.map(p => p.getViewport({ scale: pdfRenderScale }));
 
             // --- SPREAD MASKING LOGIC ---
-            // A "spread" in rendering means viewMode is spread, it's not the first view, AND there are two pages.
-            const isSpreadView = currentViewMode === 'spread' && viewNumber !== 1 && pages.length === 2;
+            const isSpread = currentViewMode === 'spread' && pages.length > 1;
             const bleedPt = (projectSpecs?.bleedInches || 0) * 72; // 72 points per inch
-            const scaledBleed = bleedPt * pdfRenderScale; // Bleed scaled to the temporary canvas size
+            const scaledBleed = bleedPt * pdfRenderScale; // Bleed scaled for rendering
 
             // Render each page to a temporary canvas, then composite them onto the main hidden canvas.
             const pageCanvases = await Promise.all(pages.map(async (page, i) => {
                 const viewport = viewports[i];
                 const tempCanvas = document.createElement('canvas');
-
-                // Determine the source clipping and final dimensions on the hidden canvas
-                let sourceX = 0;
-                let sourceWidth = viewport.width;
-                let destWidth = viewport.width; // Width on the hidden canvas
-
-                if (isSpreadView) {
-                    sourceWidth -= scaledBleed;
-                    destWidth -= scaledBleed;
-                    if (i === 1) { // Right page of spread, clip from left
-                        sourceX = scaledBleed;
-                    }
-                }
-
-                tempCanvas.width = sourceWidth;
+                tempCanvas.width = viewport.width;
                 tempCanvas.height = viewport.height;
                 const tempCtx = tempCanvas.getContext('2d');
-                await page.render({
-                     canvasContext: tempCtx,
-                     viewport: page.getViewport({
-                        scale: pdfRenderScale,
-                        offsetX: -sourceX // Translate rendering left for right page to clip
-                     })
-                }).promise;
+                await page.render({ canvasContext: tempCtx, viewport: viewport }).promise;
 
+                // Determine the source area to copy from the temp canvas
+                let sourceX = 0;
+                let sourceWidth = viewport.width;
+                if (isSpread) {
+                    sourceWidth -= scaledBleed; // Reduce source width by one bleed
+                    if (i === 1) { // Right page of spread, clip from left
+                        sourceX = scaledBleed; // Start copying after the inner bleed
+                    }
+                }
                 return {
                     canvas: tempCanvas,
-                    sourceX: 0, // Always draw from the start of the temp canvas
-                    sourceWidth: sourceWidth,
-                    destWidth: destWidth, // Use clipped width for destination
-                    destHeight: viewport.height
+                    sourceX,            // X start in temp canvas (scaled pixels)
+                    sourceWidth,        // Width to copy from temp canvas (scaled pixels)
+                    destWidth: sourceWidth, // How much horizontal space it takes in the final composition (scaled pixels)
+                    destHeight: viewport.height // Full height (scaled pixels)
                 };
             }));
 
@@ -541,13 +492,13 @@ export async function initializeSharedViewer(config) {
             // Draw the clipped page canvases onto the main hidden canvas
             let currentX = 0;
             for (const pageCanvasInfo of pageCanvases) {
-                const offsetY = (maxHeight - pageCanvasInfo.destHeight) / 2;
+                const offsetY = (maxHeight - pageCanvasInfo.destHeight) / 2; // Center vertically
                 hiddenContext.drawImage(
                     pageCanvasInfo.canvas,
-                    pageCanvasInfo.sourceX, 0, // source x, y
-                    pageCanvasInfo.sourceWidth, pageCanvasInfo.destHeight, // source w, h
-                    currentX, offsetY, // dest x, y
-                    pageCanvasInfo.destWidth, pageCanvasInfo.destHeight // dest w, h
+                    pageCanvasInfo.sourceX, 0, // source x, y (from temp canvas)
+                    pageCanvasInfo.sourceWidth, pageCanvasInfo.destHeight, // source w, h (from temp canvas)
+                    currentX, offsetY, // dest x, y (on hidden canvas)
+                    pageCanvasInfo.destWidth, pageCanvasInfo.destHeight // dest w, h (on hidden canvas)
                 );
                 currentX += pageCanvasInfo.destWidth;
             }
@@ -566,20 +517,17 @@ export async function initializeSharedViewer(config) {
             visibleContext.save(); // Save context state before applying zoom/pan
 
             // --- Calculate base scale and position for the entire view ---
-            const baseViewports = pages.map(p => p.getViewport({ scale: 1.0 }));
-            let totalBaseWidth = baseViewports.reduce((sum, vp) => sum + vp.width, 0);
-            if (isSpreadView) {
-                 // For spreads, the base width is the sum of page widths minus the inside bleeds.
-                totalBaseWidth -= (2 * bleedPt);
-            }
+            // Use the dimensions from the *hidden canvas* which represent the final *visual* size
+            const totalBaseWidthPts = totalWidth / pdfRenderScale; // Convert back to PDF points
+            const maxBaseHeightPts = maxHeight / pdfRenderScale; // Convert back to PDF points
 
-            const maxBaseHeight = Math.max(...baseViewports.map(vp => vp.height));
             const availableWidth = pdfViewer.clientWidth;
             const availableHeight = pdfViewer.clientHeight;
             // Calculate scale to fit, with padding
-            const baseScale = Math.min(availableWidth / totalBaseWidth, availableHeight / maxBaseHeight) * 0.95;
-            const viewWidth = totalBaseWidth * baseScale;
-            const viewHeight = maxBaseHeight * baseScale;
+            const baseScale = Math.min(availableWidth / totalBaseWidthPts, availableHeight / maxBaseHeightPts) * 0.95;
+
+            const viewWidth = totalBaseWidthPts * baseScale; // Final width on visible canvas (before zoom/pan)
+            const viewHeight = maxBaseHeightPts * baseScale; // Final height on visible canvas (before zoom/pan)
             // Calculate top-left position to center the entire view
             const viewX = (availableWidth - viewWidth) / 2;
             const viewY = (availableHeight - viewHeight) / 2;
@@ -594,39 +542,38 @@ export async function initializeSharedViewer(config) {
             // --- Draw the pre-rendered content from the hidden canvas ---
             visibleContext.drawImage(hiddenCanvas, viewX, viewY, viewWidth, viewHeight);
 
-            // --- Calculate individual page render info FOR GUIDES ---
+            // --- Calculate individual page render info (needed for guides) ---
             pageRenderInfos = []; // Reset the array
             let currentPageX = viewX; // Start at the beginning of the view's x position
-            for (let i = 0; i < baseViewports.length; i++) {
-                const pageBaseViewport = baseViewports[i];
+            for (let i = 0; i < pages.length; i++) {
+                const page = pages[i];
+                const pageBaseViewport = page.getViewport({ scale: 1.0 }); // Original page viewport at scale 1
                 const scaledBaseBleed = bleedPt * baseScale;
 
-                // Determine width for this page in the final view
-                let pageRenderWidth = pageBaseViewport.width * baseScale;
-                if (isSpreadView) {
-                    pageRenderWidth -= scaledBaseBleed; // Subtract inner bleed
-                }
-
+                // Width of this specific page's *visible portion* in the final view
+                let pageRenderWidth = (pageCanvases[i].destWidth / pdfRenderScale) * baseScale;
                 const pageRenderHeight = pageBaseViewport.height * baseScale;
-                const pageY = viewY + (viewHeight - pageRenderHeight) / 2; // Center vertically
+                const pageY = viewY + (viewHeight - pageRenderHeight) / 2; // Center vertically within the view
 
-                // Determine if this is the left or right page in a spread context
-                // Handle RTL
-                const isRTL = projectSpecs?.readingDirection === 'rtl';
-                let pageIsLeftInSpread = false;
-                if (isSpreadView) {
-                    pageIsLeftInSpread = (isRTL && i === 1) || (!isRTL && i === 0);
+                // Determine if this page is the left or right one in the view
+                // This considers LTR/RTL reading direction if specified
+                let isLeft = false;
+                if (pages.length > 1) { // Only relevant for spreads
+                    if (projectSpecs?.readingDirection === 'rtl') {
+                        isLeft = (i === 1); // In RTL, the second page in the array is the left one
+                    } else {
+                        isLeft = (i === 0); // In LTR, the first page is the left one
+                    }
                 }
-
 
                 pageRenderInfos.push({
-                    x: currentPageX, // The X position where this page *starts* in the combined view
+                    x: currentPageX,
                     y: pageY,
-                    width: pageRenderWidth, // The width this page occupies in the combined view
+                    width: pageRenderWidth,
                     height: pageRenderHeight,
-                    scale: baseScale, // The overall scale used for the view
-                    isSpread: isSpreadView, // Is this part of a 2-page spread?
-                    isLeftPage: pageIsLeftInSpread // Is it the left-hand page of that spread?
+                    scale: baseScale,
+                    isSpread: isSpread,
+                    isLeftPage: isLeft // Pass the calculated left/right status
                 });
                 currentPageX += pageRenderWidth; // Move to the next page's horizontal position
             }
@@ -634,11 +581,11 @@ export async function initializeSharedViewer(config) {
             // Draw guides if applicable and module is loaded
             if (projectSpecs && guidesModule) {
                 const guideOptions = {
-                    trim: showTrimGuideCheckbox?.checked ?? true, // Default to true if element doesn't exist
+                    trim: showTrimGuideCheckbox?.checked ?? true,
                     bleed: showBleedGuideCheckbox?.checked ?? true,
                     safety: showSafetyGuideCheckbox?.checked ?? true
                 };
-                // Pass pageRenderInfos (array) to drawGuides
+                // Pass the array of pageRenderInfos to drawGuides
                 guidesModule.drawGuides(visibleContext, projectSpecs, pageRenderInfos, guideOptions);
             }
 
@@ -647,8 +594,6 @@ export async function initializeSharedViewer(config) {
 
         } catch (err) {
             console.error("Error rendering page/spread:", err);
-            // Optionally display error on canvas or elsewhere
-            // pdfViewer.innerHTML = `<p class="text-red-400 p-4">Error rendering PDF: ${err.message}</p>`;
         } finally {
             pageRendering = false; // Mark rendering as complete
             renderingThrobber.classList.add('hidden'); // Hide loading indicator
@@ -671,7 +616,6 @@ export async function initializeSharedViewer(config) {
             const view = parseInt(item.dataset.view, 10);
             if (view === currentView) {
                 item.classList.add('border-indigo-400'); // Add border highlight
-                // Scroll into view smoothly, ensuring it's visible
                 item.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
             } else {
                 item.classList.remove('border-indigo-400'); // Remove highlight
@@ -684,10 +628,8 @@ export async function initializeSharedViewer(config) {
      */
     function queueRenderPage(num) {
         if (pageRendering) {
-            // If a render is ongoing, queue the new page number if it's different
             if (num !== pageNum) pageNumPending = num;
         } else {
-            // If no render is ongoing, start rendering the requested page
             renderPage(num);
         }
     }
@@ -697,10 +639,8 @@ export async function initializeSharedViewer(config) {
      */
     function setActiveTool(tool) {
         currentTool = tool;
-        // Toggle background highlight for active tool button
         if(toolPanButton) toolPanButton.classList.toggle('bg-slate-600', tool === 'pan');
         if(toolCommentButton) toolCommentButton.classList.toggle('bg-slate-600', tool === 'comment');
-        // Update cursor style via global function (defined in viewerControls.js)
         if (typeof window.updateCursor === 'function') window.updateCursor();
     }
 
@@ -712,20 +652,15 @@ export async function initializeSharedViewer(config) {
             console.error("Project data or versions array is missing.");
             return;
         }
-        // Find the version data matching the requested version number
         const versionData = projectData.versions.find(v => v.version === versionNumber);
         if (!versionData) {
             console.error("Version not found:", versionNumber);
             return;
         }
-
-        // Prefer previewURL if available, otherwise use fileURL
         let urlToLoad = versionData.previewURL || versionData.fileURL;
-
-        // Only reload if the URL has changed and is valid
         if (urlToLoad && urlToLoad !== currentlyLoadedURL) {
             console.log(`Switching to version ${versionNumber}. Loading URL: ${urlToLoad.substring(0, 100)}...`);
-            loadPdf(urlToLoad); // Load the PDF from the selected version's URL
+            loadPdf(urlToLoad);
         } else if (!urlToLoad) {
              console.error("No URL found for version:", versionNumber);
              if (pdfViewer) pdfViewer.innerHTML = `<p class="text-red-400 p-4">Could not find file for version ${versionNumber}.</p>`;
@@ -738,7 +673,7 @@ export async function initializeSharedViewer(config) {
 
     // --- Initialization ---
 
-    // Set up initial view mode based on project specs (if available)
+    // Set up initial view mode based on project specs
     const isBook = projectSpecs && (projectSpecs.binding === 'Perfect Bound' || projectSpecs.binding === 'Saddle-Stitch');
     if (isBook && viewModeSelect) {
         viewModeSelect.value = 'spread';
@@ -749,24 +684,23 @@ export async function initializeSharedViewer(config) {
     }
 
 
-    // --- NEW: Function to get guest's name ---
+    // --- Function to get guest's name ---
     function getGuestDisplayName() {
-        // Simple prompt, can be replaced with a more robust modal
         const name = prompt("Please enter your name to leave a comment:", "Guest");
-        return name || "Guest"; // Default to "Guest" if prompt is empty or cancelled
+        return name || "Guest";
     }
 
     // Initialize annotation functionality
     if (pdfCanvas && commentsSection) {
         initializeAnnotations(
             db, auth, projectId, pdfCanvas, commentsSection,
-            () => pageNum, // Function to get current view number
-            () => queueRenderPage(pageNum), // Function to trigger rerender
-            (callback) => { onPageRenderedCallback = callback; }, // Set annotation drawing callback
-            () => transformState, // Get current zoom/pan
-            () => viewRenderInfo, // Get PDF render position/size info for the whole view
-            isGuest, // Pass guest status
-            getGuestDisplayName // Pass function to get guest name
+            () => pageNum,
+            () => queueRenderPage(pageNum),
+            (callback) => { onPageRenderedCallback = callback; },
+            () => transformState,
+            () => viewRenderInfo, // Use overall view info for coordinate mapping
+            isGuest,
+            getGuestDisplayName
         );
     } else {
         console.warn("Could not initialize annotations: canvas or comments section missing.");
@@ -776,14 +710,13 @@ export async function initializeSharedViewer(config) {
     if (pdfViewer && pdfCanvas && zoomLevelDisplay) {
         initializeViewerControls(
             pdfViewer, pdfCanvas,
-            (newTransform) => { // Callback on transform change
+            (newTransform) => {
                 transformState = newTransform;
-                queueRenderPage(pageNum); // Rerender with new zoom/pan
+                queueRenderPage(pageNum);
             },
-            () => currentTool, // Function to get current tool
-            // Pass overall viewRenderInfo for controls
-            () => viewRenderInfo, // Get PDF render position/size info for the whole view
-            zoomLevelDisplay // Element to display zoom level
+            () => currentTool,
+            () => viewRenderInfo, // Pass overall view info
+            zoomLevelDisplay
         );
     } else {
          console.warn("Could not initialize viewer controls: required elements missing.");
@@ -794,7 +727,7 @@ export async function initializeSharedViewer(config) {
         thumbnailList.addEventListener('click', (e) => {
             const item = e.target.closest('.thumbnail-item');
             if (item && item.dataset.view) {
-                queueRenderPage(parseInt(item.dataset.view, 10)); // Go to clicked view
+                queueRenderPage(parseInt(item.dataset.view, 10));
             }
         });
     }
@@ -807,12 +740,8 @@ export async function initializeSharedViewer(config) {
     if (viewModeSelect) {
         viewModeSelect.addEventListener('change', async (e) => {
             currentViewMode = e.target.value;
-            // Clear page cache as viewports might change relative positioning
-            Object.keys(pdfPageCache).forEach(key => delete pdfPageCache[key]);
-            // Regenerate the thumbnail list to match the new view mode
             await renderThumbnailList();
-            // Render the first view of the new mode
-            queueRenderPage(1);
+            queueRenderPage(1); // Go back to the first view when mode changes
         });
     }
 
@@ -820,20 +749,18 @@ export async function initializeSharedViewer(config) {
     const guideCheckboxes = [showTrimGuideCheckbox, showBleedGuideCheckbox, showSafetyGuideCheckbox];
     guideCheckboxes.forEach(checkbox => {
         if (checkbox) {
-            checkbox.addEventListener('change', () => queueRenderPage(pageNum)); // Rerender on change
+            checkbox.addEventListener('change', () => queueRenderPage(pageNum));
         }
     });
 
 
     // Admin version selector listener
     if (isAdmin && versionSelector) {
-        // Populate versions dropdown (sorted newest first)
         versionSelector.innerHTML = '';
         if (projectData && projectData.versions && projectData.versions.length > 0) {
             projectData.versions.sort((a,b) => b.version - a.version).forEach(v => {
                 const option = document.createElement('option');
                 option.value = v.version;
-                // Add "(Latest)" label to the highest version number
                 const isLatest = v.version === Math.max(...projectData.versions.map(ver => ver.version));
                 option.textContent = `Version ${v.version}${isLatest ? ' (Latest)' : ''}`;
                 versionSelector.appendChild(option);
@@ -841,9 +768,6 @@ export async function initializeSharedViewer(config) {
         } else {
              versionSelector.innerHTML = '<option value="">No versions available</option>';
         }
-
-
-        // Add change event listener
         versionSelector.addEventListener('change', (e) => {
              try {
                  const selectedVersion = parseInt(e.target.value, 10);
@@ -857,66 +781,33 @@ export async function initializeSharedViewer(config) {
     }
 
     // --- Initial PDF Load ---
-
     let versionToLoad = null;
     let targetUrlToLoad = null;
-
     if (projectData && projectData.versions && projectData.versions.length > 0) {
         let targetVersionNumber;
-        // If it's the admin view AND the version selector exists and has a value, use that.
         if (isAdmin && versionSelector && versionSelector.value) {
-             try {
-                targetVersionNumber = parseInt(versionSelector.value, 10);
-             } catch (e) {
-                console.error("Could not parse version selector value:", versionSelector.value, e);
-                // Fallback to latest if parsing fails
-                targetVersionNumber = Math.max(...projectData.versions.map(v => v.version));
-             }
+             try { targetVersionNumber = parseInt(versionSelector.value, 10); }
+             catch (e) { targetVersionNumber = Math.max(...projectData.versions.map(v => v.version)); }
         } else {
-            // Otherwise, just find the latest version number.
             targetVersionNumber = Math.max(...projectData.versions.map(v => v.version));
         }
-
-        // Find the version object corresponding to the target version number.
         versionToLoad = projectData.versions.find(v => v.version === targetVersionNumber);
-
-        // If the specific version wasn't found (shouldn't happen often), fallback to the absolute latest.
         if (!versionToLoad && projectData.versions.length > 0) {
-             versionToLoad = projectData.versions.reduce((latest, current) =>
-                (current.version > latest.version ? current : latest), projectData.versions[0]);
-             console.warn(`Target version ${targetVersionNumber} not found, falling back to latest version ${versionToLoad?.version}`);
+             versionToLoad = projectData.versions.reduce((latest, current) => (current.version > latest.version ? current : latest), projectData.versions[0]);
         }
-
-        // Now determine the URL, prioritizing previewURL
-        if (versionToLoad && versionToLoad.previewURL) {
-            targetUrlToLoad = versionToLoad.previewURL; // Prefer optimized preview
-        } else if (versionToLoad && versionToLoad.fileURL) {
-            targetUrlToLoad = versionToLoad.fileURL; // Fallback to original
-        }
-        console.log(`Selected version ${versionToLoad?.version}. Target URL: ${targetUrlToLoad ? targetUrlToLoad.substring(0, 100) + '...' : 'None'}`); // Log selection
-    } else {
-        console.warn("No versions found in projectData.");
+        if (versionToLoad) targetUrlToLoad = versionToLoad.previewURL || versionToLoad.fileURL;
     }
 
-
-    // --- Only load if URL is new and valid ---
     if (targetUrlToLoad && targetUrlToLoad !== currentlyLoadedURL) {
-        console.log("New target URL detected, loading PDF:", targetUrlToLoad.substring(0, 100) + '...');
-        // currentlyLoadedURL will be updated inside loadPdf upon success
-        loadPdf(targetUrlToLoad); // Load the determined URL
-    } else if (!targetUrlToLoad && !currentlyLoadedURL) { // Only show 'no file' if nothing is loaded at all
-        console.warn("No proof file URL found in project data.");
-        if (loadingSpinner) loadingSpinner.classList.add('hidden'); // Hide spinner
+        loadPdf(targetUrlToLoad);
+    } else if (!targetUrlToLoad && !currentlyLoadedURL) {
+        if (renderingThrobber) renderingThrobber.classList.add('hidden');
         if (pdfViewer) pdfViewer.innerHTML = '<p class="text-gray-400 p-4">No proof file available for this project yet.</p>';
         if (navigationControls) navigationControls.classList.add('hidden');
         if (guidesSection) guidesSection.classList.add('hidden');
     } else if (!targetUrlToLoad && currentlyLoadedURL) {
-         // A file is loaded, but the target version has no URL
-         console.warn(`Target version ${versionToLoad?.version} has no URL, keeping current PDF loaded.`);
-         if (loadingSpinner) loadingSpinner.classList.add('hidden'); // Hide spinner if it was shown
+         if (renderingThrobber) renderingThrobber.classList.add('hidden');
     } else {
-        // URL is the same as already loaded, or initial load spinner is still active
-        console.log("Target URL is same as currently loaded or no target URL found. No PDF reload triggered.");
-         if (!pageRendering && loadingSpinner) loadingSpinner.classList.add('hidden'); // Hide spinner if rendering isn't active
+         if (!pageRendering && renderingThrobber) renderingThrobber.classList.add('hidden');
     }
 }
