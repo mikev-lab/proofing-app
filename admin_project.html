@@ -228,6 +228,20 @@
                             </button>
                         </form>
                     </div>
+                     <!-- Share Project -->
+                    <div class="bg-slate-800/60 p-6 rounded-lg shadow-xl border border-slate-700/50">
+                        <h3 class="text-lg font-semibold text-white mb-4">Share Project</h3>
+                        <p class="text-sm text-gray-400 mb-4">Generate a shareable link for guests to view this proof without logging in.</p>
+                        <button id="share-button" class="w-full mt-4 bg-purple-600 hover:bg-purple-500 text-white font-semibold py-2 px-4 rounded-md">
+                            Generate Guest Link
+                        </button>
+                        <div id="guest-links-container" class="mt-6 border-t border-slate-700/50 pt-4">
+                            <h4 class="text-md font-semibold text-white mb-2">Generated Links</h4>
+                            <div id="guest-links-list" class="space-y-3 max-h-48 overflow-y-auto">
+                                <p class="text-sm text-gray-500">No links generated yet.</p>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Main Grid for Viewer -->
@@ -326,14 +340,56 @@
        </div>
     </div>
 
+    <!-- Share Modal -->
+    <div id="share-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center hidden z-50">
+        <div class="bg-slate-800 rounded-lg shadow-xl p-6 w-full max-w-lg mx-4 border border-slate-700/50">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-xl font-semibold text-white">Generate Guest Link</h3>
+                <button id="share-modal-close-button" class="text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
+            </div>
+            <div id="share-modal-content">
+                <p class="text-gray-300 mb-4">Configure permissions for the guest link. The link will expire in 30 days by default.</p>
+                <form id="share-link-form">
+                    <div class="space-y-3">
+                        <label class="flex items-center space-x-3 cursor-pointer">
+                            <input type="checkbox" id="permission-approve" name="canApprove" class="h-5 w-5 rounded border-gray-400 text-indigo-500 bg-slate-700 focus:ring-indigo-600">
+                            <span class="text-gray-200">Allow guest to Approve / Request Changes</span>
+                        </label>
+                         <label class="flex items-center space-x-3 cursor-pointer">
+                            <input type="checkbox" id="permission-annotate" name="canAnnotate" class="h-5 w-5 rounded border-gray-400 text-indigo-500 bg-slate-700 focus:ring-indigo-600">
+                            <span class="text-gray-200">Allow guest to add annotations</span>
+                        </label>
+                        <label class="flex items-center space-x-3 cursor-pointer">
+                            <input type="checkbox" id="permission-see-comments" name="canSeeComments" checked class="h-5 w-5 rounded border-gray-400 text-indigo-500 bg-slate-700 focus:ring-indigo-600">
+                            <span class="text-gray-200">Allow guest to see existing comments</span>
+                        </label>
+                    </div>
+                    <div class="mt-6 flex justify-end space-x-4">
+                        <button type="button" id="share-modal-cancel-button" class="px-4 py-2 rounded-md bg-gray-600 hover:bg-gray-500 text-white font-semibold text-sm">Cancel</button>
+                        <button type="submit" id="generate-link-button" class="px-4 py-2 rounded-md bg-purple-600 hover:bg-purple-500 text-white font-semibold text-sm disabled:bg-purple-800 disabled:cursor-not-allowed">Generate Link</button>
+                    </div>
+                </form>
+            </div>
+             <div id="share-modal-result" class="hidden">
+                <p class="text-gray-300 mb-2">Your shareable link has been generated:</p>
+                <div class="flex items-center space-x-2">
+                    <input type="text" id="generated-link-url" readonly class="w-full rounded-lg border-0 bg-slate-900/80 py-2 px-3 text-gray-200 ring-1 ring-inset ring-slate-700">
+                    <button id="copy-link-button" class="px-4 py-2 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm whitespace-nowrap">Copy</button>
+                </div>
+                <p id="copy-status-message" class="text-sm text-green-400 mt-2 h-4"></p>
+            </div>
+        </div>
+    </div>
+
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, onSnapshot, getDoc, updateDoc, Timestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, onSnapshot, getDoc, updateDoc, Timestamp, collection, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js";
         import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
         import { initializeSharedViewer } from './js/viewer.js';
-        import { STANDARD_PAPER_SIZES } from './js/guides.js'; // Import paper sizes
+        import { STANDARD_PAPER_SIZES } from './js/guides.js';
 
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
             apiKey: "AIzaSyApmEJdFi96QS3TwYh7GyEDSbZrCuVpBrg",
@@ -348,6 +404,21 @@
         const auth = getAuth(app);
         const db = getFirestore(app);
         const storage = getStorage(app);
+        const functions = getFunctions(app, 'us-central1');
+
+        // Share Modal Elements
+        const shareButton = document.getElementById('share-button');
+        const shareModal = document.getElementById('share-modal');
+        const shareModalCloseButton = document.getElementById('share-modal-close-button');
+        const shareModalCancelButton = document.getElementById('share-modal-cancel-button');
+        const shareLinkForm = document.getElementById('share-link-form');
+        const generateLinkButton = document.getElementById('generate-link-button');
+        const shareModalContent = document.getElementById('share-modal-content');
+        const shareModalResult = document.getElementById('share-modal-result');
+        const generatedLinkUrlInput = document.getElementById('generated-link-url');
+        const copyLinkButton = document.getElementById('copy-link-button');
+        const copyStatusMessage = document.getElementById('copy-status-message');
+        const guestLinksList = document.getElementById('guest-links-list');
 
         const loadingSpinner = document.getElementById('loading-spinner');
         const proofContent = document.getElementById('proof-content');
@@ -656,6 +727,97 @@
                  uploadButton.textContent = 'Upload New Version';
             }
         });
+
+        // --- Share Link Logic ---
+        function openShareModal() {
+            shareModal.classList.remove('hidden');
+            shareModalContent.classList.remove('hidden');
+            shareModalResult.classList.add('hidden');
+            shareLinkForm.reset(); // Reset form fields
+            generateLinkButton.disabled = false;
+            copyStatusMessage.textContent = '';
+        }
+
+        function closeShareModal() {
+            shareModal.classList.add('hidden');
+        }
+
+        shareButton.addEventListener('click', openShareModal);
+        shareModalCloseButton.addEventListener('click', closeShareModal);
+        shareModalCancelButton.addEventListener('click', closeShareModal);
+
+        shareLinkForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            generateLinkButton.disabled = true;
+            generateLinkButton.textContent = 'Generating...';
+
+            const permissions = {
+                canApprove: document.getElementById('permission-approve').checked,
+                canAnnotate: document.getElementById('permission-annotate').checked,
+                canSeeComments: document.getElementById('permission-see-comments').checked
+            };
+
+            try {
+                const generateGuestLink = httpsCallable(functions, 'generateGuestLink');
+                const result = await generateGuestLink({ projectId, permissions });
+
+                if (result.data.success) {
+                    const fullUrl = new URL(result.data.url);
+                    // Use relative path for the generated URL to work on any environment
+                    generatedLinkUrlInput.value = `${window.location.origin}/proof.html${fullUrl.search}`;
+                    shareModalContent.classList.add('hidden');
+                    shareModalResult.classList.remove('hidden');
+                } else {
+                    throw new Error('Cloud function returned an error.');
+                }
+            } catch (error) {
+                console.error("Error generating guest link:", error);
+                alert(`Error: ${error.message || 'Could not generate link.'}`);
+                generateLinkButton.textContent = 'Generate Link';
+                generateLinkButton.disabled = false;
+            }
+        });
+
+        copyLinkButton.addEventListener('click', () => {
+            generatedLinkUrlInput.select();
+            document.execCommand('copy');
+            copyStatusMessage.textContent = 'Copied!';
+            setTimeout(() => { copyStatusMessage.textContent = ''; }, 2000);
+        });
+
+        // --- Render Guest Links List ---
+        function renderGuestLinks(links) {
+            guestLinksList.innerHTML = '';
+            if (links.length === 0) {
+                guestLinksList.innerHTML = '<p class="text-sm text-gray-500">No links generated yet.</p>';
+                return;
+            }
+
+            links.forEach(link => {
+                const createdAt = link.createdAt ? link.createdAt.toDate().toLocaleDateString() : 'N/A';
+                const expiresAt = link.expiresAt ? link.expiresAt.toDate().toLocaleDateString() : 'N/A';
+                const viewCount = link.viewHistory?.length || 0;
+
+                const linkEl = document.createElement('div');
+                linkEl.className = 'p-2 bg-slate-700/50 rounded-md text-xs';
+                linkEl.innerHTML = `
+                    <p class="font-mono text-purple-300 break-all">...${link.id.slice(-12)}</p>
+                    <p class="text-gray-400">Created: ${createdAt} | Expires: ${expiresAt}</p>
+                    <p class="text-gray-400">Views: ${viewCount}</p>
+                `;
+                guestLinksList.appendChild(linkEl);
+            });
+        }
+
+        // --- Firestore Listener for Guest Links ---
+        if (projectId) {
+            const guestLinksQuery = query(collection(db, "projects", projectId, "guestLinks"), orderBy("createdAt", "desc"));
+            onSnapshot(guestLinksQuery, (snapshot) => {
+                const links = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                renderGuestLinks(links);
+            });
+        }
+
     </script>
 </body>
 </html>
