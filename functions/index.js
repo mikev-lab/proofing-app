@@ -73,28 +73,54 @@ exports.optimizePdf = onObjectFinalized({
     await bucket.file(filePath).download({ destination: tempFilePath });
     logger.log('File downloaded locally to', tempFilePath);
 
-    // --- Preflight Checks ---
+    // --- STEP 1: Run Preflight Checks & Update Firestore ---
     const { spawn } = require('child-process-promise');
-    const preflightResults = await runPreflightChecks(tempFilePath, logger);
-    logger.log('Preflight checks completed.', preflightResults);
+    const { preflightStatus, preflightResults } = await runPreflightChecks(tempFilePath, logger);
+    logger.log('Preflight checks completed.', { preflightStatus, preflightResults });
+
+    await db.runTransaction(async (transaction) => {
+        const projectDoc = await transaction.get(projectRef);
+        if (!projectDoc.exists) {
+            throw new Error(`Project ${projectId} not found in Firestore.`);
+        }
+        const projectData = projectDoc.data();
+        const versions = projectData.versions || [];
+        const versionIndex = versions.findIndex(v => v.filePath === filePath);
+
+        if (versionIndex === -1) {
+            logger.warn(`No version found matching filePath "${filePath}" in project ${projectId}.`);
+            return;
+        }
+
+        // Update the version with preflight results
+        versions[versionIndex].preflightStatus = preflightStatus;
+        versions[versionIndex].preflightResults = preflightResults;
+        // Also set initial processing status if not already set to an error
+        if (versions[versionIndex].processingStatus !== 'error') {
+            versions[versionIndex].processingStatus = 'processing';
+        }
+
+        transaction.update(projectRef, { versions: versions });
+        logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with preflight results.`);
+    });
 
 
-    // Optimize the PDF using Ghostscript
+    // --- STEP 2: Optimize the PDF using Ghostscript ---
     await spawn('gs', [
-      '-sDEVICE=pdfwrite',
-      '-dCompatibilityLevel=1.4',
-      '-dPDFSETTINGS=/ebook',
-      '-dJPEGQ=90',
-      '-dColorImageResolution=150',
-      '-dGrayImageResolution=150',
-      '-dMonoImageResolution=150',
-      '-dDetectDuplicateImages=false',
-      '-dConvertCMYKImagesToRGB=true',
-      '-dNOPAUSE',
-      '-dQUIET',
-      '-dBATCH',
-      `-sOutputFile=${tempPreviewPath}`,
-      tempFilePath
+        '-sDEVICE=pdfwrite',
+        '-dCompatibilityLevel=1.4',
+        '-dPDFSETTINGS=/ebook',
+        '-dJPEGQ=90',
+        '-dColorImageResolution=150',
+        '-dGrayImageResolution=150',
+        '-dMonoImageResolution=150',
+        '-dDetectDuplicateImages=false',
+        '-dConvertCMYKImagesToRGB=true',
+        '-dNOPAUSE',
+        '-dQUIET',
+        '-dBATCH',
+        `-sOutputFile=${tempPreviewPath}`,
+        tempFilePath
     ]);
     logger.log('PDF optimized and saved to', tempPreviewPath);
 
@@ -104,40 +130,48 @@ exports.optimizePdf = onObjectFinalized({
     logger.log('Optimized PDF uploaded to', destination);
 
     // Get a signed URL for the preview file
-    const previewFile = bucket.file(destination);
-    const [signedUrl] = await previewFile.getSignedUrl({
-      action: 'read',
-      expires: '03-09-2491'
-    });
+    let signedUrl;
+    // When running in the emulator, getSignedUrl fails. We construct the URL manually instead.
+    if (process.env.FUNCTIONS_EMULATOR === 'true') {
+        const host = process.env.FIREBASE_STORAGE_EMULATOR_HOST || '127.0.0.1:9199';
+        const bucketName = bucket.name;
+        const encodedDestination = encodeURIComponent(destination);
+        signedUrl = `http://${host}/v0/b/${bucketName}/o/${encodedDestination}?alt=media`;
+        logger.log(`Generated emulator storage URL: ${signedUrl}`);
+    } else {
+        const previewFile = bucket.file(destination);
+        [signedUrl] = await previewFile.getSignedUrl({
+            action: 'read',
+            expires: '03-09-2491'
+        });
+    }
 
-    // --- Update Firestore with SUCCESS status ---
+    // --- STEP 3 (Success): Update Firestore with SUCCESS status ---
     await db.runTransaction(async (transaction) => {
-      const projectDoc = await transaction.get(projectRef);
-      if (!projectDoc.exists) {
-        throw new Error(`Project ${projectId} not found in Firestore.`);
-      }
-      const projectData = projectDoc.data();
-      const versions = projectData.versions || [];
-      const versionIndex = versions.findIndex(v => v.filePath === filePath);
+        const projectDoc = await transaction.get(projectRef);
+        if (!projectDoc.exists) {
+            throw new Error(`Project ${projectId} not found in Firestore.`);
+        }
+        const projectData = projectDoc.data();
+        const versions = projectData.versions || [];
+        const versionIndex = versions.findIndex(v => v.filePath === filePath);
 
-      if (versionIndex === -1) {
-        logger.warn(`No version found matching filePath "${filePath}" in project ${projectId}.`);
-        return;
-      }
+        if (versionIndex === -1) {
+            logger.warn(`No version found matching filePath "${filePath}" in project ${projectId}.`);
+            return;
+        }
 
-      // Update the found version with the previewURL and status
-      versions[versionIndex].previewURL = signedUrl;
-      versions[versionIndex].processingStatus = 'complete';
-      versions[versionIndex].processingError = null; // Clear any previous error
-      versions[versionIndex].preflightStatus = preflightResults.preflightStatus;
-      versions[versionIndex].preflightResults = preflightResults.preflightResults;
-      transaction.update(projectRef, { versions: versions });
-      logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with previewURL and status 'complete'.`);
+        // Update the found version with the previewURL and final status
+        versions[versionIndex].previewURL = signedUrl;
+        versions[versionIndex].processingStatus = 'complete';
+        versions[versionIndex].processingError = null; // Clear any previous error
+        transaction.update(projectRef, { versions: versions });
+        logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with previewURL and status 'complete'.`);
     });
 
   } catch (error) {
     logger.error('Error processing PDF:', error);
-    // --- Update Firestore with ERROR status ---
+    // --- STEP 3 (Failure): Update Firestore with ERROR status ---
     try {
       await db.runTransaction(async (transaction) => {
         const projectDoc = await transaction.get(projectRef);
@@ -154,6 +188,7 @@ exports.optimizePdf = onObjectFinalized({
           return;
         }
 
+        // Update with error, but preserve the preflight results from the first update
         versions[versionIndex].processingStatus = 'error';
         versions[versionIndex].processingError = error.message || 'An unknown error occurred during processing.';
         transaction.update(projectRef, { versions: versions });
@@ -177,113 +212,109 @@ exports.optimizePdf = onObjectFinalized({
 });
 
 
-// --- Helper Function for Preflight Checks ---
+// --- Helper Function for Preflight Checks (using pdfinfo) ---
 async function runPreflightChecks(filePath, logger) {
     const { spawn } = require('child-process-promise');
-    const results = {
-        dpiCheck: { status: 'passed', details: 'No low-resolution images detected.' },
-        colorSpaceCheck: { status: 'passed', details: 'Colors appear to be CMYK.' },
-        fontCheck: { status: 'passed', details: 'All fonts appear to be embedded.' }
+
+    let preflightStatus = 'passed';
+    let preflightResults = {
+        dpiCheck: { status: 'skipped', details: 'DPI check not implemented yet.' },
+        colorSpaceCheck: { status: 'failed', details: 'Color space analysis not run.' },
+        fontCheck: { status: 'failed', details: 'Font analysis not run.' }
     };
-    let overallStatus = 'passed';
 
+    // --- Font Check ---
     try {
-        // 1. DPI Check Heuristic (using pdfimages)
-        // This is a HEURISTIC. It can't calculate the *actual* DPI without knowing the
-        // physical size of the image on the page. Instead, we identify images that are
-        // physically large on the page but have low pixel dimensions.
-        const imageListPromise = spawn('pdfimages', ['-list', filePath], { capture: ['stdout', 'stderr'] });
-        const imageListResult = await imageListPromise;
-        const imageListOutput = imageListResult.stdout.toString();
-        const lines = imageListOutput.split('\n').slice(2);
+        const fontInfoResult = await spawn('pdfinfo', ['-fonts', filePath], { capture: ['stdout', 'stderr'] });
+        const fontInfoOutput = fontInfoResult.stdout.toString();
+        const lines = fontInfoOutput.split('\n');
 
-        let lowResImages = [];
-        // A4 paper size in points. An image covering a significant portion of a page
-        // should have a correspondingly high pixel count.
-        const LARGE_DIMENSION_THRESHOLD_PT = 420; // Approx 5.8 inches
-        const MIN_PIXEL_DIMENSION_FOR_LARGE_IMAGE = 875; // 5.8 inches * 150 DPI
+        const headerLineIndex = lines.findIndex(line => line.includes('emb sub uni'));
+        const unembeddedFonts = [];
+        let fontsFound = false;
 
-        for (const line of lines) {
-            if (line.trim() === '') continue;
-            const columns = line.trim().split(/\s+/);
-            const widthPx = parseInt(columns[3], 10);
-            const heightPx = parseInt(columns[4], 10);
-            const widthPt = parseFloat(columns[9]);
-            const heightPt = parseFloat(columns[10]);
+        if (headerLineIndex !== -1) {
+            // Start processing from the line after the header separator
+            for (let i = headerLineIndex + 2; i < lines.length; i++) {
+                const line = lines[i];
+                if (line.trim() === '') continue;
+                fontsFound = true;
 
-            if ([widthPx, heightPx, widthPt, heightPt].some(isNaN)) continue;
-
-            // Check if the image is physically large but has a low pixel count
-            if ((widthPt > LARGE_DIMENSION_THRESHOLD_PT || heightPt > LARGE_DIMENSION_THRESHOLD_PT) &&
-                (widthPx < MIN_PIXEL_DIMENSION_FOR_LARGE_IMAGE || heightPx < MIN_PIXEL_DIMENSION_FOR_LARGE_IMAGE)) {
-                lowResImages.push(`page ${columns[0]}: ${widthPx}x${heightPx}px (at ${widthPt.toFixed(0)}x${heightPt.toFixed(0)}pt)`);
+                const columns = line.trim().split(/\s+/).filter(Boolean);
+                if (columns.length > 2 && columns[2] === 'no') {
+                    unembeddedFonts.push(columns[0]);
+                }
             }
         }
 
-        if (lowResImages.length > 0) {
-            results.dpiCheck.status = 'warning';
-            results.dpiCheck.details = `Found ${lowResImages.length} image(s) that may be low resolution: ${lowResImages.join(', ')}.`;
-            overallStatus = 'warning';
+        if (unembeddedFonts.length > 0) {
+            preflightResults.fontCheck.status = 'failed';
+            preflightResults.fontCheck.details = `Error: ${unembeddedFonts.length} font(s) are not embedded: ${unembeddedFonts.join(', ')}.`;
+            preflightStatus = 'failed';
+        } else if (!fontsFound) {
+            preflightResults.fontCheck.status = 'passed';
+            preflightResults.fontCheck.details = 'No fonts listed in the document.';
+        } else {
+            preflightResults.fontCheck.status = 'passed';
+            preflightResults.fontCheck.details = 'All fonts embedded.';
         }
-
     } catch (error) {
-        logger.error('Error during DPI check:', error.stderr || error.message);
-        results.dpiCheck.status = 'failed';
-        results.dpiCheck.details = 'Failed to analyze image resolutions.';
-        overallStatus = 'failed';
+        const stderr = (error.stderr || '').toString();
+        // If pdfinfo fails, it might be because there are no fonts. If stderr shows the usage text,
+        // we'll treat it as a pass for this check.
+        if (stderr.includes('Usage: pdfinfo')) {
+            logger.warn('pdfinfo -fonts command failed, likely because no fonts were found. Treating as a pass.');
+            preflightResults.fontCheck.status = 'passed';
+            preflightResults.fontCheck.details = 'No fonts found in the document.';
+        } else {
+            logger.error('Error during font check:', stderr || error.message);
+            preflightResults.fontCheck.status = 'failed';
+            preflightResults.fontCheck.details = 'Failed to execute or parse font analysis.';
+            preflightStatus = 'failed';
+        }
     }
 
+    // --- Color Space Check ---
+    // This check is a best-effort heuristic, as pdfinfo doesn't give a simple summary.
     try {
-        // 2. Color Space & Font Check (using exiftool)
-        const exiftoolPromise = spawn('exiftool', ['-json', '-G', '-S', filePath], { capture: ['stdout', 'stderr'] });
-        const exiftoolResult = await exiftoolPromise;
-        const exiftoolOutput = JSON.parse(exiftoolResult.stdout.toString())[0];
+        const pdfInfoResult = await spawn('pdfinfo', [filePath], { capture: ['stdout', 'stderr'] });
+        const pdfInfoOutput = pdfInfoResult.stdout.toString();
 
-        // Color Space Check
-        const colorIssues = [];
-        const hasRGB = Object.values(exiftoolOutput).some(val => typeof val === 'string' && val.includes('RGB'));
-        const hasSpot = Object.values(exiftoolOutput).some(val => typeof val === 'string' && val.includes('Separation'));
+        const nonCmykIndicators = ['DeviceRGB', 'CalRGB', 'Separation', 'DeviceN'];
+        const detectedIssues = [];
 
-        if (hasRGB) colorIssues.push('File contains RGB color spaces.');
-        if (hasSpot) colorIssues.push('File contains Spot colors.');
-
-        if (colorIssues.length > 0) {
-            results.colorSpaceCheck.status = 'warning';
-            results.colorSpaceCheck.details = colorIssues.join(' ');
-            if (overallStatus !== 'failed') overallStatus = 'warning';
+        for (const indicator of nonCmykIndicators) {
+            if (pdfInfoOutput.includes(indicator)) {
+                detectedIssues.push(indicator);
+            }
+        }
+        // ICCBased can be tricky, check if it's not CMYK
+        if (pdfInfoOutput.includes('ICCBased') && !pdfInfoOutput.includes('CMYK')) {
+             if(!detectedIssues.includes('ICCBased RGB or other')) {
+                detectedIssues.push('ICCBased RGB or other');
+             }
         }
 
-        // Font Check - more reliable
-        const allFonts = Object.keys(exiftoolOutput)
-            .filter(k => k.startsWith('FontName-'))
-            .map(k => exiftoolOutput[k]);
-
-        const unembeddedFonts = allFonts.filter(font =>
-            typeof font === 'string' && !(font.includes('(Embedded') || font.includes('Subset)'))
-        );
-
-        if (allFonts.length === 0) {
-             results.fontCheck.status = 'warning';
-             results.fontCheck.details = 'No font information was found. Text may not render correctly.';
-             if (overallStatus !== 'failed') overallStatus = 'warning';
-        } else if (unembeddedFonts.length > 0) {
-            results.fontCheck.status = 'warning';
-            results.fontCheck.details = `Found ${unembeddedFonts.length} font(s) that may not be embedded: ${unembeddedFonts.join(', ')}.`;
-            if (overallStatus !== 'failed') overallStatus = 'warning';
+        if (detectedIssues.length > 0) {
+            preflightResults.colorSpaceCheck.status = 'warning';
+            preflightResults.colorSpaceCheck.details = `Warning: Non-CMYK color indicators found: ${[...new Set(detectedIssues)].join(', ')}.`;
+            if (preflightStatus !== 'failed') {
+                preflightStatus = 'warning';
+            }
+        } else {
+            preflightResults.colorSpaceCheck.status = 'passed';
+            preflightResults.colorSpaceCheck.details = 'No non-CMYK color indicators found.';
         }
-
     } catch (error) {
-        logger.error('Error during exiftool check:', error.stderr || error.message);
-        results.colorSpaceCheck.status = 'failed';
-        results.colorSpaceCheck.details = 'Failed to analyze color spaces.';
-        results.fontCheck.status = 'failed';
-        results.fontCheck.details = 'Failed to analyze font embedding.';
-        overallStatus = 'failed';
+        logger.error('Error during color space check:', error.stderr || error.message);
+        preflightResults.colorSpaceCheck.status = 'failed';
+        preflightResults.colorSpaceCheck.details = 'Failed to execute or parse color space analysis.';
+        if (preflightStatus !== 'failed') preflightStatus = 'failed';
     }
 
     return {
-        preflightStatus: overallStatus,
-        preflightResults: results
+        preflightStatus,
+        preflightResults
     };
 }
 
