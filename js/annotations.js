@@ -12,9 +12,11 @@ import { collection, addDoc, onSnapshot, query, orderBy, serverTimestamp } from 
  * @param {function} setOnPageRenderedCallback - A function to register the drawing callback.
  * @param {function} getTransformState - A function that returns the current zoom and pan state.
  * @param {function} getPdfRenderInfo - A function that returns the PDF's last render position and dimensions.
+ * @param {boolean} isGuest - Flag indicating if the current user is a guest.
+ * @param {function} getGuestDisplayName - Function to prompt for and get the guest's display name.
  */
-export function initializeAnnotations(db, auth, projectId, canvas, commentsContainer, getCurrentPageNumber, rerenderCanvas, setOnPageRenderedCallback, getTransformState, getPdfRenderInfo) {
-    console.log("Initializing annotations for project:", projectId);
+export function initializeAnnotations(db, auth, projectId, canvas, commentsContainer, getCurrentPageNumber, rerenderCanvas, setOnPageRenderedCallback, getTransformState, getPdfRenderInfo, isGuest, getGuestDisplayName) {
+    console.log("Initializing annotations for project:", projectId, "Is Guest:", isGuest);
 
     const modal = document.getElementById('annotation-modal');
     const modalCloseButton = document.getElementById('modal-close-button');
@@ -113,15 +115,34 @@ export function initializeAnnotations(db, auth, projectId, canvas, commentsConta
     }
 
     // --- Firestore Interaction ---
-    if (annotationForm) { // Check if form exists
+    if (annotationForm) {
         annotationForm.addEventListener('submit', async (event) => {
             event.preventDefault();
+            const text = annotationText.value.trim();
+            if (!newAnnotationData || !text) return;
 
-            // Check annotationText exists here too
-            if (!newAnnotationData || !annotationText || !annotationText.value.trim()) {
-                return;
+            let authorName = auth.currentUser?.displayName || auth.currentUser?.email || "Anonymous";
+            let authorUid = auth.currentUser?.uid;
+
+            // If it's a guest, get their chosen display name
+            if (isGuest) {
+                authorName = getGuestDisplayName();
+                // For anonymous auth, uid is still valid for security rules
             }
-            // ... rest of the submit logic ...
+
+            try {
+                await addDoc(collection(db, "projects", projectId, "annotations"), {
+                    ...newAnnotationData,
+                    text: text,
+                    author: authorName,
+                    authorUid: authorUid,
+                    createdAt: serverTimestamp()
+                });
+                hideModal(); // Hide modal on successful submission
+            } catch (error) {
+                console.error("Error adding annotation: ", error);
+                alert("Could not add your comment. Please try again.");
+            }
         });
     } else {
          console.warn("Annotation form not found for adding submit listener.");

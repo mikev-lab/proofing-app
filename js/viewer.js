@@ -15,9 +15,11 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = "https://mozilla.github.io/pdf.js/build
  * @param {string} config.projectId - The ID of the project to load.
  * @param {object} config.projectData - The initial project data from Firestore.
  * @param {boolean} [config.isAdmin=false] - Flag to determine if this is the admin view.
+ * @param {boolean} [config.isGuest=false] - Flag to determine if the user is a guest.
+ * @param {object} [config.guestPermissions={}] - The permissions object for the guest.
  */
 export async function initializeSharedViewer(config) {
-    const { db, auth, projectId, projectData, isAdmin = false } = config;
+    const { db, auth, projectId, projectData, isAdmin = false, isGuest = false, guestPermissions = {} } = config;
 
     // Get DOM elements
     const pdfViewer = document.getElementById('pdf-viewer');
@@ -637,6 +639,13 @@ export async function initializeSharedViewer(config) {
     }
 
 
+    // --- NEW: Function to get guest's name ---
+    function getGuestDisplayName() {
+        // Simple prompt, can be replaced with a more robust modal
+        const name = prompt("Please enter your name to leave a comment:", "Guest");
+        return name || "Guest"; // Default to "Guest" if prompt is empty or cancelled
+    }
+
     // Initialize annotation functionality
     if (pdfCanvas && commentsSection) {
         initializeAnnotations(
@@ -645,8 +654,9 @@ export async function initializeSharedViewer(config) {
             () => queueRenderPage(pageNum), // Function to trigger rerender
             (callback) => { onPageRenderedCallback = callback; }, // Set annotation drawing callback
             () => transformState, // Get current zoom/pan
-            // Pass overall viewRenderInfo for annotations
-            () => viewRenderInfo // Get PDF render position/size info for the whole view
+            () => viewRenderInfo, // Get PDF render position/size info for the whole view
+            isGuest, // Pass guest status
+            getGuestDisplayName // Pass function to get guest name
         );
     } else {
         console.warn("Could not initialize annotations: canvas or comments section missing.");

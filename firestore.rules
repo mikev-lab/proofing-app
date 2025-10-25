@@ -1,127 +1,180 @@
 rules_version = '2';
 service cloud.firestore {
-match /databases/{database}/documents {
+  match /databases/{database}/documents {
 
-// --- Helper Functions ---
-function isAdmin() {
-// Check if user is authenticated AND their role is 'admin' in their user document
-return request.auth != null &&
-exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
-}
+    // --- Helper Functions ---
+    function isAdmin() {
+      // Check if user is authenticated AND their role is 'admin' in their user document
+      return request.auth != null &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
 
-function getUserData(userId) {
-// Get the data document for a specific user ID
-return get(/databases/$(database)/documents/users/$(userId)).data;
-}
+    function getUserData(userId) {
+      // Get the data document for a specific user ID
+      return get(/databases/$(database)/documents/users/$(userId)).data;
+    }
 
-function getProject(projectId) {
-// Get the data document for a specific project ID
-return get(/databases/$(database)/documents/projects/$(projectId)).data;
-}
+    function getProject(projectId) {
+      // Get the data document for a specific project ID
+      return get(/databases/$(database)/documents/projects/$(projectId)).data;
+    }
 
-function isCompanyMember(companyId) {
-// Check if the requesting user exists and belongs to the specified company
-return request.auth != null &&
-exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-getUserData(request.auth.uid).companyId == companyId;
-}
+    function isCompanyMember(companyId) {
+      // Check if the requesting user exists and belongs to the specified company
+      return request.auth != null &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        getUserData(request.auth.uid).companyId == companyId;
+    }
 
-// --- Rules for 'users' Collection ---
-match /users/{userId} {
-// Allow creation for:
-// 1. A user creating their own doc (register.html)
-// 2. An MCE Admin (admin_client_management.html)
-// 3. A Company Admin adding a user *to their own company* (account.html)
-allow create: if request.auth.uid == userId || isAdmin() ||
-(
-request.auth != null &&
-exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-getUserData(request.auth.uid).companyRole == 'admin' &&
-request.resource.data.companyId == getUserData(request.auth.uid).companyId &&
-request.resource.data.role == 'client_user'
-);
+    // --- NEW Guest Helper Functions ---
+    // Check for a valid guest token by looking up the claim associated with the anon UID
+    function hasValidGuestDataAccess(projectId, permission) {
+      // User must be authenticated (anonymously)
+      if (request.auth == null || request.auth.token.firebase.sign_in_provider != 'anonymous') {
+        return false;
+      }
 
-// User can read/update their own doc, Admin can read/update any
-allow read, update: if request.auth.uid == userId || isAdmin();
-// Only Admin can delete
-allow delete: if isAdmin();
-}
+      // Look up the claim document created by the client after anonymous sign-in
+      let claim = get(/databases/$(database)/documents/guest_claims/$(request.auth.uid)).data;
 
-// --- Rules for 'companies' Collection ---
-match /companies/{companyId} {
-// Allow authenticated user to create if they are the owner specified in the new doc
-allow create: if request.auth != null &&
-request.resource.data.ownerUid == request.auth.uid;
+      // Check that the claim is for the project being requested
+      if (claim.projectId != projectId) {
+        return false;
+      }
 
-// Allow read if user is a member of the company or an Admin
-allow read: if isCompanyMember(companyId) || isAdmin();
+      // Get the actual guest link document using the token from the claim
+      let link = get(/databases/$(database)/documents/projects/$(projectId)/guestLinks/$(claim.guestToken));
 
-// Allow update if user is owner, a company admin, or an MCE Admin
-allow update: if request.auth != null && (
-request.auth.uid == resource.data.ownerUid ||
-(isCompanyMember(companyId) && getUserData(request.auth.uid).companyRole == 'admin') ||
-isAdmin()
-);
+      // Check if link exists, is not expired, and has the required permission
+      return link != null &&
+            request.time < link.data.expiresAt &&
+            link.data.permissions[permission] == true;
+    }
 
-// Only Admin can delete
-allow delete: if isAdmin();
-}
+    // --- NEW Rules for 'guest_claims' Collection ---
+    // This collection temporarily links an anonymous UID to a guest token they are using.
+    match /guest_claims/{userId} {
+      // Allow an anonymous user to create a 'claim' document for themselves.
+      // This is a write-once operation.
+      allow create: if request.auth.uid == userId &&
+                      request.auth.token.firebase.sign_in_provider == 'anonymous';
+      // Nobody can read or modify claims after they are created.
+      allow read, update, delete: if false;
+    }
 
-// --- Rules for 'projects' Collection ---
-match /projects/{projectId} {
-// ** Admins have full access **
-allow read, write: if isAdmin(); // Combines get, list, create, update, delete for Admin
+    // --- Rules for 'users' Collection ---
+    match /users/{userId} {
+      // Allow creation for:
+      // 1. A user creating their own doc (register.html)
+      // 2. An MCE Admin (admin_client_management.html)
+      // 3. A Company Admin adding a user *to their own company* (account.html)
+      allow create: if request.auth.uid == userId || isAdmin() ||
+        (
+          request.auth != null &&
+          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          getUserData(request.auth.uid).companyRole == 'admin' &&
+          request.resource.data.companyId == getUserData(request.auth.uid).companyId &&
+          request.resource.data.role == 'client_user'
+        );
 
-// ** Client Access **
-// Allow client 'read' if companyId matches (new) OR if clientId matches (old)
-allow read: if request.auth != null &&
-exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-(
-getUserData(request.auth.uid).companyId == resource.data.companyId ||
-request.auth.uid == resource.data.clientId // Backward Compatibility
-);
+      // User can read/update their own doc, Admin can read/update any
+      allow read, update: if request.auth.uid == userId || isAdmin();
+      // Only Admin can delete
+      allow delete: if isAdmin();
+    }
 
+    // --- Rules for 'companies' Collection ---
+    match /companies/{companyId} {
+      // Allow authenticated user to create if they are the owner specified in the new doc
+      allow create: if request.auth != null &&
+        request.resource.data.ownerUid == request.auth.uid;
 
+      // Allow read if user is a member of the company or an Admin
+      allow read: if isCompanyMember(companyId) || isAdmin();
 
-// Client 'update' (for status changes or file uploads)
-allow update: if request.auth != null &&
-exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-getUserData(request.auth.uid).companyId == resource.data.companyId && // User belongs to the project's company
-(
-// Case 1: Standard status update (only status field changes)
-(request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])) ||
-// Case 2: Client uploading requested file (specific fields change)
-(resource.data.isAwaitingClientUpload == true &&
-request.resource.data.isAwaitingClientUpload == false &&
-request.resource.data.status == 'pending' &&
-request.resource.data.versions.size() == resource.data.versions.size() + 1 &&
-// Ensure other essential fields remain unchanged during upload update
-request.resource.data.companyId == resource.data.companyId &&
-request.resource.data.projectName == resource.data.projectName &&
-request.resource.data.specs == resource.data.specs
-)
-);
-}
+      // Allow update if user is owner, a company admin, or an MCE Admin
+      allow update: if request.auth != null && (
+        request.auth.uid == resource.data.ownerUid ||
+        (isCompanyMember(companyId) && getUserData(request.auth.uid).companyRole == 'admin') ||
+        isAdmin()
+      );
 
-// --- Rules for 'annotations' Sub-collection ---
-// (Removed duplicate block and kept the more specific one)
-match /projects/{projectId}/annotations/{annotationId} {
-// Admin full control
-allow read, create, update, delete: if isAdmin();
+      // Only Admin can delete
+      allow delete: if isAdmin();
+    }
 
-// (Backward Compatibility):
-// Allow client 'read/create' if they are part of the project's company (new)
-// OR if their UID matches the project's clientId (old)
-allow read, create: if request.auth != null &&
-exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-(
-getUserData(request.auth.uid).companyId == getProject(projectId).companyId ||
-request.auth.uid == getProject(projectId).clientId
-);
+    // --- Rules for 'projects' Collection ---
+    match /projects/{projectId} {
+      // ** Admins have full access **
+      allow read, write: if isAdmin();
 
-// Author can update/delete their own annotations
-allow update, delete: if request.auth != null && request.auth.uid == resource.data.authorUid;
-}
-}
+      // ** Client & Guest Access **
+      allow read: if (request.auth != null &&
+                      exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+                      (
+                        getUserData(request.auth.uid).companyId == resource.data.companyId ||
+                        request.auth.uid == resource.data.clientId // Backward Compatibility
+                      ))
+                      // ** OR Guest Read Access **
+                      || hasValidGuestDataAccess(projectId, 'canSeeComments');
+
+      // Client & Guest 'update' (for status changes or file uploads)
+      allow update: if (
+                      // Client update logic
+                      request.auth != null &&
+                      exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+                      getUserData(request.auth.uid).companyId == resource.data.companyId &&
+                      (
+                        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])) ||
+                        (resource.data.isAwaitingClientUpload == true &&
+                          request.resource.data.isAwaitingClientUpload == false &&
+                          request.resource.data.status == 'pending' &&
+                          request.resource.data.versions.size() == resource.data.versions.size() + 1 &&
+                          request.resource.data.companyId == resource.data.companyId &&
+                          request.resource.data.projectName == resource.data.projectName &&
+                          request.resource.data.specs == resource.data.specs
+                        )
+                      )
+                    )
+                    // ** OR Guest Approval Logic **
+                    || (
+                      hasValidGuestDataAccess(projectId, 'canApprove') &&
+                      request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+                    );
+
+      // --- NEW Rules for 'guestLinks' Sub-collection ---
+      match /guestLinks/{linkId} {
+          // Admins have full control
+          allow read, write: if isAdmin();
+
+          // The very first step for a guest is to fetch the link details.
+          // At this point, they are unauthenticated. The linkId (token) is the secret.
+          allow get: if request.auth == null;
+      }
+    }
+
+    // --- Rules for 'annotations' Sub-collection ---
+    match /projects/{projectId}/annotations/{annotationId} {
+      // Admin full control
+      allow read, create, update, delete: if isAdmin();
+
+      // Client read/create
+      allow read, create: if request.auth != null &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        (
+          getUserData(request.auth.uid).companyId == getProject(projectId).companyId ||
+          request.auth.uid == getProject(projectId).clientId
+        );
+
+      // Author can update/delete their own annotations
+      allow update, delete: if request.auth != null && request.auth.uid == resource.data.authorUid;
+
+      // Guest read access
+      allow read: if hasValidGuestDataAccess(projectId, 'canSeeComments');
+
+      // Guest create access
+      allow create: if hasValidGuestDataAccess(projectId, 'canAnnotate');
+    }
+  }
 }

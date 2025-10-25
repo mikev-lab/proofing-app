@@ -4,12 +4,13 @@
 // Example Dockerfile command: RUN apt-get update && apt-get install -y ghostscript
 
 // Gen 2 Imports:
-// The function is onObjectFinalized (with a 'd')
 const { onObjectFinalized } = require('firebase-functions/v2/storage');
+const { onCall, HttpsError } = require('firebase-functions/v2/https'); // <-- Import for callable function
 const logger = require('firebase-functions/logger');
+const crypto = require('crypto'); // <-- Import for token generation
 
 // Your existing imports
-const admin = require('firebase-admin');
+const admin =require('firebase-admin');
 const { Storage } = require('@google-cloud/storage');
 const path = require('path');
 const os = require('os');
@@ -144,4 +145,67 @@ exports.optimizePdf = onObjectFinalized({
   }
 
   return null;
+});
+
+// --- NEW Callable Function for Generating Guest Links ---
+exports.generateGuestLink = onCall({ region: 'us-central1' }, async (request) => {
+  // 1. Authentication Check: Ensure the user is a logged-in admin.
+  if (!request.auth || !request.auth.token) {
+    throw new HttpsError('unauthenticated', 'The function must be called while authenticated.');
+  }
+
+  const userUid = request.auth.uid;
+  try {
+    const userDoc = await db.collection('users').doc(userUid).get();
+    if (!userDoc.exists || userDoc.data().role !== 'admin') {
+      throw new HttpsError('permission-denied', 'You must be an admin to perform this action.');
+    }
+  } catch (error) {
+    logger.error('Admin check failed', error);
+    throw new HttpsError('internal', 'An error occurred while verifying admin status.');
+  }
+
+  // 2. Data Validation: Check for required input (projectId, permissions).
+  const { projectId, permissions, expiresDays = 30 } = request.data;
+  if (!projectId || !permissions) {
+    throw new HttpsError('invalid-argument', 'The function must be called with a "projectId" and "permissions" object.');
+  }
+  if (typeof permissions.canApprove !== 'boolean' || typeof permissions.canAnnotate !== 'boolean' || typeof permissions.canSeeComments !== 'boolean') {
+    throw new HttpsError('invalid-argument', 'The "permissions" object must contain boolean values for "canApprove", "canAnnotate", and "canSeeComments".');
+  }
+
+  // 3. Generate Secure Token.
+  const token = crypto.randomBytes(20).toString('hex');
+
+  // 4. Calculate Expiration Date.
+  const createdAt = admin.firestore.FieldValue.serverTimestamp();
+  const expiresAt = new Date();
+  expiresAt.setDate(expiresAt.getDate() + expiresDays);
+  const expiresAtTimestamp = admin.firestore.Timestamp.fromDate(expiresAt);
+
+  // 5. Create Guest Link Document in Firestore.
+  const guestLinkRef = db.collection('projects').doc(projectId).collection('guestLinks').doc(token);
+
+  try {
+    await guestLinkRef.set({
+      projectId: projectId,
+      permissions: permissions,
+      createdAt: createdAt,
+      expiresAt: expiresAtTimestamp,
+      viewHistory: [] // Initialize an empty array for view tracking
+    });
+
+    logger.log(`Successfully created guest link for project ${projectId} with token ${token}`);
+
+    // 6. Return the full URL to the client.
+    // Note: The base URL should be configured or passed in, but we'll hardcode a placeholder for now.
+    const baseUrl = 'https://your-app-domain.com/proof.html'; // Replace with your actual domain
+    const guestUrl = `${baseUrl}?projectId=${projectId}&guestToken=${token}`;
+
+    return { success: true, url: guestUrl, token: token };
+
+  } catch (error) {
+    logger.error('Error creating guest link document in Firestore:', error);
+    throw new HttpsError('internal', 'Failed to create the guest link.');
+  }
 });
