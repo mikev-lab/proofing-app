@@ -41,6 +41,41 @@
             backdrop-filter: blur(4px);
             z-index: 10;
         }
+        /* Style inputs/selects in the specs form */
+        #specs-form select,
+        #specs-form input[type="number"] {
+             margin-top: 0.25rem;
+             display: block;
+             width: 100%;
+             border-radius: 0.5rem; /* rounded-lg */
+             border: 0;
+             background-color: rgba(255, 255, 255, 0.05); /* bg-white/5 */
+             padding-top: 0.5rem; /* py-2 */
+             padding-bottom: 0.5rem; /* py-2 */
+             padding-left: 0.75rem; /* px-3 */
+             padding-right: 0.75rem; /* px-3 */
+             color: white; /* text-white */
+             box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05); /* shadow-sm */
+             ring: 1px solid rgba(255, 255, 255, 0.1); /* ring-1 ring-inset ring-white/10 */
+        }
+        #specs-form select:focus,
+        #specs-form input[type="number"]:focus {
+            outline: 2px solid transparent;
+            outline-offset: 2px;
+            --tw-ring-color: #6366f1; /* focus:ring-indigo-500 */
+             box-shadow: 0 0 0 2px #6366f1;
+        }
+        #specs-form label {
+            display: block;
+            margin-bottom: 0.25rem;
+            font-size: 0.875rem; /* text-sm */
+            font-weight: 500; /* font-medium */
+            color: #d1d5db; /* text-gray-300 */
+        }
+        #specs-form .form-group {
+            margin-bottom: 1rem; /* Add spacing between groups */
+        }
+
     </style>
 
     <!-- PDF.js Library -->
@@ -109,12 +144,81 @@
                     <div class="md:col-span-2 bg-slate-800/60 p-6 rounded-lg shadow-xl border border-slate-700/50">
                         <h3 class="text-lg font-semibold text-white mb-4">Project Details</h3>
                         <p class="mt-1 text-white"><strong class="text-gray-400">Project:</strong> <span id="project-name"></span></p>
-                        <p class="mt-1 text-white"><strong class="text-gray-400">Company:</strong> <span id="company-name"></span></p>
-                        <div id="specs-container" class="border-t border-slate-700/50 pt-4 mt-4">
-                            <h4 class="text-md font-semibold text-white mb-2">Print Specifications</h4>
-                            <ul id="specs-list" class="space-y-2"></ul>
-                        </div>
+                        <p class="mt-1 text-white mb-4"><strong class="text-gray-400">Company:</strong> <span id="company-name"></span></p>
+
+                        <!-- Editable Print Specifications Form -->
+                        <form id="specs-form" class="border-t border-slate-700/50 pt-4 mt-4">
+                            <h4 class="text-md font-semibold text-white mb-4">Print Specifications</h4>
+                            <div class="space-y-4">
+                                <!-- Dimensions -->
+                                <div class="form-group">
+                                    <label for="dimensions">Dimensions</label>
+                                    <select id="dimensions" name="dimensions">
+                                        <!-- Options populated by JS -->
+                                        <option value="custom">Custom</option>
+                                    </select>
+                                    <div id="custom-dimension-inputs" class="hidden mt-2 space-y-2">
+                                        <input type="number" id="custom-width" name="custom-width" placeholder="Width" step="any">
+                                        <input type="number" id="custom-height" name="custom-height" placeholder="Height" step="any">
+                                        <select id="custom-units" name="custom-units">
+                                            <option value="in">Inches (in)</option>
+                                            <option value="mm">Millimeters (mm)</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <!-- Bleed -->
+                                <div class="form-group">
+                                    <label for="bleedInches">Bleed (inches)</label>
+                                    <input type="number" id="bleedInches" name="bleedInches" value="0.125" step="0.001" required>
+                                </div>
+                                <!-- Safety -->
+                                <div class="form-group">
+                                    <label for="safetyInches">Safety Margin (inches)</label>
+                                    <input type="number" id="safetyInches" name="safetyInches" value="0.125" step="0.001" required>
+                                </div>
+                                <!-- Page Count -->
+                                <div class="form-group">
+                                    <label for="page-count">Page Count</label>
+                                    <input type="number" id="page-count" name="page-count" required>
+                                </div>
+                                <!-- Binding -->
+                                <div class="form-group">
+                                    <label for="binding">Binding</label>
+                                    <select id="binding" name="binding">
+                                        <option value="Perfect Bound">Perfect Bound</option>
+                                        <option value="Saddle-Stitch">Saddle-Stitch</option>
+                                        <option value="Coil Bound">Coil Bound</option>
+                                        <option value="None">None (Flat Sheets)</option>
+                                    </select>
+                                </div>
+                                <!-- Reading Direction -->
+                                <div class="form-group">
+                                    <label for="readingDirection">Reading Direction</label>
+                                    <select id="readingDirection" name="readingDirection">
+                                        <option value="ltr">Left-to-Right</option>
+                                        <option value="rtl">Right-to-Left</option>
+                                    </select>
+                                </div>
+                                <!-- Paper Type -->
+                                <div class="form-group">
+                                    <label for="paper-type">Paper Type</label>
+                                    <select id="paper-type" name="paper-type">
+                                        <option value="Gloss">Gloss</option>
+                                        <option value="Matte">Matte</option>
+                                        <option value="Uncoated">Uncoated</option>
+                                    </select>
+                                </div>
+                            </div>
+                             <!-- Save Button and Status Message -->
+                            <div class="mt-6 border-t border-slate-700/50 pt-4">
+                                <button type="submit" id="save-specs-button" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-blue-800 disabled:cursor-not-allowed">
+                                    Save Specification Changes
+                                </button>
+                                <p id="specs-status-message" class="mt-2 text-center text-sm"></p>
+                            </div>
+                        </form>
                     </div>
+                    <!-- Upload New Version -->
                     <div class="bg-slate-800/60 p-6 rounded-lg shadow-xl border border-slate-700/50">
                         <h3 class="text-lg font-semibold text-white mb-4">Upload New Version</h3>
                         <form id="file-upload-form">
@@ -229,15 +333,15 @@
         import { getFirestore, doc, onSnapshot, getDoc, updateDoc, Timestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
         import { initializeSharedViewer } from './js/viewer.js';
-        import { STANDARD_PAPER_SIZES } from './js/guides.js';
+        import { STANDARD_PAPER_SIZES } from './js/guides.js'; // Import paper sizes
 
-        const firebaseConfig = {
-          apiKey: "AIzaSyApmEJdFi96QS3TwYh7GyEDSbZrCuVpBrg",
-          authDomain: "proofing-application.firebaseapp.com",
-          projectId: "proofing-application",
-          storageBucket: "proofing-application.firebasestorage.app",
-          messagingSenderId: "452256252711",
-          appId: "1:452256252711:web:68795c1e5cc9438ff05f02",
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+            apiKey: "AIzaSyApmEJdFi96QS3TwYh7GyEDSbZrCuVpBrg",
+            authDomain: "proofing-application.firebaseapp.com",
+            projectId: "proofing-application",
+            storageBucket: "proofing-application.firebasestorage.app",
+            messagingSenderId: "452256252711",
+            appId: "1:452256252711:web:68795c1e5cc9438ff05f02",
         };
 
         const app = initializeApp(firebaseConfig);
@@ -251,12 +355,193 @@
         const projectNameHeader = document.getElementById('project-name-header');
         const fileUploadForm = document.getElementById('file-upload-form');
         const fileInput = document.getElementById('file-input');
-        const uploadButton = fileUploadForm.querySelector('button[type="submit"]'); // Get upload button
+        const uploadButton = fileUploadForm.querySelector('button[type="submit"]');
+
+        // Spec form elements
+        const specsForm = document.getElementById('specs-form');
+        const dimensionsSelect = document.getElementById('dimensions');
+        const customDimensionInputs = document.getElementById('custom-dimension-inputs');
+        const customWidthInput = document.getElementById('custom-width');
+        const customHeightInput = document.getElementById('custom-height');
+        const customUnitsSelect = document.getElementById('custom-units');
+        const bleedInchesInput = document.getElementById('bleedInches');
+        const safetyInchesInput = document.getElementById('safetyInches');
+        const pageCountInput = document.getElementById('page-count');
+        const bindingSelect = document.getElementById('binding');
+        const readingDirectionSelect = document.getElementById('readingDirection');
+        const paperTypeSelect = document.getElementById('paper-type');
+        const saveSpecsButton = document.getElementById('save-specs-button');
+        const specsStatusMessage = document.getElementById('specs-status-message');
 
 
         const urlParams = new URLSearchParams(window.location.search);
         const projectId = urlParams.get('id');
+        let currentProjectData = null; // Store current project data globally for save function
 
+        // --- Populate Dimensions Select ---
+        function populateDimensionsSelect() {
+            dimensionsSelect.innerHTML = ''; // Clear existing
+            // Add grouped standard sizes
+            const groupedSizes = {};
+            for (const key in STANDARD_PAPER_SIZES) {
+                const size = STANDARD_PAPER_SIZES[key];
+                if (!groupedSizes[size.group]) {
+                    groupedSizes[size.group] = document.createElement('optgroup');
+                    groupedSizes[size.group].label = size.group;
+                }
+                const option = document.createElement('option');
+                option.value = key;
+                // Display name and dimensions
+                const dimString = size.width_mm && size.height_mm
+                    ? ` (${size.width_mm} x ${size.height_mm} mm)` // Assuming mm for display, adjust if needed
+                    : '';
+                option.textContent = `${size.name}${dimString}`;
+                groupedSizes[size.group].appendChild(option);
+            }
+            // Append optgroups to select
+            Object.values(groupedSizes).forEach(group => dimensionsSelect.appendChild(group));
+            // Add Custom option at the end
+            const customOption = document.createElement('option');
+            customOption.value = 'custom';
+            customOption.textContent = 'Custom';
+            dimensionsSelect.appendChild(customOption);
+        }
+        populateDimensionsSelect(); // Call on page load
+
+        // --- Handle Dimension Select Change ---
+        dimensionsSelect.addEventListener('change', () => {
+             customDimensionInputs.classList.toggle('hidden', dimensionsSelect.value !== 'custom');
+             customWidthInput.required = dimensionsSelect.value === 'custom';
+             customHeightInput.required = dimensionsSelect.value === 'custom';
+        });
+
+        // --- Populate Form from Data ---
+        function populateSpecsForm(specs) {
+            if (!specs) return;
+
+            // Dimensions
+            if (typeof specs.dimensions === 'object' && specs.dimensions !== null) {
+                dimensionsSelect.value = 'custom';
+                customDimensionInputs.classList.remove('hidden');
+                customWidthInput.value = specs.dimensions.width || '';
+                customHeightInput.value = specs.dimensions.height || '';
+                customUnitsSelect.value = specs.dimensions.units || 'in';
+                customWidthInput.required = true;
+                customHeightInput.required = true;
+            } else if (typeof specs.dimensions === 'string') {
+                 if (dimensionsSelect.querySelector(`option[value="${specs.dimensions}"]`)) {
+                    dimensionsSelect.value = specs.dimensions;
+                 } else {
+                     // Handle legacy string format (e.g., "5x7") - Assume inches, set to custom
+                     dimensionsSelect.value = 'custom';
+                     const parts = specs.dimensions.split('x');
+                     if (parts.length === 2) {
+                         customWidthInput.value = parseFloat(parts[0]) || '';
+                         customHeightInput.value = parseFloat(parts[1]) || '';
+                     }
+                     customUnitsSelect.value = 'in'; // Assume inches
+                     customDimensionInputs.classList.remove('hidden');
+                     customWidthInput.required = true;
+                     customHeightInput.required = true;
+                 }
+            } else {
+                 dimensionsSelect.value = 'US_Letter'; // Default if missing/invalid
+                 customDimensionInputs.classList.add('hidden');
+                 customWidthInput.required = false;
+                 customHeightInput.required = false;
+            }
+
+            bleedInchesInput.value = specs.bleedInches ?? 0.125;
+            safetyInchesInput.value = specs.safetyInches ?? 0.125;
+            pageCountInput.value = specs.pageCount || '';
+            bindingSelect.value = specs.binding || 'Perfect Bound';
+            readingDirectionSelect.value = specs.readingDirection || 'ltr';
+            paperTypeSelect.value = specs.paperType || 'Gloss';
+        }
+
+        // --- Save Spec Changes Handler ---
+        specsForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            saveSpecsButton.disabled = true;
+            specsStatusMessage.textContent = 'Saving...';
+            specsStatusMessage.className = 'mt-2 text-center text-sm text-yellow-400';
+
+            try {
+                const updatedSpecs = {
+                    pageCount: parseInt(pageCountInput.value, 10) || null,
+                    binding: bindingSelect.value,
+                    readingDirection: readingDirectionSelect.value,
+                    paperType: paperTypeSelect.value,
+                    bleedInches: parseFloat(bleedInchesInput.value) || 0,
+                    safetyInches: parseFloat(safetyInchesInput.value) || 0,
+                };
+
+                if (dimensionsSelect.value === 'custom') {
+                     const width = parseFloat(customWidthInput.value);
+                     const height = parseFloat(customHeightInput.value);
+                     if (isNaN(width) || isNaN(height) || width <= 0 || height <= 0) {
+                         throw new Error('Please enter valid, positive numbers for custom width and height.');
+                     }
+                      // Basic check for safety margin vs custom dimensions
+                     if (customUnitsSelect.value === 'in' && (updatedSpecs.safetyInches * 2 >= width || updatedSpecs.safetyInches * 2 >= height)) {
+                         throw new Error('Safety margin cannot be larger than half the page dimension.');
+                     } // Add similar check for mm if needed
+
+                     updatedSpecs.dimensions = {
+                         width: width,
+                         height: height,
+                         units: customUnitsSelect.value
+                     };
+                } else {
+                    updatedSpecs.dimensions = dimensionsSelect.value;
+                }
+
+                 // Validate page count
+                 if (!updatedSpecs.pageCount || updatedSpecs.pageCount <= 0) {
+                     throw new Error('Please enter a valid, positive page count.');
+                 }
+
+                // Update Firestore
+                const projectRef = doc(db, "projects", projectId);
+                await updateDoc(projectRef, { specs: updatedSpecs });
+
+                specsStatusMessage.textContent = 'Specifications saved successfully!';
+                specsStatusMessage.className = 'mt-2 text-center text-sm text-green-400';
+
+                 // --- Trigger viewer update AFTER saving ---
+                 // Find the currently selected version to reload
+                const currentVersionNum = parseInt(document.getElementById('version-selector')?.value, 10);
+                if (!isNaN(currentVersionNum)) {
+                     // Temporarily update local data for immediate guide redraw
+                     if (currentProjectData) {
+                         currentProjectData.specs = updatedSpecs;
+                         initializeSharedViewer({ // Re-initialize with updated specs
+                             db,
+                             auth,
+                             projectId,
+                             projectData: currentProjectData, // Pass updated data
+                             isAdmin: true
+                         });
+                         // Reloading the same version should now re-render with new guides
+                         // loadProofByVersion(currentVersionNum); // You might not need this if initializeSharedViewer handles it
+                     }
+                }
+                // --- End trigger viewer update ---
+
+
+            } catch (error) {
+                console.error("Error saving specifications:", error);
+                specsStatusMessage.textContent = `Error: ${error.message || 'Could not save.'}`;
+                specsStatusMessage.className = 'mt-2 text-center text-sm text-red-400';
+            } finally {
+                saveSpecsButton.disabled = false;
+                // Clear status message after a few seconds
+                 setTimeout(() => { specsStatusMessage.textContent = ''; }, 4000);
+            }
+        });
+
+
+        // --- Firestore Listener ---
         onAuthStateChanged(auth, (user) => {
             if (user) {
                 document.getElementById('user-email').textContent = user.email;
@@ -264,44 +549,25 @@
                     const projectRef = doc(db, "projects", projectId);
                     onSnapshot(projectRef, async (docSnap) => {
                         if (docSnap.exists()) {
-                            const projectData = docSnap.data();
-                            projectNameHeader.textContent = projectData.projectName;
-                            document.getElementById('project-name').textContent = projectData.projectName;
+                            currentProjectData = docSnap.data(); // Store data globally
+                            projectNameHeader.textContent = currentProjectData.projectName;
+                            document.getElementById('project-name').textContent = currentProjectData.projectName;
 
-                            if (projectData.companyId) {
-                                const companySnap = await getDoc(doc(db, "companies", projectData.companyId));
+                            if (currentProjectData.companyId) {
+                                const companySnap = await getDoc(doc(db, "companies", currentProjectData.companyId));
                                 if (companySnap.exists()) {
                                     document.getElementById('company-name').textContent = companySnap.data().companyName;
                                 }
                             }
 
-                            const specsList = document.getElementById('specs-list');
-                            if (projectData.specs) {
-                                let dimensionString = 'N/A';
-                                const dimSpec = projectData.specs.dimensions;
-                                if (typeof dimSpec === 'object' && dimSpec !== null) {
-                                    dimensionString = `Custom: ${dimSpec.width} x ${dimSpec.height} ${dimSpec.units}`;
-                                } else if (typeof dimSpec === 'string' && STANDARD_PAPER_SIZES[dimSpec]) {
-                                    const size = STANDARD_PAPER_SIZES[dimSpec];
-                                    dimensionString = `${size.name} (${size.width_mm} x ${size.height_mm} mm)`;
-                                } else if (typeof dimSpec === 'string') {
-                                    dimensionString = dimSpec;
-                                }
-
-                                specsList.innerHTML = `
-                                    <li class='mt-2'><strong class='text-gray-300'>Dimensions:</strong> <span id='spec-dimensions'>${dimensionString}</span></li>
-                                    <li class='mt-2'><strong class='text-gray-300'>Page Count:</strong> <span id='spec-pages'>${projectData.specs.pageCount || 'N/A'}</span></li>
-                                    <li class='mt-2'><strong class='text-gray-300'>Binding:</strong> <span id='spec-binding'>${projectData.specs.binding || 'N/A'}</span></li>
-                                    <li class='mt-2'><strong class='text-gray-300'>Paper Type:</strong> <span id='spec-paper'>${projectData.specs.paperType || 'N/A'}</span></li>
-                                `;
-                            }
-
+                            // Populate the specs form
+                            populateSpecsForm(currentProjectData.specs);
 
                             initializeSharedViewer({
                                 db,
                                 auth,
                                 projectId,
-                                projectData,
+                                projectData: currentProjectData, // Pass current data
                                 isAdmin: true
                             });
 
@@ -312,6 +578,8 @@
                              loadingSpinner.innerHTML = '<p class="text-red-400">Error: Project not found.</p>';
                         }
                     });
+                } else {
+                     loadingSpinner.innerHTML = '<p class="text-red-400">Error: No Project ID provided.</p>';
                 }
             } else {
                 window.location.href = 'index.html';
@@ -338,6 +606,7 @@
             }
         });
 
+        // --- File Upload Logic ---
         fileUploadForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             const file = fileInput.files[0];
@@ -352,34 +621,33 @@
 
             const projectRef = doc(db, "projects", projectId);
             try {
-                // --- Store filePath ---
+                // Get current versions from latest data
+                const projectSnap = await getDoc(projectRef); // Get fresh data before upload
+                const currentVersions = projectSnap.exists() ? (projectSnap.data().versions || []) : [];
+
                 const timestampedFileName = `${Date.now()}_${file.name}`;
-                const storagePath = `proofs/${projectId}/${timestampedFileName}`; // This is the filePath
+                const storagePath = `proofs/${projectId}/${timestampedFileName}`;
                 const storageRef = ref(storage, storagePath);
                 const uploadResult = await uploadBytes(storageRef, file);
                 const downloadURL = await getDownloadURL(uploadResult.ref);
 
-                const projectSnap = await getDoc(projectRef);
-                const currentVersions = projectSnap.data().versions || [];
                 const newVersion = {
-                    fileName: file.name, // Store original filename without timestamp
+                    fileName: file.name,
                     fileURL: downloadURL,
-                    filePath: storagePath, // <-- Store storage path
+                    filePath: storagePath,
                     uploadedAt: Timestamp.now(),
                     version: currentVersions.length + 1
                 };
-                // --- End storing filePath ---
 
                 await updateDoc(projectRef, {
                     versions: [...currentVersions, newVersion],
                     status: 'pending', // Reset status to pending for review
-                    isAwaitingClientUpload: false // Ensure this is false
+                    isAwaitingClientUpload: false
                 });
 
-                // Optionally clear the file input after upload
                 fileInput.value = '';
                 alert('New version uploaded successfully!');
-                // Reloading might happen automatically due to onSnapshot, or you might force it
+                // onSnapshot listener should automatically update the viewer and version selector
             } catch (error) {
                 console.error("Error uploading new version:", error);
                 alert('Error uploading file. Please try again.');

@@ -47,11 +47,8 @@ export async function initializeSharedViewer(config) {
     // Dynamically imported module
     let guidesModule = null;
 
-    // --- MODIFICATION START: Update projectSpecs whenever function runs ---
     // Update projectSpecs based on the potentially updated projectData passed in
-    // --- FIX: Add 'let' to declare the variable ---
     let projectSpecs = projectData.specs;
-    // --- MODIFICATION END ---
 
 
     // PDF.js state
@@ -69,7 +66,8 @@ export async function initializeSharedViewer(config) {
 
     // State managed by viewerControls
     let transformState = { zoom: 1.0, pan: { x: 0, y: 0 } };
-    let pdfRenderInfo = { x: 0, y: 0, width: 0, height: 0, scale: 1.0 };
+    let viewRenderInfo = { x: 0, y: 0, width: 0, height: 0, scale: 1.0 }; // Overall info for the current view
+    let pageRenderInfos = []; // Array of render info for *each page* within the current view
     let hiddenCanvas = document.createElement('canvas');
     let currentlyLoadedURL = null; // Keep track of the currently loaded URL
 
@@ -113,13 +111,6 @@ export async function initializeSharedViewer(config) {
         thumbnailList.innerHTML = ''; // Clear existing thumbnails
         renderedThumbnails.clear(); // Clear the set tracking rendered thumbnails
 
-        // Adjust effective page count for spread view to ensure even pairs for spreads
-        let effectiveNumPages = pdfDoc.numPages;
-        if (currentViewMode === 'spread' && effectiveNumPages > 1 && effectiveNumPages % 2 !== 0) {
-           // We only need to adjust if there's more than one page and it's odd
-           // The logic in getPagesForView handles the single cover page case correctly
-           // We might not actually need to adjust effectiveNumPages here if getViewCount handles it. Let's rely on getViewCount.
-        }
         const totalViews = getViewCount(pdfDoc.numPages); // Use actual page count for view calculation
 
         // Determine a standard aspect ratio for spread thumbnails for consistency
@@ -154,13 +145,15 @@ export async function initializeSharedViewer(config) {
 
             let aspectRatio;
             if (currentViewMode === 'spread') {
-                 if (i === 1 && pdfDoc.numPages > 1) { // First page might be single cover
+                 // --- Simplified spread aspect ratio logic ---
+                 if (i === 1 && pagesIndices.length === 1) { // Single cover page
                      const page = await pdfDoc.getPage(1);
                      const viewport = page.getViewport({ scale: 1.0 });
                      aspectRatio = viewport.width / viewport.height;
-                 } else {
+                 } else { // All other spreads (or single last page treated as spread)
                      aspectRatio = standardSpreadAspectRatio; // Use precalculated spread ratio
                  }
+                 // --- End simplified logic ---
             } else {
                 // For single view, calculate dynamically for each page
                 const page = await pdfDoc.getPage(pagesIndices[0]);
@@ -175,7 +168,7 @@ export async function initializeSharedViewer(config) {
 
             // Set inner HTML with placeholder div and canvas
             thumbItem.innerHTML = `
-                <div class="bg-black/20 flex items-center justify-center rounded-sm overflow-hidden" style="aspect-ratio: ${aspectRatio}">
+                <div class="bg-black/20 flex items-center justify-center rounded-sm overflow-hidden" style="aspect-ratio: ${aspectRatio || 1}">
                      <canvas class="w-full h-full object-contain"></canvas>
                 </div>
                 <p class="text-center text-xs mt-2">Page ${pagesStr || 'Blank'}</p>
@@ -365,10 +358,8 @@ export async function initializeSharedViewer(config) {
             // Check if pdfDoc was successfully loaded
             if (!pdfDoc) throw new Error("PDF document loading failed or returned null.");
 
-            // --- MODIFICATION START: Update currentlyLoadedURL on successful load ---
             currentlyLoadedURL = pdfUrl; // Update the tracking variable
             console.log("PDF loaded successfully. Currently loaded URL updated.");
-            // --- MODIFICATION END ---
 
             const totalViews = getViewCount(pdfDoc.numPages);
             pageCountSpan.textContent = totalViews; // Update total views display
@@ -483,7 +474,7 @@ export async function initializeSharedViewer(config) {
             visibleContext.scale(devicePixelRatio, devicePixelRatio); // Scale context for high-res drawing
             visibleContext.save(); // Save context state before applying zoom/pan
 
-            // Calculate base scale and position to fit the PDF content within the viewer
+            // --- Calculate base scale and position for the entire view ---
             const baseViewports = pages.map(p => p.getViewport({ scale: 1.0 }));
             const totalBaseWidth = baseViewports.reduce((sum, vp) => sum + vp.width, 0);
             const maxBaseHeight = Math.max(...baseViewports.map(vp => vp.height));
@@ -491,21 +482,42 @@ export async function initializeSharedViewer(config) {
             const availableHeight = pdfViewer.clientHeight;
             // Calculate scale to fit, with padding
             const baseScale = Math.min(availableWidth / totalBaseWidth, availableHeight / maxBaseHeight) * 0.95;
-            const baseWidth = totalBaseWidth * baseScale;
-            const baseHeight = maxBaseHeight * baseScale;
-            // Calculate top-left position to center the content
-            const baseX = (availableWidth - baseWidth) / 2;
-            const baseY = (availableHeight - baseHeight) / 2;
+            const viewWidth = totalBaseWidth * baseScale;
+            const viewHeight = maxBaseHeight * baseScale;
+            // Calculate top-left position to center the entire view
+            const viewX = (availableWidth - viewWidth) / 2;
+            const viewY = (availableHeight - viewHeight) / 2;
 
-            // Store render info for guides and annotations
-            pdfRenderInfo = { x: baseX, y: baseY, width: baseWidth, height: baseHeight, scale: baseScale };
+            // --- Store overall view render info ---
+            viewRenderInfo = { x: viewX, y: viewY, width: viewWidth, height: viewHeight, scale: baseScale };
 
             // Apply current pan and zoom transformations
             visibleContext.translate(transformState.pan.x, transformState.pan.y);
             visibleContext.scale(transformState.zoom, transformState.zoom);
 
-            // Draw the pre-rendered content from the hidden canvas
-            visibleContext.drawImage(hiddenCanvas, baseX, baseY, baseWidth, baseHeight);
+            // --- Draw the pre-rendered content from the hidden canvas ---
+            visibleContext.drawImage(hiddenCanvas, viewX, viewY, viewWidth, viewHeight);
+
+            // --- Calculate individual page render info ---
+            pageRenderInfos = []; // Reset the array
+            let currentPageX = viewX; // Start at the beginning of the view's x position
+            for (let i = 0; i < baseViewports.length; i++) {
+                const pageBaseViewport = baseViewports[i];
+                const pageWidth = pageBaseViewport.width * baseScale;
+                const pageHeight = pageBaseViewport.height * baseScale;
+                // Center each page vertically within the max height of the view
+                const pageY = viewY + (viewHeight - pageHeight) / 2;
+
+                pageRenderInfos.push({
+                    x: currentPageX,
+                    y: pageY,
+                    width: pageWidth,
+                    height: pageHeight,
+                    scale: baseScale // Use the same base scale for guides
+                });
+                currentPageX += pageWidth; // Move to the next page's horizontal position
+            }
+
 
             // Draw guides if applicable and module is loaded
             if (projectSpecs && guidesModule) {
@@ -514,7 +526,8 @@ export async function initializeSharedViewer(config) {
                     bleed: showBleedGuideCheckbox?.checked ?? true,
                     safety: showSafetyGuideCheckbox?.checked ?? true
                 };
-                guidesModule.drawGuides(visibleContext, projectSpecs, pdfRenderInfo, guideOptions);
+                // Pass pageRenderInfos (array) to drawGuides
+                guidesModule.drawGuides(visibleContext, projectSpecs, pageRenderInfos, guideOptions);
             }
 
             visibleContext.restore(); // Restore context state (removes zoom/pan)
@@ -632,7 +645,8 @@ export async function initializeSharedViewer(config) {
             () => queueRenderPage(pageNum), // Function to trigger rerender
             (callback) => { onPageRenderedCallback = callback; }, // Set annotation drawing callback
             () => transformState, // Get current zoom/pan
-            () => pdfRenderInfo // Get PDF render position/size info
+            // Pass overall viewRenderInfo for annotations
+            () => viewRenderInfo // Get PDF render position/size info for the whole view
         );
     } else {
         console.warn("Could not initialize annotations: canvas or comments section missing.");
@@ -647,7 +661,8 @@ export async function initializeSharedViewer(config) {
                 queueRenderPage(pageNum); // Rerender with new zoom/pan
             },
             () => currentTool, // Function to get current tool
-            () => pdfRenderInfo, // Get PDF render position/size info
+            // Pass overall viewRenderInfo for controls
+            () => viewRenderInfo, // Get PDF render position/size info for the whole view
             zoomLevelDisplay // Element to display zoom level
         );
     } else {
@@ -721,7 +736,6 @@ export async function initializeSharedViewer(config) {
 
     // --- Initial PDF Load ---
 
-    // --- MODIFICATION START: Refined URL Selection Logic ---
     let versionToLoad = null;
     let targetUrlToLoad = null;
 
@@ -761,11 +775,9 @@ export async function initializeSharedViewer(config) {
     } else {
         console.warn("No versions found in projectData.");
     }
-    // --- MODIFICATION END ---
 
 
     // --- Only load if URL is new and valid ---
-    // (This part should now work correctly with the refined targetUrlToLoad)
     if (targetUrlToLoad && targetUrlToLoad !== currentlyLoadedURL) {
         console.log("New target URL detected, loading PDF:", targetUrlToLoad.substring(0, 100) + '...');
         // currentlyLoadedURL will be updated inside loadPdf upon success

@@ -1,6 +1,7 @@
 export const INCH_TO_POINTS = 72;
 export const MM_TO_POINTS = 2.83465;
 
+// Define standard paper sizes with dimensions in millimeters
 export const STANDARD_PAPER_SIZES = {
     // ISO A Series
     'A0': { name: 'A0', width_mm: 841, height_mm: 1189, group: 'ISO A' },
@@ -42,9 +43,16 @@ export const STANDARD_PAPER_SIZES = {
     'A6_Postcard': { name: 'A6 Postcard', width_mm: 105, height_mm: 148, group: 'Postcards' },
 };
 
+/**
+ * Gets the trim dimensions in points (pt) based on the dimension specification.
+ * Handles standard size names (like 'A4', 'US_Letter'), custom dimension objects,
+ * and legacy custom dimension strings (like '5x7').
+ * @param {string|object} dimensionSpec - The dimension specification.
+ * @returns {object|null} An object with { width, height } in points, or null if invalid.
+ */
 export function getTrimDimensions(dimensionSpec) {
-    // Handle new custom dimension object
-    if (typeof dimensionSpec === 'object' && dimensionSpec !== null) {
+    // Handle new custom dimension object { width, height, units }
+    if (typeof dimensionSpec === 'object' && dimensionSpec !== null && dimensionSpec.units) {
         const { width, height, units } = dimensionSpec;
         if (units === 'in') {
             return {
@@ -59,7 +67,7 @@ export function getTrimDimensions(dimensionSpec) {
         }
     }
 
-    // Handle standard size string
+    // Handle standard size string (e.g., 'A4', 'US_Letter')
     if (typeof dimensionSpec === 'string' && STANDARD_PAPER_SIZES[dimensionSpec]) {
         const size = STANDARD_PAPER_SIZES[dimensionSpec];
         return {
@@ -68,7 +76,7 @@ export function getTrimDimensions(dimensionSpec) {
         };
     }
 
-    // Handle legacy custom dimension string (e.g., "5x7")
+    // Handle legacy custom dimension string (e.g., "5x7" - assume inches)
     if (typeof dimensionSpec === 'string' && dimensionSpec.includes('x')) {
         const parts = dimensionSpec.toLowerCase().split('x');
         if (parts.length === 2) {
@@ -84,7 +92,7 @@ export function getTrimDimensions(dimensionSpec) {
     }
 
     console.warn('Could not determine trim dimensions for spec:', dimensionSpec);
-    return null; // Or return a default/error state
+    return null; // Return null for invalid or unrecognized specs
 }
 
 /**
@@ -96,14 +104,16 @@ export function getTrimDimensions(dimensionSpec) {
  * @param {number} options.width - The width of the box.
  * @param {number} options.height - The height of the box.
  * @param {string} options.color - The stroke color for the box.
- * @param {number} [options.lineWidth=1] - The width of the line.
- * @param {number[]} [options.dashPattern=[]] - An array for dashed lines.
+ * @param {number} [options.lineWidth=1] - The width of the line in pixels (will appear constant regardless of zoom).
+ * @param {number[]} [options.dashPattern=[]] - An array for dashed lines in pixels (will appear constant regardless of zoom).
  */
 function drawBox(ctx, { x, y, width, height, color, lineWidth = 1, dashPattern = [] }) {
     ctx.save();
     ctx.strokeStyle = color;
-    ctx.lineWidth = lineWidth / ctx.getTransform().a; // Descale line width
-    ctx.setLineDash(dashPattern.map(d => d / ctx.getTransform().a)); // Descale dash pattern
+    // Apply line width and dash pattern independent of current transform scale
+    const currentScale = ctx.getTransform().a; // Assuming uniform scaling (a=d)
+    ctx.lineWidth = lineWidth / currentScale; // Counteract the scale
+    ctx.setLineDash(dashPattern.map(d => d / currentScale)); // Counteract the scale
     ctx.strokeRect(x, y, width, height);
     ctx.restore();
 }
@@ -119,57 +129,10 @@ function drawTrimGuide(ctx, params) {
         y: params.trimY,
         width: params.trimWidth,
         height: params.trimHeight,
-        color: 'black',
-        lineWidth: 1
+        color: 'black', // Trim is typically black or cyan
+        lineWidth: 1 // Keep this thin
     });
 }
-
-/**
- * Main function to draw all selected guides onto the canvas.
- * @param {CanvasRenderingContext2D} ctx - The canvas context.
- * @param {object} specs - The project's print specifications.
- * @param {object} renderInfo - Information about the PDF's rendered position and size.
- * @param {object} guideOptions - An object indicating which guides to show.
- */
-export function drawGuides(ctx, specs, renderInfo, guideOptions) {
-    if (!specs || !renderInfo) return;
-
-    const trimDimensions = getTrimDimensions(specs.dimensions);
-    if (!trimDimensions) return;
-
-    const bleedPt = specs.bleedInches ? specs.bleedInches * INCH_TO_POINTS : (specs.bleedMillimeters ? specs.bleedMillimeters * MM_TO_POINTS : 0);
-    const safetyPt = specs.safetyInches ? specs.safetyInches * INCH_TO_POINTS : (specs.safetyMillimeters ? specs.safetyMillimeters * MM_TO_POINTS : 0);
-
-    const pageTotalWidthPt = trimDimensions.width + (2 * bleedPt);
-    if (pageTotalWidthPt <= 0) return;
-
-    const scale = renderInfo.width / pageTotalWidthPt;
-
-    const trimDrawX = renderInfo.x + (bleedPt * scale);
-    const trimDrawY = renderInfo.y + (bleedPt * scale);
-    const trimDrawWidth = trimDimensions.width * scale;
-    const trimDrawHeight = trimDimensions.height * scale;
-
-    const guideParams = {
-        trimX: trimDrawX,
-        trimY: trimDrawY,
-        trimWidth: trimDrawWidth,
-        trimHeight: trimDrawHeight,
-        bleedPx: bleedPt * scale,
-        safetyPx: safetyPt * scale,
-    };
-
-    if (guideOptions.trim) {
-        drawTrimGuide(ctx, guideParams);
-    }
-    if (guideOptions.bleed && bleedPt > 0) {
-        drawBleedGuide(ctx, guideParams);
-    }
-    if (guideOptions.safety && safetyPt > 0) {
-        drawSafetyGuide(ctx, guideParams);
-    }
-}
-
 
 /**
  * Draws the bleed guide based on calculated coordinates.
@@ -178,13 +141,13 @@ export function drawGuides(ctx, specs, renderInfo, guideOptions) {
  */
 function drawBleedGuide(ctx, params) {
     drawBox(ctx, {
-        x: params.trimX - params.bleedPx,
-        y: params.trimY - params.bleedPx,
-        width: params.trimWidth + (2 * params.bleedPx),
-        height: params.trimHeight + (2 * params.bleedPx),
-        color: 'red',
+        x: params.bleedX,
+        y: params.bleedY,
+        width: params.bleedWidth,
+        height: params.bleedHeight,
+        color: 'red', // Bleed is typically red
         lineWidth: 1,
-        dashPattern: [5, 5]
+        dashPattern: [5, 5] // Dashed line
     });
 }
 
@@ -194,13 +157,134 @@ function drawBleedGuide(ctx, params) {
  * @param {object} params - The drawing parameters object.
  */
 function drawSafetyGuide(ctx, params) {
-    drawBox(ctx, {
-        x: params.trimX + params.safetyPx,
-        y: params.trimY + params.safetyPx,
-        width: params.trimWidth - (2 * params.safetyPx),
-        height: params.trimHeight - (2 * params.safetyPx),
-        color: 'green',
+     drawBox(ctx, {
+        x: params.safetyX,
+        y: params.safetyY,
+        width: params.safetyWidth,
+        height: params.safetyHeight,
+        color: 'green', // Safety is often green or blue
         lineWidth: 1,
-        dashPattern: [5, 5]
+        dashPattern: [5, 5] // Dashed line
+    });
+}
+
+
+/**
+ * Calculates guide positions and draws them for a single rendered page.
+ * @param {CanvasRenderingContext2D} ctx - The canvas context.
+ * @param {object} specs - The project's print specifications.
+ * @param {object} pageRenderInfo - Information about the specific page's rendered position and size {x, y, width, height, scale}.
+ * @param {object} guideOptions - An object indicating which guides to show { trim, bleed, safety }.
+ */
+function drawGuidesForPage(ctx, specs, pageRenderInfo, guideOptions) {
+    console.log("drawGuidesForPage - pageRenderInfo:", pageRenderInfo);
+
+    if (!specs || !pageRenderInfo) {
+        console.warn("drawGuidesForPage: Missing specs or pageRenderInfo.");
+        return;
+    }
+
+    const trimDimensions = getTrimDimensions(specs.dimensions);
+    if (!trimDimensions || trimDimensions.width <= 0 || trimDimensions.height <= 0) {
+        console.warn("drawGuidesForPage: Invalid trim dimensions calculated from specs:", specs.dimensions);
+        return;
+    }
+
+    // Get bleed and safety margins in points, defaulting to 0 if not specified or invalid
+    const bleedPt = Math.max(0, specs.bleedInches ? specs.bleedInches * INCH_TO_POINTS : (specs.bleedMillimeters ? specs.bleedMillimeters * MM_TO_POINTS : 0));
+    const safetyPt = Math.max(0, specs.safetyInches ? specs.safetyInches * INCH_TO_POINTS : (specs.safetyMillimeters ? specs.safetyMillimeters * MM_TO_POINTS : 0));
+
+    console.log(`drawGuidesForPage - bleedPt: ${bleedPt}, safetyPt: ${safetyPt}`);
+
+    // Use the scale provided by the viewer for this specific page
+    const scale = pageRenderInfo.scale;
+    if (!scale || scale <= 0) {
+        console.warn("drawGuidesForPage: Invalid scale provided in pageRenderInfo:", scale);
+        return;
+    }
+
+    // Calculate the dimensions of the trim box in *drawing* coordinates
+    const trimDrawWidth = trimDimensions.width * scale;
+    const trimDrawHeight = trimDimensions.height * scale;
+
+    // Calculate the top-left corner (x, y) of the trim box, centered within the pageRenderInfo area
+    const trimDrawX = pageRenderInfo.x + (pageRenderInfo.width - trimDrawWidth) / 2;
+    const trimDrawY = pageRenderInfo.y + (pageRenderInfo.height - trimDrawHeight) / 2;
+
+     console.log(`drawGuidesForPage - Trim Box - x: ${trimDrawX.toFixed(2)}, y: ${trimDrawY.toFixed(2)}, w: ${trimDrawWidth.toFixed(2)}, h: ${trimDrawHeight.toFixed(2)}`);
+
+
+    // Calculate dimensions and positions for bleed and safety relative to the trim box
+    const scaledBleed = bleedPt * scale;
+    const scaledSafety = safetyPt * scale;
+
+    const bleedDrawX = trimDrawX - scaledBleed;
+    const bleedDrawY = trimDrawY - scaledBleed;
+    const bleedDrawWidth = trimDrawWidth + (2 * scaledBleed);
+    const bleedDrawHeight = trimDrawHeight + (2 * scaledBleed);
+
+    const safetyDrawX = trimDrawX + scaledSafety;
+    const safetyDrawY = trimDrawY + scaledSafety;
+    const safetyDrawWidth = trimDrawWidth - (2 * scaledSafety);
+    const safetyDrawHeight = trimDrawHeight - (2 * scaledSafety);
+
+    const guideParams = {
+        trimX: trimDrawX,
+        trimY: trimDrawY,
+        trimWidth: trimDrawWidth,
+        trimHeight: trimDrawHeight,
+        bleedX: bleedDrawX,
+        bleedY: bleedDrawY,
+        bleedWidth: bleedDrawWidth,
+        bleedHeight: bleedDrawHeight,
+        safetyX: safetyDrawX,
+        safetyY: safetyDrawY,
+        safetyWidth: safetyDrawWidth,
+        safetyHeight: safetyDrawHeight,
+    };
+
+    // Draw the guides based on options
+    if (guideOptions.trim) {
+        console.log("Drawing Trim Guide...");
+        drawTrimGuide(ctx, guideParams);
+    }
+    if (guideOptions.bleed && bleedPt > 0) {
+         console.log(`Drawing Bleed Guide - x: ${bleedDrawX.toFixed(2)}, y: ${bleedDrawY.toFixed(2)}, w: ${bleedDrawWidth.toFixed(2)}, h: ${bleedDrawHeight.toFixed(2)}`);
+        drawBleedGuide(ctx, guideParams);
+    } else {
+         console.log("Skipping Bleed Guide draw (bleedPt <= 0)");
+    }
+    if (guideOptions.safety && safetyPt > 0) {
+        // Ensure safety dimensions are positive before drawing
+        if (safetyDrawWidth > 0 && safetyDrawHeight > 0) {
+             console.log(`Drawing Safety Guide - x: ${safetyDrawX.toFixed(2)}, y: ${safetyDrawY.toFixed(2)}, w: ${safetyDrawWidth.toFixed(2)}, h: ${safetyDrawHeight.toFixed(2)}`);
+            drawSafetyGuide(ctx, guideParams);
+        } else {
+             console.warn("Skipping Safety Guide draw (calculated width/height is zero or negative)");
+        }
+    } else {
+         console.log("Skipping Safety Guide draw (safetyPt <= 0)");
+    }
+}
+
+
+/**
+ * Main function to draw all selected guides onto the canvas. Iterates through pages if needed.
+ * @param {CanvasRenderingContext2D} ctx - The canvas context.
+ * @param {object} specs - The project's print specifications.
+ * @param {Array<object>} pageRenderInfos - An array of render info objects for each page in the current view [{x, y, width, height, scale}, ...].
+ * @param {object} guideOptions - An object indicating which guides to show { trim, bleed, safety }.
+ */
+export function drawGuides(ctx, specs, pageRenderInfos, guideOptions) {
+    // Check if pageRenderInfos is a valid array
+    if (!Array.isArray(pageRenderInfos) || pageRenderInfos.length === 0) {
+        console.error("drawGuides expects an array of pageRenderInfos.");
+        return;
+    }
+
+    // Loop through each page's render info and draw guides for it
+    pageRenderInfos.forEach((pageInfo, index) => {
+        console.log(`Drawing guides for page index ${index}`);
+        drawGuidesForPage(ctx, specs, pageInfo, guideOptions);
     });
 }

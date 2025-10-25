@@ -86,6 +86,7 @@
                         <div class="border-t border-slate-700/50 pt-6">
                             <h3 class="text-lg font-semibold text-white">Print Specifications</h3>
                             <div class="space-y-4 mt-4">
+                                <!-- Dimensions -->
                                 <div>
                                     <label for="dimensions" class="block text-sm font-medium text-gray-300">Dimensions</label>
                                     <select id="dimensions" name="dimensions" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
@@ -144,18 +145,32 @@
                                         </select>
                                     </div>
                                 </div>
+                                <!-- Bleed -->
+                                <div>
+                                    <label for="bleedInches" class="block text-sm font-medium text-gray-300">Bleed (inches)</label>
+                                    <input type="number" id="bleedInches" name="bleedInches" value="0.125" step="0.001" required class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
+                                </div>
+                                <!-- Safety -->
+                                <div>
+                                    <label for="safetyInches" class="block text-sm font-medium text-gray-300">Safety Margin (inches)</label>
+                                    <input type="number" id="safetyInches" name="safetyInches" value="0.125" step="0.001" required class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
+                                </div>
+                                <!-- Page Count -->
                                 <div>
                                     <label for="page-count" class="block text-sm font-medium text-gray-300">Page Count</label>
                                     <input type="number" id="page-count" name="page-count" required class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
                                 </div>
+                                <!-- Binding -->
                                 <div>
                                     <label for="binding" class="block text-sm font-medium text-gray-300">Binding</label>
                                     <select id="binding" name="binding" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
                                         <option value="Perfect Bound">Perfect Bound</option>
                                         <option value="Saddle-Stitch">Saddle-Stitch</option>
                                         <option value="Coil Bound">Coil Bound</option>
+                                        <option value="None">None (Flat Sheets)</option> <!-- Added None option -->
                                     </select>
                                 </div>
+                                <!-- Reading Direction -->
                                 <div>
                                     <label for="readingDirection" class="block text-sm font-medium text-gray-300">Reading Direction</label>
                                     <select id="readingDirection" name="readingDirection" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
@@ -163,16 +178,19 @@
                                         <option value="rtl">Right-to-Left</option>
                                     </select>
                                 </div>
+                                <!-- Paper Type -->
                                 <div>
                                     <label for="paper-type" class="block text-sm font-medium text-gray-300">Paper Type</label>
                                     <select id="paper-type" name="paper-type" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
                                         <option value="Gloss">Gloss</option>
                                         <option value="Matte">Matte</option>
+                                        <option value="Uncoated">Uncoated</option> <!-- Added Uncoated -->
                                     </select>
                                 </div>
                             </div>
                         </div>
 
+                        <!-- File Input / Request File -->
                         <div class="border-t border-slate-700/50 pt-6">
                             <div class="flex items-center">
                                 <input id="request-file-checkbox" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 bg-white/10">
@@ -184,6 +202,7 @@
                             </div>
                         </div>
 
+                        <!-- Submit Button -->
                         <div class="pt-4">
                             <button type="submit" id="submit-button" class="w-full bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-green-800 disabled:cursor-not-allowed">
                                 Create Project
@@ -203,13 +222,13 @@
         import { getFirestore, collection, addDoc, getDocs, Timestamp, updateDoc, doc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
 
-        const firebaseConfig = {
-          apiKey: "AIzaSyApmEJdFi96QS3TwYh7GyEDSbZrCuVpBrg",
-          authDomain: "proofing-application.firebaseapp.com",
-          projectId: "proofing-application",
-          storageBucket: "proofing-application.firebasestorage.app",
-          messagingSenderId: "452256252711",
-          appId: "1:452256252711:web:68795c1e5cc9438ff05f02",
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+            apiKey: "AIzaSyApmEJdFi96QS3TwYh7GyEDSbZrCuVpBrg",
+            authDomain: "proofing-application.firebaseapp.com",
+            projectId: "proofing-application",
+            storageBucket: "proofing-application.firebasestorage.app",
+            messagingSenderId: "452256252711",
+            appId: "1:452256252711:web:68795c1e5cc9438ff05f02",
         };
 
         const app = initializeApp(firebaseConfig);
@@ -275,17 +294,33 @@
             submitButton.disabled = true;
             statusMessage.textContent = "Creating project, please wait...";
             statusMessage.classList.add('text-yellow-400');
+            statusMessage.classList.remove('text-red-400', 'text-green-400'); // Reset color
 
             const projectName = newProjectForm.projectName.value;
             const companyId = newProjectForm.companyId.value;
             const file = fileInput.files[0];
             const isAwaitingUpload = requestFileCheckbox.checked;
 
+            // Get bleed and safety values
+            const bleedInchesValue = parseFloat(document.getElementById('bleedInches').value);
+            const safetyInchesValue = parseFloat(document.getElementById('safetyInches').value);
+
+            // Basic validation for bleed/safety
+            if (isNaN(bleedInchesValue) || bleedInchesValue < 0 || isNaN(safetyInchesValue) || safetyInchesValue < 0) {
+                 statusMessage.textContent = 'Please enter valid, non-negative numbers for bleed and safety margins.';
+                 statusMessage.className = 'mt-4 text-center text-red-400';
+                 submitButton.disabled = false;
+                 return;
+            }
+
+
             const specs = {
                 pageCount: parseInt(newProjectForm['page-count'].value, 10),
                 binding: newProjectForm.binding.value,
                 readingDirection: newProjectForm.readingDirection.value,
                 paperType: newProjectForm['paper-type'].value,
+                bleedInches: bleedInchesValue, // Add bleed
+                safetyInches: safetyInchesValue // Add safety
             };
 
             if (dimensionsSelect.value === 'custom') {
@@ -293,7 +328,7 @@
                 const height = parseFloat(customHeightInput.value);
                 if (isNaN(width) || isNaN(height) || width <= 0 || height <= 0) {
                     statusMessage.textContent = 'Please enter valid, positive numbers for width and height.';
-                    statusMessage.className = 'text-red-400';
+                    statusMessage.className = 'mt-4 text-center text-red-400';
                     submitButton.disabled = false;
                     return;
                 }
@@ -308,17 +343,27 @@
 
             if (!isAwaitingUpload && !file) {
                 statusMessage.textContent = 'Please select a file to upload or request one from the client.';
-                statusMessage.className = 'text-red-400';
+                statusMessage.className = 'mt-4 text-center text-red-400';
                 submitButton.disabled = false;
                 return;
             }
+             // Additional check: Ensure safety margin isn't too large for custom dimensions
+             if (specs.dimensions.units && specs.dimensions.units === 'in') {
+                if (specs.safetyInches * 2 >= specs.dimensions.width || specs.safetyInches * 2 >= specs.dimensions.height) {
+                    statusMessage.textContent = 'Safety margin cannot be larger than half the page dimension.';
+                    statusMessage.className = 'mt-4 text-center text-red-400';
+                    submitButton.disabled = false;
+                    return;
+                }
+             } // Add similar checks for mm if needed
+
 
             try {
                 // Create project data *without* versions initially if uploading
                 const projectData = {
                     projectName,
                     companyId,
-                    specs,
+                    specs, // Now includes bleed and safety
                     createdAt: Timestamp.now(),
                     versions: [] // Start with empty versions
                     // Status and isAwaitingClientUpload determined later
@@ -329,7 +374,6 @@
                 const projectId = docRef.id; // Get the generated project ID
 
                 if (!isAwaitingUpload && file) {
-                    // --- MODIFICATION START: Store filePath ---
                     // Now construct the storage path using the projectId
                     const timestampedFileName = `${Date.now()}_${file.name}`;
                     const storagePath = `proofs/${projectId}/${timestampedFileName}`; // This is the filePath
@@ -352,7 +396,6 @@
                         status: 'pending',
                         isAwaitingClientUpload: false
                     });
-                     // --- MODIFICATION END ---
                 } else if (isAwaitingUpload) {
                     // Update the project document status if awaiting upload
                     await updateDoc(docRef, {
@@ -362,7 +405,7 @@
                 }
 
                 statusMessage.textContent = 'Project created successfully! Redirecting...';
-                statusMessage.className = 'text-green-400';
+                statusMessage.className = 'mt-4 text-center text-green-400';
 
                 setTimeout(() => {
                     window.location.href = `admin_project.html?id=${docRef.id}`;
@@ -371,7 +414,7 @@
             } catch (error) {
                 console.error("Error creating project:", error);
                 statusMessage.textContent = 'Error creating project. Please check console for details.';
-                statusMessage.className = 'text-red-400';
+                statusMessage.className = 'mt-4 text-center text-red-400';
                 submitButton.disabled = false;
             }
         }
