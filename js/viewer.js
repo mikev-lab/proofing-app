@@ -147,6 +147,7 @@ export async function initializeSharedViewer(config) {
         }
 
 
+
         for (let i = 1; i <= totalViews; i++) {
             const pagesIndices = getPagesForView(i, pdfDoc.numPages);
             if (pagesIndices.length === 0 || pagesIndices[0] > pdfDoc.numPages) continue;
@@ -155,14 +156,13 @@ export async function initializeSharedViewer(config) {
 
             let aspectRatio;
             if (currentViewMode === 'spread') {
-                 if (i === 1 && pagesIndices.length === 1) { // Single cover page
-                     const page = await pdfDoc.getPage(1);
-                     const viewport = page.getViewport({ scale: 1.0 });
-                     aspectRatio = viewport.width / viewport.height;
-                 } else { // All other spreads (or single last page treated as spread)
-                     aspectRatio = standardSpreadAspectRatio; // Use precalculated spread ratio
-                 }
-            } else {
+                // --- CHANGE HERE ---
+                // In spread mode, ALWAYS use the calculated spread aspect ratio
+                // for all thumbnails to maintain consistent height.
+                aspectRatio = standardSpreadAspectRatio;
+                // --- END CHANGE ---
+            } else { // 'single' view mode
+                // Calculate aspect ratio based on the single page's natural dimensions
                 const page = await pdfDoc.getPage(pagesIndices[0]);
                 const viewport = page.getViewport({ scale: 1.0 });
                 aspectRatio = viewport.width / viewport.height;
