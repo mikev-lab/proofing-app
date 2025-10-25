@@ -536,6 +536,11 @@
 
 
                     console.log('[Load Project] Initializing shared viewer...');
+                    // The onSnapshot listener provides real-time updates.
+                    // Every time the project document changes (e.g., a version's processingStatus
+                    // changes from 'processing' to 'complete'), this code will re-run.
+                    // We just need to re-initialize the viewer with the fresh `projectData`.
+                    // The logic inside viewer.js will handle showing the correct state.
                     initializeSharedViewer({
                         db,
                         auth,
