@@ -31,36 +31,33 @@ service cloud.firestore {
     // Check for a valid guest token by looking up the claim associated with the anon UID
     function hasValidGuestDataAccess(projectId, permission) {
       // User must be authenticated (anonymously)
-      if (request.auth == null || request.auth.token.firebase.sign_in_provider != 'anonymous') {
-        return false;
-      }
-
       // Look up the claim document created by the client after anonymous sign-in
-      let claim = get(/databases/$(database)/documents/guest_claims/$(request.auth.uid)).data;
-
-      // Check that the claim is for the project being requested
-      if (claim.projectId != projectId) {
-        return false;
-      }
-
       // Get the actual guest link document using the token from the claim
-      let link = get(/databases/$(database)/documents/projects/$(projectId)/guestLinks/$(claim.guestToken));
-
       // Check if link exists, is not expired, and has the required permission
-      return link != null &&
-            request.time < link.data.expiresAt &&
-            link.data.permissions[permission] == true;
+      return request.auth != null &&
+            request.auth.token.firebase.sign_in_provider == 'anonymous' &&
+            exists(/databases/$(database)/documents/guest_claims/$(request.auth.uid)) && // Check claim exists first
+            get(/databases/$(database)/documents/guest_claims/$(request.auth.uid)).data.projectId == projectId && // Check claim is for the right project
+            exists(/databases/$(database)/documents/projects/$(projectId)/guestLinks/$(get(/databases/$(database)/documents/guest_claims/$(request.auth.uid)).data.guestToken)) && // Check link exists using token from claim
+            request.time < get(/databases/$(database)/documents/projects/$(projectId)/guestLinks/$(get(/databases/$(database)/documents/guest_claims/$(request.auth.uid)).data.guestToken)).data.expiresAt &&
+            get(/databases/$(database)/documents/projects/$(projectId)/guestLinks/$(get(/databases/$(database)/documents/guest_claims/$(request.auth.uid)).data.guestToken)).data.permissions[permission] == true;
     }
 
+
     // --- NEW Rules for 'guest_claims' Collection ---
-    // This collection temporarily links an anonymous UID to a guest token they are using.
     match /guest_claims/{userId} {
-      // Allow an anonymous user to create a 'claim' document for themselves.
-      // This is a write-once operation.
-      allow create: if request.auth.uid == userId &&
+      // Allow an anonymous user to create OR UPDATE their own claim doc.
+      // This is crucial because setDoc() acts as an update if the doc exists
+      // from a previous session.
+      allow create, update: if request.auth.uid == userId &&
+                          request.auth.token.firebase.sign_in_provider == 'anonymous';
+      
+      // Allow the user to read their own claim doc (needed for hasValidGuestDataAccess)
+      allow read: if request.auth.uid == userId &&
                       request.auth.token.firebase.sign_in_provider == 'anonymous';
-      // Nobody can read or modify claims after they are created.
-      allow read, update, delete: if false;
+      
+      // Prevent deletion by anyone
+      allow delete: if false;
     }
 
     // --- Rules for 'users' Collection ---
@@ -69,7 +66,8 @@ service cloud.firestore {
       // 1. A user creating their own doc (register.html)
       // 2. An MCE Admin (admin_client_management.html)
       // 3. A Company Admin adding a user *to their own company* (account.html)
-      allow create: if request.auth.uid == userId || isAdmin() ||
+      allow create: if request.auth.uid == userId ||
+        isAdmin() ||
         (
           request.auth != null &&
           exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
@@ -77,9 +75,9 @@ service cloud.firestore {
           request.resource.data.companyId == getUserData(request.auth.uid).companyId &&
           request.resource.data.role == 'client_user'
         );
-
       // User can read/update their own doc, Admin can read/update any
-      allow read, update: if request.auth.uid == userId || isAdmin();
+      allow read, update: if request.auth.uid == userId ||
+        isAdmin();
       // Only Admin can delete
       allow delete: if isAdmin();
     }
@@ -89,9 +87,9 @@ service cloud.firestore {
       // Allow authenticated user to create if they are the owner specified in the new doc
       allow create: if request.auth != null &&
         request.resource.data.ownerUid == request.auth.uid;
-
       // Allow read if user is a member of the company or an Admin
-      allow read: if isCompanyMember(companyId) || isAdmin();
+      allow read: if isCompanyMember(companyId) ||
+        isAdmin();
 
       // Allow update if user is owner, a company admin, or an MCE Admin
       allow update: if request.auth != null && (
@@ -99,7 +97,6 @@ service cloud.firestore {
         (isCompanyMember(companyId) && getUserData(request.auth.uid).companyRole == 'admin') ||
         isAdmin()
       );
-
       // Only Admin can delete
       allow delete: if isAdmin();
     }
@@ -110,14 +107,16 @@ service cloud.firestore {
       allow read, write: if isAdmin();
 
       // ** Client & Guest Access **
-      allow read: if (request.auth != null &&
+      allow read: if (
+                      request.auth != null &&
                       exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
                       (
                         getUserData(request.auth.uid).companyId == resource.data.companyId ||
                         request.auth.uid == resource.data.clientId // Backward Compatibility
-                      ))
-                      // ** OR Guest Read Access **
-                      || hasValidGuestDataAccess(projectId, 'canSeeComments');
+                      )
+                    )
+                    // ** OR Guest Read Access **
+                    || hasValidGuestDataAccess(projectId, 'canSeeComments'); // Removed extra 'if'
 
       // Client & Guest 'update' (for status changes or file uploads)
       allow update: if (
@@ -150,7 +149,8 @@ service cloud.firestore {
 
           // The very first step for a guest is to fetch the link details.
           // At this point, they are unauthenticated. The linkId (token) is the secret.
-          allow get: if request.auth == null;
+          allow get: if request.auth == null ||
+                        request.auth.token.firebase.sign_in_provider == 'anonymous';
       }
     }
 
