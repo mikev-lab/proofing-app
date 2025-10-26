@@ -346,6 +346,9 @@
                             </button>
                             <div class="accordion-content p-6 border-t border-slate-700/50">
                                 <p class="text-sm text-gray-400 mb-4">Generate a shareable link for guests to view this proof without logging in.</p>
+                                <button id="impose-button" class="w-full bg-teal-600 hover:bg-teal-500 text-white font-semibold py-2 px-4 rounded-md">
+                                    Impose PDF
+                                </button>
                                 <button id="share-button" class="w-full mt-4 bg-purple-600 hover:bg-purple-500 text-white font-semibold py-2 px-4 rounded-md">
                                     Generate Guest Link
                                 </button>
@@ -430,6 +433,7 @@
         import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
         import { initializeSharedViewer } from './js/viewer.js';
         import { STANDARD_PAPER_SIZES } from './js/guides.js';
+        import { initializeImpositionTool } from './js/imposition.js';
 
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
             apiKey: "AIzaSyApmEJdFi96QS3TwYh7GyEDSbZrCuVpBrg",
@@ -689,7 +693,11 @@
                                 projectId,
                                 projectData: currentProjectData,
                                 isAdmin: true
+                            }).then(({ pdfDoc }) => {
+                                const imposePdf = httpsCallable(functions, 'imposePdf');
+                                initializeImpositionTool({ id: projectId }, pdfDoc, imposePdf);
                             });
+
 
                             // After initialization, ensure the dropdown reflects the correct version if it exists.
                             // The viewer's internal logic selects the latest, but we might need to respect the dropdown.

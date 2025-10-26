@@ -984,4 +984,6 @@ export async function initializeSharedViewer(config) {
     // It handles all cases, including when versionToLoad is null.
     loadVersion(versionToLoad);
     displayPreflightResults(versionToLoad); // Also display preflight for initial load
+
+    return { pdfDoc };
 }
