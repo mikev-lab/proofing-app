@@ -61,8 +61,14 @@ async function renderPreview(settings, pdfDoc, projectData) {
     const ctx = canvas.getContext('2d');
 
     const sheetConfig = SHEET_SIZES.find(s => s.name === settings.sheet);
-    const sheetWidth = sheetConfig.longSideInches * INCH_TO_POINTS;
-    const sheetHeight = sheetConfig.shortSideInches * INCH_TO_POINTS;
+    let sheetWidth = sheetConfig.longSideInches * INCH_TO_POINTS;
+    let sheetHeight = sheetConfig.shortSideInches * INCH_TO_POINTS;
+
+    if (settings.sheetOrientation === 'portrait') {
+        sheetWidth = sheetConfig.shortSideInches * INCH_TO_POINTS;
+        sheetHeight = sheetConfig.longSideInches * INCH_TO_POINTS;
+    }
+
     const bleedPoints = (settings.bleedInches || 0) * INCH_TO_POINTS;
 
     const scale = Math.min((canvas.parentElement.clientWidth-20) / sheetWidth, (canvas.parentElement.clientHeight-20) / sheetHeight);
@@ -72,7 +78,19 @@ async function renderPreview(settings, pdfDoc, projectData) {
     ctx.save();
     ctx.scale(scale, scale);
 
-    ctx.fillStyle = 'white';
+    const slipSheetColors = {
+        yellow: 'rgba(255, 255, 0, 0.3)',
+        pink: 'rgba(255, 192, 203, 0.3)',
+        green: 'rgba(144, 238, 144, 0.3)',
+        blue: 'rgba(173, 216, 230, 0.3)',
+        grey: 'rgba(128, 128, 128, 0.3)',
+    };
+
+    if (settings.slipSheetColor && settings.slipSheetColor !== 'none') {
+        ctx.fillStyle = slipSheetColors[settings.slipSheetColor];
+    } else {
+        ctx.fillStyle = 'white';
+    }
     ctx.fillRect(0, 0, sheetWidth, sheetHeight);
 
     const firstPage = await pdfDoc.getPage(1);
@@ -121,7 +139,10 @@ async function renderPreview(settings, pdfDoc, projectData) {
             }
         }
     }
-    await drawSlugInfo(ctx, "1F", 1, projectData);
+
+    if (settings.showQRCode) {
+        await drawSlugInfo(ctx, "1F", 1, projectData, settings.qrCodePosition);
+    }
     ctx.restore();
 }
 
@@ -202,9 +223,69 @@ export async function initializeImpositionUI(projectData) {
             populateForm(initialSettings);
             updatePreview();
         }
+
+        renderImpositionThumbnails(pdfDoc);
     }
 
     form.addEventListener('change', updatePreview);
     closeModalButton.addEventListener('click', () => impositionModal.classList.add('hidden'));
     imposePdfButton.addEventListener('click', openModal);
+
+    const generateButton = document.getElementById('imposition-generate-button');
+    generateButton.addEventListener('click', () => generateImposedPdf(projectData));
+}
+
+async function generateImposedPdf(projectData) {
+    const generateButton = document.getElementById('imposition-generate-button');
+    generateButton.disabled = true;
+    generateButton.textContent = 'Generating...';
+
+    try {
+        const form = document.getElementById('imposition-form');
+        const formData = new FormData(form);
+        const settings = Object.fromEntries(formData.entries());
+        Object.keys(settings).forEach(key => {
+            const el = form.elements[key];
+            if(el.type === 'number') settings[key] = parseFloat(settings[key]);
+            if(el.type === 'checkbox') settings[key] = el.checked;
+        });
+
+        // This will be implemented in a future step
+        console.log('Calling cloud function with settings:', settings);
+        alert('PDF Generation is not yet implemented.');
+
+    } catch (error) {
+        console.error('Error preparing imposition request:', error);
+        alert(`Error: ${error.message}`);
+    } finally {
+        generateButton.disabled = false;
+        generateButton.textContent = 'Generate Imposed PDF';
+    }
+}
+
+async function renderImpositionThumbnails(pdfDoc) {
+    const container = document.getElementById('imposition-thumbnail-strip');
+    container.innerHTML = ''; // Clear existing thumbnails
+
+    for (let i = 1; i <= pdfDoc.numPages; i++) {
+        const page = await pdfDoc.getPage(i);
+        const viewport = page.getViewport({ scale: 1 });
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        const scale = 80 / viewport.width;
+        canvas.width = 80;
+        canvas.height = viewport.height * scale;
+
+        const renderContext = {
+            canvasContext: ctx,
+            viewport: page.getViewport({ scale: scale }),
+        };
+        await page.render(renderContext).promise;
+
+        const thumbnailWrapper = document.createElement('div');
+        thumbnailWrapper.className = 'text-center';
+        thumbnailWrapper.innerHTML = `<p class="text-xs text-gray-400">Page ${i}</p>`;
+        thumbnailWrapper.prepend(canvas);
+        container.appendChild(thumbnailWrapper);
+    }
 }

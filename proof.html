@@ -248,8 +248,7 @@
         // --- PARSE URL PARAMS ONCE AT SCRIPT LOAD ---
         const urlParams = new URLSearchParams(window.location.search);
         const initialGuestToken = urlParams.get('guestToken');
-        // *** FIX: The URL parameter is 'projectId', not 'id' ***
-        const initialProjectId = urlParams.get('projectId'); // <<< Was urlParams.get('id')
+        const initialProjectId = urlParams.get('id');
         console.log(`[Init] Parsed URL Params - Guest Token: ${initialGuestToken}, Project ID: ${initialProjectId}`);
         // --- END PARSE URL PARAMS ---
 

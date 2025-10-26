@@ -71,7 +71,7 @@ export function drawCropMarks(ctx, trimAreaX, trimAreaY, trimAreaWidth, trimArea
     ctx.restore();
 }
 
-export async function drawSlugInfo(ctx, currentSheetId, totalSheets, jobInfo) {
+export async function drawSlugInfo(ctx, currentSheetId, totalSheets, jobInfo, position = 'bottomLeft') {
     if (!window.QRious) {
         console.error("QRious library not loaded.");
         return;
@@ -79,8 +79,38 @@ export async function drawSlugInfo(ctx, currentSheetId, totalSheets, jobInfo) {
     ctx.save();
     ctx.fillStyle = 'black';
 
-    const qrX = SLUG_AREA_MARGIN_POINTS;
-    const qrY = SLUG_AREA_BOTTOM_Y_POINTS;
+    const sheetWidth = ctx.canvas.width;
+    const sheetHeight = ctx.canvas.height;
+
+    let qrX, qrY, textX, textAnchor;
+
+    switch (position) {
+        case 'topLeft':
+            qrX = SLUG_AREA_MARGIN_POINTS;
+            qrY = SLUG_AREA_MARGIN_POINTS;
+            textX = qrX + QR_CODE_SIZE_POINTS + SLUG_TEXT_QR_PADDING_POINTS;
+            textAnchor = 'left';
+            break;
+        case 'topRight':
+            qrX = sheetWidth - QR_CODE_SIZE_POINTS - SLUG_AREA_MARGIN_POINTS;
+            qrY = SLUG_AREA_MARGIN_POINTS;
+            textX = qrX - SLUG_TEXT_QR_PADDING_POINTS;
+            textAnchor = 'right';
+            break;
+        case 'bottomRight':
+            qrX = sheetWidth - QR_CODE_SIZE_POINTS - SLUG_AREA_MARGIN_POINTS;
+            qrY = sheetHeight - QR_CODE_SIZE_POINTS - SLUG_AREA_MARGIN_POINTS;
+            textX = qrX - SLUG_TEXT_QR_PADDING_POINTS;
+            textAnchor = 'right';
+            break;
+        default: // bottomLeft
+            qrX = SLUG_AREA_MARGIN_POINTS;
+            qrY = sheetHeight - QR_CODE_SIZE_POINTS - SLUG_AREA_MARGIN_POINTS;
+            textX = qrX + QR_CODE_SIZE_POINTS + SLUG_TEXT_QR_PADDING_POINTS;
+            textAnchor = 'left';
+            break;
+    }
+
 
     const trimSize = (jobInfo.specs?.dimensions?.width && jobInfo.specs?.dimensions?.height)
         ? `${jobInfo.specs.dimensions.width}x${jobInfo.specs.dimensions.height}`
@@ -105,9 +135,9 @@ export async function drawSlugInfo(ctx, currentSheetId, totalSheets, jobInfo) {
         ctx.fillText("QR ERR", qrX + 10, qrY + 20);
     }
 
-    const textX = qrX + QR_CODE_SIZE_POINTS + SLUG_TEXT_QR_PADDING_POINTS;
     ctx.font = `${SLUG_TEXT_FONT_SIZE_POINTS}px sans-serif`;
     ctx.textBaseline = 'middle';
+    ctx.textAlign = textAnchor;
     ctx.fillText(slugText, textX, qrY + (QR_CODE_SIZE_POINTS / 2));
 
     ctx.restore();
