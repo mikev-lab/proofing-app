@@ -438,3 +438,160 @@ exports.scheduledProjectDeletion = onSchedule("every day 03:00", async (event) =
   logger.log(`Deletion job finished. Processed ${projectsToDelete.size} projects.`);
   return null;
 });
+
+// --- NEW Imposition Functions ---
+const { onDocumentUpdated } = require('firebase-functions/v2/firestore');
+const { imposePdf: imposePdfLogic } = require('./imposition'); // Import the core logic
+
+// HTTP Callable function for manual imposition
+exports.imposePdf = onCall({
+  region: 'us-central1',
+  memory: '4GiB', // Imposition can be memory intensive
+  timeoutSeconds: 540
+}, async (request) => {
+  // 1. Authentication Check
+  if (!request.auth || !request.auth.token) {
+    throw new HttpsError('unauthenticated', 'The function must be called while authenticated.');
+  }
+  const userUid = request.auth.uid;
+  try {
+    const userDoc = await db.collection('users').doc(userUid).get();
+    if (!userDoc.exists || userDoc.data().role !== 'admin') {
+      throw new HttpsError('permission-denied', 'You must be an admin to perform this action.');
+    }
+  } catch (error) {
+    logger.error('Admin check failed', error);
+    throw new HttpsError('internal', 'An error occurred while verifying admin status.');
+  }
+
+  // 2. Data Validation (ensure projectId and settings are passed)
+  const { projectId, settings } = request.data;
+  if (!projectId || !settings) {
+    throw new HttpsError('invalid-argument', 'Missing "projectId" or "settings".');
+  }
+
+  logger.log(`Manual imposition triggered for project ${projectId} by user ${userUid}`);
+
+  try {
+    const projectRef = db.collection('projects').doc(projectId);
+    const projectDoc = await projectRef.get();
+    if (!projectDoc.exists) {
+      throw new HttpsError('not-found', `Project ${projectId} not found.`);
+    }
+    const projectData = projectDoc.data();
+
+    const latestVersion = projectData.versions.reduce((latest, v) => (v.versionNumber > latest.versionNumber ? v : latest), projectData.versions[0]);
+    if (!latestVersion || !latestVersion.fileURL) {
+      throw new HttpsError('not-found', 'No file found for the latest version.');
+    }
+
+    const bucket = admin.storage().bucket();
+    const filePath = new URL(latestVersion.fileURL).pathname.split('/o/')[1].replace(/%2F/g, '/');
+    const file = bucket.file(decodeURIComponent(filePath));
+
+    // 3. Call main imposition logic
+    const imposedPdfBytes = await imposePdfLogic({
+      inputFile: file,
+      settings: settings,
+      jobInfo: projectData,
+    });
+
+    // 4. Upload result to storage
+    const imposedFileName = `imposed_manual_${Date.now()}.pdf`;
+    const imposedFilePath = `imposed/${projectId}/${imposedFileName}`;
+    const imposedFile = bucket.file(imposedFilePath);
+    await imposedFile.save(imposedPdfBytes, { contentType: 'application/pdf' });
+    const [imposedFileUrl] = await imposedFile.getSignedUrl({ action: 'read', expires: '03-09-2491' });
+
+    // 5. Update Firestore
+    await projectRef.update({
+      impositions: admin.firestore.FieldValue.arrayUnion({
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        fileURL: imposedFileUrl,
+        settings: settings,
+        type: 'manual',
+        triggeredBy: userUid,
+      }),
+    });
+
+    logger.log(`Successfully created manual imposition for project ${projectId}`);
+    return { success: true, url: imposedFileUrl };
+
+  } catch (error) {
+    logger.error(`Error during manual imposition for project ${projectId}:`, error);
+    throw new HttpsError('internal', error.message || 'An internal error occurred.');
+  }
+});
+
+
+// Firestore Trigger for automatic imposition
+exports.onProjectApprove = onDocumentUpdated('projects/{projectId}', async (event) => {
+  const beforeData = event.data.before.data();
+  const afterData = event.data.after.data();
+
+  if (beforeData.status !== 'Approved' && afterData.status === 'Approved') {
+    const projectId = event.params.projectId;
+    logger.log(`Automatic imposition triggered for project ${projectId}`);
+
+    try {
+      // 1. Get the latest version's file from the project
+      const latestVersion = afterData.versions.reduce((latest, v) => (v.versionNumber > latest.versionNumber ? v : latest), afterData.versions[0]);
+      if (!latestVersion || !latestVersion.fileURL) {
+        throw new HttpsError('not-found', 'No file found for the latest version of the project.');
+      }
+
+      const bucket = admin.storage().bucket();
+      const filePath = new URL(latestVersion.fileURL).pathname.split('/o/')[1].replace(/%2F/g, '/');
+      const file = bucket.file(decodeURIComponent(filePath));
+
+      // 2. Load the PDF to get its dimensions
+      const [fileBytes] = await file.download();
+      const { PDFDocument } = require('pdf-lib');
+      const inputPdfDoc = await PDFDocument.load(fileBytes);
+      const { width, height } = inputPdfDoc.getPage(0).getSize();
+
+      // 3. Run the "Maximize N-Up" algorithm
+      const { maximizeNUp } = require('./imposition');
+      const settings = await maximizeNUp(width, height);
+      logger.log(`Optimal layout for project ${projectId}: ${settings.columns}x${settings.rows} on ${settings.sheet.name}`);
+
+      // 4. Call the main imposition logic
+      const imposedPdfBytes = await imposePdfLogic({
+        inputFile: file,
+        settings: settings,
+        jobInfo: afterData
+      });
+
+      // 5. Upload result to storage
+      const imposedFileName = `imposed_${Date.now()}.pdf`;
+      const imposedFilePath = `imposed/${projectId}/${imposedFileName}`;
+      const imposedFile = bucket.file(imposedFilePath);
+      await imposedFile.save(imposedPdfBytes, { contentType: 'application/pdf' });
+
+      // 6. Update Firestore with the new imposition record
+      const projectRef = db.collection('projects').doc(projectId);
+      await projectRef.update({
+        impositions: admin.firestore.FieldValue.arrayUnion({
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          fileURL: await imposedFile.getSignedUrl({ action: 'read', expires: '03-09-2491' })[0],
+          settings: settings,
+          type: 'automatic'
+        }),
+        status: 'Imposition Complete'
+      });
+
+      logger.log(`Successfully imposed and updated project ${projectId}`);
+
+    } catch (error) {
+      logger.error(`Error during automatic imposition for project ${projectId}:`, error);
+      // 7. Handle errors
+      const projectRef = db.collection('projects').doc(projectId);
+      await projectRef.update({
+        status: 'Imposition Failed',
+        impositionError: error.message
+      });
+    }
+  }
+
+  return null;
+});
