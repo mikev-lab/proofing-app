@@ -1,5 +1,5 @@
 {
-  "functions":
+  "functions": [
     {
       "source": "functions",
       "runtime": "nodejs20",
@@ -11,8 +11,14 @@
         "firebase-debug.*.log"
       ],
       "predeploy": "cd functions && npm install"
+    },
+    {
+      "source": "functions",
+      "codebase": "preflight",
+      "runtime": "custom",
+      "predeploy": "cd functions && npm install"
     }
-  ,
+  ],
   "hosting": {
     "public": ".",
     "ignore": [
