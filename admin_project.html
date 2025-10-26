@@ -111,6 +111,9 @@
                     <h2 id="project-name-header" class="text-xl font-semibold text-white">Project Details</h2>
                 </div>
                 <div class="flex items-center space-x-4">
+                     <button id="approve-button" class="bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all duration-150 ease-in-out">
+                        Mark as Approved
+                    </button>
                      <button id="impose-pdf-button" class="bg-teal-600 hover:bg-teal-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all duration-150 ease-in-out">
                         Impose PDF
                     </button>
@@ -879,6 +882,28 @@
                 renderGuestLinks(links);
             });
         }
+
+        // --- Approve Button Logic ---
+        const approveButton = document.getElementById('approve-button');
+        approveButton.addEventListener('click', async () => {
+            if (!projectId) return;
+            if (confirm('Are you sure you want to mark this project as approved?')) {
+                approveButton.disabled = true;
+                approveButton.textContent = 'Approving...';
+                try {
+                    const projectRef = doc(db, "projects", projectId);
+                    await updateDoc(projectRef, { status: 'Approved' });
+                    // The onSnapshot listener will handle the UI update.
+                    alert('Project marked as approved.');
+                } catch (error) {
+                    console.error("Error approving project:", error);
+                    alert('Could not approve the project. Please try again.');
+                } finally {
+                    approveButton.disabled = false;
+                    approveButton.textContent = 'Mark as Approved';
+                }
+            }
+        });
 
         // Accordion Logic
         document.querySelectorAll('.accordion-header').forEach(header => {

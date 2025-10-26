@@ -1,0 +1,29 @@
+{
+  "firestore": {
+    "rules": "firestore.rules"
+  },
+  "storage": {
+    "rules": "storage.rules"
+  },
+   "functions": {
+      "source": "functions",
+      "runtime": "nodejs20"
+    },
+  "emulators": {
+    "auth": {
+      "port": 9100
+    },
+    "functions": {
+      "port": 5101
+    },
+    "firestore": {
+      "port": 8181
+    },
+    "storage": {
+      "port": 9292
+    },
+    "ui": {
+      "enabled": false
+    }
+  }
+}

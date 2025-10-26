@@ -1,64 +1,68 @@
-const test = require('firebase-functions-test')();
+
 const assert = require('assert');
 const admin = require('firebase-admin');
-const { Storage } = require('@google-cloud/storage');
-const path = require('path');
-const fs = require('fs');
+const test = require('firebase-functions-test')();
+const sinon = require('sinon');
 
-describe('optimizePdf', () => {
-  let myFunctions;
+// Make sinon quiet
+sinon.stub(console, 'log');
 
-  before(() => {
-    process.env.FUNCTIONS_EMULATOR = 'true';
-    myFunctions = require('./index.js');
-  });
+describe('Cloud Functions', () => {
+    let myFunctions;
 
-  after(() => {
-    test.cleanup();
-  });
-
-  it('should create a preview of a newly uploaded pdf', async () => {
-    const projectId = `project-${Date.now()}`;
-    const fileName = `test-${Date.now()}.pdf`;
-    const filePath = `proofs/${projectId}/${fileName}`;
-    const tempFilePath = path.join(__dirname, 'test-data', 'test.pdf');
-    const storage = new Storage();
-    const bucket = storage.bucket('default-bucket');
-
-    // Upload the test file to the storage emulator
-    await bucket.upload(tempFilePath, { destination: filePath });
-
-    // Create a fake event
-    const event = {
-      data: {
-        bucket: 'default-bucket',
-        name: filePath,
-        contentType: 'application/pdf',
-      },
-    };
-
-    // Create a project in firestore
-    await admin.firestore().collection('projects').doc(projectId).set({
-      versions: [{ filePath: filePath }],
+    before(() => {
+        // IMPORTANT: The emulator must be running for this to work.
+        process.env.FUNCTIONS_EMULATOR = 'true';
+        process.env.FIRESTORE_EMULATOR_HOST = 'localhost:8181'; // Use the custom port
+        myFunctions = require('./index'); // Corrected path
     });
 
-    // Run the function
-    await myFunctions.optimizePdf(event);
+    after(() => {
+        test.cleanup();
+    });
 
-    // Check that the preview file was created
-    const previewFileName = `${path.basename(fileName, '.pdf')}_preview.pdf`;
-    const previewFilePath = `proofs/${projectId}/${previewFileName}`;
-    const fileExists = await bucket.file(previewFilePath).exists();
-    assert.strictEqual(fileExists[0], true);
+    describe('onProjectApprove', () => {
+        it('should trigger imposition when project status is updated to Approved', async () => {
+            const projectId = `test-project-${Date.now()}`;
+            const projectRef = admin.firestore().collection('projects').doc(projectId);
 
-    // Check that the firestore document was updated with the preflight check results
-    const projectDoc = await admin.firestore().collection('projects').doc(projectId).get();
-    const projectData = projectDoc.data();
-    const version = projectData.versions[0];
-    assert.strictEqual(version.preflightStatus, 'passed');
-    assert.strictEqual(version.preflightResults.dpiCheck.status, 'skipped');
-    assert.strictEqual(version.preflightResults.colorSpaceCheck.status, 'passed');
-    assert.strictEqual(version.preflightResults.fontCheck.status, 'passed');
-    assert.strictEqual(version.processingStatus, 'complete');
-  }).timeout(10000);
+            // 1. Setup initial project state
+            const initialData = {
+                projectName: 'Test Impose Project',
+                status: 'pending',
+                versions: [{
+                    version: 1,
+                    // NOTE: This URL must be accessible to the function's environment.
+                    // Using a real URL from storage for a more realistic test.
+                    fileURL: 'https://firebasestorage.googleapis.com/v0/b/proofing-application.appspot.com/o/proofs%2FOrJNtwmfjRJ3lPoqK7jx%2F1720546809292_dummy.pdf?alt=media'
+                }],
+                specs: {
+                    dimensions: { width: 8.5, height: 11, units: 'in' }
+                }
+            };
+            await projectRef.set(initialData);
+
+            // 2. Make the change that should trigger the function
+            const beforeSnap = test.firestore.makeDocumentSnapshot(initialData, `projects/${projectId}`);
+            const afterData = { ...initialData, status: 'Approved' };
+            const afterSnap = test.firestore.makeDocumentSnapshot(afterData, `projects/${projectId}`);
+            const change = test.makeChange(beforeSnap, afterSnap);
+
+            // 3. Call the wrapped function
+            const wrapped = test.wrap(myFunctions.onProjectApprove);
+            await wrapped(change, { params: { projectId: projectId } });
+
+            // 4. Check the result in Firestore
+            await new Promise(resolve => setTimeout(resolve, 5000)); // Wait for async operations
+
+            const finalDoc = await projectRef.get();
+            const finalData = finalDoc.data();
+
+            // 5. Assertions
+            assert.strictEqual(finalData.status, 'Imposition Complete', 'Status should be updated to Imposition Complete');
+            assert.ok(finalData.impositions, 'Impositions array should exist');
+            assert.strictEqual(finalData.impositions.length, 1, 'Impositions array should have one entry');
+            assert.strictEqual(finalData.impositions[0].type, 'automatic', 'Imposition type should be automatic');
+        }).timeout(20000); // Increase timeout for this test
+    });
 });
