@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Imposition Test</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://mozilla.github.io/pdf.js/build/pdf.mjs" type="module"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js"></script>
+</head>
+<body class="bg-gray-800 p-10">
+
+    <button id="impose-pdf-button" class="bg-teal-600 hover:bg-teal-500 text-white font-semibold py-2 px-4 rounded-md">
+        Impose PDF (Test)
+    </button>
+
+    <!-- Exactly mirror the modal structure from admin_project.html -->
+    <div id="imposition-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-80 flex items-center justify-center z-50">
+        <div class="bg-slate-800 rounded-lg shadow-xl w-full max-w-6xl h-[90vh] mx-4 border border-slate-700/50 flex flex-col">
+            <div class="flex justify-between items-center p-4 border-b border-slate-700/50">
+                <h3 class="text-xl font-semibold text-white">Manual PDF Imposition</h3>
+                <button id="imposition-modal-close-button" class="text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
+            </div>
+            <div class="flex-1 flex p-4 overflow-hidden">
+                <div class="w-1/4 p-4 bg-slate-900/50 rounded-l-md overflow-y-auto">
+                    <form id="imposition-form" class="space-y-4">
+                        <div>
+                            <label for="imposition-type" class="block text-sm font-medium text-gray-300">Imposition Type</label>
+                            <select id="imposition-type" name="impositionType" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white"></select>
+                        </div>
+                        <div>
+                            <label for="sheet-size" class="block text-sm font-medium text-gray-300">Sheet Size</label>
+                            <select id="sheet-size" name="sheet" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white"></select>
+                        </div>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label for="columns" class="block text-sm font-medium text-gray-300">Columns</label>
+                                <input type="number" id="columns" name="columns" value="1" min="1" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white">
+                            </div>
+                            <div>
+                                <label for="rows" class="block text-sm font-medium text-gray-300">Rows</label>
+                                <input type="number" id="rows" name="rows" value="1" min="1" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white">
+                            </div>
+                        </div>
+                        <div>
+                            <label for="bleed-inches" class="block text-sm font-medium text-gray-300">Bleed (inches)</label>
+                            <input type="number" id="bleed-inches" name="bleedInches" value="0.125" step="0.001" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white">
+                        </div>
+                         <div>
+                            <label for="horizontal-gutter" class="block text-sm font-medium text-gray-300">Horiz. Gutter (in)</label>
+                            <input type="number" id="horizontal-gutter" name="horizontalGutterInches" value="0" step="0.001" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white">
+                        </div>
+                        <div>
+                            <label for="vertical-gutter" class="block text-sm font-medium text-gray-300">Vert. Gutter (in)</label>
+                            <input type="number" id="vertical-gutter" name="verticalGutterInches" value="0" step="0.001" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white">
+                        </div>
+                        <div class="pt-4 border-t border-slate-700/50">
+                            <label class="flex items-center">
+                                <input type="checkbox" id="is-duplex" name="isDuplex" class="h-4 w-4 rounded border-gray-300 text-indigo-600 bg-white/10">
+                                <span class="ml-2 text-gray-300">Duplex (Double-sided)</span>
+                            </label>
+                        </div>
+                    </form>
+                </div>
+                <div class="w-3/4 bg-black/20 rounded-r-md flex items-center justify-center p-4">
+                    <canvas id="imposition-preview-canvas" style="max-width: 100%; max-height: 100%;"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { initializeImpositionUI } from '../js/imposition-ui.js';
+
+        // Mock project data, including a URL to a publicly accessible PDF
+        const mockProjectData = {
+            projectName: "Test Project for Imposition",
+            versions: [{
+                version: 1,
+                previewURL: "/jules-scratch/sample.pdf"
+            }],
+            specs: {
+                dimensions: { width: 8.5, height: 11, units: 'in' }
+            }
+        };
+
+        // Initialize the UI with mock data
+        initializeImpositionUI(mockProjectData);
+
+    </script>
+</body>
+</html>
