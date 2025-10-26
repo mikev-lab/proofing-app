@@ -3,10 +3,16 @@
 export const INCH_TO_POINTS = 72;
 
 export const SHEET_SIZES = [
-    { name: "11 x 17 Paper", longSideInches: 17, shortSideInches: 11 },
-    { name: "12 x 18 Paper", longSideInches: 18, shortSideInches: 12 },
-    { name: "12.5 x 19 Paper", longSideInches: 19, shortSideInches: 12.5 },
-    { name: "13 x 19 Paper", longSideInches: 19, shortSideInches: 13 },
+    // US Sizes
+    { name: "Letter (8.5 x 11 in)", longSideInches: 11, shortSideInches: 8.5 },
+    { name: "Legal (8.5 x 14 in)", longSideInches: 14, shortSideInches: 8.5 },
+    { name: "Tabloid (11 x 17 in)", longSideInches: 17, shortSideInches: 11 },
+    { name: "Digital Press (12 x 18 in)", longSideInches: 18, shortSideInches: 12 },
+    { name: "Super B (13 x 19 in)", longSideInches: 19, shortSideInches: 13 },
+    // International 'A' Sizes (ISO 216)
+    { name: "A4 (210 x 297 mm)", longSideInches: 11.69, shortSideInches: 8.27 },
+    { name: "A3 (297 x 420 mm)", longSideInches: 16.54, shortSideInches: 11.69 },
+    { name: "A2 (420 x 594 mm)", longSideInches: 23.39, shortSideInches: 16.54 },
 ];
 
 function calculateLayout(docWidth, docHeight, sheetWidth, sheetHeight) {

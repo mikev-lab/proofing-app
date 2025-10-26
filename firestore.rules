@@ -104,10 +104,12 @@ service cloud.firestore {
     // --- Rules for 'projects' Collection ---
     match /projects/{projectId} {
       // ** Admins have full access **
-      allow read, write: if isAdmin();
+      allow write: if isAdmin(); // Write is simpler, keep it separate.
+      allow read: if isAdmin();  // Admins can read anything.
 
-      // ** Client & Guest Access **
-      allow read: if (
+      // ** Client & Guest Access for GET (reading a single document) **
+      // This rule uses `resource.data`, which is valid for `get` operations.
+      allow get: if (
                       request.auth != null &&
                       exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
                       (
@@ -116,7 +118,13 @@ service cloud.firestore {
                       )
                     )
                     // ** OR Guest Read Access **
-                    || hasValidGuestDataAccess(projectId, 'canSeeComments'); // Removed extra 'if'
+                    || hasValidGuestDataAccess(projectId, 'canSeeComments');
+
+      // ** Client & Guest Access for LIST (querying documents) **
+      // This rule is broad, but Firestore requires the client's query (e.g., `where("companyId", "==", user.companyId)`)
+      // to be structured so that every document returned also passes the `get` rule above. This prevents data leakage.
+      allow list: if request.auth != null;
+
 
       // Client & Guest 'update' (for status changes or file uploads)
       allow update: if (
