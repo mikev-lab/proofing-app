@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCE Printing - Admin Settings</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-[#0f172a] to-[#334155] text-gray-100">
+    <div class="flex h-full">
+        <!-- Sidebar -->
+        <div class="flex flex-col w-64 bg-slate-900/70">
+            <div class="flex items-center justify-center h-16 border-b border-slate-700/50">
+                <h1 class="text-2xl font-bold text-white">MCE Admin</h1>
+            </div>
+            <nav class="flex-grow px-4 py-4">
+                <a href="admin.html" class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50">All Projects</a>
+                <a href="admin_client_management.html" class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50">Clients</a>
+                <a href="admin_settings.html" class="block px-4 py-2 mt-2 text-sm font-semibold text-white bg-slate-700/50 rounded-lg">Settings</a>
+            </nav>
+        </div>
+
+        <!-- Main content -->
+        <div class="flex flex-col flex-1">
+            <header class="flex justify-between items-center h-16 px-6 bg-slate-800/60">
+                <h2 class="text-xl font-semibold text-white">Settings</h2>
+                <div>
+                    <span id="user-email" class="text-sm text-gray-300"></span>
+                    <button id="logout-button" class="ml-4 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm">Sign Out</button>
+                </div>
+            </header>
+
+            <main class="flex-1 p-6">
+                <div class="bg-slate-800/60 p-6 rounded-lg shadow-xl">
+                    <h3 class="text-lg font-semibold text-white mb-4">Imposition Defaults</h3>
+                    <p class="text-gray-400 mb-6">Define rules to map document sizes to specific press sheets for automatic imposition.</p>
+                    <div id="imposition-rules">
+                        <!-- Rules will be loaded and rendered here -->
+                    </div>
+                    <button id="add-rule-button" class="mt-4 bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md">Add Rule</button>
+                </div>
+            </main>
+        </div>
+    </div>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { initializeSettings } from './js/admin-settings.js';
+
+        const firebaseConfig = JSON.parse(decodeURIComponent(
+            (document.cookie.match(/^(.*;)?\s*firebaseConfig=([^;]+)/) || [])[2] || '{}'
+        ));
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                document.getElementById('user-email').textContent = user.email;
+                initializeSettings(db);
+            } else {
+                window.location.href = 'index.html';
+            }
+        });
+
+        document.getElementById('logout-button').addEventListener('click', () => {
+            signOut(auth);
+        });
+    </script>
+</body>
+</html>
