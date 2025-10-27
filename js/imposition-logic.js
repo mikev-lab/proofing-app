@@ -1,18 +1,52 @@
 // js/imposition-logic.js
+import { collection, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
 export const INCH_TO_POINTS = 72;
 
-export const SHEET_SIZES = [
-    // ... (SHEET_SIZES array remains unchanged)
-    { name: "Letter (8.5 x 11 in)", longSideInches: 11, shortSideInches: 8.5 },
-    { name: "Legal (8.5 x 14 in)", longSideInches: 14, shortSideInches: 8.5 },
-    { name: "Tabloid (11 x 17 in)", longSideInches: 17, shortSideInches: 11 },
-    { name: "Digital Press (12 x 18 in)", longSideInches: 18, shortSideInches: 12 },
+// Default sheet sizes to be used if Firestore is unavailable or empty
+const DEFAULT_SHEET_SIZES = [
     { name: "Super B (13 x 19 in)", longSideInches: 19, shortSideInches: 13 },
-    { name: "A4 (210 x 297 mm)", longSideInches: 11.69, shortSideInches: 8.27 },
-    { name: "A3 (297 x 420 mm)", longSideInches: 16.54, shortSideInches: 11.69 },
-    { name: "A2 (420 x 594 mm)", longSideInches: 23.39, shortSideInches: 16.54 },
+    { name: "Custom (12.5 x 19 in)", longSideInches: 19, shortSideInches: 12.5 },
+    { name: "Digital Press (12 x 18 in)", longSideInches: 18, shortSideInches: 12 },
+    { name: "Tabloid (11 x 17 in)", longSideInches: 17, shortSideInches: 11 },
+    { name: "Letter (8.5 x 11 in)", longSideInches: 11, shortSideInches: 8.5 },
 ];
+
+let sheetSizesCache = null;
+
+/**
+ * Fetches sheet sizes from Firestore. Caches the result.
+ * Falls back to default sizes if Firestore is empty or errors out.
+ * @param {object} db - The Firestore database instance.
+ * @returns {Promise<Array>} A promise that resolves to an array of sheet size objects.
+ */
+export async function getSheetSizes(db) {
+    if (sheetSizesCache) {
+        return sheetSizesCache;
+    }
+
+    try {
+        const q = collection(db, 'settings', 'sheetSizes', 'sizes');
+        const querySnapshot = await getDocs(q);
+        const sizes = [];
+        querySnapshot.forEach((doc) => {
+            sizes.push(doc.data());
+        });
+
+        if (sizes.length > 0) {
+            sheetSizesCache = sizes;
+            return sizes;
+        } else {
+            console.warn("No sheet sizes found in Firestore, using default sizes.");
+            sheetSizesCache = DEFAULT_SHEET_SIZES;
+            return DEFAULT_SHEET_SIZES;
+        }
+    } catch (error) {
+        console.error("Error fetching sheet sizes from Firestore, falling back to defaults:", error);
+        sheetSizesCache = DEFAULT_SHEET_SIZES;
+        return DEFAULT_SHEET_SIZES;
+    }
+}
 
 function calculateLayout(docWidth, docHeight, sheetWidth, sheetHeight) {
     // ... (calculateLayout function remains unchanged)
@@ -37,10 +71,9 @@ function calculateLayout(docWidth, docHeight, sheetWidth, sheetHeight) {
     }
 }
 
-export function maximizeNUp(docWidth, docHeight) {
-    // ... (maximizeNUp function remains unchanged)
+export function maximizeNUp(docWidth, docHeight, sheetSizes) {
     let bestLayout = { count: 0, waste: Infinity, sheet: null, sheetOrientation: null, docRotated: false, columns: 0, rows: 0 };
-    for (const sheet of SHEET_SIZES) {
+    for (const sheet of sheetSizes) {
         const longSide = sheet.longSideInches * INCH_TO_POINTS;
         const shortSide = sheet.shortSideInches * INCH_TO_POINTS;
         const portraitLayout = calculateLayout(docWidth, docHeight, shortSide, longSide);

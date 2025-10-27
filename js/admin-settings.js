@@ -1,160 +1,196 @@
 // js/admin-settings.js
-import { collection, onSnapshot, doc, setDoc, deleteDoc, addDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-import { SHEET_SIZES } from './imposition-logic.js';
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+import { getFirestore, doc, getDoc, setDoc, collection, getDocs, addDoc, deleteDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { STANDARD_PAPER_SIZES } from './guides.js';
 
-// Flatten the grouped standard sizes into a single array for easier use
-const STANDARD_SIZES_FLAT = Object.values({
-    "US Sizes": [
-        { "name": "US Letter", "group": "US Sizes", "width_in": 8.5, "height_in": 11 },
-        { "name": "US Legal", "group": "US Sizes", "width_in": 8.5, "height_in": 14 },
-        { "name": "US Tabloid", "group": "US Sizes", "width_in": 11, "height_in": 17 }
-    ],
-    "A Series": [
-        { "name": "A5", "group": "A Series", "width_mm": 148, "height_mm": 210 },
-        { "name": "A4", "group": "A Series", "width_mm": 210, "height_mm": 297 },
-        { "name": "A3", "group": "A Series", "width_mm": 297, "height_mm": 420 }
-    ],
-    "B Series": [
-        { "name": "B5", "group": "B Series", "width_mm": 176, "height_mm": 250 },
-        { "name": "B4", "group": "B Series", "width_mm": 250, "height_mm": 353 }
-    ],
-    "Other": [
-       { "name": "Business Card", "group": "Other", "width_in": 3.5, "height_in": 2 }
-    ]
-}).flat();
+const firebaseConfig = {
+    apiKey: "AIzaSyApmEJdFi96QS3TwYh7GyEDSbZrCuVpBrg",
+    authDomain: "proofing-application.firebaseapp.com",
+    projectId: "proofing-application",
+    storageBucket: "proofing-application.firebasestorage.app",
+    messagingSenderId: "452256252711",
+    appId: "1:452256252711:web:68795c1e5cc9438ff05f02",
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+const loadingSpinner = document.getElementById('loading-spinner');
+const settingsContent = document.getElementById('settings-content');
+const userEmailSpan = document.getElementById('user-email');
+const logoutButton = document.getElementById('logout-button');
+
+// --- Global Defaults ---
+const globalDefaultsForm = document.getElementById('global-defaults-form');
+const bleedInchesInput = document.getElementById('bleed-inches');
+const safetyInchesInput = document.getElementById('safety-inches');
+
+// --- Sheet Sizes ---
+const sheetSizesList = document.getElementById('sheet-sizes-list');
+const addSheetSizeForm = document.getElementById('add-sheet-size-form');
+const newSheetNameInput = document.getElementById('new-sheet-name');
+const newSheetLongInput = document.getElementById('new-sheet-long');
+const newSheetShortInput = document.getElementById('new-sheet-short');
+
+// --- Imposition Rules ---
+const impositionRulesList = document.getElementById('imposition-rules-list');
+const addImpositionRuleForm = document.getElementById('add-imposition-rule-form');
+const newRuleDocSizeSelect = document.getElementById('new-rule-doc-size');
+const newRulePressSheetSelect = document.getElementById('new-rule-press-sheet');
 
 
-export function initializeSettings(db) {
-    const rulesContainer = document.getElementById('imposition-rules');
-    const addRuleButton = document.getElementById('add-rule-button');
-    const saveGlobalButton = document.getElementById('save-global-settings');
-    const globalSettingsForm = document.getElementById('global-settings-form');
-
-    const rulesCollection = collection(db, 'impositionDefaults');
-    const globalSettingsDocRef = doc(db, 'settings', 'globalImpositionDefaults');
-
-    // --- Load and Render Global Settings ---
-    getDoc(globalSettingsDocRef).then((docSnap) => {
-        if (docSnap.exists()) {
-            const data = docSnap.data();
-            globalSettingsForm.querySelector('#global-bleed').value = data.bleedInches || 0.125;
-            globalSettingsForm.querySelector('#global-gutter').value = data.gutterInches || 0.25;
-            globalSettingsForm.querySelector('#crop-mark-style').value = data.cropMarkStyle || 'standard';
-        }
-    });
-
-    saveGlobalButton.addEventListener('click', () => {
-        const data = {
-            bleedInches: parseFloat(globalSettingsForm.querySelector('#global-bleed').value),
-            gutterInches: parseFloat(globalSettingsForm.querySelector('#global-gutter').value),
-            cropMarkStyle: globalSettingsForm.querySelector('#crop-mark-style').value,
-        };
-        setDoc(globalSettingsDocRef, data, { merge: true })
-            .then(() => alert('Global settings saved!'))
-            .catch(err => alert(`Error: ${err.message}`));
-    });
-
-    // --- Load and Render Imposition Rules ---
-    onSnapshot(rulesCollection, (snapshot) => {
-        const rules = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        renderRules(rules);
-    });
-
-    function renderRules(rules) {
-        rulesContainer.innerHTML = ''; // Clear existing rows
-        if (rules.length === 0) {
-            rulesContainer.innerHTML = `<tr><td colspan="6" class="text-center py-4 text-gray-500">No rules defined. Add a rule to get started.</td></tr>`;
-        }
-        rules.forEach(rule => {
-            const ruleRow = document.createElement('tr');
-            ruleRow.id = `rule-${rule.id}`;
-
-            // 1. Document Size Select
-            const docSizeCell = document.createElement('td');
-            docSizeCell.className = 'px-6 py-4 whitespace-nowrap';
-            const docSizeSelect = createSelect(STANDARD_SIZES_FLAT.map(s => s.name), rule.docSize);
-            docSizeSelect.onchange = () => updateRule(rule.id, { docSize: docSizeSelect.value });
-            docSizeCell.appendChild(docSizeSelect);
-
-            // 2. Press Sheet Select
-            const sheetSizeCell = document.createElement('td');
-            sheetSizeCell.className = 'px-6 py-4 whitespace-nowrap';
-            const sheetSizeSelect = createSelect(SHEET_SIZES.map(s => s.name), rule.pressSheet);
-            sheetSizeSelect.onchange = () => updateRule(rule.id, { pressSheet: sheetSizeSelect.value });
-            sheetSizeCell.appendChild(sheetSizeSelect);
-
-            // 3. Columns Input
-            const columnsCell = document.createElement('td');
-            columnsCell.className = 'px-6 py-4 whitespace-nowrap';
-            const columnsInput = createNumberInput(rule.columns, 1);
-            columnsInput.oninput = () => updateRule(rule.id, { columns: parseInt(columnsInput.value, 10) });
-            columnsCell.appendChild(columnsInput);
-
-            // 4. Rows Input
-            const rowsCell = document.createElement('td');
-            rowsCell.className = 'px-6 py-4 whitespace-nowrap';
-            const rowsInput = createNumberInput(rule.rows, 1);
-            rowsInput.oninput = () => updateRule(rule.id, { rows: parseInt(rowsInput.value, 10) });
-            rowsCell.appendChild(rowsInput);
-
-            // 5. Orientation Select
-            const orientationCell = document.createElement('td');
-            orientationCell.className = 'px-6 py-4 whitespace-nowrap';
-            const orientationSelect = createSelect(['portrait', 'landscape', 'auto'], rule.orientation);
-            orientationSelect.onchange = () => updateRule(rule.id, { orientation: orientationSelect.value });
-            orientationCell.appendChild(orientationSelect);
-
-            // 6. Actions Cell
-            const actionsCell = document.createElement('td');
-            actionsCell.className = 'px-6 py-4 whitespace-nowrap text-right text-sm font-medium';
-            const deleteButton = document.createElement('button');
-            deleteButton.textContent = 'Delete';
-            deleteButton.className = 'text-red-500 hover:text-red-700';
-            deleteButton.onclick = () => {
-                if(confirm('Are you sure you want to delete this rule?')) {
-                    deleteDoc(doc(db, 'impositionDefaults', rule.id));
-                }
-            };
-            actionsCell.appendChild(deleteButton);
-
-            ruleRow.append(docSizeCell, sheetSizeCell, columnsCell, rowsCell, orientationCell, actionsCell);
-            rulesContainer.appendChild(ruleRow);
-        });
+async function loadGlobalDefaults() {
+    const docRef = doc(db, 'settings', 'globalImpositionDefaults');
+    const docSnap = await getDoc(docRef);
+    if (docSnap.exists()) {
+        const data = docSnap.data();
+        bleedInchesInput.value = data.bleedInches || 0.125;
+        safetyInchesInput.value = data.safetyInches || 0.125;
+    } else {
+        // Set default values if the document doesn't exist
+        bleedInchesInput.value = 0.125;
+        safetyInchesInput.value = 0.125;
     }
+}
 
-    function createSelect(options, selectedValue) {
-        const select = document.createElement('select');
-        select.className = 'form-select block w-full rounded-md border-gray-600 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm';
-        options.forEach(opt => select.add(new Option(opt, opt)));
-        select.value = selectedValue || options[0];
-        return select;
-    }
+async function saveGlobalDefaults(e) {
+    e.preventDefault();
+    const data = {
+        bleedInches: parseFloat(bleedInchesInput.value),
+        safetyInches: parseFloat(safetyInchesInput.value)
+    };
+    await setDoc(doc(db, 'settings', 'globalImpositionDefaults'), data);
+    alert('Global defaults saved!');
+}
 
-    function createNumberInput(value, min) {
-        const input = document.createElement('input');
-        input.type = 'number';
-        input.min = min;
-        input.className = 'form-input block w-20 rounded-md border-gray-600 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm';
-        input.value = value || min;
-        return input;
-    }
-
-    async function updateRule(id, data) {
-        const ruleRef = doc(db, 'impositionDefaults', id);
-        try {
-            await setDoc(ruleRef, data, { merge: true });
-        } catch (error) {
-            console.error("Error updating rule:", error);
-        }
-    }
-
-    addRuleButton.addEventListener('click', () => {
-        addDoc(rulesCollection, {
-            docSize: STANDARD_SIZES_FLAT[0].name,
-            pressSheet: SHEET_SIZES[0].name,
-            columns: 2,
-            rows: 1,
-            orientation: 'landscape'
-        });
+async function loadSheetSizes() {
+    const q = collection(db, 'settings', 'sheetSizes', 'sizes');
+    const querySnapshot = await getDocs(q);
+    sheetSizesList.innerHTML = '';
+    newRulePressSheetSelect.innerHTML = '';
+    querySnapshot.forEach((doc) => {
+        renderSheetSize(doc.id, doc.data());
     });
 }
+
+function renderSheetSize(id, data) {
+    const div = document.createElement('div');
+    div.className = 'flex items-center justify-between p-2 bg-slate-700/50 rounded-md';
+    div.innerHTML = `
+        <span>${data.name} (${data.longSideInches}" x ${data.shortSideInches}")</span>
+        <button data-id="${id}" class="delete-sheet-btn text-red-400 hover:text-red-300">Delete</button>
+    `;
+    sheetSizesList.appendChild(div);
+
+    const option = document.createElement('option');
+    option.value = data.name;
+    option.textContent = data.name;
+    newRulePressSheetSelect.appendChild(option);
+}
+
+async function addSheetSize(e) {
+    e.preventDefault();
+    const data = {
+        name: newSheetNameInput.value,
+        longSideInches: parseFloat(newSheetLongInput.value),
+        shortSideInches: parseFloat(newSheetShortInput.value)
+    };
+    if (!data.name || !data.longSideInches || !data.shortSideInches) {
+        alert('Please fill out all fields for the new sheet size.');
+        return;
+    }
+    const docRef = await addDoc(collection(db, 'settings', 'sheetSizes', 'sizes'), data);
+    renderSheetSize(docRef.id, data);
+    addSheetSizeForm.reset();
+}
+
+async function deleteSheetSize(e) {
+    if (e.target.classList.contains('delete-sheet-btn')) {
+        const id = e.target.dataset.id;
+        if (confirm('Are you sure you want to delete this sheet size?')) {
+            await deleteDoc(doc(db, 'settings', 'sheetSizes', 'sizes', id));
+            e.target.parentElement.remove();
+        }
+    }
+}
+
+function populateDocSizeSelect() {
+    for (const key in STANDARD_PAPER_SIZES) {
+        const option = document.createElement('option');
+        option.value = key;
+        option.textContent = STANDARD_PAPER_SIZES[key].name;
+        newRuleDocSizeSelect.appendChild(option);
+    }
+}
+
+async function loadImpositionRules() {
+    const q = collection(db, 'impositionDefaults');
+    const querySnapshot = await getDocs(q);
+    impositionRulesList.innerHTML = '';
+    querySnapshot.forEach((doc) => {
+        renderImpositionRule(doc.id, doc.data());
+    });
+}
+
+function renderImpositionRule(id, data) {
+    const div = document.createElement('div');
+    div.className = 'flex items-center justify-between p-2 bg-slate-700/50 rounded-md';
+    div.innerHTML = `
+        <span>Document: <strong>${data.docSize}</strong> -> Press Sheet: <strong>${data.pressSheet}</strong></span>
+        <button data-id="${id}" class="delete-rule-btn text-red-400 hover:text-red-300">Delete</button>
+    `;
+    impositionRulesList.appendChild(div);
+}
+
+async function addImpositionRule(e) {
+    e.preventDefault();
+    const data = {
+        docSize: newRuleDocSizeSelect.value,
+        pressSheet: newRulePressSheetSelect.value
+    };
+    if (!data.docSize || !data.pressSheet) {
+        alert('Please select both a document size and a press sheet.');
+        return;
+    }
+    const docRef = await addDoc(collection(db, 'impositionDefaults'), data);
+    renderImpositionRule(docRef.id, data);
+}
+
+async function deleteImpositionRule(e) {
+    if (e.target.classList.contains('delete-rule-btn')) {
+        const id = e.target.dataset.id;
+        if (confirm('Are you sure you want to delete this imposition rule?')) {
+            await deleteDoc(doc(db, 'impositionDefaults', id));
+            e.target.parentElement.remove();
+        }
+    }
+}
+
+onAuthStateChanged(auth, (user) => {
+    if (user) {
+        userEmailSpan.textContent = user.email;
+        Promise.all([
+            loadGlobalDefaults(),
+            loadSheetSizes(),
+            loadImpositionRules(),
+            populateDocSizeSelect()
+        ]).then(() => {
+            loadingSpinner.classList.add('hidden');
+            settingsContent.classList.remove('hidden');
+        });
+    } else {
+        window.location.href = 'index.html';
+    }
+});
+
+logoutButton.addEventListener('click', () => {
+    signOut(auth);
+});
+
+globalDefaultsForm.addEventListener('submit', saveGlobalDefaults);
+addSheetSizeForm.addEventListener('submit', addSheetSize);
+sheetSizesList.addEventListener('click', deleteSheetSize);
+addImpositionRuleForm.addEventListener('submit', addImpositionRule);
+impositionRulesList.addEventListener('click', deleteImpositionRule);

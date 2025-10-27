@@ -50,7 +50,7 @@ service cloud.firestore {
       // This is crucial because setDoc() acts as an update if the doc exists
       // from a previous session.
       allow create, update: if request.auth.uid == userId &&
-                          request.auth.token.firebase.sign_in_provider == 'anonymous';
+                                request.auth.token.firebase.sign_in_provider == 'anonymous';
       
       // Allow the user to read their own claim doc (needed for hasValidGuestDataAccess)
       allow read: if request.auth.uid == userId &&
@@ -128,27 +128,27 @@ service cloud.firestore {
 
       // Client & Guest 'update' (for status changes or file uploads)
       allow update: if (
-                      // Client update logic
-                      request.auth != null &&
-                      exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-                      getUserData(request.auth.uid).companyId == resource.data.companyId &&
-                      (
-                        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])) ||
-                        (resource.data.isAwaitingClientUpload == true &&
-                          request.resource.data.isAwaitingClientUpload == false &&
-                          request.resource.data.status == 'pending' &&
-                          request.resource.data.versions.size() == resource.data.versions.size() + 1 &&
-                          request.resource.data.companyId == resource.data.companyId &&
-                          request.resource.data.projectName == resource.data.projectName &&
-                          request.resource.data.specs == resource.data.specs
+                        // Client update logic
+                        request.auth != null &&
+                        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+                        getUserData(request.auth.uid).companyId == resource.data.companyId &&
+                        (
+                          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])) ||
+                          (resource.data.isAwaitingClientUpload == true &&
+                            request.resource.data.isAwaitingClientUpload == false &&
+                            request.resource.data.status == 'pending' &&
+                            request.resource.data.versions.size() == resource.data.versions.size() + 1 &&
+                            request.resource.data.companyId == resource.data.companyId &&
+                            request.resource.data.projectName == resource.data.projectName &&
+                            request.resource.data.specs == resource.data.specs
+                          )
                         )
                       )
-                    )
-                    // ** OR Guest Approval Logic **
-                    || (
-                      hasValidGuestDataAccess(projectId, 'canApprove') &&
-                      request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
-                    );
+                      // ** OR Guest Approval Logic **
+                      || (
+                        hasValidGuestDataAccess(projectId, 'canApprove') &&
+                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+                      );
 
       // --- NEW Rules for 'guestLinks' Sub-collection ---
       match /guestLinks/{linkId} {
@@ -158,7 +158,7 @@ service cloud.firestore {
           // The very first step for a guest is to fetch the link details.
           // At this point, they are unauthenticated. The linkId (token) is the secret.
           allow get: if request.auth == null ||
-                        request.auth.token.firebase.sign_in_provider == 'anonymous';
+                         request.auth.token.firebase.sign_in_provider == 'anonymous';
       }
     }
 
@@ -184,5 +184,35 @@ service cloud.firestore {
       // Guest create access
       allow create: if hasValidGuestDataAccess(projectId, 'canAnnotate');
     }
+
+    // ******** ADD THIS SECTION ********
+
+    // --- Rules for 'settings' Collection (NEW) ---
+    // This matches the path: 'settings/globalImpositionDefaults'
+    match /settings/globalImpositionDefaults {
+      allow read, write: if isAdmin();
+    }
+
+    // This matches the path: 'settings/sheetSizes'
+    match /settings/sheetSizes {
+      // This document isn't used directly, but we need the path
+      // to define rules for its subcollection.
+      allow read, write: if false; // Deny access to the parent doc itself
+
+      // This matches the path: 'settings/sheetSizes/sizes/{sizeId}'
+      match /sizes/{sizeId} {
+        // Allow only admins to read, create, update, and delete sheet sizes
+        allow read, write: if isAdmin();
+      }
+    }
+
+    // --- Rules for 'impositionDefaults' Collection (NEW) ---
+    // This matches the path: 'impositionDefaults/{ruleId}'
+    match /impositionDefaults/{ruleId} {
+      // Allow only admins to read, create, update, and delete imposition rules
+      allow read, write: if isAdmin();
+    }
+    // ******** END ADDED SECTION ********
+
   }
 }
