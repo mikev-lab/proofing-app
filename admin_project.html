@@ -698,7 +698,7 @@
                                 isAdmin: true
                             });
 
-                            initializeImpositionUI(currentProjectData);
+                            initializeImpositionUI({ projectData: currentProjectData, db });
 
                             // After initialization, ensure the dropdown reflects the correct version if it exists.
                             // The viewer's internal logic selects the latest, but we might need to respect the dropdown.
@@ -975,11 +975,18 @@
                             <label for="vertical-gutter" class="block text-sm font-medium text-gray-300">Vert. Gutter (in)</label>
                             <input type="number" id="vertical-gutter" name="verticalGutterInches" value="0" step="0.001" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white">
                         </div>
-                        <div class="pt-4 border-t border-slate-700/50">
-                            <label class="flex items-center">
+                        <div class="pt-4 border-t border-slate-700/50 grid grid-cols-2 gap-4 items-center">
+                            <label class="flex items-center col-span-1">
                                 <input type="checkbox" id="is-duplex" name="isDuplex" class="h-4 w-4 rounded border-gray-300 text-indigo-600 bg-white/10">
-                                <span class="ml-2 text-gray-300">Duplex (Double-sided)</span>
+                                <span class="ml-2 text-gray-300">Duplex</span>
                             </label>
+                             <div id="side-selector-container" class="col-span-1 hidden">
+                                <label for="side-selector" class="block text-sm font-medium text-gray-300">Side</label>
+                                <select id="side-selector" name="side" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white">
+                                    <option value="front">Front</option>
+                                    <option value="back">Back</option>
+                                </select>
+                            </div>
                         </div>
                         <div class="pt-4 border-t border-slate-700/50">
                             <label class="flex items-center">
@@ -1013,9 +1020,18 @@
                 <div class="w-3/4 bg-black/20 rounded-r-md flex items-center justify-center p-4">
                     <canvas id="imposition-preview-canvas"></canvas>
                 </div>
-                <!-- Thumbnail Strip -->
-                <div id="imposition-thumbnail-strip" class="w-1/6 bg-slate-900/50 rounded-r-md overflow-y-auto p-2 space-y-2">
-                    <!-- Thumbnails will be injected here -->
+                <!-- Sheet Preview Column -->
+                <div class="w-1/5 bg-slate-900/50 rounded-r-md flex flex-col p-2 space-y-2">
+                    <h4 class="text-center font-semibold text-white">Sheet Preview</h4>
+                    <div id="imposition-sheet-preview-container" class="flex-1 bg-black/20 rounded flex items-center justify-center p-1 relative">
+                        <canvas id="imposition-sheet-preview-canvas"></canvas>
+                        <!-- Page number overlays will be added here -->
+                    </div>
+                    <div class="flex items-center justify-center space-x-2">
+                        <button id="prev-sheet-button" class="px-3 py-1 rounded-md bg-slate-700 hover:bg-slate-600 text-white">&lt;</button>
+                        <span id="sheet-nav-display" class="text-sm text-gray-300">Sheet 1 of 1</span>
+                        <button id="next-sheet-button" class="px-3 py-1 rounded-md bg-slate-700 hover:bg-slate-600 text-white">&gt;</button>
+                    </div>
                 </div>
             </div>
             <div class="p-4 border-t border-slate-700/50 flex justify-end">
