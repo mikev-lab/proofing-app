@@ -17,8 +17,9 @@ let zoomState = {
     isDragging: false,
     startX: 0,
     startY: 0,
-    isRendering: false // FIX: Add render lock
 };
+let animationFrameRequest = null; // NEW: To throttle rendering
+let contentCanvas = document.createElement('canvas'); // NEW: Off-screen canvas for rendering
 
 // --- CONSTANTS ---
 const IMPOSITION_TYPE_OPTIONS = [
@@ -55,34 +56,33 @@ function populateForm(settings) {
 // --- CORE RENDERING ---
 async function renderAllPreviews(projectData) {
     if (!pdfDoc) return;
-    await renderMainPreview(projectData);
-    await renderSheetPreview(projectData);
+    // await renderMainPreview(projectData); // MODIFICATION: renderContentCanvas handles this
+    await renderContentCanvas(projectData); // MODIFICATION: Render to off-screen canvas
+    await renderSheetPreview(projectData); // This is likely for a different view, leaving as-is
 }
 
-async function renderMainPreview(projectData) {
+/**
+ * FAST RENDER: Draws the pre-rendered contentCanvas to the visible canvas
+ * with current zoom/pan. This is called by rAF on pan/zoom.
+ */
+function renderMainPreview(projectData) {
     const canvas = document.getElementById('imposition-preview-canvas');
     const zoomLevelDisplay = document.getElementById('imposition-zoom-level-display');
     
-    // FIX #2: Check for lock
-    if (zoomState.isRendering || !canvas || !zoomLevelDisplay) return;
-
-    zoomState.isRendering = true; // Set lock
+    if (!canvas || !zoomLevelDisplay || !contentCanvas.width) return; // Don't render if content isn't ready
 
     try {
         const ctx = canvas.getContext('2d');
         const sheetConfig = sheetSizes.find(s => s.name === currentSettings.sheet);
-        if (!sheetConfig) return; // Added check
+        if (!sheetConfig) return; 
 
-        let sheetWidth = sheetConfig.longSideInches * INCH_TO_POINTS;
-        let sheetHeight = sheetConfig.shortSideInches * INCH_TO_POINTS;
-        if (currentSettings.sheetOrientation === 'portrait') {
-            [sheetWidth, sheetHeight] = [sheetHeight, sheetWidth];
-        }
-
+        // Get sheet dimensions (these are also on contentCanvas, but good for scaling)
+        let sheetWidth = contentCanvas.width;
+        let sheetHeight = contentCanvas.height;
+       
         const parent = canvas.parentElement;
 
-        // FIX #1: Only resize canvas if parent dimensions actually changed.
-        // This is an optimization; the root cause is likely CSS.
+        // Resize visible canvas if needed
         if (canvas.width !== parent.clientWidth) {
             canvas.width = parent.clientWidth;
         }
@@ -104,17 +104,57 @@ async function renderMainPreview(projectData) {
         ctx.scale(totalScale, totalScale);
         ctx.translate(-sheetWidth / 2, -sheetHeight / 2);
 
-        await renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, currentSheetIndex, currentViewSide, projectData);
+        // FAST RENDER: Draw the pre-rendered canvas. No awaits!
+        ctx.drawImage(contentCanvas, 0, 0);
 
         ctx.restore();
 
         zoomLevelDisplay.textContent = `${Math.round(zoomState.scale * 100)}%`;
 
     } catch (err) {
-        console.error("Error during render:", err);
-    } finally {
-        zoomState.isRendering = false; // Release lock
+        console.error("Error during fast render:", err);
     }
+}
+
+/**
+ * SLOW RENDER: Renders the PDF pages onto the off-screen contentCanvas.
+ * This is called when data changes (form, sheet click).
+ */
+async function renderContentCanvas(projectData) {
+    const sheetConfig = sheetSizes.find(s => s.name === currentSettings.sheet);
+    if (!pdfDoc || !sheetConfig) return;
+
+    let sheetWidth = sheetConfig.longSideInches * INCH_TO_POINTS;
+    let sheetHeight = sheetConfig.shortSideInches * INCH_TO_POINTS;
+    if (currentSettings.sheetOrientation === 'portrait') {
+        [sheetWidth, sheetHeight] = [sheetHeight, sheetWidth];
+    }
+
+    // Set off-screen canvas to the exact sheet size
+    contentCanvas.width = sheetWidth;
+    contentCanvas.height = sheetHeight;
+
+    const ctx = contentCanvas.getContext('2d');
+
+    // All drawing logic now goes to the off-screen canvas context
+    await renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, currentSheetIndex, currentViewSide, projectData);
+
+    // After the expensive render is done, trigger one fast render
+    // to show the new content.
+    requestRender(projectData);
+}
+
+// NEW: Render function to be called by rAF
+// MODIFICATION: This is now SYNCHRONOUS, calling the fast renderMainPreview
+function requestRender(projectData) {
+    if (animationFrameRequest) {
+        return; // A frame is already requested, ignore this call
+    }
+    // Queue up a render for the next browser paint cycle
+    animationFrameRequest = requestAnimationFrame(() => {
+        renderMainPreview(projectData); // This is the fast, synchronous render
+        animationFrameRequest = null; // Clear the lock *after* render is done
+    });
 }
 
 
@@ -122,8 +162,9 @@ async function renderSheetAndThumbnails(projectData) {
     if (!pdfDoc) return;
 
     totalSheets = calculateTotalSheets();
-    await renderMainPreview(projectData);
-    await renderThumbnailList(projectData);
+    // await renderMainPreview(projectData); // MODIFICATION: Replaced with content render
+    await renderContentCanvas(projectData); // MODIFICATION: Do the slow render
+    await renderThumbnailList(projectData); // Render thumbnails separately
 }
 
 async function renderThumbnailList(projectData) {
@@ -168,7 +209,7 @@ async function renderThumbnailList(projectData) {
             ctx.scale(scale, scale);
             // This is async, but thumbnail race conditions are less critical
             // and less likely to be triggered by a user.
-            renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, i, side, projectData).then(() => {
+            renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, i, side, projectData).finally(() => { // MODIFICATION: Use finally
                  ctx.restore();
             });
         }
@@ -250,6 +291,7 @@ function calculateTotalSheets() {
     if (impositionType === 'booklet') {
         // Booklet pages are always in sets of 4
         const roundedPages = Math.ceil(pdfDoc.numPages / 4) * 4;
+        if (roundedPages === 0) return 0; // Handle 0-page doc
         return roundedPages / 4;
     }
     if (impositionType === 'repeat') {
@@ -308,11 +350,11 @@ export async function initializeImpositionUI({ projectData, db }) {
         if (sideSelectorContainer) sideSelectorContainer.classList.add('hidden');
 
         // Reset zoom and pan when settings change
-        resetZoom(); 
-        await renderSheetAndThumbnails(projectData);
+        resetZoom(); // This is fast, just updates state and queues a fast render
+        await renderSheetAndThumbnails(projectData); // This will do the slow render
     }
 
-    thumbnailList.addEventListener('click', (e) => {
+    thumbnailList.addEventListener('click', async (e) => { // MODIFICATION: Make async
         const item = e.target.closest('.thumbnail-item');
         if (!item || !item.dataset.sheet || !item.dataset.side) return;
 
@@ -328,7 +370,9 @@ export async function initializeImpositionUI({ projectData, db }) {
 
         currentSheetIndex = newIndex;
         currentViewSide = newSide;
-        renderMainPreview(projectData);
+        // renderMainPreview(projectData); // MODIFICATION: Replace direct call
+        // requestRender(projectData); // MODIFICATION: Replace with slow render
+        await renderContentCanvas(projectData); // MODIFICATION: Do expensive re-render
     });
 
     async function loadDataAndRender() {
@@ -389,12 +433,14 @@ export async function initializeImpositionUI({ projectData, db }) {
 
     function zoom(factor) {
         zoomState.scale = Math.max(0.5, Math.min(zoomState.scale * factor, 5));
-        renderMainPreview(projectData);
+        // renderMainPreview(projectData); // MODIFICATION: Replace direct call
+        requestRender(projectData); // MODIFICATION: Use rAF (This is FAST)
     }
 
     function resetZoom() {
-        zoomState = { scale: 1.0, offsetX: 0, offsetY: 0, isDragging: false, startX: 0, startY: 0, isRendering: false };
-        renderMainPreview(projectData);
+        zoomState = { scale: 1.0, offsetX: 0, offsetY: 0, isDragging: false, startX: 0, startY: 0 }; // MODIFICATION: Remove isRendering
+        // renderMainPreview(projectData); // MODIFICATION: Replace direct call
+        requestRender(projectData); // MODIFICATION: Use rAF (This is FAST)
     }
 
     if (zoomInButton) zoomInButton.addEventListener('click', () => zoom(1.25));
@@ -405,7 +451,7 @@ export async function initializeImpositionUI({ projectData, db }) {
         canvas.addEventListener('wheel', (e) => {
             e.preventDefault();
             const factor = e.deltaY > 0 ? 0.95 : 1.05;
-            zoom(factor);
+            zoom(factor); // This now calls requestRender
         });
 
         canvas.addEventListener('mousedown', (e) => {
@@ -434,7 +480,8 @@ export async function initializeImpositionUI({ projectData, db }) {
             zoomState.startX = e.clientX;
             zoomState.startY = e.clientY;
 
-            renderMainPreview(projectData);
+            // renderMainPreview(projectData); // MODIFICATION: Replace direct call
+            requestRender(projectData); // MODIFICATION: Use rAF (This is FAST)
         });
 
         canvas.addEventListener('mouseup', () => {
@@ -453,7 +500,8 @@ export async function initializeImpositionUI({ projectData, db }) {
     if (imposePdfButton) { // We are in the main app
         const openModal = () => {
             impositionModal.classList.remove('hidden');
-            loadDataAndRender().then(resetZoom); // Reset zoom when opening
+            // loadDataAndRender().then(resetZoom); // MODIFICATION: resetZoom is now called *inside* loadData
+            loadDataAndRender(); // This will reset zoom and render
         }
         imposePdfButton.addEventListener('click', openModal);
         if (closeModalButton) closeModalButton.addEventListener('click', () => impositionModal.classList.add('hidden'));
