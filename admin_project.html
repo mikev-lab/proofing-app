@@ -98,7 +98,7 @@
                 <nav class="flex-grow md:block px-4 pb-4 md:pb-0 md:overflow-y-auto">
                     <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-200 bg-slate-700/50 rounded-lg hover:bg-slate-600/50" href="admin.html">All Projects</a>
                     <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="admin_client_management.html">Clients</a>
-                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="#">Settings</a>
+                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="admin_settings.html">Settings</a>
                 </nav>
             </div>
         </div>
@@ -428,6 +428,12 @@
     </div>
 
     <!-- Firebase SDKs -->
+    <script src="/__/firebase/11.6.1/firebase-app-compat.js"></script>
+    <script src="/__/firebase/11.6.1/firebase-auth-compat.js"></script>
+    <script src="/__/firebase/11.6.1/firebase-firestore-compat.js"></script>
+    <script src="/__/firebase/11.6.1/firebase-functions-compat.js"></script>
+    <script src="/__/firebase/11.6.1/firebase-storage-compat.js"></script>
+    <script src="/__/firebase/init.js"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
@@ -438,16 +444,7 @@
         import { STANDARD_PAPER_SIZES } from './js/guides.js';
         import { initializeImpositionUI } from './js/imposition-ui.js';
 
-        const firebaseConfig = {
-          apiKey: "AIzaSyApmEJdFi96QS3TwYh7GyEDSbZrCuVpBrg",
-          authDomain: "proofing-application.firebaseapp.com",
-          projectId: "proofing-application",
-          storageBucket: "proofing-application.firebasestorage.app",
-          messagingSenderId: "452256252711",
-          appId: "1:452256252711:web:68795c1e5cc9438ff05f02",
-        };
-
-        const app = initializeApp(firebaseConfig);
+        const app = firebase.initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
         const storage = getStorage(app);
@@ -1020,17 +1017,11 @@
                 <div class="w-3/4 bg-black/20 rounded-r-md flex items-center justify-center p-4">
                     <canvas id="imposition-preview-canvas"></canvas>
                 </div>
-                <!-- Sheet Preview Column -->
+                <!-- Thumbnails Column -->
                 <div class="w-1/5 bg-slate-900/50 rounded-r-md flex flex-col p-2 space-y-2">
-                    <h4 class="text-center font-semibold text-white">Sheet Preview</h4>
-                    <div id="imposition-sheet-preview-container" class="flex-1 bg-black/20 rounded flex items-center justify-center p-1 relative">
-                        <canvas id="imposition-sheet-preview-canvas"></canvas>
-                        <!-- Page number overlays will be added here -->
-                    </div>
-                    <div class="flex items-center justify-center space-x-2">
-                        <button id="prev-sheet-button" class="px-3 py-1 rounded-md bg-slate-700 hover:bg-slate-600 text-white">&lt;</button>
-                        <span id="sheet-nav-display" class="text-sm text-gray-300">Sheet 1 of 1</span>
-                        <button id="next-sheet-button" class="px-3 py-1 rounded-md bg-slate-700 hover:bg-slate-600 text-white">&gt;</button>
+                    <h4 class="text-center font-semibold text-white">Sheet Thumbnails</h4>
+                    <div id="imposition-thumbnail-list" class="flex-1 space-y-2 overflow-y-auto p-1">
+                        <!-- Thumbnails will be populated here -->
                     </div>
                 </div>
             </div>

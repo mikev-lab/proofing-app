@@ -1,6 +1,6 @@
 // js/imposition-ui.js
-import { maximizeNUp, SHEET_SIZES, getPageSequenceForSheet } from './imposition-logic.js';
-import { drawCropMarks, drawSlugInfo, drawSpineIndicator, drawSpineSlugText } from './imposition-drawing.js';
+import { maximizeNUp, getSheetSizes, getPageSequenceForSheet } from './imposition-logic.js';
+import { drawCropMarks, drawSlugInfo, drawSpineIndicator, drawSpineSlugText, drawPageNumber } from './imposition-drawing.js';
 import { INCH_TO_POINTS } from './constants.js';
 import { collection, query, where, getDocs, doc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
@@ -10,6 +10,7 @@ let currentSheetIndex = 0;
 let totalSheets = 0;
 let currentSettings = {};
 let currentViewSide = 'front';
+let sheetSizes = [];
 
 // --- CONSTANTS ---
 const IMPOSITION_TYPE_OPTIONS = [
@@ -54,7 +55,7 @@ async function renderMainPreview(projectData) {
     const canvas = document.getElementById('imposition-preview-canvas');
     if (!canvas) return; // Guard for test harness
     const ctx = canvas.getContext('2d');
-    const sheetConfig = SHEET_SIZES.find(s => s.name === currentSettings.sheet);
+    const sheetConfig = sheetSizes.find(s => s.name === currentSettings.sheet);
     if (!sheetConfig) return;
     let sheetWidth = sheetConfig.longSideInches * INCH_TO_POINTS;
     let sheetHeight = sheetConfig.shortSideInches * INCH_TO_POINTS;
@@ -69,30 +70,51 @@ async function renderMainPreview(projectData) {
     ctx.restore();
 }
 
-async function renderSheetPreview(projectData) {
+async function renderSheetAndThumbnails(projectData) {
     if (!pdfDoc) return;
-    const canvas = document.getElementById('imposition-sheet-preview-canvas');
-    const container = document.getElementById('imposition-sheet-preview-container');
-    const navDisplay = document.getElementById('sheet-nav-display');
-    const ctx = canvas.getContext('2d');
 
     totalSheets = calculateTotalSheets();
-    navDisplay.textContent = `Sheet ${currentSheetIndex + 1} of ${Math.max(1, totalSheets)}`;
+    await renderMainPreview(projectData);
+    await renderThumbnailList(projectData);
+}
 
-    const sheetConfig = SHEET_SIZES.find(s => s.name === currentSettings.sheet);
-    if (!sheetConfig) return;
-    let sheetWidth = sheetConfig.longSideInches * INCH_TO_POINTS;
-    let sheetHeight = sheetConfig.shortSideInches * INCH_TO_POINTS;
-    if (currentSettings.sheetOrientation === 'portrait') { [sheetWidth, sheetHeight] = [sheetHeight, sheetWidth]; }
+async function renderThumbnailList(projectData) {
+    const thumbnailList = document.getElementById('imposition-thumbnail-list');
+    thumbnailList.innerHTML = '';
 
-    const scale = Math.min(container.clientWidth / sheetWidth, container.clientHeight / sheetHeight);
-    canvas.width = sheetWidth * scale;
-    canvas.height = sheetHeight * scale;
+    for (let i = 0; i < totalSheets; i++) {
+        const thumbItem = document.createElement('div');
+        thumbItem.className = 'thumbnail-item p-1 rounded-md border-2 border-transparent hover:border-indigo-400 cursor-pointer';
+        if (i === currentSheetIndex) {
+            thumbItem.classList.add('border-indigo-400');
+        }
+        thumbItem.dataset.sheet = i;
+        thumbItem.innerHTML = `
+            <div class="bg-black/20 flex items-center justify-center rounded-sm overflow-hidden">
+                 <canvas class="w-full h-full object-contain"></canvas>
+            </div>
+            <p class="text-center text-xs mt-1">Sheet ${i + 1}</p>
+        `;
+        thumbnailList.appendChild(thumbItem);
 
-    ctx.save();
-    ctx.scale(scale, scale);
-    await renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, currentSheetIndex, currentViewSide, projectData);
-    ctx.restore();
+        const canvas = thumbItem.querySelector('canvas');
+        const sheetConfig = sheetSizes.find(s => s.name === currentSettings.sheet);
+        if (!sheetConfig) continue;
+
+        let sheetWidth = sheetConfig.longSideInches * INCH_TO_POINTS;
+        let sheetHeight = sheetConfig.shortSideInches * INCH_TO_POINTS;
+        if (currentSettings.sheetOrientation === 'portrait') { [sheetWidth, sheetHeight] = [sheetHeight, sheetWidth]; }
+
+        const scale = Math.min(canvas.parentElement.clientWidth / sheetWidth, canvas.parentElement.clientHeight / sheetHeight);
+        canvas.width = sheetWidth * scale;
+        canvas.height = sheetHeight * scale;
+
+        const ctx = canvas.getContext('2d');
+        ctx.save();
+        ctx.scale(scale, scale);
+        await renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, i, currentViewSide, projectData);
+        ctx.restore();
+    }
 }
 
 async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, side, projectData) {
@@ -130,13 +152,7 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
             await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport: pageViewport }).promise;
             ctx.drawImage(tempCanvas, x, y);
 
-            ctx.save();
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-            ctx.font = '24px sans-serif';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillText(`P${pageNum}`, x + pageContentWidth / 2, y + pageContentHeight / 2);
-            ctx.restore();
+            drawPageNumber(ctx, pageNum, x, y);
 
             drawCropMarks(ctx, x + bleedPoints, y + bleedPoints, pageContentWidth - (2 * bleedPoints), pageContentHeight - (2 * bleedPoints), {});
         }
@@ -169,8 +185,7 @@ export async function initializeImpositionUI({ projectData, db }) {
     const impositionModal = document.getElementById('imposition-modal');
     const closeModalButton = document.getElementById('imposition-modal-close-button');
     const form = document.getElementById('imposition-form');
-    const prevSheetBtn = document.getElementById('prev-sheet-button');
-    const nextSheetBtn = document.getElementById('next-sheet-button');
+    const thumbnailList = document.getElementById('imposition-thumbnail-list');
     const sideSelectorContainer = document.getElementById('side-selector-container');
     const sideSelector = document.getElementById('side-selector');
 
@@ -179,8 +194,11 @@ export async function initializeImpositionUI({ projectData, db }) {
     impTypeSelect.innerHTML = '';
     IMPOSITION_TYPE_OPTIONS.forEach(opt => impTypeSelect.add(new Option(opt.label, opt.value)));
     const sheetSelect = document.getElementById('sheet-size');
+
+    // Fetch sheet sizes from Firestore
+    sheetSizes = await getSheetSizes(db);
     sheetSelect.innerHTML = '';
-    SHEET_SIZES.forEach(s => sheetSelect.add(new Option(s.name, s.name)));
+    sheetSizes.forEach(s => sheetSelect.add(new Option(s.name, s.name)));
 
     async function handleFormChange() {
         const formData = new FormData(form);
@@ -195,8 +213,16 @@ export async function initializeImpositionUI({ projectData, db }) {
         currentViewSide = sideSelector.value;
         sideSelectorContainer.classList.toggle('hidden', !currentSettings.isDuplex);
 
-        await renderAllPreviews(projectData);
+        await renderSheetAndThumbnails(projectData);
     }
+
+    thumbnailList.addEventListener('click', (e) => {
+        const item = e.target.closest('.thumbnail-item');
+        if (item && item.dataset.sheet) {
+            currentSheetIndex = parseInt(item.dataset.sheet, 10);
+            renderSheetAndThumbnails(projectData);
+        }
+    });
 
     async function loadDataAndRender() {
         if (!projectData.versions || projectData.versions.length === 0) {
@@ -209,14 +235,21 @@ export async function initializeImpositionUI({ projectData, db }) {
         pdfDoc = await getPdfDoc(latestVersion.previewURL || latestVersion.fileURL);
         if (!pdfDoc) return;
 
-        const globalSettingsSnap = await getDoc(doc(db, 'settings', 'globalImpositionDefaults'));
-        const globalDefaults = globalSettingsSnap.exists() ? globalSettingsSnap.data() : {};
-        const projectDocSizeName = typeof projectData.specs?.dimensions === 'string' ? projectData.specs.dimensions : null;
+        let globalDefaults = {};
         let ruleSettings = null;
-        if (projectDocSizeName) {
-            const q = query(collection(db, 'impositionDefaults'), where("docSize", "==", projectDocSizeName));
-            const querySnapshot = await getDocs(q);
-            if (!querySnapshot.empty) ruleSettings = querySnapshot.docs[0].data();
+        try {
+            const globalSettingsSnap = await getDoc(doc(db, 'settings', 'globalImpositionDefaults'));
+            if (globalSettingsSnap.exists()) {
+                globalDefaults = globalSettingsSnap.data();
+            }
+            const projectDocSizeName = typeof projectData.specs?.dimensions === 'string' ? projectData.specs.dimensions : null;
+            if (projectDocSizeName) {
+                const q = query(collection(db, 'impositionDefaults'), where("docSize", "==", projectDocSizeName));
+                const querySnapshot = await getDocs(q);
+                if (!querySnapshot.empty) ruleSettings = querySnapshot.docs[0].data();
+            }
+        } catch (error) {
+            console.warn("Could not fetch settings from Firestore for test environment, using defaults.", error);
         }
 
         let initialSettings = projectData.impositions?.slice().sort((a,b) => b.createdAt - a.createdAt)[0]?.settings;
@@ -226,7 +259,7 @@ export async function initializeImpositionUI({ projectData, db }) {
             if (ruleSettings) {
                 initialSettings = { ...globalDefaults, ...ruleSettings, sheet: ruleSettings.pressSheet, impositionType: 'stack' };
             } else {
-                initialSettings = { ...globalDefaults, ...maximizeNUp(width, height) };
+                initialSettings = { ...globalDefaults, ...maximizeNUp(width, height, sheetSizes) };
             }
         }
 
@@ -237,18 +270,6 @@ export async function initializeImpositionUI({ projectData, db }) {
     }
 
     form.addEventListener('change', handleFormChange);
-    prevSheetBtn.addEventListener('click', () => {
-        if (currentSheetIndex > 0) {
-            currentSheetIndex--;
-            renderSheetPreview(projectData);
-        }
-    });
-    nextSheetBtn.addEventListener('click', () => {
-        if (currentSheetIndex < totalSheets - 1) {
-            currentSheetIndex++;
-            renderSheetPreview(projectData);
-        }
-    });
 
     // Logic for the actual page vs the test harness
     if (imposePdfButton) { // We are in the main app

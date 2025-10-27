@@ -5,122 +5,152 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MCE Printing - Admin Settings</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        body { font-family: 'Inter', sans-serif; }
-        .form-input, .form-select {
-            background-color: #374151; /* bg-gray-700 */
-            border-color: #4b5563; /* border-gray-600 */
-            color: #d1d5db; /* text-gray-300 */
+        body {
+            font-family: 'Inter', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+        .form-input {
+             margin-top: 0.25rem;
+             display: block;
+             width: 100%;
+             border-radius: 0.5rem;
+             border: 0;
+             background-color: rgba(255, 255, 255, 0.05);
+             padding: 0.5rem 0.75rem;
+             color: white;
+             box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+             ring: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .form-input:focus {
+            outline: 2px solid transparent;
+            outline-offset: 2px;
+            --tw-ring-color: #6366f1;
+             box-shadow: 0 0 0 2px #6366f1;
+        }
+        .form-label {
+            display: block;
+            margin-bottom: 0.25rem;
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: #d1d5db;
+        }
+        .form-group {
+            margin-bottom: 1rem;
         }
     </style>
 </head>
 <body class="min-h-screen bg-gradient-to-br from-[#0f172a] to-[#334155] text-gray-100">
     <div class="flex h-full">
         <!-- Sidebar -->
-        <div class="flex flex-col w-64 bg-slate-900/70">
+        <div class="flex flex-col w-64 bg-slate-900/70 backdrop-blur-sm border-r border-slate-700/50">
             <div class="flex items-center justify-center h-16 border-b border-slate-700/50">
                 <h1 class="text-2xl font-bold text-white">MCE Admin</h1>
             </div>
-            <nav class="flex-grow px-4 py-4">
-                <a href="admin.html" class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50">All Projects</a>
-                <a href="admin_client_management.html" class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50">Clients</a>
-                <a href="admin_settings.html" class="block px-4 py-2 mt-2 text-sm font-semibold text-white bg-slate-700/50 rounded-lg">Settings</a>
-            </nav>
+            <div class="flex-grow">
+                <nav class="flex-grow md:block px-4 pb-4 md:pb-0 md:overflow-y-auto">
+                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="admin.html">All Projects</a>
+                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="admin_client_management.html">Clients</a>
+                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-200 bg-slate-700/50 rounded-lg hover:bg-slate-600/50" href="admin_settings.html">Settings</a>
+                </nav>
+            </div>
         </div>
 
         <!-- Main content -->
         <div class="flex flex-col flex-1">
-            <header class="flex justify-between items-center h-16 px-6 bg-slate-800/60">
-                <h2 class="text-xl font-semibold text-white">Settings</h2>
+            <!-- Header -->
+            <header class="flex justify-between items-center h-16 px-6 bg-slate-800/60 backdrop-blur-sm border-b border-slate-700/50">
                 <div>
-                    <span id="user-email" class="text-sm text-gray-300"></span>
-                    <button id="logout-button" class="ml-4 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm">Sign Out</button>
+                    <h2 class="text-xl font-semibold text-white">Admin Settings</h2>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <span id="user-email" class="text-sm text-gray-300 hidden sm:block"></span>
+                    <button id="logout-button" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm">Sign Out</button>
                 </div>
             </header>
 
-            <main class="flex-1 p-6 space-y-6">
-                <!-- Global Settings Section -->
-                <div class="bg-slate-800/60 p-6 rounded-lg shadow-xl">
-                    <h3 class="text-lg font-semibold text-white mb-4">Global Imposition Settings</h3>
-                    <div id="global-settings-form" class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <div>
-                            <label for="global-bleed" class="block text-sm font-medium text-gray-300">Default Bleed (inches)</label>
-                            <input type="number" id="global-bleed" name="bleedInches" value="0.125" step="0.001" class="form-input mt-1 block w-full rounded-md border-gray-600 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
-                        </div>
-                        <div>
-                            <label for="global-gutter" class="block text-sm font-medium text-gray-300">Default Gutter (inches)</label>
-                            <input type="number" id="global-gutter" name="gutterInches" value="0.25" step="0.001" class="form-input mt-1 block w-full rounded-md border-gray-600 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
-                        </div>
-                        <div>
-                            <label for="crop-mark-style" class="block text-sm font-medium text-gray-300">Crop Mark Style</label>
-                            <select id="crop-mark-style" name="cropMarkStyle" class="form-select mt-1 block w-full rounded-md border-gray-600 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
-                                <option value="standard">Standard</option>
-                            </select>
-                        </div>
-                    </div>
-                     <div class="mt-4 text-right">
-                        <button id="save-global-settings" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-4 rounded-md">Save Global Settings</button>
-                    </div>
+            <main class="flex-1 p-6">
+                <div id="loading-spinner" class="text-center py-12">
+                    <div class="h-12 w-12 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900 mx-auto"></div>
+                    <p class="mt-4 text-gray-300">Loading settings...</p>
                 </div>
 
-                <!-- Document Size Rules Section -->
-                <div class="bg-slate-800/60 p-6 rounded-lg shadow-xl">
-                    <h3 class="text-lg font-semibold text-white mb-4">Document Size Imposition Rules</h3>
-                    <p class="text-gray-400 mb-6">Define default layouts for specific document sizes. These rules override the automatic "Maximize N-Up" logic.</p>
-                    <div class="overflow-x-auto">
-                        <table class="min-w-full divide-y divide-gray-700">
-                            <thead class="bg-slate-700/50">
-                                <tr>
-                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Document Size</th>
-                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Press Sheet</th>
-                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Columns</th>
-                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Rows</th>
-                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Orientation</th>
-                                    <th scope="col" class="relative px-6 py-3"><span class="sr-only">Actions</span></th>
-                                </tr>
-                            </thead>
-                            <tbody id="imposition-rules" class="bg-slate-800 divide-y divide-gray-700">
-                                <!-- Rules will be rendered here by JavaScript -->
-                            </tbody>
-                        </table>
+                <div id="settings-content" class="hidden space-y-8 max-w-4xl mx-auto">
+                    <!-- Global Defaults -->
+                    <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
+                        <h3 class="text-lg font-semibold text-white mb-4">Global Defaults</h3>
+                        <form id="global-defaults-form" class="space-y-4">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label for="bleed-inches" class="form-label">Default Bleed (inches)</label>
+                                    <input type="number" id="bleed-inches" name="bleedInches" step="0.001" class="form-input">
+                                </div>
+                                <div>
+                                    <label for="safety-inches" class="form-label">Default Safety Margin (inches)</label>
+                                    <input type="number" id="safety-inches" name="safetyInches" step="0.001" class="form-input">
+                                </div>
+                            </div>
+                            <div class="pt-4 text-right">
+                                <button type="submit" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-4 rounded-md">Save Global Defaults</button>
+                            </div>
+                        </form>
                     </div>
-                    <button id="add-rule-button" class="mt-4 bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md">Add Rule</button>
+
+                    <!-- Sheet Sizes -->
+                    <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
+                        <h3 class="text-lg font-semibold text-white mb-4">Manage Press Sheet Sizes</h3>
+                        <div id="sheet-sizes-list" class="space-y-2 mb-4">
+                            <!-- Sheet sizes will be populated here -->
+                        </div>
+                        <form id="add-sheet-size-form" class="flex items-end space-x-4">
+                            <div class="flex-1">
+                                <label for="new-sheet-name" class="form-label">Sheet Name</label>
+                                <input type="text" id="new-sheet-name" placeholder="e.g., Super B" class="form-input">
+                            </div>
+                            <div class="w-24">
+                                <label for="new-sheet-long" class="form-label">Long (in)</label>
+                                <input type="number" id="new-sheet-long" step="any" class="form-input">
+                            </div>
+                            <div class="w-24">
+                                <label for="new-sheet-short" class="form-label">Short (in)</label>
+                                <input type="number" id="new-sheet-short" step="any" class="form-input">
+                            </div>
+                            <button type="submit" class="bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md">Add</button>
+                        </form>
+                    </div>
+
+                    <!-- Imposition Rules -->
+                    <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
+                        <h3 class="text-lg font-semibold text-white mb-4">Default Imposition Rules</h3>
+                        <p class="text-sm text-gray-400 mb-4">Map a document size to a default press sheet for automatic imposition.</p>
+                        <div id="imposition-rules-list" class="space-y-2 mb-4">
+                            <!-- Rules will be populated here -->
+                        </div>
+                        <form id="add-imposition-rule-form" class="flex items-end space-x-4">
+                            <div class="flex-1">
+                                <label for="new-rule-doc-size" class="form-label">Document Size</label>
+                                <select id="new-rule-doc-size" class="form-input"></select>
+                            </div>
+                            <div class="flex-1">
+                                <label for="new-rule-press-sheet" class="form-label">Default Press Sheet</label>
+                                <select id="new-rule-press-sheet" class="form-input"></select>
+                            </div>
+                            <button type="submit" class="bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md">Add Rule</button>
+                        </form>
+                    </div>
                 </div>
             </main>
         </div>
     </div>
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import { initializeSettings } from './js/admin-settings.js';
 
-        const firebaseConfig = {
-          apiKey: "AIzaSyApmEJdFi96QS3TwYh7GyEDSbZrCuVpBrg",
-          authDomain: "proofing-application.firebaseapp.com",
-          projectId: "proofing-application",
-          storageBucket: "proofing-application.firebasestorage.app",
-          messagingSenderId: "452256252711",
-          appId: "1:452256252711:web:68795c1e5cc9438ff05f02",
-        };
-
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-
-        onAuthStateChanged(auth, (user) => {
-            if (user) {
-                document.getElementById('user-email').textContent = user.email;
-                initializeSettings(db);
-            } else {
-                window.location.href = 'index.html';
-            }
-        });
-
-        document.getElementById('logout-button').addEventListener('click', () => {
-            signOut(auth).then(() => window.location.href = 'index.html');
-        });
-    </script>
+    <script src="/__/firebase/11.6.1/firebase-app-compat.js"></script>
+    <script src="/__/firebase/11.6.1/firebase-auth-compat.js"></script>
+    <script src="/__/firebase/11.6.1/firebase-firestore-compat.js"></script>
+    <script src="/__/firebase/init.js"></script>
+    <script type="module" src="./js/admin-settings.js"></script>
 </body>
 </html>

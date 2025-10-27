@@ -196,3 +196,13 @@ export function drawSpineSlugText(ctx, trimAreaX, trimAreaY, trimAreaWidth, trim
 
     ctx.restore();
 };
+
+export function drawPageNumber(ctx, pageNum, x, y) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+    ctx.font = '12px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText(`P${pageNum}`, x + 4, y + 4);
+    ctx.restore();
+}
