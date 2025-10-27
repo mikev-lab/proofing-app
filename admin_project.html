@@ -428,12 +428,6 @@
     </div>
 
     <!-- Firebase SDKs -->
-    <script src="/__/firebase/11.6.1/firebase-app-compat.js"></script>
-    <script src="/__/firebase/11.6.1/firebase-auth-compat.js"></script>
-    <script src="/__/firebase/11.6.1/firebase-firestore-compat.js"></script>
-    <script src="/__/firebase/11.6.1/firebase-functions-compat.js"></script>
-    <script src="/__/firebase/11.6.1/firebase-storage-compat.js"></script>
-    <script src="/__/firebase/init.js"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
@@ -444,7 +438,16 @@
         import { STANDARD_PAPER_SIZES } from './js/guides.js';
         import { initializeImpositionUI } from './js/imposition-ui.js';
 
-        const app = firebase.initializeApp(firebaseConfig);
+        const firebaseConfig = {
+            apiKey: "AIzaSyApmEJdFi96QS3TwYh7GyEDSbZrCuVpBrg",
+            authDomain: "proofing-application.firebaseapp.com",
+            projectId: "proofing-application",
+            storageBucket: "proofing-application.firebasestorage.app",
+            messagingSenderId: "452256252711",
+            appId: "1:452256252711:web:68795c1e5cc9438ff05f02",
+        };
+
+        const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
         const storage = getStorage(app);
