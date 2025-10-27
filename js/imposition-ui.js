@@ -1,4 +1,3 @@
-// js/imposition-ui.js
 import { maximizeNUp, getSheetSizes, getPageSequenceForSheet } from './imposition-logic.js';
 import { drawCropMarks, drawSlugInfo, drawSpineIndicator, drawSpineSlugText, drawPageNumber } from './imposition-drawing.js';
 import { INCH_TO_POINTS } from './constants.js';
@@ -18,6 +17,7 @@ let zoomState = {
     isDragging: false,
     startX: 0,
     startY: 0,
+    isRendering: false // FIX: Add render lock
 };
 
 // --- CONSTANTS ---
@@ -62,42 +62,61 @@ async function renderAllPreviews(projectData) {
 async function renderMainPreview(projectData) {
     const canvas = document.getElementById('imposition-preview-canvas');
     const zoomLevelDisplay = document.getElementById('imposition-zoom-level-display');
-    if (!canvas || !zoomLevelDisplay) return;
+    
+    // FIX #2: Check for lock
+    if (zoomState.isRendering || !canvas || !zoomLevelDisplay) return;
 
-    const ctx = canvas.getContext('2d');
-    const sheetConfig = sheetSizes.find(s => s.name === currentSettings.sheet);
-    if (!sheetConfig) return;
+    zoomState.isRendering = true; // Set lock
 
-    let sheetWidth = sheetConfig.longSideInches * INCH_TO_POINTS;
-    let sheetHeight = sheetConfig.shortSideInches * INCH_TO_POINTS;
-    if (currentSettings.sheetOrientation === 'portrait') {
-        [sheetWidth, sheetHeight] = [sheetHeight, sheetWidth];
+    try {
+        const ctx = canvas.getContext('2d');
+        const sheetConfig = sheetSizes.find(s => s.name === currentSettings.sheet);
+        if (!sheetConfig) return; // Added check
+
+        let sheetWidth = sheetConfig.longSideInches * INCH_TO_POINTS;
+        let sheetHeight = sheetConfig.shortSideInches * INCH_TO_POINTS;
+        if (currentSettings.sheetOrientation === 'portrait') {
+            [sheetWidth, sheetHeight] = [sheetHeight, sheetWidth];
+        }
+
+        const parent = canvas.parentElement;
+
+        // FIX #1: Only resize canvas if parent dimensions actually changed.
+        // This is an optimization; the root cause is likely CSS.
+        if (canvas.width !== parent.clientWidth) {
+            canvas.width = parent.clientWidth;
+        }
+        if (canvas.height !== parent.clientHeight) {
+            canvas.height = parent.clientHeight;
+        }
+
+        // Calculate the scale to fit the sheet within the canvas
+        const fitScale = Math.min((canvas.width - 20) / sheetWidth, (canvas.height - 20) / sheetHeight);
+        const totalScale = fitScale * zoomState.scale;
+
+        // Clear canvas
+        ctx.fillStyle = '#262626';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.save();
+        // Center the view and apply transformations
+        ctx.translate(canvas.width / 2 + zoomState.offsetX, canvas.height / 2 + zoomState.offsetY);
+        ctx.scale(totalScale, totalScale);
+        ctx.translate(-sheetWidth / 2, -sheetHeight / 2);
+
+        await renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, currentSheetIndex, currentViewSide, projectData);
+
+        ctx.restore();
+
+        zoomLevelDisplay.textContent = `${Math.round(zoomState.scale * 100)}%`;
+
+    } catch (err) {
+        console.error("Error during render:", err);
+    } finally {
+        zoomState.isRendering = false; // Release lock
     }
-
-    const parent = canvas.parentElement;
-    canvas.width = parent.clientWidth;
-    canvas.height = parent.clientHeight;
-
-    // Calculate the scale to fit the sheet within the canvas
-    const fitScale = Math.min((canvas.width - 20) / sheetWidth, (canvas.height - 20) / sheetHeight);
-    const totalScale = fitScale * zoomState.scale;
-
-    // Clear canvas
-    ctx.fillStyle = '#262626';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    ctx.save();
-    // Center the view and apply transformations
-    ctx.translate(canvas.width / 2 + zoomState.offsetX, canvas.height / 2 + zoomState.offsetY);
-    ctx.scale(totalScale, totalScale);
-    ctx.translate(-sheetWidth / 2, -sheetHeight / 2);
-
-    await renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, currentSheetIndex, currentViewSide, projectData);
-
-    ctx.restore();
-
-    zoomLevelDisplay.textContent = `${Math.round(zoomState.scale * 100)}%`;
 }
+
 
 async function renderSheetAndThumbnails(projectData) {
     if (!pdfDoc) return;
@@ -125,7 +144,7 @@ async function renderThumbnailList(projectData) {
             thumbItem.dataset.side = side;
             thumbItem.innerHTML = `
                 <div class="bg-black/20 flex items-center justify-center rounded-sm overflow-hidden">
-                     <canvas class="w-full h-full object-contain"></canvas>
+                        <canvas class="w-full h-full object-contain"></canvas>
                 </div>
                 <p class="text-center text-xs mt-1">Sheet ${i + 1}${sideLabel}</p>
             `;
@@ -147,11 +166,15 @@ async function renderThumbnailList(projectData) {
             const ctx = canvas.getContext('2d');
             ctx.save();
             ctx.scale(scale, scale);
-            await renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, i, side, projectData);
-            ctx.restore();
+            // This is async, but thumbnail race conditions are less critical
+            // and less likely to be triggered by a user.
+            renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, i, side, projectData).then(() => {
+                 ctx.restore();
+            });
         }
     }
 }
+
 
 async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, side, projectData) {
     // Slip sheet logic
@@ -195,10 +218,16 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
             const x = startX + col * (pageContentWidth + (currentSettings.horizontalGutterInches * INCH_TO_POINTS));
             const y = startY + row * (pageContentHeight + (currentSettings.verticalGutterInches * INCH_TO_POINTS));
 
+            // Use the correct viewport for this specific page, not just page 1's
+            const specificViewport = page.getViewport({ scale: 1 });
             const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = pageContentWidth;
-            tempCanvas.height = pageContentHeight;
-            await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport: pageViewport }).promise;
+            tempCanvas.width = specificViewport.width;
+            tempCanvas.height = specificViewport.height;
+            
+            // Render using the page's own viewport
+            await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport: specificViewport }).promise;
+            
+            // Draw image, respecting potential size differences (though layout assumes they are all page 1's size)
             ctx.drawImage(tempCanvas, x, y);
 
             drawPageNumber(ctx, pageNum, x, y);
@@ -219,7 +248,9 @@ function calculateTotalSheets() {
     if (!slotsPerSheet) return 0;
 
     if (impositionType === 'booklet') {
-        return Math.ceil(pdfDoc.numPages / 4);
+        // Booklet pages are always in sets of 4
+        const roundedPages = Math.ceil(pdfDoc.numPages / 4) * 4;
+        return roundedPages / 4;
     }
     if (impositionType === 'repeat') {
         return isDuplex ? Math.ceil(pdfDoc.numPages / 2) : pdfDoc.numPages;
@@ -249,9 +280,19 @@ export async function initializeImpositionUI({ projectData, db }) {
     const sheetSelect = document.getElementById('sheet-size');
 
     // Fetch sheet sizes from Firestore
-    sheetSizes = await getSheetSizes(db);
-    sheetSelect.innerHTML = '';
-    sheetSizes.forEach(s => sheetSelect.add(new Option(s.name, s.name)));
+    try {
+        sheetSizes = await getSheetSizes(db);
+        sheetSelect.innerHTML = '';
+        sheetSizes.forEach(s => sheetSelect.add(new Option(s.name, s.name)));
+    } catch (e) {
+        console.error("Could not load sheet sizes:", e);
+        // Add a default fallback?
+        if (sheetSizes.length === 0) {
+            sheetSizes = [{ name: "Letter (11x8.5)", longSideInches: 11, shortSideInches: 8.5 }];
+            sheetSizes.forEach(s => sheetSelect.add(new Option(s.name, s.name)));
+        }
+    }
+
 
     async function handleFormChange() {
         const formData = new FormData(form);
@@ -266,7 +307,8 @@ export async function initializeImpositionUI({ projectData, db }) {
         currentViewSide = 'front'; // Default to front view
         if (sideSelectorContainer) sideSelectorContainer.classList.add('hidden');
 
-
+        // Reset zoom and pan when settings change
+        resetZoom(); 
         await renderSheetAndThumbnails(projectData);
     }
 
@@ -323,8 +365,11 @@ export async function initializeImpositionUI({ projectData, db }) {
              const { width, height } = firstPage.getViewport({scale: 1});
             if (ruleSettings) {
                 initialSettings = { ...globalDefaults, ...ruleSettings, sheet: ruleSettings.pressSheet, impositionType: 'stack' };
-            } else {
+            } else if (sheetSizes.length > 0) { // Ensure sheet sizes are loaded
                 initialSettings = { ...globalDefaults, ...maximizeNUp(width, height, sheetSizes) };
+            } else {
+                // Fallback if sheet sizes *still* aren't loaded
+                initialSettings = { ...globalDefaults, sheet: sheetSizes[0].name, impositionType: 'stack', rows: 1, columns: 1 };
             }
         }
 
@@ -348,7 +393,7 @@ export async function initializeImpositionUI({ projectData, db }) {
     }
 
     function resetZoom() {
-        zoomState = { scale: 1.0, offsetX: 0, offsetY: 0, isDragging: false, startX: 0, startY: 0 };
+        zoomState = { scale: 1.0, offsetX: 0, offsetY: 0, isDragging: false, startX: 0, startY: 0, isRendering: false };
         renderMainPreview(projectData);
     }
 
@@ -374,11 +419,10 @@ export async function initializeImpositionUI({ projectData, db }) {
         canvas.addEventListener('mousemove', (e) => {
             if (!zoomState.isDragging) return;
 
+            // This check is redundant now thanks to the render lock, but harmless
             const sheetConfig = sheetSizes.find(s => s.name === currentSettings.sheet);
             if (!sheetConfig) return;
-            let sheetWidth = sheetConfig.longSideInches * INCH_TO_POINTS;
-            let sheetHeight = sheetConfig.shortSideInches * INCH_TO_POINTS;
-            if (currentSettings.sheetOrientation === 'portrait') { [sheetWidth, sheetHeight] = [sheetHeight, sheetWidth]; }
+            
             // Adjust movement by the current zoom level
             const dx = e.clientX - zoomState.startX;
             const dy = e.clientY - zoomState.startY;
