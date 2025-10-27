@@ -11,6 +11,14 @@ let totalSheets = 0;
 let currentSettings = {};
 let currentViewSide = 'front';
 let sheetSizes = [];
+let zoomState = {
+    scale: 1.0,
+    offsetX: 0,
+    offsetY: 0,
+    isDragging: false,
+    startX: 0,
+    startY: 0,
+};
 
 // --- CONSTANTS ---
 const IMPOSITION_TYPE_OPTIONS = [
@@ -53,21 +61,43 @@ async function renderAllPreviews(projectData) {
 
 async function renderMainPreview(projectData) {
     const canvas = document.getElementById('imposition-preview-canvas');
-    if (!canvas) return; // Guard for test harness
+    const zoomLevelDisplay = document.getElementById('imposition-zoom-level-display');
+    if (!canvas || !zoomLevelDisplay) return;
+
     const ctx = canvas.getContext('2d');
     const sheetConfig = sheetSizes.find(s => s.name === currentSettings.sheet);
     if (!sheetConfig) return;
+
     let sheetWidth = sheetConfig.longSideInches * INCH_TO_POINTS;
     let sheetHeight = sheetConfig.shortSideInches * INCH_TO_POINTS;
-    if (currentSettings.sheetOrientation === 'portrait') { [sheetWidth, sheetHeight] = [sheetHeight, sheetWidth]; }
+    if (currentSettings.sheetOrientation === 'portrait') {
+        [sheetWidth, sheetHeight] = [sheetHeight, sheetWidth];
+    }
 
-    const scale = Math.min((canvas.parentElement.clientWidth - 20) / sheetWidth, (canvas.parentElement.clientHeight - 20) / sheetHeight);
-    canvas.width = sheetWidth * scale;
-    canvas.height = sheetHeight * scale;
+    const parent = canvas.parentElement;
+    canvas.width = parent.clientWidth;
+    canvas.height = parent.clientHeight;
+
+    // Calculate the scale to fit the sheet within the canvas
+    const fitScale = Math.min((canvas.width - 20) / sheetWidth, (canvas.height - 20) / sheetHeight);
+    const totalScale = fitScale * zoomState.scale;
+
+    // Clear canvas
+    ctx.fillStyle = '#262626';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
     ctx.save();
-    ctx.scale(scale, scale);
-    await renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, 0, currentViewSide, projectData);
+    // Center the view and apply transformations
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.scale(totalScale, totalScale);
+    ctx.translate(zoomState.offsetX, zoomState.offsetY);
+    ctx.translate(-sheetWidth / 2, -sheetHeight / 2);
+
+    await renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, currentSheetIndex, currentViewSide, projectData);
+
     ctx.restore();
+
+    zoomLevelDisplay.textContent = `${Math.round(zoomState.scale * 100)}%`;
 }
 
 async function renderSheetAndThumbnails(projectData) {
@@ -105,7 +135,9 @@ async function renderThumbnailList(projectData) {
         let sheetHeight = sheetConfig.shortSideInches * INCH_TO_POINTS;
         if (currentSettings.sheetOrientation === 'portrait') { [sheetWidth, sheetHeight] = [sheetHeight, sheetWidth]; }
 
-        const scale = Math.min(canvas.parentElement.clientWidth / sheetWidth, canvas.parentElement.clientHeight / sheetHeight);
+        // Increase thumbnail resolution for clarity
+        const parentWidth = canvas.parentElement.clientWidth * 2; // Render at 2x
+        const scale = Math.min(parentWidth / sheetWidth, (parentWidth * (sheetHeight / sheetWidth)) / sheetHeight);
         canvas.width = sheetWidth * scale;
         canvas.height = sheetHeight * scale;
 
@@ -118,13 +150,26 @@ async function renderThumbnailList(projectData) {
 }
 
 async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, side, projectData) {
-    ctx.fillStyle = 'white';
+    // Slip sheet logic
+    const slipSheetColor = currentSettings.slipSheetColor;
+    if (slipSheetColor && slipSheetColor !== 'none' && sheetIndex === 0 && side === 'front') {
+        ctx.fillStyle = slipSheetColor;
+    } else {
+        ctx.fillStyle = 'white';
+    }
     ctx.fillRect(0, 0, sheetWidth, sheetHeight);
+
     if (!pdfDoc || totalSheets === 0) return;
 
     const sequence = getPageSequenceForSheet(sheetIndex, pdfDoc.numPages, currentSettings);
     const pagesOnThisSide = sequence[side];
-    if (!pagesOnThisSide || pagesOnThisSide.every(p => p === null)) return;
+    if (!pagesOnThisSide || pagesOnThisSide.every(p => p === null)) {
+        // Still draw QR code on blank back sides if needed
+        if (currentSettings.showQRCode) {
+            await drawSlugInfo(ctx, sheetIndex + 1, totalSheets, projectData, currentSettings.qrCodePosition);
+        }
+        return;
+    };
 
     const bleedPoints = (currentSettings.bleedInches || 0) * INCH_TO_POINTS;
     const firstPageProxy = await pdfDoc.getPage(1);
@@ -156,6 +201,10 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
 
             drawCropMarks(ctx, x + bleedPoints, y + bleedPoints, pageContentWidth - (2 * bleedPoints), pageContentHeight - (2 * bleedPoints), {});
         }
+    }
+    // QR Code logic
+    if (currentSettings.showQRCode) {
+        await drawSlugInfo(ctx, sheetIndex + 1, totalSheets, projectData, currentSettings.qrCodePosition);
     }
 }
 
@@ -219,8 +268,16 @@ export async function initializeImpositionUI({ projectData, db }) {
     thumbnailList.addEventListener('click', (e) => {
         const item = e.target.closest('.thumbnail-item');
         if (item && item.dataset.sheet) {
-            currentSheetIndex = parseInt(item.dataset.sheet, 10);
-            renderSheetAndThumbnails(projectData);
+            const newIndex = parseInt(item.dataset.sheet, 10);
+            if (newIndex === currentSheetIndex) return;
+
+            // Update highlighting
+            const currentItem = thumbnailList.querySelector(`[data-sheet="${currentSheetIndex}"]`);
+            if (currentItem) currentItem.classList.remove('border-indigo-400');
+            item.classList.add('border-indigo-400');
+
+            currentSheetIndex = newIndex;
+            renderMainPreview(projectData); // Only re-render the main preview
         }
     });
 
@@ -271,11 +328,82 @@ export async function initializeImpositionUI({ projectData, db }) {
 
     form.addEventListener('change', handleFormChange);
 
+    // --- Zoom & Pan Logic ---
+    const canvas = document.getElementById('imposition-preview-canvas');
+    const zoomInButton = document.getElementById('imposition-zoom-in-button');
+    const zoomOutButton = document.getElementById('imposition-zoom-out-button');
+    const zoomResetButton = document.getElementById('imposition-zoom-reset-button');
+
+    function zoom(factor) {
+        zoomState.scale = Math.max(0.5, Math.min(zoomState.scale * factor, 5));
+        renderMainPreview(projectData);
+    }
+
+    function resetZoom() {
+        zoomState = { scale: 1.0, offsetX: 0, offsetY: 0, isDragging: false, startX: 0, startY: 0 };
+        renderMainPreview(projectData);
+    }
+
+    if (zoomInButton) zoomInButton.addEventListener('click', () => zoom(1.25));
+    if (zoomOutButton) zoomOutButton.addEventListener('click', () => zoom(0.8));
+    if (zoomResetButton) zoomResetButton.addEventListener('click', resetZoom);
+
+    if (canvas) {
+        canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const factor = e.deltaY > 0 ? 0.95 : 1.05;
+            zoom(factor);
+        });
+
+        canvas.addEventListener('mousedown', (e) => {
+            zoomState.isDragging = true;
+            // Capture start position relative to the current pan offset
+            zoomState.startX = e.clientX;
+            zoomState.startY = e.clientY;
+            canvas.style.cursor = 'grabbing';
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (!zoomState.isDragging) return;
+
+            const sheetConfig = sheetSizes.find(s => s.name === currentSettings.sheet);
+            if (!sheetConfig) return;
+            let sheetWidth = sheetConfig.longSideInches * INCH_TO_POINTS;
+            let sheetHeight = sheetConfig.shortSideInches * INCH_TO_POINTS;
+            if (currentSettings.sheetOrientation === 'portrait') { [sheetWidth, sheetHeight] = [sheetHeight, sheetWidth]; }
+            const fitScale = Math.min((canvas.width - 20) / sheetWidth, (canvas.height - 20) / sheetHeight);
+
+            // Adjust movement by the current zoom level
+            const dx = (e.clientX - zoomState.startX) / (fitScale * zoomState.scale);
+            const dy = (e.clientY - zoomState.startY) / (fitScale * zoomState.scale);
+
+            zoomState.offsetX += dx;
+            zoomState.offsetY += dy;
+
+            // Update start position for next movement delta
+            zoomState.startX = e.clientX;
+            zoomState.startY = e.clientY;
+
+            renderMainPreview(projectData);
+        });
+
+        canvas.addEventListener('mouseup', () => {
+            zoomState.isDragging = false;
+            canvas.style.cursor = 'grab';
+        });
+
+        canvas.addEventListener('mouseleave', () => {
+            zoomState.isDragging = false;
+            canvas.style.cursor = 'grab';
+        });
+    }
+
+
     // Logic for the actual page vs the test harness
     if (imposePdfButton) { // We are in the main app
         const openModal = () => {
             impositionModal.classList.remove('hidden');
-            loadDataAndRender();
+            loadDataAndRender().then(resetZoom); // Reset zoom when opening
         }
         imposePdfButton.addEventListener('click', openModal);
         if (closeModalButton) closeModalButton.addEventListener('click', () => impositionModal.classList.add('hidden'));
