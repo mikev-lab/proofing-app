@@ -88,9 +88,8 @@ async function renderMainPreview(projectData) {
 
     ctx.save();
     // Center the view and apply transformations
-    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.translate(canvas.width / 2 + zoomState.offsetX, canvas.height / 2 + zoomState.offsetY);
     ctx.scale(totalScale, totalScale);
-    ctx.translate(zoomState.offsetX, zoomState.offsetY);
     ctx.translate(-sheetWidth / 2, -sheetHeight / 2);
 
     await renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, currentSheetIndex, currentViewSide, projectData);
@@ -111,41 +110,46 @@ async function renderSheetAndThumbnails(projectData) {
 async function renderThumbnailList(projectData) {
     const thumbnailList = document.getElementById('imposition-thumbnail-list');
     thumbnailList.innerHTML = '';
+    const sides = currentSettings.isDuplex ? ['front', 'back'] : ['front'];
 
     for (let i = 0; i < totalSheets; i++) {
-        const thumbItem = document.createElement('div');
-        thumbItem.className = 'thumbnail-item p-1 rounded-md border-2 border-transparent hover:border-indigo-400 cursor-pointer';
-        if (i === currentSheetIndex) {
-            thumbItem.classList.add('border-indigo-400');
+        for (const side of sides) {
+            const sideLabel = side === 'front' ? 'f' : 'b';
+            const thumbItem = document.createElement('div');
+            thumbItem.className = 'thumbnail-item p-1 rounded-md border-2 border-transparent hover:border-indigo-400 cursor-pointer';
+
+            if (i === currentSheetIndex && side === currentViewSide) {
+                thumbItem.classList.add('border-indigo-400');
+            }
+            thumbItem.dataset.sheet = i;
+            thumbItem.dataset.side = side;
+            thumbItem.innerHTML = `
+                <div class="bg-black/20 flex items-center justify-center rounded-sm overflow-hidden">
+                     <canvas class="w-full h-full object-contain"></canvas>
+                </div>
+                <p class="text-center text-xs mt-1">Sheet ${i + 1}${sideLabel}</p>
+            `;
+            thumbnailList.appendChild(thumbItem);
+
+            const canvas = thumbItem.querySelector('canvas');
+            const sheetConfig = sheetSizes.find(s => s.name === currentSettings.sheet);
+            if (!sheetConfig) continue;
+
+            let sheetWidth = sheetConfig.longSideInches * INCH_TO_POINTS;
+            let sheetHeight = sheetConfig.shortSideInches * INCH_TO_POINTS;
+            if (currentSettings.sheetOrientation === 'portrait') { [sheetWidth, sheetHeight] = [sheetHeight, sheetWidth]; }
+
+            const parentWidth = canvas.parentElement.clientWidth * 2;
+            const scale = Math.min(parentWidth / sheetWidth, (parentWidth * (sheetHeight / sheetWidth)) / sheetHeight);
+            canvas.width = sheetWidth * scale;
+            canvas.height = sheetHeight * scale;
+
+            const ctx = canvas.getContext('2d');
+            ctx.save();
+            ctx.scale(scale, scale);
+            await renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, i, side, projectData);
+            ctx.restore();
         }
-        thumbItem.dataset.sheet = i;
-        thumbItem.innerHTML = `
-            <div class="bg-black/20 flex items-center justify-center rounded-sm overflow-hidden">
-                 <canvas class="w-full h-full object-contain"></canvas>
-            </div>
-            <p class="text-center text-xs mt-1">Sheet ${i + 1}</p>
-        `;
-        thumbnailList.appendChild(thumbItem);
-
-        const canvas = thumbItem.querySelector('canvas');
-        const sheetConfig = sheetSizes.find(s => s.name === currentSettings.sheet);
-        if (!sheetConfig) continue;
-
-        let sheetWidth = sheetConfig.longSideInches * INCH_TO_POINTS;
-        let sheetHeight = sheetConfig.shortSideInches * INCH_TO_POINTS;
-        if (currentSettings.sheetOrientation === 'portrait') { [sheetWidth, sheetHeight] = [sheetHeight, sheetWidth]; }
-
-        // Increase thumbnail resolution for clarity
-        const parentWidth = canvas.parentElement.clientWidth * 2; // Render at 2x
-        const scale = Math.min(parentWidth / sheetWidth, (parentWidth * (sheetHeight / sheetWidth)) / sheetHeight);
-        canvas.width = sheetWidth * scale;
-        canvas.height = sheetHeight * scale;
-
-        const ctx = canvas.getContext('2d');
-        ctx.save();
-        ctx.scale(scale, scale);
-        await renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, i, currentViewSide, projectData);
-        ctx.restore();
     }
 }
 
@@ -259,26 +263,30 @@ export async function initializeImpositionUI({ projectData, db }) {
         });
 
         currentSheetIndex = 0;
-        currentViewSide = sideSelector.value;
-        sideSelectorContainer.classList.toggle('hidden', !currentSettings.isDuplex);
+        currentViewSide = 'front'; // Default to front view
+        if (sideSelectorContainer) sideSelectorContainer.classList.add('hidden');
+
 
         await renderSheetAndThumbnails(projectData);
     }
 
     thumbnailList.addEventListener('click', (e) => {
         const item = e.target.closest('.thumbnail-item');
-        if (item && item.dataset.sheet) {
-            const newIndex = parseInt(item.dataset.sheet, 10);
-            if (newIndex === currentSheetIndex) return;
+        if (!item || !item.dataset.sheet || !item.dataset.side) return;
 
-            // Update highlighting
-            const currentItem = thumbnailList.querySelector(`[data-sheet="${currentSheetIndex}"]`);
-            if (currentItem) currentItem.classList.remove('border-indigo-400');
-            item.classList.add('border-indigo-400');
+        const newIndex = parseInt(item.dataset.sheet, 10);
+        const newSide = item.dataset.side;
 
-            currentSheetIndex = newIndex;
-            renderMainPreview(projectData); // Only re-render the main preview
-        }
+        if (newIndex === currentSheetIndex && newSide === currentViewSide) return;
+
+        // Update highlighting
+        const currentItem = thumbnailList.querySelector(`[data-sheet="${currentSheetIndex}"][data-side="${currentViewSide}"]`);
+        if (currentItem) currentItem.classList.remove('border-indigo-400');
+        item.classList.add('border-indigo-400');
+
+        currentSheetIndex = newIndex;
+        currentViewSide = newSide;
+        renderMainPreview(projectData);
     });
 
     async function loadDataAndRender() {
@@ -371,11 +379,9 @@ export async function initializeImpositionUI({ projectData, db }) {
             let sheetWidth = sheetConfig.longSideInches * INCH_TO_POINTS;
             let sheetHeight = sheetConfig.shortSideInches * INCH_TO_POINTS;
             if (currentSettings.sheetOrientation === 'portrait') { [sheetWidth, sheetHeight] = [sheetHeight, sheetWidth]; }
-            const fitScale = Math.min((canvas.width - 20) / sheetWidth, (canvas.height - 20) / sheetHeight);
-
             // Adjust movement by the current zoom level
-            const dx = (e.clientX - zoomState.startX) / (fitScale * zoomState.scale);
-            const dy = (e.clientY - zoomState.startY) / (fitScale * zoomState.scale);
+            const dx = e.clientX - zoomState.startX;
+            const dy = e.clientY - zoomState.startY;
 
             zoomState.offsetX += dx;
             zoomState.offsetY += dy;

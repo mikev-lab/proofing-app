@@ -929,14 +929,14 @@
 
     <!-- Imposition Modal -->
     <div id="imposition-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-80 flex items-center justify-center z-50">
-        <div class="bg-slate-800 rounded-lg shadow-xl w-full max-w-6xl h-[90vh] mx-4 border border-slate-700/50 flex flex-col">
+        <div class="bg-slate-800 rounded-lg shadow-xl w-full max-w-7xl h-[90vh] mx-4 border border-slate-700/50 flex flex-col">
             <div class="flex justify-between items-center p-4 border-b border-slate-700/50">
                 <h3 class="text-xl font-semibold text-white">Manual PDF Imposition</h3>
                 <button id="imposition-modal-close-button" class="text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
             </div>
             <div class="flex-1 flex p-4 overflow-hidden">
                 <!-- Settings Panel -->
-                <div class="w-1/4 p-4 bg-slate-900/50 rounded-l-md overflow-y-auto" id="specs-form">
+                <div class="w-1/4 p-4 bg-slate-900/50 rounded-l-md overflow-y-auto" id="imposition-settings-panel">
                     <form id="imposition-form" class="space-y-4">
                         <div>
                             <label for="imposition-type" class="block text-sm font-medium text-gray-300">Imposition Type</label>
@@ -1017,7 +1017,7 @@
                     </form>
                 </div>
                 <!-- Preview Panel -->
-                <div class="w-3/4 bg-black/20 rounded-r-md flex items-center justify-center p-4 relative">
+                <div class="flex-1 bg-black/20 rounded-r-md flex items-center justify-center p-4 relative">
                     <canvas id="imposition-preview-canvas" class="cursor-grab"></canvas>
                     <!-- Zoom Controls -->
                     <div class="absolute bottom-4 right-4 bg-slate-900/50 backdrop-blur-sm rounded-lg p-1 flex items-center space-x-1">
@@ -1028,7 +1028,7 @@
                     </div>
                 </div>
                 <!-- Thumbnails Column -->
-                <div class="w-1/5 bg-slate-900/50 rounded-r-md flex flex-col p-2 space-y-2">
+                <div class="w-1/5 bg-slate-900/50 rounded-r-md flex flex-col p-2 space-y-2" id="imposition-thumbnail-panel">
                     <h4 class="text-center font-semibold text-white">Sheet Thumbnails</h4>
                     <div id="imposition-thumbnail-list" class="flex-1 space-y-2 overflow-y-auto p-1">
                         <!-- Thumbnails will be populated here -->
