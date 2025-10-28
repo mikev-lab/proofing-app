@@ -1,11 +1,38 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
-    // Allow authenticated users to read and write files under the 'proofs' path
+    function isProjectMember(projectId) {
+      let userCompanyId = get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId;
+      let projectCompanyId = get(/databases/$(database)/documents/projects/$(projectId)).data.companyId;
+      return userCompanyId == projectCompanyId;
+    }
+
+    function isAdmin() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // Common condition for project file access
+    function canAccessProjectFiles(projectId) {
+      return request.auth != null &&
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             (isAdmin() || isProjectMember(projectId));
+    }
+
     match /proofs/{allPaths=**} {
       allow read, write: if request.auth != null;
     }
-    
-    // Add other rules if needed for different paths
+
+    match /uploads/{projectId}/{fileName} {
+      allow write: if canAccessProjectFiles(projectId);
+    }
+    match /sources/{projectId}/{fileName} {
+      allow read, write: if canAccessProjectFiles(projectId);
+    }
+    match /previews/{projectId}/{fileName} {
+      allow read, write: if canAccessProjectFiles(projectId);
+    }
+    match /final/{projectId}/{fileName} {
+      allow read, write: if canAccessProjectFiles(projectId);
+    }
   }
 }

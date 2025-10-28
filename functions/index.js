@@ -442,8 +442,177 @@ exports.scheduledProjectDeletion = onSchedule("every day 03:00", async (event) =
 // --- NEW Imposition Functions ---
 const { onDocumentUpdated } = require('firebase-functions/v2/firestore');
 const { imposePdf: imposePdfLogic } = require('./imposition'); // Import the core logic
+const axios = require('axios');
+const { PDFDocument } = require('pdf-lib');
+const FormData = require('form-data');
+const jszip = require('jszip');
+
+const GOTENBERG_URL = 'https://gotenberg-service-xxxx-uc.a.run.app'; //placeholder
+
+exports.generatePreviews = onCall({ region: 'us-central1' }, async (request) => {
+    if (!request.auth) {
+        throw new HttpsError('unauthenticated', 'User must be authenticated.');
+    }
+
+    const { projectId, originalFilePath, originalFileName } = request.data;
+    const userUid = request.auth.uid;
+
+    try {
+        const userDoc = await db.collection('users').doc(userUid).get();
+        const projectDoc = await db.collection('projects').doc(projectId).get();
+
+        if (!userDoc.exists) {
+            throw new HttpsError('permission-denied', 'User not found.');
+        }
+
+        if (!projectDoc.exists) {
+            throw new HttpsError('not-found', `Project ${projectId} not found.`);
+        }
+
+        const userData = userDoc.data();
+        const projectData = projectDoc.data();
+
+        if (userData.role !== 'admin' && userData.companyId !== projectData.companyId) {
+            throw new HttpsError('permission-denied', 'User does not have rights to this project.');
+        }
+
+        const bucket = admin.storage().bucket();
+        const originalFile = bucket.file(originalFilePath);
+        const [originalFileBuffer] = await originalFile.download();
+
+        const convertFormData = new FormData();
+        convertFormData.append('files', originalFileBuffer, originalFileName);
+
+        const convertResponse = await axios.post(`${GOTENBERG_URL}/forms/libreoffice/convert`, convertFormData, {
+            headers: { ...convertFormData.getHeaders() },
+            responseType: 'arraybuffer'
+        });
+        const multiPagePdfBuffer = convertResponse.data;
+
+        const splitFormData = new FormData();
+        splitFormData.append('files', multiPagePdfBuffer, 'converted.pdf');
+
+        const splitResponse = await axios.post(`${GOTENBERG_URL}/forms/pdfengines/split`, splitFormData, {
+            headers: { ...splitFormData.getHeaders() },
+            responseType: 'arraybuffer',
+        });
+
+        const zip = await jszip.loadAsync(splitResponse.data);
+        const singlePagePdfBuffers = [];
+        const zipPromises = [];
+        zip.forEach((relativePath, zipEntry) => {
+            const promise = zipEntry.async('nodebuffer').then(buffer => {
+                singlePagePdfBuffers.push(buffer);
+            });
+            zipPromises.push(promise);
+        });
+        await Promise.all(zipPromises);
+
+        const newPageDocs = [];
+        const pagesCollection = db.collection('projects').doc(projectId).collection('pages');
+
+        const processingPromises = singlePagePdfBuffers.map(async (pageBuffer, index) => {
+            const pageNum = index + 1;
+            const pageId = pagesCollection.doc().id;
+
+            const pdfDoc = await PDFDocument.load(pageBuffer);
+            const { width, height } = pdfDoc.getPage(0).getSize();
+
+            const previewFormData = new FormData();
+            previewFormData.append('files', pageBuffer, `page_${pageNum}.pdf`);
+            const previewResponse = await axios.post(`${GOTENBERG_URL}/forms/chromium/screenshot`, previewFormData, {
+                headers: { ...previewFormData.getHeaders() },
+                responseType: 'arraybuffer'
+            });
+            const previewBuffer = previewResponse.data;
+
+            const sourcePath = `sources/${projectId}/${pageId}.pdf`;
+            const previewPath = `previews/${projectId}/${pageId}.png`;
+
+            await bucket.file(sourcePath).save(pageBuffer);
+            await bucket.file(previewPath).save(previewBuffer, { contentType: 'image/png' });
+
+            const pageData = {
+                id: pageId,
+                status: 'complete',
+                originalFileName,
+                pageNumber: pageNum,
+                sourcePath,
+                previewPath,
+                width,
+                height,
+            };
+            await pagesCollection.doc(pageId).set(pageData);
+            newPageDocs.push(pageData);
+        });
+
+        await Promise.all(processingPromises);
+        return newPageDocs;
+
+    } catch (error) {
+        logger.error('Error in generatePreviews:', error);
+        throw new HttpsError('internal', error.message || 'An internal error occurred.');
+    }
+});
+
 
 // HTTP Callable function for manual imposition
+
+exports.generateFinalPdf = onCall({ region: 'us-central1' }, async (request) => {
+    if (!request.auth) {
+        throw new HttpsError('unauthenticated', 'User must be authenticated.');
+    }
+
+    const { projectId, pageIds } = request.data;
+    const userUid = request.auth.uid;
+
+    try {
+        const userDoc = await db.collection('users').doc(userUid).get();
+        const projectDoc = await db.collection('projects').doc(projectId).get();
+
+        if (!userDoc.exists) {
+            throw new HttpsError('permission-denied', 'User not found.');
+        }
+
+        if (!projectDoc.exists) {
+            throw new HttpsError('not-found', `Project ${projectId} not found.`);
+        }
+
+        const userData = userDoc.data();
+        const projectData = projectDoc.data();
+
+        if (userData.role !== 'admin' && userData.companyId !== projectData.companyId) {
+            throw new HttpsError('permission-denied', 'User does not have rights to this project.');
+        }
+
+        const bucket = admin.storage().bucket();
+        const pagesCollection = db.collection('projects').doc(projectId).collection('pages');
+        const mergeFormData = new FormData();
+
+        for (const pageId of pageIds) {
+            const pageDoc = await pagesCollection.doc(pageId).get();
+            const sourcePath = pageDoc.data().sourcePath;
+            const [buffer] = await bucket.file(sourcePath).download();
+            mergeFormData.append('files', buffer, `${pageId}.pdf`);
+        }
+
+        const mergeResponse = await axios.post(`${GOTENBERG_URL}/forms/pdfengines/merge`, mergeFormData, {
+            headers: { ...mergeFormData.getHeaders() },
+            responseType: 'arraybuffer'
+        });
+
+        const finalPdfBuffer = mergeResponse.data;
+        const finalPdfPath = `final/${projectId}/${new Date().toISOString()}.pdf`;
+        await bucket.file(finalPdfPath).save(finalPdfBuffer, { contentType: 'application/pdf' });
+
+        return { finalPdfPath: finalPdfPath };
+
+    } catch (error) {
+        logger.error('Error in generateFinalPdf:', error);
+        throw new HttpsError('internal', error.message || 'An internal error occurred.');
+    }
+});
+
 exports.imposePdf = onCall({
   region: 'us-central1',
   memory: '4GiB', // Imposition can be memory intensive
