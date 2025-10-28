@@ -114,6 +114,7 @@
                      <button id="approve-button" class="bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all duration-150 ease-in-out">
                         Mark as Approved
                     </button>
+                    <button id="generate-pdf-button" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all duration-150 ease-in-out"> Generate PDF </button>
                      <button id="impose-pdf-button" class="bg-teal-600 hover:bg-teal-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all duration-150 ease-in-out">
                         Impose PDF
                     </button>
@@ -338,11 +339,12 @@
                             </button>
                             <div class="accordion-content p-6 border-t border-slate-700/50">
                                 <form id="file-upload-form">
-                                    <input type="file" id="file-input" accept=".pdf" class="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-600/20 file:text-indigo-300 hover:file:bg-indigo-600/30">
+                                    <input type="file" id="file-input" accept=".pdf,.doc,.docx,.tif,.tiff,.jpg,.jpeg,.png" multiple class="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-600/20 file:text-indigo-300 hover:file:bg-indigo-600/30">
                                     <button type="submit" class="w-full mt-4 bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-green-800 disabled:cursor-not-allowed">
-                                        Upload New Version
+                                        Add Source Files
                                     </button>
                                 </form>
+                                <div id="upload-status-container" class="mt-4 space-y-2"></div>
                             </div>
                         </div>
                         <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50">
