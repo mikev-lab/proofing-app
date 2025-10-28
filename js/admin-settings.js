@@ -1,21 +1,8 @@
 // js/admin-settings.js
-import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-import { getFirestore, doc, getDoc, setDoc, collection, getDocs, addDoc, deleteDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { auth, db } from './firebase.js';
+import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+import { doc, getDoc, setDoc, collection, getDocs, addDoc, deleteDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 import { STANDARD_PAPER_SIZES } from './guides.js';
-
-const firebaseConfig = {
-    apiKey: "AIzaSyApmEJdFi96QS3TwYh7GyEDSbZrCuVpBrg",
-    authDomain: "proofing-application.firebaseapp.com",
-    projectId: "proofing-application",
-    storageBucket: "proofing-application.firebasestorage.app",
-    messagingSenderId: "452256252711",
-    appId: "1:452256252711:web:68795c1e5cc9438ff05f02",
-};
-
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
 
 const loadingSpinner = document.getElementById('loading-spinner');
 const settingsContent = document.getElementById('settings-content');
