@@ -1,11 +1,8 @@
 // js/admin-settings.js
-import { getAuth, onAuthStateChanged, signOut } from "/__/firebase/11.6.1/firebase-auth.js";
-import { getFirestore, doc, getDoc, setDoc, collection, getDocs, addDoc, deleteDoc, updateDoc } from "/__/firebase/11.6.1/firebase-firestore.js";
+import { auth, db } from './firebase.js';
+import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+import { doc, getDoc, setDoc, collection, getDocs, addDoc, deleteDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 import { STANDARD_PAPER_SIZES } from './guides.js';
-
-// Firebase is initialized by /__/firebase/init.js
-const auth = getAuth();
-const db = getFirestore();
 
 const loadingSpinner = document.getElementById('loading-spinner');
 const settingsContent = document.getElementById('settings-content');
