@@ -100,23 +100,14 @@
     </div>
 
     <!-- Firebase SDKs -->
+    <script src="/__/firebase/11.6.1/firebase-app.js"></script>
+    <script src="/__/firebase/init.js"></script>
     <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, createUserWithEmailAndPassword } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, addDoc, collection, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, createUserWithEmailAndPassword } from "/__/firebase/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, addDoc, collection, serverTimestamp } from "/__/firebase/11.6.1/firebase-firestore.js";
 
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
-            apiKey: "AIzaSyApmEJdFi96QS3TwYh7GyEDSbZrCuVpBrg",
-            authDomain: "proofing-application.firebaseapp.com",
-            projectId: "proofing-application",
-            storageBucket: "proofing-application.firebasestorage.app",
-            messagingSenderId: "452256252711",
-            appId: "1:452256252711:web:68795c1e5cc9438ff05f02",
-        };
-
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
+        const auth = getAuth();
+        const db = getFirestore();
 
         const registerForm = document.getElementById('register-form');
         const registerButton = document.getElementById('register-button');
