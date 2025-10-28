@@ -1,7 +1,6 @@
-import { auth, db, storage, functions } from './firebase.js';
+import { auth, db, storage, generatePreviews, generateFinalPdf } from './firebase.js';
 import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 import { doc, onSnapshot, getDoc, updateDoc, Timestamp, collection, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-import { httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js";
 import { ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
 import { initializeSharedViewer } from './viewer.js';
 import { STANDARD_PAPER_SIZES } from './guides.js';
@@ -28,6 +27,8 @@ const projectNameHeader = document.getElementById('project-name-header');
 const fileUploadForm = document.getElementById('file-upload-form');
 const fileInput = document.getElementById('file-input');
 const uploadButton = fileUploadForm.querySelector('button[type="submit"]');
+const uploadStatusContainer = document.getElementById('upload-status-container');
+const generatePdfButton = document.getElementById('generate-pdf-button');
 
 // Spec form elements
 const specsForm = document.getElementById('specs-form');
@@ -303,54 +304,113 @@ document.addEventListener('click', (event) => {
 // --- File Upload Logic ---
 fileUploadForm.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const file = fileInput.files[0];
-    if (!file) {
-        alert('Please select a file to upload.');
+    const files = fileInput.files;
+    if (!files.length) {
+        alert('Please select one or more files to upload.');
         return;
     }
 
     uploadButton.disabled = true;
-    uploadButton.textContent = 'Uploading...';
+    generatePdfButton.disabled = true;
+    uploadStatusContainer.innerHTML = ''; // Clear previous statuses
 
+    // Create status elements for each file
+    const statusElements = Array.from(files).map(file => {
+        const statusEl = document.createElement('div');
+        statusEl.className = 'p-2 bg-slate-700/50 rounded-md text-sm flex justify-between items-center';
+        statusEl.innerHTML = `
+            <span class="truncate mr-2">${file.name}</span>
+            <span class="font-medium text-gray-400">Waiting...</span>
+        `;
+        uploadStatusContainer.appendChild(statusEl);
+        return statusEl;
+    });
 
-    const projectRef = doc(db, "projects", projectId);
-    try {
-        // Get current versions from latest data
-        const projectSnap = await getDoc(projectRef); // Get fresh data before upload
-        const currentVersions = projectSnap.exists() ? (projectSnap.data().versions || []) : [];
+    for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const statusEl = statusElements[i];
+        const statusSpan = statusEl.querySelector('.font-medium');
 
-        const timestampedFileName = `${Date.now()}_${file.name}`;
-        const storagePath = `proofs/${projectId}/${timestampedFileName}`;
-        const storageRef = ref(storage, storagePath);
-        const uploadResult = await uploadBytes(storageRef, file);
-        const downloadURL = await getDownloadURL(uploadResult.ref);
+        try {
+            // 1. Upload file to temp location
+            statusSpan.textContent = 'Uploading...';
+            statusSpan.className = 'font-medium text-blue-400';
+            const storagePath = `uploads/${projectId}/${Date.now()}-${file.name}`;
+            const storageRef = ref(storage, storagePath);
+            await uploadBytes(storageRef, file);
 
-        const newVersion = {
-            fileName: file.name,
-            fileURL: downloadURL,
-            filePath: storagePath,
-            uploadedAt: Timestamp.now(),
-            version: currentVersions.length + 1,
-            processingStatus: 'processing'
-        };
+            // 2. Call Cloud Function to generate previews
+            statusSpan.textContent = 'Processing...';
+            statusSpan.className = 'font-medium text-yellow-400 animate-pulse';
+            const result = await generatePreviews({
+                projectId: projectId,
+                originalFilePath: storagePath,
+                originalFileName: file.name
+            });
 
-        await updateDoc(projectRef, {
-            versions: [...currentVersions, newVersion],
-            status: 'pending', // Reset status to pending for review
-            isAwaitingClientUpload: false
-        });
+            // 3. Update UI with new pages
+            // This function needs to be created in the next step.
+            // For now, we assume it exists and works correctly.
+            addPagesToThumbnailList(result.data);
 
-        fileInput.value = '';
-        alert('New version uploaded successfully!');
-        // onSnapshot listener should automatically update the viewer and version selector
-    } catch (error) {
-        console.error("Error uploading new version:", error);
-        alert('Error uploading file. Please try again.');
-    } finally {
-         uploadButton.disabled = false;
-         uploadButton.textContent = 'Upload New Version';
+            statusSpan.textContent = 'Complete';
+            statusSpan.className = 'font-medium text-green-400';
+            statusEl.classList.remove('animate-pulse');
+
+        } catch (error) {
+            console.error("Error processing file:", file.name, error);
+            const errorMessage = error.message || 'An unknown error occurred.';
+            statusSpan.textContent = `Error: ${errorMessage}`;
+            statusSpan.className = 'font-medium text-red-400';
+            statusEl.classList.remove('animate-pulse');
+        }
     }
+
+    // Re-enable buttons and clear input
+    uploadButton.disabled = false;
+    generatePdfButton.disabled = false;
+    fileInput.value = ''; // Clear the file input
 });
+
+// --- Helper function to render new pages ---
+async function addPagesToThumbnailList(newPages) {
+    const thumbnailList = document.getElementById('thumbnail-list');
+    if (!thumbnailList) return;
+
+    for (const page of newPages) {
+        try {
+            // Get download URL for the preview image
+            const previewRef = ref(storage, page.previewPath);
+            const downloadURL = await getDownloadURL(previewRef);
+
+            // Create the thumbnail element
+            const thumbElement = document.createElement('div');
+            thumbElement.className = "relative group bg-slate-800 rounded-md overflow-hidden shadow-lg border-2 border-transparent hover:border-blue-500 transition-all duration-150 ease-in-out cursor-pointer";
+            thumbElement.dataset.pageId = page.id; // IMPORTANT
+
+            thumbElement.innerHTML = `
+                <img src="${downloadURL}" alt="Page ${page.pageNumber}" class="w-full h-auto object-cover" />
+                <div class="absolute bottom-0 left-0 right-0 bg-black/50 p-1 text-center">
+                    <span class="text-white text-xs font-semibold">Page ${page.pageNumber}</span>
+                </div>
+            `;
+
+            thumbnailList.appendChild(thumbElement);
+        } catch (error) {
+            console.error(`Failed to load thumbnail for page ${page.pageNumber} (ID: ${page.id})`, error);
+            const errorElement = document.createElement('div');
+            errorElement.className = "relative group bg-slate-800 rounded-md overflow-hidden shadow-lg border-2 border-red-500";
+            errorElement.dataset.pageId = page.id;
+            errorElement.innerHTML = `
+                <div class="p-4 text-center">
+                    <p class="text-white text-xs font-semibold">Page ${page.pageNumber}</p>
+                    <p class="text-red-400 text-xs mt-1">Error loading preview</p>
+                </div>
+            `;
+            thumbnailList.appendChild(errorElement);
+        }
+    }
+}
 
 // --- Share Link Logic ---
 function openShareModal() {
@@ -478,4 +538,48 @@ document.querySelectorAll('.accordion-header').forEach(header => {
             icon.classList.add('rotate-180');
         }
     });
+});
+
+// --- "Generate PDF" Button Logic ---
+generatePdfButton.addEventListener('click', async () => {
+    generatePdfButton.disabled = true;
+    uploadButton.disabled = true;
+    const originalButtonText = generatePdfButton.textContent;
+    generatePdfButton.textContent = 'Generating...';
+
+    try {
+        // 1. Get ordered list of page IDs from the UI
+        const thumbnailList = document.getElementById('thumbnail-list');
+        const pageElements = thumbnailList.querySelectorAll('[data-page-id]');
+        const pageIds = Array.from(pageElements).map(el => el.dataset.pageId);
+
+        if (!pageIds.length) {
+            throw new Error("No pages found. Please add source files before generating a PDF.");
+        }
+
+        // 2. Call Cloud Function
+        const result = await generateFinalPdf({
+            projectId: projectId,
+            pageIds: pageIds
+        });
+
+        // 3. Get download URL for the final PDF
+        const { finalPdfPath } = result.data;
+        if (!finalPdfPath) {
+            throw new Error("The cloud function did not return a valid file path.");
+        }
+        const pdfRef = ref(storage, finalPdfPath);
+        const downloadURL = await getDownloadURL(pdfRef);
+
+        // 4. Trigger download/opening in new tab
+        window.open(downloadURL, '_blank');
+
+    } catch (error) {
+        console.error("Error generating final PDF:", error);
+        alert(`An error occurred while generating the PDF: ${error.message}`);
+    } finally {
+        generatePdfButton.disabled = false;
+        uploadButton.disabled = false;
+        generatePdfButton.textContent = originalButtonText;
+    }
 });

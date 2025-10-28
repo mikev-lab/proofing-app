@@ -3,7 +3,7 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebas
 import { getAuth } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 import { getFirestore } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 import { getStorage } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
-import { getFunctions } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js";
+import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js";
 import { firebaseConfig } from "./firebase-config.js";
 
 // Initialize Firebase
@@ -13,7 +13,10 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const storage = getStorage(app);
-const functions = getFunctions(app);
+export const functions = getFunctions(app);
 
 // Export services
-export { auth, db, storage, functions };
+export { auth, db, storage };
+
+export const generatePreviews = httpsCallable(functions, 'generatePreviews');
+export const generateFinalPdf = httpsCallable(functions, 'generateFinalPdf');
