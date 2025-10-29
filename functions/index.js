@@ -447,7 +447,7 @@ const { PDFDocument } = require('pdf-lib');
 const FormData = require('form-data');
 const jszip = require('jszip');
 
-const GOTENBERG_URL = 'https://gotenberg-service-452256252711.us-central1.run.app'; //gotenberg service
+const GOTENBERG_URL = 'https://gotenberg-service-rdkxop24pa-uc.a.run.app'; //gotenberg service
 
 exports.generatePreviews = onCall({ region: 'us-central1' }, async (request) => {
     if (!request.auth) {
