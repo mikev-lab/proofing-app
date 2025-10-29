@@ -1,6 +1,6 @@
-import { auth, db, storage } from './firebase.js';
+import { auth, db, storage, functions, generatePreviews, generateFinalPdf } from './firebase.js';
 import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-import { collection, addDoc, getDocs, Timestamp, updateDoc, doc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { collection, addDoc, getDocs, Timestamp, updateDoc, doc, setDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 import { ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
 
 const newProjectForm = document.getElementById('new-project-form');
@@ -15,6 +15,95 @@ const customWidthInput = document.getElementById('custom-width');
 const customHeightInput = document.getElementById('custom-height');
 const requestFileCheckbox = document.getElementById('request-file-checkbox');
 const fileInput = document.getElementById('file-input');
+const guidedTab = document.getElementById('guided-tab');
+const quickTab = document.getElementById('quick-tab');
+const guidedPanel = document.getElementById('guided-panel');
+const quickPanel = document.getElementById('quick-panel');
+const guidedFileInput = document.getElementById('guided-file-input');
+const uploadStatusArea = document.getElementById('upload-status-area');
+const thumbnailOrganizer = document.getElementById('thumbnail-organizer');
+
+
+async function addPagesToOrganizer(pages) {
+    // Clear the placeholder text if it's the first successful upload
+    if (thumbnailOrganizer.querySelector('p')) {
+        thumbnailOrganizer.innerHTML = '';
+    }
+
+    for (const page of pages) {
+        try {
+            const thumbnailUrl = await getDownloadURL(ref(storage, page.thumbnailPath));
+            const pageElement = document.createElement('div');
+            pageElement.className = 'bg-slate-800 p-2 rounded-md flex items-center space-x-2';
+            pageElement.dataset.pageId = page.pageId; // Store pageId for ordering
+
+            const img = document.createElement('img');
+            img.src = thumbnailUrl;
+            img.className = 'w-16 h-16 object-contain rounded-sm';
+
+            const pageNumber = document.createElement('span');
+            pageNumber.textContent = `Page ${page.pageNumber}`;
+            pageNumber.className = 'text-xs text-gray-400';
+
+            pageElement.appendChild(img);
+            pageElement.appendChild(pageNumber);
+            thumbnailOrganizer.appendChild(pageElement);
+        } catch (error) {
+            console.error(`Error getting thumbnail for page ${page.pageId}:`, error);
+        }
+    }
+}
+
+
+guidedFileInput.addEventListener('change', async (e) => {
+    const files = e.target.files;
+    if (files.length === 0) return;
+
+    // Clear previous statuses
+    uploadStatusArea.innerHTML = '';
+
+    for (const file of files) {
+        const statusElement = document.createElement('div');
+        statusElement.className = 'flex justify-between items-center bg-slate-700 p-2 rounded-md text-sm';
+        statusElement.innerHTML = `<span>${file.name}</span><span class="status-indicator text-yellow-400">Uploading...</span>`;
+        uploadStatusArea.appendChild(statusElement);
+
+        const statusIndicator = statusElement.querySelector('.status-indicator');
+
+        try {
+            // 1. Upload the file to a temporary location
+            const tempId = `temp_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+            const uploadPath = `uploads/${tempId}/${file.name}`;
+            const storageRef = ref(storage, uploadPath);
+            await uploadBytes(storageRef, file);
+
+            statusIndicator.textContent = 'Processing...';
+            statusIndicator.classList.remove('text-yellow-400');
+            statusIndicator.classList.add('text-blue-400');
+
+            // 2. Call the generatePreviews Cloud Function
+            const result = await generatePreviews({ filePath: uploadPath, originalName: file.name });
+            const { pages } = result.data;
+
+            // 3. Add thumbnails to the organizer
+            if (pages && pages.length > 0) {
+                await addPagesToOrganizer(pages);
+                statusIndicator.textContent = 'Complete';
+                statusIndicator.classList.remove('text-blue-400');
+                statusIndicator.classList.add('text-green-400');
+            } else {
+                throw new Error("No pages were generated from the file.");
+            }
+
+        } catch (error) {
+            console.error(`Error processing file ${file.name}:`, error);
+            statusIndicator.textContent = 'Error';
+            statusIndicator.classList.remove('text-yellow-400', 'text-blue-400');
+            statusIndicator.classList.add('text-red-400');
+        }
+    }
+});
+
 
 function fetchNotifications() {
     // Placeholder function for fetching notifications
@@ -51,43 +140,157 @@ dimensionsSelect.addEventListener('change', () => {
     }
 });
 
-requestFileCheckbox.addEventListener('change', () => {
-    fileInput.disabled = requestFileCheckbox.checked;
-    fileInput.required = !requestFileCheckbox.checked;
+guidedTab.addEventListener('click', () => {
+    guidedTab.classList.add('border-indigo-500', 'text-indigo-400');
+    guidedTab.classList.remove('border-transparent', 'text-gray-400', 'hover:text-gray-200', 'hover:border-gray-500');
+
+    quickTab.classList.add('border-transparent', 'text-gray-400', 'hover:text-gray-200', 'hover:border-gray-500');
+    quickTab.classList.remove('border-indigo-500', 'text-indigo-400');
+
+    guidedPanel.classList.remove('hidden');
+    quickPanel.classList.add('hidden');
 });
+
+quickTab.addEventListener('click', () => {
+    quickTab.classList.add('border-indigo-500', 'text-indigo-400');
+    quickTab.classList.remove('border-transparent', 'text-gray-400', 'hover:text-gray-200', 'hover:border-gray-500');
+
+    guidedTab.classList.add('border-transparent', 'text-gray-400', 'hover:text-gray-200', 'hover:border-gray-500');
+    guidedTab.classList.remove('border-indigo-500', 'text-indigo-400');
+
+    quickPanel.classList.remove('hidden');
+    guidedPanel.classList.add('hidden');
+});
+
+async function handleGuidedProjectCreation(client, projectName, specs) {
+    // 1. Get page IDs
+    const pageIds = Array.from(thumbnailOrganizer.children).map(child => child.dataset.pageId);
+
+    if (pageIds.length === 0) {
+        throw new Error("No pages have been processed. Please upload and process files first.");
+    }
+
+    // 2. Call generateFinalPdf
+    const result = await generateFinalPdf({
+        projectId: `new-project-${Date.now()}`, // Temporary ID
+        pageIds: pageIds
+    });
+    const { finalPdfPath } = result.data;
+
+    // 3. Get download URL
+    const finalPdfRef = ref(storage, finalPdfPath);
+    const downloadURL = await getDownloadURL(finalPdfRef);
+
+    // 4. Create the project doc in Firestore
+    const newProjectRef = collection(db, "projects");
+    const projectDoc = await addDoc(newProjectRef, {
+        projectName: projectName,
+        companyId: client.companyId,
+        clientId: client.id,
+        specs,
+        status: 'pending',
+        createdAt: serverTimestamp(),
+        systemVersion: 2,
+        versions: [{
+            versionNumber: 1,
+            createdAt: serverTimestamp(),
+            fileURL: downloadURL,
+            filePath: finalPdfPath,
+            fileName: 'Generated Proof.pdf'
+        }]
+    });
+
+    // 5. Redirect
+    statusMessage.textContent = 'Project created successfully! Redirecting...';
+    statusMessage.className = 'mt-4 text-center text-green-400';
+    setTimeout(() => {
+        window.location.href = `admin_project.html?id=${projectDoc.id}`;
+    }, 2000);
+}
+
+async function handleAdvancedProjectCreation(client, projectName, specs) {
+    const file = document.getElementById('advanced-file-input').files[0];
+
+    if (!file) {
+        throw new Error("Please select a PDF file for quick upload.");
+    }
+
+    // Create project data *without* versions initially
+    const projectData = {
+        projectName: projectName,
+        companyId: client.companyId,
+        clientId: client.id,
+        specs: specs,
+        createdAt: serverTimestamp(),
+        versions: [],
+        status: 'pending',
+        isAwaitingClientUpload: false,
+        systemVersion: 2
+    };
+
+    // Create the project doc FIRST to get its ID
+    const docRef = await addDoc(collection(db, "projects"), projectData);
+    const projectId = docRef.id;
+
+    // Now construct the storage path using the projectId
+    const timestampedFileName = `${Date.now()}_${file.name}`;
+    const storagePath = `proofs/${projectId}/${timestampedFileName}`;
+    const storageRef = ref(storage, storagePath);
+    const uploadResult = await uploadBytes(storageRef, file);
+    const downloadURL = await getDownloadURL(uploadResult.ref);
+
+    // Prepare the first version entry
+    const firstVersion = {
+        fileName: file.name,
+        fileURL: downloadURL,
+        filePath: storagePath,
+        uploadedAt: serverTimestamp(),
+        versionNumber: 1,
+        processingStatus: 'processing'
+    };
+
+    // Update the project document with the first version
+    await updateDoc(docRef, {
+        versions: [firstVersion]
+    });
+
+    // Redirect
+    statusMessage.textContent = 'Project created successfully! Redirecting...';
+    statusMessage.className = 'mt-4 text-center text-green-400';
+    setTimeout(() => {
+        window.location.href = `admin_project.html?id=${docRef.id}`;
+    }, 2000);
+}
 
 async function handleFormSubmit(e) {
     e.preventDefault();
     submitButton.disabled = true;
     statusMessage.textContent = "Creating project, please wait...";
     statusMessage.classList.add('text-yellow-400');
-    statusMessage.classList.remove('text-red-400', 'text-green-400'); // Reset color
+    statusMessage.classList.remove('text-red-400', 'text-green-400');
 
     const projectName = newProjectForm.projectName.value;
     const companyId = newProjectForm.companyId.value;
-    const file = fileInput.files[0];
-    const isAwaitingUpload = requestFileCheckbox.checked;
+    const selectedCompanyOption = companySelect.options[companySelect.selectedIndex];
+    const client = { id: companyId, companyName: selectedCompanyOption.text, companyId: companyId };
 
-    // Get bleed and safety values
     const bleedInchesValue = parseFloat(document.getElementById('bleedInches').value);
     const safetyInchesValue = parseFloat(document.getElementById('safetyInches').value);
 
-    // Basic validation for bleed/safety
     if (isNaN(bleedInchesValue) || bleedInchesValue < 0 || isNaN(safetyInchesValue) || safetyInchesValue < 0) {
-         statusMessage.textContent = 'Please enter valid, non-negative numbers for bleed and safety margins.';
-         statusMessage.className = 'mt-4 text-center text-red-400';
-         submitButton.disabled = false;
-         return;
+        statusMessage.textContent = 'Please enter valid, non-negative numbers for bleed and safety margins.';
+        statusMessage.className = 'mt-4 text-center text-red-400';
+        submitButton.disabled = false;
+        return;
     }
-
 
     const specs = {
         pageCount: parseInt(newProjectForm['page-count'].value, 10),
         binding: newProjectForm.binding.value,
         readingDirection: newProjectForm.readingDirection.value,
         paperType: newProjectForm['paper-type'].value,
-        bleedInches: bleedInchesValue, // Add bleed
-        safetyInches: safetyInchesValue // Add safety
+        bleedInches: bleedInchesValue,
+        safetyInches: safetyInchesValue
     };
 
     if (dimensionsSelect.value === 'custom') {
@@ -108,82 +311,17 @@ async function handleFormSubmit(e) {
         specs.dimensions = dimensionsSelect.value;
     }
 
-    if (!isAwaitingUpload && !file) {
-        statusMessage.textContent = 'Please select a file to upload or request one from the client.';
-        statusMessage.className = 'mt-4 text-center text-red-400';
-        submitButton.disabled = false;
-        return;
-    }
-     // Additional check: Ensure safety margin isn't too large for custom dimensions
-     if (specs.dimensions.units && specs.dimensions.units === 'in') {
-        if (specs.safetyInches * 2 >= specs.dimensions.width || specs.safetyInches * 2 >= specs.dimensions.height) {
-            statusMessage.textContent = 'Safety margin cannot be larger than half the page dimension.';
-            statusMessage.className = 'mt-4 text-center text-red-400';
-            submitButton.disabled = false;
-            return;
-        }
-     } // Add similar checks for mm if needed
-
+    const isGuidedFlow = !guidedPanel.classList.contains('hidden');
 
     try {
-        // Create project data *without* versions initially if uploading
-        const projectData = {
-            projectName,
-            companyId,
-            specs, // Now includes bleed and safety
-            createdAt: Timestamp.now(),
-            versions: [], // Start with empty versions
-            status: 'active', // Default status
-            deleteAt: null // Default deleteAt
-            // isAwaitingClientUpload determined later
-        };
-
-        // Create the project doc FIRST to get its ID
-        const docRef = await addDoc(collection(db, "projects"), projectData);
-        const projectId = docRef.id; // Get the generated project ID
-
-        if (!isAwaitingUpload && file) {
-            // Now construct the storage path using the projectId
-            const timestampedFileName = `${Date.now()}_${file.name}`;
-            const storagePath = `proofs/${projectId}/${timestampedFileName}`; // This is the filePath
-            const storageRef = ref(storage, storagePath);
-            const uploadResult = await uploadBytes(storageRef, file);
-            const downloadURL = await getDownloadURL(uploadResult.ref);
-
-            // Prepare the first version entry
-            const firstVersion = {
-                fileName: file.name, // Store original filename without timestamp
-                fileURL: downloadURL,
-                filePath: storagePath, // <-- Store storage path
-                uploadedAt: Timestamp.now(),
-                version: 1,
-                processingStatus: 'processing'
-            };
-
-            // Update the project document with the first version and status
-            await updateDoc(docRef, {
-                versions: [firstVersion],
-                status: 'pending',
-                isAwaitingClientUpload: false
-            });
-        } else if (isAwaitingUpload) {
-            // Update the project document status if awaiting upload
-            await updateDoc(docRef, {
-                 status: 'awaiting_upload',
-                 isAwaitingClientUpload: true
-            });
+        if (isGuidedFlow) {
+            await handleGuidedProjectCreation(client, projectName, specs);
+        } else {
+            await handleAdvancedProjectCreation(client, projectName, specs);
         }
-
-        statusMessage.textContent = 'Project created successfully! Redirecting...';
-        statusMessage.className = 'mt-4 text-center text-green-400';
-
-        setTimeout(() => {
-            window.location.href = `admin_project.html?id=${docRef.id}`;
-        }, 2000);
-
     } catch (error) {
         console.error("Error creating project:", error);
-        statusMessage.textContent = 'Error creating project. Please check console for details.';
+        statusMessage.textContent = `Error creating project: ${error.message}`;
         statusMessage.className = 'mt-4 text-center text-red-400';
         submitButton.disabled = false;
     }
@@ -215,4 +353,10 @@ document.addEventListener('click', function(event) {
     if (!notificationBell.contains(event.target) && !notificationPanel.contains(event.target)) {
         notificationPanel.classList.add('hidden');
     }
+});
+
+// Initialize SortableJS
+new Sortable(thumbnailOrganizer, {
+    animation: 150,
+    ghostClass: 'bg-slate-700'
 });
