@@ -160,6 +160,12 @@ service cloud.firestore {
           allow get: if request.auth == null ||
                          request.auth.token.firebase.sign_in_provider == 'anonymous';
       }
+
+      // --- Rules for 'pages' Sub-collection ---
+      match /pages/{pageId} {
+          allow read, write: if isAdmin() ||
+                                (request.auth != null && isCompanyMember(getProject(projectId).companyId));
+      }
     }
 
     // --- Rules for 'annotations' Sub-collection ---

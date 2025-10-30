@@ -1,11 +1,75 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
-    // Allow authenticated users to read and write files under the 'proofs' path
+    function isProjectMember(projectId) {
+      let userCompanyId = get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId;
+      let projectCompanyId = get(/databases/$(database)/documents/projects/$(projectId)).data.companyId;
+      return userCompanyId == projectCompanyId;
+    }
+
+    function isAdmin() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // Common condition for project file access
+    function canAccessProjectFiles(projectId) {
+      return request.auth != null &&
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             (isAdmin() || isProjectMember(projectId));
+    }
+
+    // --- START: Add these rules for Temporary Guided Setup ---
+    
+    // Allow an authenticated user to write files to their own temporary upload folder
+    match /temp_uploads/{userId}/{allPaths=**} {
+      allow write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Allow an authenticated user to read their own temporary previews (for thumbnails)
+    match /temp_previews/{userId}/{allPaths=**} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Allow user to manage their own temporary source files (e.g., for cleanup)
+    match /temp_sources/{userId}/{allPaths=**} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // ADD THIS RULE to allow admins to read from the path in your error
+    match /temp_pages/{userId}/{allPaths=**} {
+      // Allow read if user owns it OR if user is an admin
+      allow read: if (request.auth != null && request.auth.uid == userId) || isAdmin();
+    }
+
+    // Allow an authenticated user to write files to their own temporary upload folder
+    match /temp_uploads/{userId}/{allPaths=**} {
+      allow write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Allow an authenticated user to read their own temporary previews (for thumbnails)
+    match /temp_previews/{userId}/{allPaths=**} {
+      // Also add admin access here, it's good practice
+      allow read: if (request.auth != null && request.auth.uid == userId) || isAdmin();
+    }
+    // --- END: New Rules ---
+
+
+    // --- Existing Project Rules ---
     match /proofs/{allPaths=**} {
       allow read, write: if request.auth != null;
     }
-    
-    // Add other rules if needed for different paths
+
+    match /uploads/{projectId}/{fileName} {
+      allow write: if canAccessProjectFiles(projectId);
+    }
+    match /sources/{projectId}/{fileName} {
+      allow read, write: if canAccessProjectFiles(projectId);
+    }
+    match /previews/{projectId}/{fileName} {
+      allow read, write: if canAccessProjectFiles(projectId);
+    }
+    match /final/{projectId}/{fileName} {
+      allow read, write: if canAccessProjectFiles(projectId);
+    }
   }
 }
