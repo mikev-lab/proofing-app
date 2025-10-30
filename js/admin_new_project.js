@@ -31,9 +31,9 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://mozilla.github.io/pdf.js/build
 
 // **Step 1: Copy this helper function into your file**
 // (Copied from js/admin_project.js)
-async function renderPdfOnCanvas(canvas, pdfStoragePath) {
-    if (!pdfStoragePath || typeof pdfStoragePath !== 'string') {
-        console.error(`Invalid pdfStoragePath provided to renderPdfOnCanvas:`, pdfStoragePath);
+async function renderPdfOnCanvas(canvas, tempPreviewPath) {
+    if (!tempPreviewPath || typeof tempPreviewPath !== 'string') {
+        console.error(`Invalid tempPreviewPath provided to renderPdfOnCanvas:`, tempPreviewPath);
         const context = canvas.getContext('2d');
         canvas.width = 150;
         canvas.height = 200;
@@ -46,7 +46,7 @@ async function renderPdfOnCanvas(canvas, pdfStoragePath) {
         return;
     }
     try {
-        const pdfRef = ref(storage, pdfStoragePath);
+        const pdfRef = ref(storage, tempPreviewPath);
         const downloadURL = await getDownloadURL(pdfRef);
 
         // Make sure pdfjsLib is imported at the top of your file
@@ -61,7 +61,7 @@ async function renderPdfOnCanvas(canvas, pdfStoragePath) {
 
         await page.render({ canvasContext: context, viewport: viewport }).promise;
     } catch (error) {
-        console.error(`Error rendering PDF thumbnail for ${pdfStoragePath}:`, error);
+        console.error(`Error rendering PDF thumbnail for ${tempPreviewPath}:`, error);
         // ... (rest of error handling) ...
     }
 }
@@ -76,11 +76,12 @@ async function addPagesToOrganizer(pages) {
 
     for (const page of pages) {
         try {
-            // *** FIX: Use page.tempStoragePath which exists ***
+            // *** FIX: Use page.tempSourcePath which exists ***
             const pageElement = document.createElement('div');
             pageElement.className = 'bg-slate-800 p-1 rounded-md cursor-move relative shadow-lg';
             pageElement.dataset.pageId = page.pageId;
-            pageElement.dataset.tempStoragePath = page.tempStoragePath; // Use the correct property
+            pageElement.dataset.tempSourcePath = page.tempSourcePath; // Store temp source path
+            pageElement.dataset.tempPreviewPath = page.tempPreviewPath; // Store temp preview path
             pageElement.dataset.pageNumber = page.pageNumber;
 
             // *** FIX: Create a CANVAS, not an IMG ***
@@ -111,7 +112,7 @@ async function addPagesToOrganizer(pages) {
 
             // *** FIX: Call the render function ***
             // Asynchronously render the PDF onto the canvas
-            renderPdfOnCanvas(canvas, page.tempStoragePath);
+            renderPdfOnCanvas(canvas, page.tempPreviewPath);
 
         } catch (error) {
             console.error(`Error adding page ${page.pageId} to organizer:`, error);
@@ -126,7 +127,8 @@ guidedFileInput.addEventListener('change', async (e) => {
 
     uploadStatusArea.innerHTML = ''; // Clear previous statuses
 
-    for (const file of files) {
+    // 1. Create an array of promises, one for each file upload/processing task.
+    const processingPromises = Array.from(files).map(async (file) => {
         const statusElement = document.createElement('div');
         statusElement.className = 'flex justify-between items-center bg-slate-700 p-2 rounded-md text-sm';
         statusElement.innerHTML = `<span>${file.name}</span><span class="status-indicator text-yellow-400">Uploading...</span>`;
@@ -135,26 +137,28 @@ guidedFileInput.addEventListener('change', async (e) => {
 
         try {
             // 1. Upload to a temporary, unique path (e.g., using user ID or a random ID)
-            const tempId = auth.currentUser ? auth.currentUser.uid : `anon_${Date.now()}`; // Use UID or timestamp for uniqueness
-            const uploadPath = `temp_uploads/${tempId}/${Date.now()}_${file.name}`; // Temporary path
+            const tempId = auth.currentUser ? auth.currentUser.uid : `anon_${Date.now()}`;
+            const uploadPath = `temp_uploads/${tempId}/${Date.now()}_${file.name}`;
             const storageRef = ref(storage, uploadPath);
-            await uploadBytes(storageRef, file);
+            await uploadBytes(storageRef, file); // This upload happens concurrently
 
             statusIndicator.textContent = 'Processing...';
             statusIndicator.classList.remove('text-yellow-400');
             statusIndicator.classList.add('text-blue-400');
 
-            // 2. Call generatePreviews WITHOUT projectId, pass temp path
+            // 2. Call generatePreviews concurrently
             const result = await generatePreviews({
-                // NO projectId here
-                filePath: uploadPath,      // Pass the temporary upload path
-                originalName: file.name  // Pass the original file name
-             });
-            const pagesData = result.data.pages; // Expect { pages: [...] }
+                filePath: uploadPath,
+                originalName: file.name
+            });
+            const pagesData = result.data.pages;
 
             // 3. Add thumbnails using data returned from the function
             if (pagesData && pagesData.length > 0) {
-                await addPagesToOrganizer(pagesData); // Pass the array of page data
+                // NOTE: addPagesToOrganizer is not async-safe for concurrent writes, 
+                // but since it only appends, it should generally be safe unless DOM operations conflict.
+                // We'll proceed, but keep in mind DOM manipulation in a loop can be slow.
+                await addPagesToOrganizer(pagesData); 
                 statusIndicator.textContent = 'Complete';
                 statusIndicator.classList.remove('text-blue-400');
                 statusIndicator.classList.add('text-green-400');
@@ -164,11 +168,22 @@ guidedFileInput.addEventListener('change', async (e) => {
 
         } catch (error) {
             console.error(`Error processing file ${file.name}:`, error);
-            statusIndicator.textContent = `Error: ${error.message.substring(0, 50)}...`; // Show shorter error
+            statusIndicator.textContent = `Error: ${error.message.substring(0, 50)}...`;
             statusIndicator.classList.remove('text-yellow-400', 'text-blue-400');
             statusIndicator.classList.add('text-red-400');
+            // Return an object indicating failure so Promise.all can still resolve
+            return { success: false, fileName: file.name, error: error }; 
         }
-    }
+        // Return an object indicating success
+        return { success: true, fileName: file.name };
+    });
+
+    // 2. Wait for all promises (all file processing tasks) to resolve.
+    // This allows all files to be uploaded and processed simultaneously.
+    await Promise.all(processingPromises); 
+
+    // All files are processed (successfully or with errors)
+    console.log('All file processing tasks have completed.');
     // Optionally re-enable upload button if needed
 });
 
@@ -261,7 +276,7 @@ async function handleGuidedProjectCreation(client, projectName, specs) {
     statusMessage.textContent = "Generating final proof PDF...";
     const result = await generateFinalPdf({
         projectId: projectId,              // Pass the REAL projectId now
-        sourcePaths: orderedTempSourcePaths // Pass the temporary source paths
+        tempSourcePath: orderedTempSourcePaths // Pass the temporary source paths
     });
     const { finalPdfPath } = result.data; // Function should return the FINAL path ('proofs/...')
 

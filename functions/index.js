@@ -18,6 +18,7 @@ const { Storage } = require('@google-cloud/storage');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const { spawn } = require('child-process-promise');
 
 admin.initializeApp();
 const storage = new Storage();
@@ -469,6 +470,11 @@ async function getAuthenticatedClient() {
     return authenticatedAxios;
 }
 
+// Add required imports at the top of index.js if they aren't there already:
+// const { spawn } = require('child-process-promise'); // This is already present later, but adding here for clarity
+// const path = require('path');
+// const os = require('os');
+
 // --- REFACTORED HELPER: Stores a single PDF page buffer and returns its metadata ---
 async function storePageAsPdf({ pageBuffer, pageNum, tempId }) {
     const pageId = crypto.randomBytes(10).toString('hex');
@@ -477,15 +483,49 @@ async function storePageAsPdf({ pageBuffer, pageNum, tempId }) {
     const pdfDoc = await PDFDocument.load(pageBuffer);
     const { width, height } = pdfDoc.getPage(0).getSize();
 
-    const tempStoragePath = `temp_pages/${tempId}/${pageId}.pdf`;
+    // 1. Define paths
+    const tempSourcePath = `temp_sources/${tempId}/${pageId}.pdf`; // Changed folder name for clarity
+    const sourceFilePath = path.join(os.tmpdir(), `${pageId}_source.pdf`);
+    const previewFileName = `${pageId}_preview.pdf`;
+    const previewFilePath = path.join(os.tmpdir(), previewFileName);
+    const tempPreviewPath = `temp_previews/${tempId}/${previewFileName}`; // NEW: Path for the Cloud Storage preview file
 
-    await bucket.file(tempStoragePath).save(pageBuffer, { contentType: 'application/pdf' });
-    logger.log(`Saved single-page PDF temporarily to ${tempStoragePath}`);
+    // 2. Save source buffer to local temp file
+    fs.writeFileSync(sourceFilePath, pageBuffer);
+    
+    // 3. Run Ghostscript to create the optimized PREVIEW file
+    logger.log(`Generating preview for page ${pageNum} using Ghostscript...`);
+    await spawn('gs', [
+        '-sDEVICE=pdfwrite',
+        '-dCompatibilityLevel=1.4',
+        '-dPDFSETTINGS=/ebook', // Use a small, screen-friendly setting
+        '-dConvertCMYKImagesToRGB=true',
+        '-dNOPAUSE',
+        '-dQUIET',
+        '-dBATCH',
+        `-sOutputFile=${previewFilePath}`, // Output to local temp path
+        sourceFilePath // Input from local temp path
+    ]);
+    logger.log(`Preview saved locally to ${previewFilePath}`);
 
+    // 4. Upload the original SOURCE and the new PREVIEW to Cloud Storage
+    await bucket.file(tempSourcePath).save(pageBuffer, { contentType: 'application/pdf' });
+    logger.log(`Saved single-page SOURCE temporarily to ${tempSourcePath}`);
+    
+    // Upload the optimized PREVIEW file
+    await bucket.upload(previewFilePath, { destination: tempPreviewPath, contentType: 'application/pdf' });
+    logger.log(`Saved single-page PREVIEW temporarily to ${tempPreviewPath}`);
+    
+    // 5. Clean up local temp files
+    fs.unlinkSync(sourceFilePath);
+    fs.unlinkSync(previewFilePath);
+
+    // 6. Return all required metadata, including the NEW tempPreviewPath
     return {
         pageId,
         pageNumber: pageNum,
-        tempStoragePath,
+        tempSourcePath,
+        tempPreviewPath, // <--- 🛑 THE FIX IS HERE
         width,
         height,
         status: 'complete'
@@ -514,26 +554,29 @@ exports.generatePreviews = onCall({
         const bucket = admin.storage().bucket();
         const authAxios = await getAuthenticatedClient();
         const originalFile = bucket.file(originalFilePath);
-        const [originalFileBuffer] = await originalFile.download();
 
-        let multiPagePdfBuffer; // This will hold the PDF buffer, either converted or original
-
-        // --- NEW LOGIC: Check if conversion is needed ---
+        let multiPagePdfBuffer;
+        let tempPdfPathForSplit = originalFilePath; // Default to the uploaded file path
         const fileExtension = path.extname(originalFileName).toLowerCase();
-        
+
+        // --- 1. Conversion or Direct Use ---
         if (fileExtension === '.pdf') {
-            logger.log('File is already a PDF, skipping LibreOffice conversion.');
-            multiPagePdfBuffer = originalFileBuffer;
+            logger.log('File is already a PDF, proceeding directly.');
+            // We need the buffer to check page count later, but conversion is skipped.
+            [multiPagePdfBuffer] = await originalFile.download();
+            // tempPdfPathForSplit is already originalFilePath
         } else {
             logger.log(`File is '${fileExtension}', calling LibreOffice convert...`);
+            // Download buffer to send to Gotenberg for conversion
+            const [sourceBuffer] = await originalFile.download();
+
             // --- LibreOffice Conversion ---
             const convertFormData = new FormData();
-            convertFormData.append('files', originalFileBuffer, originalFileName);
+            convertFormData.append('files', sourceBuffer, originalFileName);
             
             const convertResponse = await authAxios.post(`${GOTENBERG_URL}/forms/libreoffice/convert`, convertFormData, {
                 responseType: 'arraybuffer'
             }).catch(err => { 
-                // Log the Gotenberg error if possible
                 const gotenbergError = err.response?.data ? Buffer.from(err.response.data).toString() : err.message;
                 logger.error('Gotenberg LibreOffice conversion failed:', gotenbergError);
                 throw new HttpsError('internal', `LibreOffice conversion failed: ${gotenbergError}`); 
@@ -541,18 +584,22 @@ exports.generatePreviews = onCall({
             
             multiPagePdfBuffer = convertResponse.data;
             logger.log('LibreOffice conversion successful.');
+
+            // Upload the converted PDF back to storage temporarily to get a path for splitting
+            const convertedFileName = path.basename(originalFilePath).replace(fileExtension, '.pdf');
+            tempPdfPathForSplit = `temp_uploads/${tempId}/converted_${convertedFileName}`;
+            await bucket.file(tempPdfPathForSplit).save(multiPagePdfBuffer, { contentType: 'application/pdf' });
         }
-        // --- END OF NEW LOGIC ---
 
 
         const tempDoc = await PDFDocument.load(multiPagePdfBuffer);
         const pageCount = tempDoc.getPageCount();
 
-        // This logic you had is CORRECT and will now work for single-page PDFs
+        // --- 2. Handle Single Page Case (No Splitting) ---
         if (pageCount <= 1) {
             logger.log(`Document has only ${pageCount} page(s). Storing single PDF.`);
             
-            // Store the single-page PDF and get its metadata
+            // Store the single-page PDF, generate the preview, and get its metadata
             const pageData = await storePageAsPdf({
                 pageBuffer: multiPagePdfBuffer, // Use the full buffer as the single page source
                 pageNum: 1,
@@ -563,17 +610,39 @@ exports.generatePreviews = onCall({
             return { pages: [pageData] }; 
         }
 
-        // --- PDF Splitting (Runs ONLY if pageCount > 1) ---
+        // --- 3. PDF Splitting (Runs ONLY if pageCount > 1) ---
+
+        // 🛑 CRITICAL FIX: Bypass 32MB limit by generating a signed URL for Gotenberg to fetch
+        const fileToSplit = bucket.file(tempPdfPathForSplit);
+        const [signedUrl] = await fileToSplit.getSignedUrl({
+             action: 'read',
+             expires: Date.now() + 3600 * 1000 // Expires in 1 hour
+        });
+        logger.log(`Generated signed URL for splitting: ${signedUrl}`);
+
         const splitFormData = new FormData();
-        splitFormData.append('files', multiPagePdfBuffer, 'converted.pdf');
+        // 🚨 FIX: Pass the signed URL with the full options object so Gotenberg's multipart parser 
+        // recognizes it as a remote file, not just a string.
+        const remoteFile = {
+            value: signedUrl,
+            options: {
+                filename: 'remote_file.pdf', // Gotenberg requires a filename to identify the type
+                contentType: 'application/pdf'
+            }
+        };
+        splitFormData.append('files', remoteFile.value, remoteFile.options); // Use the format FormData expects
+
         splitFormData.append('splitMode', 'pages'); // Tell Gotenberg to split by page
         splitFormData.append('splitSpan', '1-');   // Tell Gotenberg to split all pages (1-to-end)
-        logger.log('Calling PDF split...');
+        logger.log('Calling PDF split using signed URL...');
         
-        // NOTE: Keeping old V7 URL as requested. This should be /convert/pdfengines/split
         const splitResponse = await authAxios.post(`${GOTENBERG_URL}/forms/pdfengines/split`, splitFormData, {
             responseType: 'arraybuffer',
-        }).catch(err => { throw new HttpsError('internal', `PDF splitting failed: ${err.message}`); });
+        }).catch(err => { 
+            const gotenbergError = err.response?.data ? Buffer.from(err.response.data).toString() : err.message;
+            logger.error('Gotenberg PDF splitting failed with URL:', gotenbergError);
+            throw new HttpsError('internal', `PDF splitting failed: ${gotenbergError}. The file may be too large for the Gotenberg service to handle even via URL.`); 
+        });
         logger.log('PDF splitting successful.');
 
         const zip = await jszip.loadAsync(splitResponse.data);
@@ -589,7 +658,7 @@ exports.generatePreviews = onCall({
 
         const processedPagesData = []; // Array to hold results for the client
 
-        // 🛑 Multi-page processing now uses the helper function for efficiency
+        // Multi-page processing now uses the helper function for efficiency
         const processingPromises = singlePagePdfBuffers.map(async (pageBuffer, index) => {
             const pageNum = index + 1;
 
@@ -602,21 +671,17 @@ exports.generatePreviews = onCall({
 
             processedPagesData.push(pageData);
             return pageData;
-        }); // LINE 591 in your file: End of the logic block
+        });
 
         await Promise.all(processingPromises);
         logger.log('All pages processed successfully.');
 
         // Return the array of processed page data
-        // Sort by page number before returning
         processedPagesData.sort((a, b) => a.pageNumber - b.pageNumber);
         return { pages: processedPagesData };
 
     } catch (error) {
         
-        // --- 🔴 BUG FIX: The duplicated code from lines 595-667 was removed ---
-        // This is the ONLY code that should be in your catch block.
-
         logger.error('Error in generatePreviews:', error.response?.data ? Buffer.from(error.response.data).toString() : error);
         
         // Extract error message from Gotenberg if available
@@ -643,15 +708,15 @@ exports.generateFinalPdf = onCall({
         throw new HttpsError('unauthenticated', 'User must be authenticated.');
     }
 
-    // *** Get tempStoragePaths instead of sourcePaths ***
-    const { projectId, tempStoragePaths } = request.data;
+    // *** Get tempSourcePath instead of sourcePaths ***
+    const { projectId, tempSourcePath } = request.data;
     const userUid = request.auth.uid; // Keep track of who initiated
 
-    if (!projectId || !Array.isArray(tempStoragePaths) || tempStoragePaths.length === 0) {
-        throw new HttpsError('invalid-argument', 'Missing "projectId" or valid "tempStoragePaths" array.');
+    if (!projectId || !Array.isArray(tempSourcePath) || tempSourcePath.length === 0) {
+        throw new HttpsError('invalid-argument', 'Missing "projectId" or valid "tempSourcePath" array.');
     }
 
-    logger.log(`Generating final PDF for project ${projectId} from ${tempStoragePaths.length} source paths.`);
+    logger.log(`Generating final PDF for project ${projectId} from ${tempSourcePath.length} source paths.`);
 
     try {
         // Optional: Add permission checks here if needed (e.g., check if user is admin or belongs to the project's company)
@@ -662,8 +727,8 @@ exports.generateFinalPdf = onCall({
 
         // Download files from temporary source paths
         logger.log('Downloading temporary source files...');
-        for (let i = 0; i < tempStoragePaths.length; i++) {
-            const tempPath = tempStoragePaths[i];
+        for (let i = 0; i < tempSourcePath.length; i++) {
+            const tempPath = tempSourcePath[i];
             if (!tempPath || typeof tempPath !== 'string') {
                  throw new HttpsError('invalid-argument', `Invalid source path provided at index ${i}`);
             }
