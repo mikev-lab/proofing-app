@@ -5,6 +5,8 @@ import { ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/fireba
 import { initializeSharedViewer } from './viewer.js';
 import { STANDARD_PAPER_SIZES } from './guides.js';
 import { initializeImpositionUI } from './imposition-ui.js';
+import Sortable from 'https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/modular/sortable.esm.js';
+import { pdfjsLib } from 'https://mozilla.github.io/pdf.js/build/pdf.mjs';
 
 // Share Modal Elements
 const shareButton = document.getElementById('share-button');
@@ -540,46 +542,245 @@ document.querySelectorAll('.accordion-header').forEach(header => {
     });
 });
 
-// --- "Generate PDF" Button Logic ---
-generatePdfButton.addEventListener('click', async () => {
-    generatePdfButton.disabled = true;
-    uploadButton.disabled = true;
-    const originalButtonText = generatePdfButton.textContent;
-    generatePdfButton.textContent = 'Generating...';
+// --- "Finalize Guided Upload" Button Logic ---
+document.getElementById('finalize-guided-upload-button').addEventListener('click', async () => {
+    const finalizeButton = document.getElementById('finalize-guided-upload-button');
+    finalizeButton.disabled = true;
+    const originalButtonText = finalizeButton.textContent;
+    finalizeButton.textContent = 'Finalizing...';
 
     try {
-        // 1. Get ordered list of page IDs from the UI
-        const thumbnailList = document.getElementById('thumbnail-list');
-        const pageElements = thumbnailList.querySelectorAll('[data-page-id]');
-        const pageIds = Array.from(pageElements).map(el => el.dataset.pageId);
+        // 1. Get ordered list of temp storage paths from the UI
+        const organizer = document.getElementById('thumbnail-organizer');
+        const pageElements = organizer.querySelectorAll('[data-temp-storage-path]');
+        const tempStoragePaths = Array.from(pageElements).map(el => el.dataset.tempStoragePath);
 
-        if (!pageIds.length) {
-            throw new Error("No pages found. Please add source files before generating a PDF.");
+        if (!tempStoragePaths.length) {
+            throw new Error("No pages have been processed. Please upload a file first.");
         }
 
-        // 2. Call Cloud Function
+        // 2. Call Cloud Function to merge PDFs
         const result = await generateFinalPdf({
             projectId: projectId,
-            pageIds: pageIds
+            tempStoragePaths: tempStoragePaths
         });
 
-        // 3. Get download URL for the final PDF
         const { finalPdfPath } = result.data;
         if (!finalPdfPath) {
             throw new Error("The cloud function did not return a valid file path.");
         }
-        const pdfRef = ref(storage, finalPdfPath);
-        const downloadURL = await getDownloadURL(pdfRef);
 
-        // 4. Trigger download/opening in new tab
-        window.open(downloadURL, '_blank');
+        // 3. Update the project document with the new version
+        const projectRef = doc(db, "projects", projectId);
+        const projectDoc = await getDoc(projectRef);
+        const projectData = projectDoc.data();
+        const newVersionNumber = projectData.versions.length + 1;
+
+        const newVersion = {
+            versionNumber: newVersionNumber,
+            fileURL: `gs://${storage.bucket}/${finalPdfPath}`, // Store the GS URI
+            createdAt: Timestamp.now(),
+            processingStatus: 'complete', // It's already processed
+            preflightStatus: 'pending' // Preflight will run on this new file
+        };
+
+        const updatedVersions = [...projectData.versions, newVersion];
+        await updateDoc(projectRef, { versions: updatedVersions });
+
+        alert(`Successfully created Version ${newVersionNumber}!`);
+
+        // Reset the guided setup UI
+        document.getElementById('upload-status-area').innerHTML = '';
+        document.getElementById('thumbnail-organizer').innerHTML = '<p class="text-sm text-gray-500 text-center">Thumbnails of processed pages will appear here. You can drag and drop to reorder them.</p>';
+        document.getElementById('thumbnail-organizer').classList.remove('grid', 'grid-cols-4', 'gap-4');
+
 
     } catch (error) {
-        console.error("Error generating final PDF:", error);
-        alert(`An error occurred while generating the PDF: ${error.message}`);
+        console.error("Error finalizing guided upload:", error);
+        alert(`An error occurred: ${error.message}`);
     } finally {
-        generatePdfButton.disabled = false;
-        uploadButton.disabled = false;
-        generatePdfButton.textContent = originalButtonText;
+        finalizeButton.disabled = false;
+        finalizeButton.textContent = originalButtonText;
     }
 });
+
+// --- NEW Guided Setup Logic ---
+function initializeGuidedSetup() {
+    const guidedTab = document.getElementById('guided-tab');
+    const quickTab = document.getElementById('quick-tab');
+    const guidedPanel = document.getElementById('guided-panel');
+    const quickPanel = document.getElementById('quick-panel');
+    const dropZone = document.getElementById('drop-zone');
+    const guidedFileInput = document.getElementById('guided-file-input');
+    const uploadStatusArea = document.getElementById('upload-status-area');
+    let processedPages = []; // To store processed page data from the backend
+
+    if (!guidedTab) return; // Exit if the elements aren't on the page
+
+    // Tab switching logic
+    guidedTab.addEventListener('click', () => {
+        guidedTab.classList.add('border-indigo-500', 'text-indigo-400');
+        guidedTab.classList.remove('border-transparent', 'text-gray-400');
+        quickTab.classList.add('border-transparent', 'text-gray-400');
+        quickTab.classList.remove('border-indigo-500', 'text-indigo-400');
+        guidedPanel.classList.remove('hidden');
+        quickPanel.classList.add('hidden');
+    });
+
+    quickTab.addEventListener('click', () => {
+        quickTab.classList.add('border-indigo-500', 'text-indigo-400');
+        quickTab.classList.remove('border-transparent', 'text-gray-400');
+        guidedTab.classList.add('border-transparent', 'text-gray-400');
+        guidedTab.classList.remove('border-indigo-500', 'text-indigo-400');
+        quickPanel.classList.remove('hidden');
+        guidedPanel.classList.add('hidden');
+    });
+
+    // Drag and drop event listeners
+    dropZone.addEventListener('click', () => guidedFileInput.click());
+    dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropZone.classList.add('border-indigo-500');
+    });
+    dropZone.addEventListener('dragleave', () => {
+        dropZone.classList.remove('border-indigo-500');
+    });
+    dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('border-indigo-500');
+        const files = e.dataTransfer.files;
+        if (files.length > 0) {
+            handleGuidedUpload(files[0]); // Handle the first dropped file
+        }
+    });
+    guidedFileInput.addEventListener('change', () => {
+        if (guidedFileInput.files.length > 0) {
+            handleGuidedUpload(guidedFileInput.files[0]);
+        }
+    });
+
+    async function handleGuidedUpload(file) {
+        uploadStatusArea.innerHTML = '';
+        processedPages = [];
+
+        const statusId = `status-${Date.now()}`;
+        const statusElement = document.createElement('div');
+        statusElement.className = 'flex justify-between items-center bg-slate-700 p-2 rounded-md text-sm';
+        statusElement.innerHTML = `
+            <span>${file.name}</span>
+            <span id="${statusId}" class="status-indicator text-blue-400">Uploading...</span>
+        `;
+        uploadStatusArea.appendChild(statusElement);
+
+        try {
+            const result = await uploadAndProcessFile(file, statusId);
+            processedPages = result;
+            displayPageThumbnails(processedPages); // Display the thumbnails
+        } catch (error) {
+            console.error('Guided upload failed:', error);
+            const statusIndicator = document.getElementById(statusId);
+            if(statusIndicator) {
+                statusIndicator.textContent = `Error: ${error.message}`;
+                statusIndicator.classList.remove('text-blue-400');
+                statusIndicator.classList.add('text-red-400');
+            }
+        }
+    }
+}
+
+// Initial call
+document.addEventListener('DOMContentLoaded', () => {
+    // Set the workerSrc for PDF.js
+    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://mozilla.github.io/pdf.js/build/pdf.worker.mjs`;
+    initializeGuidedSetup();
+});
+
+function displayPageThumbnails(pages) {
+    const organizer = document.getElementById('thumbnail-organizer');
+    organizer.innerHTML = ''; // Clear placeholder text or previous thumbnails
+    organizer.classList.add('grid', 'grid-cols-4', 'gap-4'); // Add grid styling
+
+    pages.forEach(page => {
+        const thumbContainer = document.createElement('div');
+        thumbContainer.className = 'bg-slate-800 p-1 rounded-md cursor-pointer relative';
+        thumbContainer.dataset.pageId = page.pageId;
+        thumbContainer.dataset.tempStoragePath = page.tempStoragePath; // Store path for final assembly
+
+        const canvas = document.createElement('canvas');
+        canvas.className = 'w-full h-auto rounded-sm';
+        thumbContainer.appendChild(canvas);
+
+        const pageNumLabel = document.createElement('span');
+        pageNumLabel.className = 'absolute top-1 left-1 bg-slate-900/80 text-white text-xs px-1.5 py-0.5 rounded-full';
+        pageNumLabel.textContent = page.pageNumber;
+        thumbContainer.appendChild(pageNumLabel);
+
+        organizer.appendChild(thumbContainer);
+
+        // Asynchronously render the PDF thumbnail
+        renderPdfOnCanvas(canvas, page.tempStoragePath);
+    });
+
+    // Initialize SortableJS
+    new Sortable(organizer, {
+        animation: 150,
+        ghostClass: 'bg-blue-200/30'
+    });
+}
+
+async function renderPdfOnCanvas(canvas, pdfStoragePath) {
+    try {
+        // Convert the storage path to a downloadable URL
+        const pdfRef = ref(storage, pdfStoragePath);
+        const downloadURL = await getDownloadURL(pdfRef);
+
+        const pdf = await pdfjsLib.getDocument(downloadURL).promise;
+        const page = await pdf.getPage(1); // It's a single-page PDF
+
+        const viewport = page.getViewport({ scale: 0.5 }); // Use a smaller scale for thumbnails
+        const context = canvas.getContext('2d');
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+
+        await page.render({ canvasContext: context, viewport: viewport }).promise;
+    } catch (error) {
+        console.error(`Error rendering PDF thumbnail for ${pdfStoragePath}:`, error);
+        // Optionally display an error state on the canvas itself
+    }
+}
+
+
+async function uploadAndProcessFile(file, statusId) {
+    const statusIndicator = document.getElementById(statusId);
+    try {
+        // 1. Upload file to a temporary location
+        statusIndicator.textContent = 'Uploading...';
+        statusIndicator.className = 'status-indicator text-blue-400';
+        // Use a unique temporary folder for each upload session
+        const tempId = `temp_${auth.currentUser.uid}_${Date.now()}`;
+        const tempStoragePath = `${tempId}/${file.name}`;
+        const tempStorageRef = ref(storage, tempStoragePath);
+        await uploadBytes(tempStorageRef, file);
+
+        // 2. Call the Cloud Function to process the file
+        statusIndicator.textContent = 'Processing...';
+        statusIndicator.className = 'status-indicator text-yellow-400 animate-pulse';
+        const result = await generatePreviews({
+            filePath: tempStoragePath,
+            originalName: file.name
+        });
+
+        statusIndicator.textContent = 'Complete';
+        statusIndicator.className = 'status-indicator text-green-400';
+
+        // Return the array of page data from the function
+        return result.data.pages;
+
+    } catch (error) {
+        console.error("Error during file upload and processing:", error);
+        const errorMessage = error.details?.message || error.message || 'An unknown error occurred.';
+        statusIndicator.textContent = `Error: ${errorMessage}`;
+        statusIndicator.className = 'status-indicator text-red-400';
+        throw new Error(errorMessage);
+    }
+}

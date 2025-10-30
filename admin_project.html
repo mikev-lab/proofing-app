@@ -338,13 +338,62 @@
                                 <svg class="w-6 h-6 text-gray-400 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
                             </button>
                             <div class="accordion-content p-6 border-t border-slate-700/50">
-                                <form id="file-upload-form">
-                                    <input type="file" id="file-input" accept=".pdf,.doc,.docx,.tif,.tiff,.jpg,.jpeg,.png" multiple class="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-600/20 file:text-indigo-300 hover:file:bg-indigo-600/30">
-                                    <button type="submit" class="w-full mt-4 bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-green-800 disabled:cursor-not-allowed">
-                                        Add Source Files
-                                    </button>
-                                </form>
-                                <div id="upload-status-container" class="mt-4 space-y-2"></div>
+                                <div class="mb-4 border-b border-slate-700/50">
+                                    <nav class="-mb-px flex space-x-4" aria-label="Tabs">
+                                        <button id="guided-tab" type="button" class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm border-indigo-500 text-indigo-400">
+                                            Guided Setup
+                                        </button>
+                                        <button id="quick-tab" type="button" class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm border-transparent text-gray-400 hover:text-gray-200 hover:border-gray-500">
+                                            Expert Upload
+                                        </button>
+                                    </nav>
+                                </div>
+
+                                <!-- Guided Setup Panel -->
+                                <div id="guided-panel">
+                                    <label class="block text-sm font-medium text-gray-300 mb-2">Upload Pages (Images, Docs, PDF)</label>
+
+                                    <!-- Drag and Drop Area -->
+                                    <div id="drop-zone" class="mt-1 flex justify-center items-center px-6 pt-5 pb-6 border-2 border-slate-600 border-dashed rounded-md cursor-pointer hover:border-indigo-500 transition-colors">
+                                        <div class="space-y-1 text-center">
+                                            <svg class="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
+                                                <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                                            </svg>
+                                            <div class="flex text-sm text-gray-400">
+                                                <p class="pl-1">or drag and drop</p>
+                                            </div>
+                                            <p class="text-xs text-gray-500">PDF, DOCX, PNG, JPG, TIFF up to 500MB</p>
+                                        </div>
+                                    </div>
+                                    <input type="file" id="guided-file-input" multiple class="hidden">
+
+                                    <div id="upload-status-area" class="mt-4 space-y-2"></div>
+
+                                    <div class="mt-6">
+                                        <label class="block text-sm font-medium text-gray-300 mb-2">Organize Pages</label>
+                                        <div id="thumbnail-organizer" class="min-h-[200px] bg-slate-900/50 rounded-md p-4 border border-slate-700/50">
+                                            <p class="text-sm text-gray-500 text-center">Thumbnails of processed pages will appear here. You can drag and drop to reorder them.</p>
+                                        </div>
+                                    </div>
+
+                                    <div class="mt-6 border-t border-slate-700/50 pt-4">
+                                        <button id="finalize-guided-upload-button" class="w-full bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-green-800 disabled:cursor-not-allowed">
+                                            Create New Version From Pages
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <!-- Expert Upload Panel -->
+                                <div id="quick-panel" class="hidden">
+                                    <form id="file-upload-form">
+                                        <label for="file-input" class="block text-sm font-medium text-gray-300">Proof File (PDF)</label>
+                                        <input type="file" id="file-input" accept=".pdf" class="mt-1 block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-600/20 file:text-indigo-300 hover:file:bg-indigo-600/30">
+                                        <button type="submit" class="w-full mt-4 bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-green-800 disabled:cursor-not-allowed">
+                                            Upload New Version
+                                        </button>
+                                        <div id="upload-status-container" class="mt-4 space-y-2"></div>
+                                    </form>
+                                </div>
                             </div>
                         </div>
                         <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50">

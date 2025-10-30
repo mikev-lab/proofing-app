@@ -469,60 +469,23 @@ async function getAuthenticatedClient() {
     return authenticatedAxios;
 }
 
-// --- NEW HELPER: Generates and uploads the PNG preview for a single PDF page buffer ---
-async function generatePagePreview({ authAxios, GOTENBERG_URL, pageBuffer, pageNum, tempId }) {
+// --- REFACTORED HELPER: Stores a single PDF page buffer and returns its metadata ---
+async function storePageAsPdf({ pageBuffer, pageNum, tempId }) {
     const pageId = crypto.randomBytes(10).toString('hex');
     const bucket = admin.storage().bucket();
 
     const pdfDoc = await PDFDocument.load(pageBuffer);
     const { width, height } = pdfDoc.getPage(0).getSize();
 
-    // --- 🛑 CORRECTED: Use PDFEngines to convert PDF to PNG ---
-    const previewFormData = new FormData();
-    previewFormData.append('files', pageBuffer, `page_${pageNum}.pdf`);
-    
-    // *** THIS IS THE KEY FIX ***
-    // Tell pdfengines to convert the PDF to PNG format.
-    // You can also use "jpeg", "tiff", etc.
-    previewFormData.append('format', 'png'); 
+    const tempStoragePath = `temp_pages/${tempId}/${pageId}.pdf`;
 
-    logger.log(`Generating preview for page ${pageNum} via pdfengines/image...`);
-    
-    // *** 1. CHANGE THE URL to the pdfengines/convert endpoint ***
-    const previewResponse = await authAxios.post(`${GOTENBERG_URL}/forms/pdfengines/image`, previewFormData, { 
-        responseType: 'arraybuffer'
-    }).catch(err => { 
-        // Log the actual error from Gotenberg if available.
-        const gotenbergError = err.response?.data ? Buffer.from(err.response.data).toString() : err.message;
-        logger.error(`pdfengines conversion failed for page ${pageNum}:`, err.message, gotenbergError);
-        throw new HttpsError('internal', `Preview generation failed for page ${pageNum}: ${gotenbergError || err.message}`); 
-    });
-    
-    // *** 2. CHECK THE RESPONSE (it's a ZIP) ***
-    // The pdfengines/convert endpoint returns a zip file containing the image(s).
-    // We must unzip it to get the single PNG file.
-    const zip = await jszip.loadAsync(previewResponse.data);
-    const imageFileName = Object.keys(zip.files).find(name => name.endsWith('.png')); // Get the first (and only) file
-
-    if (!imageFileName) {
-        throw new HttpsError('internal', `PDF-to-PNG conversion returned an empty zip for page ${pageNum}.`);
-    }
-
-    const previewBuffer = await zip.files[imageFileName].async('nodebuffer');
-    // --- END OF FIX ---
-
-    // Use temporary, unique paths
-    const tempSourcePath = `temp_sources/${tempId}/${pageId}.pdf`;
-    const tempPreviewPath = `temp_previews/${tempId}/${pageId}.png`;
-
-    await bucket.file(tempSourcePath).save(pageBuffer);
-    await bucket.file(tempPreviewPath).save(previewBuffer, { contentType: 'image/png' });
+    await bucket.file(tempStoragePath).save(pageBuffer, { contentType: 'application/pdf' });
+    logger.log(`Saved single-page PDF temporarily to ${tempStoragePath}`);
 
     return {
         pageId,
         pageNumber: pageNum,
-        tempSourcePath,
-        tempPreviewPath,
+        tempStoragePath,
         width,
         height,
         status: 'complete'
@@ -587,12 +550,10 @@ exports.generatePreviews = onCall({
 
         // This logic you had is CORRECT and will now work for single-page PDFs
         if (pageCount <= 1) {
-            logger.log(`Document has only ${pageCount} page(s). Generating single preview.`);
+            logger.log(`Document has only ${pageCount} page(s). Storing single PDF.`);
             
-            // Generate the preview and save the single page as the source
-            const pageData = await generatePagePreview({
-                authAxios: authAxios,
-                GOTENBERG_URL: GOTENBERG_URL,
+            // Store the single-page PDF and get its metadata
+            const pageData = await storePageAsPdf({
                 pageBuffer: multiPagePdfBuffer, // Use the full buffer as the single page source
                 pageNum: 1,
                 tempId: tempId
@@ -632,10 +593,8 @@ exports.generatePreviews = onCall({
         const processingPromises = singlePagePdfBuffers.map(async (pageBuffer, index) => {
             const pageNum = index + 1;
 
-            // Use the helper to generate preview, upload files, and return metadata
-            const pageData = await generatePagePreview({
-                authAxios: authAxios,
-                GOTENBERG_URL: GOTENBERG_URL,
+            // Use the helper to store the single-page PDF and return metadata
+            const pageData = await storePageAsPdf({
                 pageBuffer: pageBuffer, // Use the split page buffer
                 pageNum: pageNum,
                 tempId: tempId
@@ -684,15 +643,15 @@ exports.generateFinalPdf = onCall({
         throw new HttpsError('unauthenticated', 'User must be authenticated.');
     }
 
-    // *** Get sourcePaths instead of pageIds ***
-    const { projectId, sourcePaths } = request.data;
+    // *** Get tempStoragePaths instead of sourcePaths ***
+    const { projectId, tempStoragePaths } = request.data;
     const userUid = request.auth.uid; // Keep track of who initiated
 
-    if (!projectId || !Array.isArray(sourcePaths) || sourcePaths.length === 0) {
-        throw new HttpsError('invalid-argument', 'Missing "projectId" or valid "sourcePaths" array.');
+    if (!projectId || !Array.isArray(tempStoragePaths) || tempStoragePaths.length === 0) {
+        throw new HttpsError('invalid-argument', 'Missing "projectId" or valid "tempStoragePaths" array.');
     }
 
-    logger.log(`Generating final PDF for project ${projectId} from ${sourcePaths.length} source paths.`);
+    logger.log(`Generating final PDF for project ${projectId} from ${tempStoragePaths.length} source paths.`);
 
     try {
         // Optional: Add permission checks here if needed (e.g., check if user is admin or belongs to the project's company)
@@ -703,25 +662,25 @@ exports.generateFinalPdf = onCall({
 
         // Download files from temporary source paths
         logger.log('Downloading temporary source files...');
-        for (let i = 0; i < sourcePaths.length; i++) {
-            const sourcePath = sourcePaths[i];
-            if (!sourcePath || typeof sourcePath !== 'string') {
+        for (let i = 0; i < tempStoragePaths.length; i++) {
+            const tempPath = tempStoragePaths[i];
+            if (!tempPath || typeof tempPath !== 'string') {
                  throw new HttpsError('invalid-argument', `Invalid source path provided at index ${i}`);
             }
             try {
-                const [buffer] = await bucket.file(sourcePath).download();
+                const [buffer] = await bucket.file(tempPath).download();
                  // Use index for filename to ensure order if Gotenberg relies on it
                 mergeFormData.append('files', buffer, `${String(i).padStart(4, '0')}.pdf`);
             } catch (downloadError) {
-                 logger.error(`Failed to download temporary file: ${sourcePath}`, downloadError);
-                 throw new HttpsError('internal', `Failed to retrieve page source: ${sourcePath}`);
+                 logger.error(`Failed to download temporary file: ${tempPath}`, downloadError);
+                 throw new HttpsError('internal', `Failed to retrieve page source: ${tempPath}`);
             }
         }
         logger.log('Temporary source files downloaded.');
 
         // Call Gotenberg merge API
         logger.log('Calling Gotenberg merge...');
-        const mergeResponse = await authAxios.post(`${GOTENBERG_URL}/convert/pdfengines/merge`, mergeFormData, {
+        const mergeResponse = await authAxios.post(`${GOTENBERG_URL}/forms/pdfengines/merge`, mergeFormData, {
             responseType: 'arraybuffer'
         }).catch(err => { throw new HttpsError('internal', `PDF merging failed: ${err.message}`); });
         logger.log('Gotenberg merge successful.');
