@@ -32,24 +32,38 @@ async function addPagesToOrganizer(pages) {
 
     for (const page of pages) {
         try {
-            const thumbnailUrl = await getDownloadURL(ref(storage, page.thumbnailPath));
+            // *** Use tempPreviewPath from the function's response ***
+            const thumbnailUrl = await getDownloadURL(ref(storage, page.tempPreviewPath));
             const pageElement = document.createElement('div');
-            pageElement.className = 'bg-slate-800 p-2 rounded-md flex items-center space-x-2';
-            pageElement.dataset.pageId = page.pageId; // Store pageId for ordering
+            // *** Store tempSourcePath and tempPreviewPath in dataset ***
+            pageElement.className = 'bg-slate-800 p-2 rounded-md flex items-center space-x-2 cursor-move'; // Added cursor-move
+            pageElement.dataset.pageId = page.pageId; // Keep unique ID
+            pageElement.dataset.tempSourcePath = page.tempSourcePath; // Store temp source path
+            pageElement.dataset.tempPreviewPath = page.tempPreviewPath; // Store temp preview path
+            pageElement.dataset.pageNumber = page.pageNumber; // Store original page number
 
             const img = document.createElement('img');
             img.src = thumbnailUrl;
-            img.className = 'w-16 h-16 object-contain rounded-sm';
+            img.className = 'w-16 h-16 object-contain rounded-sm pointer-events-none'; // Added pointer-events-none
 
-            const pageNumber = document.createElement('span');
-            pageNumber.textContent = `Page ${page.pageNumber}`;
-            pageNumber.className = 'text-xs text-gray-400';
+            const pageNumberSpan = document.createElement('span');
+            pageNumberSpan.textContent = `Page ${page.pageNumber}`; // Use the page number from the response
+            pageNumberSpan.className = 'text-xs text-gray-400 flex-grow'; // Added flex-grow
+
+            // Add a delete button
+            const deleteButton = document.createElement('button');
+            deleteButton.innerHTML = '&times;'; // Simple 'x'
+            deleteButton.type = 'button';
+            deleteButton.className = 'text-red-400 hover:text-red-300 font-bold text-lg leading-none p-1';
+            deleteButton.onclick = () => pageElement.remove();
 
             pageElement.appendChild(img);
-            pageElement.appendChild(pageNumber);
+            pageElement.appendChild(pageNumberSpan);
+            pageElement.appendChild(deleteButton); // Add delete button
             thumbnailOrganizer.appendChild(pageElement);
         } catch (error) {
             console.error(`Error getting thumbnail for page ${page.pageId}:`, error);
+            // Optionally add an error placeholder thumbnail
         }
     }
 }
@@ -59,21 +73,19 @@ guidedFileInput.addEventListener('change', async (e) => {
     const files = e.target.files;
     if (files.length === 0) return;
 
-    // Clear previous statuses
-    uploadStatusArea.innerHTML = '';
+    uploadStatusArea.innerHTML = ''; // Clear previous statuses
 
     for (const file of files) {
         const statusElement = document.createElement('div');
         statusElement.className = 'flex justify-between items-center bg-slate-700 p-2 rounded-md text-sm';
         statusElement.innerHTML = `<span>${file.name}</span><span class="status-indicator text-yellow-400">Uploading...</span>`;
         uploadStatusArea.appendChild(statusElement);
-
         const statusIndicator = statusElement.querySelector('.status-indicator');
 
         try {
-            // 1. Upload the file to a temporary location
-            const tempId = `temp_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-            const uploadPath = `uploads/${tempId}/${file.name}`;
+            // 1. Upload to a temporary, unique path (e.g., using user ID or a random ID)
+            const tempId = auth.currentUser ? auth.currentUser.uid : `anon_${Date.now()}`; // Use UID or timestamp for uniqueness
+            const uploadPath = `temp_uploads/${tempId}/${Date.now()}_${file.name}`; // Temporary path
             const storageRef = ref(storage, uploadPath);
             await uploadBytes(storageRef, file);
 
@@ -81,13 +93,17 @@ guidedFileInput.addEventListener('change', async (e) => {
             statusIndicator.classList.remove('text-yellow-400');
             statusIndicator.classList.add('text-blue-400');
 
-            // 2. Call the generatePreviews Cloud Function
-            const result = await generatePreviews({ filePath: uploadPath, originalName: file.name });
-            const { pages } = result.data;
+            // 2. Call generatePreviews WITHOUT projectId, pass temp path
+            const result = await generatePreviews({
+                // NO projectId here
+                filePath: uploadPath,      // Pass the temporary upload path
+                originalName: file.name  // Pass the original file name
+             });
+            const pagesData = result.data.pages; // Expect { pages: [...] }
 
-            // 3. Add thumbnails to the organizer
-            if (pages && pages.length > 0) {
-                await addPagesToOrganizer(pages);
+            // 3. Add thumbnails using data returned from the function
+            if (pagesData && pagesData.length > 0) {
+                await addPagesToOrganizer(pagesData); // Pass the array of page data
                 statusIndicator.textContent = 'Complete';
                 statusIndicator.classList.remove('text-blue-400');
                 statusIndicator.classList.add('text-green-400');
@@ -97,11 +113,12 @@ guidedFileInput.addEventListener('change', async (e) => {
 
         } catch (error) {
             console.error(`Error processing file ${file.name}:`, error);
-            statusIndicator.textContent = 'Error';
+            statusIndicator.textContent = `Error: ${error.message.substring(0, 50)}...`; // Show shorter error
             statusIndicator.classList.remove('text-yellow-400', 'text-blue-400');
             statusIndicator.classList.add('text-red-400');
         }
     }
+    // Optionally re-enable upload button if needed
 });
 
 
@@ -163,48 +180,74 @@ quickTab.addEventListener('click', () => {
 });
 
 async function handleGuidedProjectCreation(client, projectName, specs) {
-    // 1. Get page IDs
-    const pageIds = Array.from(thumbnailOrganizer.children).map(child => child.dataset.pageId);
+    statusMessage.textContent = "Organizing pages and creating project...";
+    statusMessage.className = 'mt-4 text-center text-yellow-400';
 
-    if (pageIds.length === 0) {
-        throw new Error("No pages have been processed. Please upload and process files first.");
+    // 1. Get ordered list of TEMPORARY SOURCE PATHS from the UI dataset
+    const pageElements = thumbnailOrganizer.querySelectorAll('[data-page-id]');
+    const orderedTempSourcePaths = Array.from(pageElements).map(el => el.dataset.tempSourcePath);
+
+    if (orderedTempSourcePaths.length === 0) {
+        throw new Error("No pages have been processed or organized. Please upload files and ensure processing is complete.");
     }
 
-    // 2. Call generateFinalPdf
-    const result = await generateFinalPdf({
-        projectId: `new-project-${Date.now()}`, // Temporary ID
-        pageIds: pageIds
-    });
-    const { finalPdfPath } = result.data;
+    // 2. Create the project document FIRST to get its ID
+    const projectData = {
+        projectName: projectName,
+        companyId: client.companyId,
+        clientId: client.id, // Keep for backward compatibility if needed
+        specs: specs,
+        createdAt: serverTimestamp(),
+        versions: [], // Initialize versions array
+        status: 'pending', // Initial status
+        isAwaitingClientUpload: false,
+        systemVersion: 2 // Mark as created via guided flow
+    };
+    const newProjectRef = await addDoc(collection(db, "projects"), projectData);
+    const projectId = newProjectRef.id; // Get the actual project ID
 
-    // 3. Get download URL
+    // 3. Call generateFinalPdf (modified) to merge PDFs from TEMP paths and save to FINAL location
+    statusMessage.textContent = "Generating final proof PDF...";
+    const result = await generateFinalPdf({
+        projectId: projectId,              // Pass the REAL projectId now
+        sourcePaths: orderedTempSourcePaths // Pass the temporary source paths
+    });
+    const { finalPdfPath } = result.data; // Function should return the FINAL path ('proofs/...')
+
+    if (!finalPdfPath) {
+        throw new Error("Cloud function failed to return the final PDF path.");
+    }
+
+    // 4. Get download URL for the FINAL PDF
     const finalPdfRef = ref(storage, finalPdfPath);
     const downloadURL = await getDownloadURL(finalPdfRef);
 
-    // 4. Create the project doc in Firestore
-    const newProjectRef = collection(db, "projects");
-    const projectDoc = await addDoc(newProjectRef, {
-        projectName: projectName,
-        companyId: client.companyId,
-        clientId: client.id,
-        specs,
-        status: 'pending',
-        createdAt: serverTimestamp(),
-        systemVersion: 2,
-        versions: [{
-            versionNumber: 1,
-            createdAt: serverTimestamp(),
-            fileURL: downloadURL,
-            filePath: finalPdfPath,
-            fileName: 'Generated Proof.pdf'
-        }]
+    // 5. Prepare the first version entry using the FINAL path/URL
+    const firstVersion = {
+        fileName: 'Generated Proof.pdf', // Or derive a name
+        fileURL: downloadURL,
+        filePath: finalPdfPath,
+        uploadedAt: serverTimestamp(),
+        versionNumber: 1,
+        processingStatus: 'processing', // Trigger optimization and preflight
+        preflightStatus: null,
+        preflightResults: null
+    };
+
+    // 6. Update the project document with the first version
+    await updateDoc(newProjectRef, {
+        versions: [firstVersion]
     });
 
-    // 5. Redirect
+    // (Optional: You might want a Cloud Function triggered by project creation
+    // or manually call another function here to clean up the temporary files
+    // in `temp_uploads`, `temp_sources`, and `temp_previews` for this `tempId`)
+
+    // 7. Redirect
     statusMessage.textContent = 'Project created successfully! Redirecting...';
     statusMessage.className = 'mt-4 text-center text-green-400';
     setTimeout(() => {
-        window.location.href = `admin_project.html?id=${projectDoc.id}`;
+        window.location.href = `admin_project.html?id=${projectId}`;
     }, 2000);
 }
 
