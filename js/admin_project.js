@@ -6,7 +6,7 @@ import { initializeSharedViewer } from './viewer.js';
 import { STANDARD_PAPER_SIZES } from './guides.js';
 import { initializeImpositionUI } from './imposition-ui.js';
 import Sortable from 'https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/modular/sortable.esm.js';
-import { pdfjsLib } from 'https://mozilla.github.io/pdf.js/build/pdf.mjs';
+import * as pdfjsLib from 'https://mozilla.github.io/pdf.js/build/pdf.mjs';
 
 // Share Modal Elements
 const shareButton = document.getElementById('share-button');

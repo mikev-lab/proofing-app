@@ -27,7 +27,7 @@ const thumbnailOrganizer = document.getElementById('thumbnail-organizer');
 
 // In js/admin_new_project.js
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://mozilla.github.io/pdf.js/build/pdf.worker.mjs';
+pdfjsLib.GlobalWorkerOptions.workerSrc = "https://mozilla.github.io/pdf.js/build/pdf.worker.mjs";
 
 // **Step 1: Copy this helper function into your file**
 // (Copied from js/admin_project.js)
@@ -293,7 +293,7 @@ async function handleGuidedProjectCreation(client, projectName, specs) {
         fileName: 'Generated Proof.pdf', // Or derive a name
         fileURL: downloadURL,
         filePath: finalPdfPath,
-        uploadedAt: serverTimestamp(),
+        uploadedAt: new Date(),
         versionNumber: 1,
         processingStatus: 'processing', // Trigger optimization and preflight
         preflightStatus: null,
@@ -353,7 +353,7 @@ async function handleAdvancedProjectCreation(client, projectName, specs) {
         fileName: file.name,
         fileURL: downloadURL,
         filePath: storagePath,
-        uploadedAt: serverTimestamp(),
+        uploadedAt: new Date(),
         versionNumber: 1,
         processingStatus: 'processing'
     };

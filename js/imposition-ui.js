@@ -1,3 +1,5 @@
+// js/imposition-ui.js
+
 import { maximizeNUp, getSheetSizes, getPageSequenceForSheet } from './imposition-logic.js';
 import { drawCropMarks, drawSlugInfo, drawSpineIndicator, drawSpineSlugText, drawPageNumber } from './imposition-drawing.js';
 import { INCH_TO_POINTS } from './constants.js';
@@ -30,6 +32,38 @@ const IMPOSITION_TYPE_OPTIONS = [
 ];
 
 // --- HELPERS ---
+
+// NEW HELPER FUNCTION
+function getTrimSizeInPoints(projectData) {
+    const specs = projectData.specs;
+    if (!specs || !specs.dimensions) {
+        console.warn("No specs.dimensions found, defaulting to Letter.");
+        return { width: 8.5 * INCH_TO_POINTS, height: 11 * INCH_TO_POINTS };
+    }
+
+    if (typeof specs.dimensions === 'object') {
+        // This is for "Custom"
+        const w = specs.dimensions.width || 8.5;
+        const h = specs.dimensions.height || 11;
+        // NOTE: This assumes units are 'in'. A more robust
+        // solution would check specs.dimensions.units
+        return { width: w * INCH_TO_POINTS, height: h * INCH_TO_POINTS };
+    }
+
+    // Handle string-based dimensions
+    const dimStr = String(specs.dimensions).toLowerCase();
+    switch (dimStr) {
+        case 'letter':
+            return { width: 8.5 * INCH_TO_POINTS, height: 11 * INCH_TO_POINTS };
+        case 'tabloid':
+            return { width: 11 * INCH_TO_POINTS, height: 17 * INCH_TO_POINTS };
+        // Add other common sizes from your dropdown
+        default:
+            console.warn(`Unknown dimension string: ${specs.dimensions}, defaulting to Letter.`);
+            return { width: 8.5 * INCH_TO_POINTS, height: 11 * INCH_TO_POINTS };
+    }
+}
+
 async function getPdfDoc(pdfUrl) {
     const { pdfjsLib } = window;
     pdfjsLib.GlobalWorkerOptions.workerSrc = `https://mozilla.github.io/pdf.js/build/pdf.worker.mjs`;
@@ -217,6 +251,7 @@ async function renderThumbnailList(projectData) {
 }
 
 
+// --- 🛑 FULLY REPLACED FUNCTION 🛑 ---
 async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, side, projectData) {
     // Slip sheet logic
     const slipSheetColor = currentSettings.slipSheetColor;
@@ -239,15 +274,35 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
         return;
     };
 
+    // --- START FIX ---
+
+    // 1. Get project-defined TRIM size (e.g., 8.5x11)
+    const { width: trimWidth, height: trimHeight } = getTrimSizeInPoints(projectData);
+
+    // 2. Get bleed from settings
     const bleedPoints = (currentSettings.bleedInches || 0) * INCH_TO_POINTS;
+    
+    // 3. Define the *correct* ART-PLUS-BLEED box size
+    const artBoxWidth = trimWidth + (2 * bleedPoints);  // e.g., 612 + 18 = 630pt (8.75")
+    const artBoxHeight = trimHeight + (2 * bleedPoints); // e.g., 792 + 18 = 810pt (11.25")
+
+    // 4. Get the *actual* FILE page size (e.g., 9x11.5)
     const firstPageProxy = await pdfDoc.getPage(1);
     const pageViewport = firstPageProxy.getViewport({ scale: 1 });
-    const { width: pageContentWidth, height: pageContentHeight } = pageViewport;
+    const { width: actualFileWidth, height: actualFileHeight } = pageViewport; // e.g., 648pt, 828pt
 
-    const totalRequiredWidth = (pageContentWidth * currentSettings.columns) + (Math.max(0, currentSettings.columns - 1) * (currentSettings.horizontalGutterInches * INCH_TO_POINTS));
-    const totalRequiredHeight = (pageContentHeight * currentSettings.rows) + (Math.max(0, currentSettings.rows - 1) * (currentSettings.verticalGutterInches * INCH_TO_POINTS));
+    // 5. Calculate clipping offsets, assuming art is centered in the file
+    const clipX = (actualFileWidth - artBoxWidth) / 2;   // e.g., (648 - 630) / 2 = 9pt
+    const clipY = (actualFileHeight - artBoxHeight) / 2; // e.g., (828 - 810) / 2 = 9pt
+
+    // 6. Use the *correct* artBoxWidth/Height for layout calculations
+    const totalRequiredWidth = (artBoxWidth * currentSettings.columns) + (Math.max(0, currentSettings.columns - 1) * (currentSettings.horizontalGutterInches * INCH_TO_POINTS));
+    const totalRequiredHeight = (artBoxHeight * currentSettings.rows) + (Math.max(0, currentSettings.rows - 1) * (currentSettings.verticalGutterInches * INCH_TO_POINTS));
     const startX = (sheetWidth - totalRequiredWidth) / 2;
     const startY = (sheetHeight - totalRequiredHeight) / 2;
+
+    // --- END FIX ---
+
 
     for (let row = 0; row < currentSettings.rows; row++) {
         for (let col = 0; col < currentSettings.columns; col++) {
@@ -256,24 +311,41 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
             if (!pageNum) continue;
 
             const page = await pdfDoc.getPage(pageNum);
-            const x = startX + col * (pageContentWidth + (currentSettings.horizontalGutterInches * INCH_TO_POINTS));
-            const y = startY + row * (pageContentHeight + (currentSettings.verticalGutterInches * INCH_TO_POINTS));
+            
+            // --- MODIFICATION ---
+            // Use the *correct* artBoxWidth/Height for layout
+            const x = startX + col * (artBoxWidth + (currentSettings.horizontalGutterInches * INCH_TO_POINTS));
+            const y = startY + row * (artBoxHeight + (currentSettings.verticalGutterInches * INCH_TO_POINTS));
+            // --- END MODIFICATION ---
 
-            // Use the correct viewport for this specific page, not just page 1's
             const specificViewport = page.getViewport({ scale: 1 });
             const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = specificViewport.width;
+            tempCanvas.width = specificViewport.width; // Still render the *full* 9"
             tempCanvas.height = specificViewport.height;
             
-            // Render using the page's own viewport
             await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport: specificViewport }).promise;
             
-            // Draw image, respecting potential size differences (though layout assumes they are all page 1's size)
-            ctx.drawImage(tempCanvas, x, y);
+            // --- MODIFICATION ---
+            // Use 9-argument drawImage to clip the excess "slug" area
+            ctx.drawImage(tempCanvas, 
+                clipX, clipY,                     // Source X, Y (start clipping)
+                artBoxWidth, artBoxHeight,        // Source W, H (grab only the art+bleed)
+                x, y,                             // Dest X, Y
+                artBoxWidth, artBoxHeight         // Dest W, H (draw at correct size)
+            );
+            // --- END MODIFICATION ---
 
             drawPageNumber(ctx, pageNum, x, y);
 
-            drawCropMarks(ctx, x + bleedPoints, y + bleedPoints, pageContentWidth - (2 * bleedPoints), pageContentHeight - (2 * bleedPoints), {});
+            // --- MODIFICATION ---
+            // Draw crop marks based on the *correct* trim box
+            drawCropMarks(ctx, 
+                x + bleedPoints,  // trim box X
+                y + bleedPoints,  // trim box Y
+                trimWidth,        // trim box W (e.g., 612pt / 8.5")
+                trimHeight,       // trim box H (e.g., 792pt / 11")
+                {});
+            // --- END MODIFICATION ---
         }
     }
     // QR Code logic
@@ -281,6 +353,8 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
         await drawSlugInfo(ctx, sheetIndex + 1, totalSheets, projectData, currentSettings.qrCodePosition);
     }
 }
+// --- END OF REPLACED FUNCTION ---
+
 
 function calculateTotalSheets() {
     if (!pdfDoc) return 0;

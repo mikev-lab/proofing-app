@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     qpdf \
     poppler-utils \
     libimage-exiftool-perl \
-    # Clean up APT cache to reduce image size
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy package.json and package-lock.json first to leverage Docker cache
