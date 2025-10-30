@@ -2,6 +2,7 @@ import { auth, db, storage, functions, generatePreviews, generateFinalPdf } from
 import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 import { collection, addDoc, getDocs, Timestamp, updateDoc, doc, setDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 import { ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
+import * as pdfjsLib from "https://mozilla.github.io/pdf.js/build/pdf.mjs";
 
 const newProjectForm = document.getElementById('new-project-form');
 const submitButton = document.getElementById('submit-button');
@@ -24,46 +25,96 @@ const uploadStatusArea = document.getElementById('upload-status-area');
 const thumbnailOrganizer = document.getElementById('thumbnail-organizer');
 
 
+// In js/admin_new_project.js
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://mozilla.github.io/pdf.js/build/pdf.worker.mjs';
+
+// **Step 1: Copy this helper function into your file**
+// (Copied from js/admin_project.js)
+async function renderPdfOnCanvas(canvas, pdfStoragePath) {
+    if (!pdfStoragePath || typeof pdfStoragePath !== 'string') {
+        console.error(`Invalid pdfStoragePath provided to renderPdfOnCanvas:`, pdfStoragePath);
+        const context = canvas.getContext('2d');
+        canvas.width = 150;
+        canvas.height = 200;
+        context.fillStyle = '#475569';
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.fillStyle = '#f87171';
+        context.font = '12px sans-serif';
+        context.textAlign = 'center';
+        context.fillText('Invalid Path', canvas.width / 2, canvas.height / 2);
+        return;
+    }
+    try {
+        const pdfRef = ref(storage, pdfStoragePath);
+        const downloadURL = await getDownloadURL(pdfRef);
+
+        // Make sure pdfjsLib is imported at the top of your file
+        // import { pdfjsLib } from 'https://mozilla.github.io/pdf.js/build/pdf.mjs';
+        const pdf = await pdfjsLib.getDocument(downloadURL).promise;
+        const page = await pdf.getPage(1); // It's a single-page PDF
+
+        const viewport = page.getViewport({ scale: 0.5 }); // Use a smaller scale for thumbnails
+        const context = canvas.getContext('2d');
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+
+        await page.render({ canvasContext: context, viewport: viewport }).promise;
+    } catch (error) {
+        console.error(`Error rendering PDF thumbnail for ${pdfStoragePath}:`, error);
+        // ... (rest of error handling) ...
+    }
+}
+
+// **Step 2: Replace your existing addPagesToOrganizer function with this one**
 async function addPagesToOrganizer(pages) {
-    // Clear the placeholder text if it's the first successful upload
     if (thumbnailOrganizer.querySelector('p')) {
         thumbnailOrganizer.innerHTML = '';
+        // Add grid styling now that we have items
+        thumbnailOrganizer.classList.add('grid', 'grid-cols-4', 'sm:grid-cols-6', 'lg:grid-cols-8', 'gap-4');
     }
 
     for (const page of pages) {
         try {
-            // *** Use tempPreviewPath from the function's response ***
-            const thumbnailUrl = await getDownloadURL(ref(storage, page.tempPreviewPath));
+            // *** FIX: Use page.tempStoragePath which exists ***
             const pageElement = document.createElement('div');
-            // *** Store tempSourcePath and tempPreviewPath in dataset ***
-            pageElement.className = 'bg-slate-800 p-2 rounded-md flex items-center space-x-2 cursor-move'; // Added cursor-move
-            pageElement.dataset.pageId = page.pageId; // Keep unique ID
-            pageElement.dataset.tempSourcePath = page.tempSourcePath; // Store temp source path
-            pageElement.dataset.tempPreviewPath = page.tempPreviewPath; // Store temp preview path
-            pageElement.dataset.pageNumber = page.pageNumber; // Store original page number
+            pageElement.className = 'bg-slate-800 p-1 rounded-md cursor-move relative shadow-lg';
+            pageElement.dataset.pageId = page.pageId;
+            pageElement.dataset.tempStoragePath = page.tempStoragePath; // Use the correct property
+            pageElement.dataset.pageNumber = page.pageNumber;
 
-            const img = document.createElement('img');
-            img.src = thumbnailUrl;
-            img.className = 'w-16 h-16 object-contain rounded-sm pointer-events-none'; // Added pointer-events-none
+            // *** FIX: Create a CANVAS, not an IMG ***
+            const canvas = document.createElement('canvas');
+            canvas.className = 'w-full h-auto rounded-sm pointer-events-none bg-white/10';
+            pageElement.appendChild(canvas);
 
             const pageNumberSpan = document.createElement('span');
-            pageNumberSpan.textContent = `Page ${page.pageNumber}`; // Use the page number from the response
-            pageNumberSpan.className = 'text-xs text-gray-400 flex-grow'; // Added flex-grow
-
-            // Add a delete button
-            const deleteButton = document.createElement('button');
-            deleteButton.innerHTML = '&times;'; // Simple 'x'
-            deleteButton.type = 'button';
-            deleteButton.className = 'text-red-400 hover:text-red-300 font-bold text-lg leading-none p-1';
-            deleteButton.onclick = () => pageElement.remove();
-
-            pageElement.appendChild(img);
+            pageNumberSpan.textContent = page.pageNumber;
+            pageNumberSpan.className = 'absolute top-1 left-1 bg-slate-900/80 text-white text-xs px-1.5 py-0.5 rounded-full pointer-events-none';
             pageElement.appendChild(pageNumberSpan);
-            pageElement.appendChild(deleteButton); // Add delete button
+
+            const deleteButton = document.createElement('button');
+            deleteButton.innerHTML = '&times;';
+            deleteButton.type = 'button';
+            deleteButton.className = 'absolute top-0 right-0 text-red-400 hover:text-red-300 font-bold text-lg leading-none p-1 bg-slate-900/50 rounded-bl-md';
+            deleteButton.onclick = () => {
+                pageElement.remove();
+                // If no thumbnails are left, show placeholder
+                if (!thumbnailOrganizer.querySelector('div')) {
+                     thumbnailOrganizer.innerHTML = '<p class="text-sm text-gray-500 text-center">Thumbnails of processed pages will appear here. You can drag and drop to reorder them.</p>';
+                     thumbnailOrganizer.classList.remove('grid', 'grid-cols-4', 'sm:grid-cols-6', 'lg:grid-cols-8', 'gap-4');
+                }
+            };
+            pageElement.appendChild(deleteButton);
+
             thumbnailOrganizer.appendChild(pageElement);
+
+            // *** FIX: Call the render function ***
+            // Asynchronously render the PDF onto the canvas
+            renderPdfOnCanvas(canvas, page.tempStoragePath);
+
         } catch (error) {
-            console.error(`Error getting thumbnail for page ${page.pageId}:`, error);
-            // Optionally add an error placeholder thumbnail
+            console.error(`Error adding page ${page.pageId} to organizer:`, error);
         }
     }
 }
