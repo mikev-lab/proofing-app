@@ -699,78 +699,112 @@ exports.generatePreviews = onCall({
 // HTTP Callable function for manual imposition
 
 exports.generateFinalPdf = onCall({
-    region: 'us-central1',
-    memory: '4GiB', // Adjust if needed
-    timeoutSeconds: 300
+    region: 'us-central1',
+    memory: '4GiB', // Adjust if needed
+    timeoutSeconds: 300
 }, async (request) => {
-    // Auth check (allow admin or relevant user if needed, simplified for now)
-    if (!request.auth) {
-        throw new HttpsError('unauthenticated', 'User must be authenticated.');
-    }
+    // Auth check (allow admin or relevant user if needed, simplified for now)
+    if (!request.auth) {
+        throw new HttpsError('unauthenticated', 'User must be authenticated.');
+    }
 
-    // *** Get tempSourcePath instead of sourcePaths ***
-    const { projectId, tempSourcePath } = request.data;
-    const userUid = request.auth.uid; // Keep track of who initiated
+    // *** Get tempSourcePath instead of sourcePaths ***
+    const { projectId, tempSourcePath } = request.data;
+    const userUid = request.auth.uid; // Keep track of who initiated
 
-    if (!projectId || !Array.isArray(tempSourcePath) || tempSourcePath.length === 0) {
-        throw new HttpsError('invalid-argument', 'Missing "projectId" or valid "tempSourcePath" array.');
-    }
+    if (!projectId || !Array.isArray(tempSourcePath) || tempSourcePath.length === 0) {
+        throw new HttpsError('invalid-argument', 'Missing "projectId" or valid "tempSourcePath" array.');
+    }
 
-    logger.log(`Generating final PDF for project ${projectId} from ${tempSourcePath.length} source paths.`);
+    logger.log(`Generating final PDF for project ${projectId} from ${tempSourcePath.length} source paths.`);
 
-    try {
-        // Optional: Add permission checks here if needed (e.g., check if user is admin or belongs to the project's company)
+    let finalPdfPath;
+    let finalPdfBuffer;
+    let localTempFiles = []; // Array to track temporary files for cleanup
 
-        const bucket = admin.storage().bucket();
-        const authAxios = await getAuthenticatedClient();
-        const mergeFormData = new FormData();
-
-        // Download files from temporary source paths
-        logger.log('Downloading temporary source files...');
+    try {
+        const bucket = admin.storage().bucket();
+        
+        // 1. Download all source pages locally
+        logger.log('Downloading all temporary source files locally...');
+        const pageFilePaths = []; // To hold paths to downloaded single page files
+        
         for (let i = 0; i < tempSourcePath.length; i++) {
-            const tempPath = tempSourcePath[i];
-            if (!tempPath || typeof tempPath !== 'string') {
-                 throw new HttpsError('invalid-argument', `Invalid source path provided at index ${i}`);
-            }
+            const tempPath = tempSourcePath[i];
+            const localFileName = `${crypto.randomBytes(10).toString('hex')}_page_${i + 1}.pdf`;
+            const localFilePath = path.join(os.tmpdir(), localFileName);
+            
+            localTempFiles.push(localFilePath);
+
             try {
-                const [buffer] = await bucket.file(tempPath).download();
-                 // Use index for filename to ensure order if Gotenberg relies on it
-                mergeFormData.append('files', buffer, `${String(i).padStart(4, '0')}.pdf`);
+                // Download the single-page PDF to the local file system
+                await bucket.file(tempPath).download({ destination: localFilePath });
+                pageFilePaths.push(localFilePath);
             } catch (downloadError) {
-                 logger.error(`Failed to download temporary file: ${tempPath}`, downloadError);
-                 throw new HttpsError('internal', `Failed to retrieve page source: ${tempPath}`);
-            }
+                logger.error(`Failed to download temporary file: ${tempPath}`, downloadError);
+                throw new HttpsError('internal', `Failed to retrieve page source: ${tempPath}`);
+            }
+        }
+        logger.log(`All ${pageFilePaths.length} source pages downloaded locally.`);
+
+        // 2. Local Merge using qpdf
+        const finalPdfFileName = `${Date.now()}_GeneratedProof.pdf`;
+        const finalLocalPath = path.join(os.tmpdir(), finalPdfFileName);
+        localTempFiles.push(finalLocalPath); // Add the final merged file to cleanup
+
+        logger.log('Starting local PDF merge using qpdf...');
+
+        // qpdf --empty --pages file1.pdf file2.pdf ... -- output.pdf
+        const qpdfArgs = [
+            '--empty', 
+            '--pages',
+            ...pageFilePaths, // Spread all the input file paths
+            '--',
+            finalLocalPath // Output file path
+        ];
+
+        await spawn('qpdf', qpdfArgs, { 
+            stdio: 'pipe', // Ensure qpdf output is captured or ignored gracefully
+            maxBuffer: 1024 * 1024 * 512 // 512MB max buffer for stdout/stderr if huge errors occur
+        });
+
+        logger.log('Local PDF merge successful.');
+
+        // 3. Read the merged file buffer
+        finalPdfBuffer = fs.readFileSync(finalLocalPath);
+        
+        // 4. Save the final PDF to the correct 'proofs/' path using the REAL projectId
+        finalPdfPath = `proofs/${projectId}/${finalPdfFileName}`; // Use 'proofs/' prefix
+
+        logger.log(`Uploading final merged PDF to ${finalPdfPath}`);
+        await bucket.file(finalPdfPath).save(finalPdfBuffer, { contentType: 'application/pdf' });
+        logger.log('Final PDF uploaded successfully.');
+
+        // Return the FINAL path
+        return { finalPdfPath: finalPdfPath };
+
+    } catch (error) {
+        logger.error('Error in generateFinalPdf:', error);
+        const message = error.message || 'An internal error occurred generating the final PDF.';
+        // If it's a known spawn error, include stderr/stdout if available
+        if (error.stderr) {
+             logger.error('qpdf stderr:', error.stderr.toString());
         }
-        logger.log('Temporary source files downloaded.');
-
-        // Call Gotenberg merge API
-        logger.log('Calling Gotenberg merge...');
-        const mergeResponse = await authAxios.post(`${GOTENBERG_URL}/forms/pdfengines/merge`, mergeFormData, {
-            responseType: 'arraybuffer'
-        }).catch(err => { throw new HttpsError('internal', `PDF merging failed: ${err.message}`); });
-        logger.log('Gotenberg merge successful.');
-
-        const finalPdfBuffer = mergeResponse.data;
-
-        // *** Save the final PDF to the correct 'proofs/' path using the REAL projectId ***
-        const finalFileName = `${Date.now()}_GeneratedProof.pdf`;
-        const finalPdfPath = `proofs/${projectId}/${finalFileName}`; // Use 'proofs/' prefix
-
-        logger.log(`Uploading final merged PDF to ${finalPdfPath}`);
-        await bucket.file(finalPdfPath).save(finalPdfBuffer, { contentType: 'application/pdf' });
-        logger.log('Final PDF uploaded successfully.');
-
-        // Return the FINAL path
-        return { finalPdfPath: finalPdfPath };
-
-    } catch (error) {
-        logger.error('Error in generateFinalPdf:', error.response?.data ? Buffer.from(error.response.data).toString() : error);
-        const message = error.response?.data ? Buffer.from(error.response.data).toString() : (error.message || 'An internal error occurred generating the final PDF.');
-        // If it's already an HttpsError, rethrow it, otherwise wrap it
-        if (error instanceof HttpsError) {
-             throw error;
-        } else {
-             throw new HttpsError('internal', message);
+        if (error.stdout) {
+             logger.error('qpdf stdout:', error.stdout.toString());
+        }
+        // If it's already an HttpsError, rethrow it, otherwise wrap it
+        if (error instanceof HttpsError) {
+             throw error;
+        } else {
+             throw new HttpsError('internal', `PDF merging failed: ${message}`);
+        }
+    } finally {
+        // 5. Cleanup local files
+        for (const filePath of localTempFiles) {
+            if (fs.existsSync(filePath)) {
+                try { fs.unlinkSync(filePath); } catch (e) { logger.warn(`Failed to delete temp file: ${filePath}`, e); }
+            }
         }
     }
 });
