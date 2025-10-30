@@ -1,4 +1,4 @@
-import { auth, db, storage, generatePreviews, generateFinalPdf } from './firebase.js';
+import { auth, db, storage, generatePreviews, generateFinalPdf, firebaseConfig } from './firebase.js';
 import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 import { doc, onSnapshot, getDoc, updateDoc, Timestamp, collection, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 import { ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
@@ -578,7 +578,7 @@ document.getElementById('finalize-guided-upload-button').addEventListener('click
 
         const newVersion = {
             versionNumber: newVersionNumber,
-            fileURL: `gs://${storage.bucket}/${finalPdfPath}`, // Store the GS URI
+            fileURL: `gs://${firebaseConfig.storageBucket}/${finalPdfPath}`, // Store the GS URI
             createdAt: Timestamp.now(),
             processingStatus: 'complete', // It's already processed
             preflightStatus: 'pending' // Preflight will run on this new file
@@ -729,6 +729,20 @@ function displayPageThumbnails(pages) {
 }
 
 async function renderPdfOnCanvas(canvas, pdfStoragePath) {
+    // Safeguard against invalid or missing paths
+    if (!pdfStoragePath || typeof pdfStoragePath !== 'string') {
+        console.error(`Invalid pdfStoragePath provided to renderPdfOnCanvas:`, pdfStoragePath);
+        const context = canvas.getContext('2d');
+        canvas.width = 150; // Default thumbnail width
+        canvas.height = 200; // Default thumbnail height
+        context.fillStyle = '#475569'; // slate-600
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.fillStyle = '#f87171'; // red-400
+        context.font = '12px sans-serif';
+        context.textAlign = 'center';
+        context.fillText('Invalid Path', canvas.width / 2, canvas.height / 2);
+        return;
+    }
     try {
         // Convert the storage path to a downloadable URL
         const pdfRef = ref(storage, pdfStoragePath);
@@ -745,7 +759,13 @@ async function renderPdfOnCanvas(canvas, pdfStoragePath) {
         await page.render({ canvasContext: context, viewport: viewport }).promise;
     } catch (error) {
         console.error(`Error rendering PDF thumbnail for ${pdfStoragePath}:`, error);
-        // Optionally display an error state on the canvas itself
+        const context = canvas.getContext('2d');
+        context.fillStyle = '#475569';
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.fillStyle = '#f87171';
+        context.font = '12px sans-serif';
+        context.textAlign = 'center';
+        context.fillText('Render Failed', canvas.width / 2, canvas.height / 2);
     }
 }
 
