@@ -1,5 +1,5 @@
 {
-  "functions":
+  "functions": [
     {
       "source": "functions",
       "runtime": "nodejs20",
@@ -12,7 +12,7 @@
       ],
       "predeploy": "cd functions && npm install"
     }
-  ,
+  ],
   "hosting": {
     "public": ".",
     "ignore": [

@@ -1,0 +1,133 @@
+---
+// storefront/src/pages/index.astro
+import logo from '../../assets/logo.png';
+import bookPrintingImg from '../../assets/book-printing.webp';
+import marketingImg from '../../assets/marketing-materials.webp';
+import comicBooksImg from '../../assets/comic-books.webp';
+import mangaPrintingImg from '../../assets/manga-printing.webp';
+import graphicDesignImg from '../../assets/graphic-design.webp';
+import directMailImg from '../../assets/direct-mail.webp';
+---
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-g">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCE Printing - Your Story, Perfectly Printed</title>
+    <style>
+        /* Basic Reset & Typography */
+        body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: #f8f9fa; color: #343a40; }
+        h1, h2, h3 { font-weight: 700; color: #212529; }
+        p { line-height: 1.6; }
+        a { color: #007bff; text-decoration: none; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 0 20px; }
+
+        /* Header */
+        .header { background-color: #ffffff; padding: 20px 0; border-bottom: 1px solid #e9ecef; }
+        .header .container { display: flex; justify-content: space-between; align-items: center; }
+        .logo { max-height: 50px; }
+        .nav a { margin-left: 20px; font-weight: 500; }
+
+        /* Hero Section */
+        .hero { text-align: center; padding: 100px 20px; background-color: #ffffff; }
+        .hero h1 { font-size: 3rem; margin-bottom: 20px; }
+        .hero p { font-size: 1.25rem; color: #6c757d; }
+
+        /* Services Grid */
+        .services { padding: 80px 0; }
+        .services h2 { text-align: center; font-size: 2.5rem; margin-bottom: 50px; }
+        .services-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 30px; }
+        .service-card { background-color: #ffffff; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); overflow: hidden; text-align: center; }
+        .service-card img { width: 100%; height: 200px; object-fit: cover; }
+        .service-card-content { padding: 20px; }
+        .service-card h3 { margin-top: 0; }
+
+        /* Testimonials */
+        .testimonials { padding: 80px 0; background-color: #ffffff; }
+        .testimonials h2 { text-align: center; font-size: 2.5rem; margin-bottom: 50px; }
+        .testimonial { max-width: 800px; margin: 0 auto 30px; text-align: center; }
+        .testimonial p { font-style: italic; font-size: 1.1rem; }
+        .testimonial cite { display: block; margin-top: 10px; font-weight: 700; }
+
+        /* Footer */
+        .footer { background-color: #343a40; color: #ffffff; padding: 50px 0; text-align: center; }
+        .footer p { margin: 0; }
+    </style>
+</head>
+<body>
+
+    <header class="header">
+        <div class="container">
+            <img src={logo.src} alt="MCE Printing Logo" class="logo" />
+            <nav class="nav">
+                <a href="/">Home</a>
+                <a href="/about">About</a>
+                <a href="/contact">Contact</a>
+                <a href="/book-printing">Book Printing</a>
+                <a href="/stationery">Stationery</a>
+            </nav>
+        </div>
+    </header>
+
+    <main>
+        <section class="hero">
+            <h1>Exceptional Printing for Every Story</h1>
+            <p>From Marketing Materials to Books, We Print It All</p>
+        </section>
+
+        <section class="services">
+            <div class="container">
+                <h2>Our Services</h2>
+                <div class="services-grid">
+                    <div class="service-card">
+                        <img src={bookPrintingImg.src} alt="Piles of books on shelves">
+                        <div class="service-card-content"><h3>Book Printing</h3></div>
+                    </div>
+                    <div class="service-card">
+                        <img src={marketingImg.src} alt="Hand holding a travel brochure">
+                        <div class="service-card-content"><h3>Marketing Materials</h3></div>
+                    </div>
+                    <div class="service-card">
+                        <img src={comicBooksImg.src} alt="Person reading a comic book">
+                        <div class="service-card-content"><h3>Comic & Graphic Novels</h3></div>
+                    </div>
+                    <div class="service-card">
+                        <img src={mangaPrintingImg.src} alt="Hand drawing a manga sketch">
+                        <div class="service-card-content"><h3>Manga Printing</h3></div>
+                    </div>
+                     <div class="service-card">
+                        <img src={graphicDesignImg.src} alt="Graphic designer working on a tablet">
+                        <div class="service-card-content"><h3>Graphic Design</h3></div>
+                    </div>
+                     <div class="service-card">
+                        <img src={directMailImg.src} alt="White envelope in a row of brown ones">
+                        <div class="service-card-content"><h3>Direct Mail</h3></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="testimonials">
+            <div class="container">
+                <h2>What Our Clients Say</h2>
+                <div class="testimonial">
+                    <p>“At MCE Printing, LLC in Kirkland, WA, we bring your ideas to life with passion and precision. Whether it’s marketing materials or book printing, we’re committed to top quality. Specializing in Doujinshi, manga, and light novels, we’re your go-to print shop in the Pacific Northwest. Having moved from publishing to printing, I understand your needs for book printing.”</p>
+                    <cite>Michael Valdez</cite>
+                </div>
+                <div class="testimonial">
+                    <p>“At MCE Printing, LLC in Kirkland, WA, we’re all about exceptional printing. From business materials to Doujinshi and manga, our shop delivers top-notch craftsmanship and attention to detail. For all your printing needs in the Pacific Northwest, you can count on us!”</p>
+                    <cite>Timothy Buzzelli</cite>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p>&copy; {new Date().getFullYear()} MCE Printing, LLC. All Rights Reserved.</p>
+        </div>
+    </footer>
+
+</body>
+</html>

@@ -214,6 +214,64 @@ exports.optimizePdf = onObjectFinalized({
   return null;
 });
 
+const { onRequest } = require('firebase-functions/v2/https'); // Import for HTTP function
+
+// --- NEW API Endpoint for Product Catalog ---
+exports.getProducts = onRequest({
+    region: 'us-central1',
+    cors: true // Allow public access
+}, async (req, res) => {
+    logger.info("Received request for product catalog.");
+    try {
+        const productsSnapshot = await db.collection('products').get();
+        if (productsSnapshot.empty) {
+            logger.warn("No products found in the database.");
+            res.status(200).json([]);
+            return;
+        }
+
+        const products = [];
+        // Use Promise.all to fetch all referenced paper stocks in parallel
+        await Promise.all(productsSnapshot.docs.map(async (doc) => {
+            const productData = doc.data();
+            const populatedProduct = { id: doc.id, ...productData };
+
+            // Helper to populate stock references
+            const populateStock = async (refs) => {
+                if (!Array.isArray(refs) || refs.length === 0) return [];
+                const stockDocs = await db.getAll(...refs);
+                return stockDocs.map(stockDoc => {
+                    if (!stockDoc.exists) return null;
+                    return { id: stockDoc.id, ...stockDoc.data() };
+                }).filter(Boolean);
+            };
+
+            // Populate paper stocks for different product parts
+            if (productData.options) {
+                if (productData.options.paperStock) {
+                    populatedProduct.options.paperStock = await populateStock(productData.options.paperStock);
+                }
+                if (productData.options.cover && productData.options.cover.paperStock) {
+                    populatedProduct.options.cover.paperStock = await populateStock(productData.options.cover.paperStock);
+                }
+                // Corrected property name from 'interior' to 'inside' to match seed script
+                if (productData.options.inside && productData.options.inside.paperStock) {
+                    populatedProduct.options.inside.paperStock = await populateStock(productData.options.inside.paperStock);
+                }
+            }
+
+            products.push(populatedProduct);
+        }));
+
+        logger.info(`Successfully fetched and populated ${products.length} products.`);
+        res.status(200).json(products);
+
+    } catch (error) {
+        logger.error("Error fetching product catalog:", error);
+        res.status(500).json({ error: 'An unexpected error occurred while fetching the product catalog.' });
+    }
+});
+
 exports.upsertInventoryItem = onCall({ region: 'us-central1' }, async (request) => {
     // 1. Authentication Check
     if (!request.auth || !request.auth.token) {

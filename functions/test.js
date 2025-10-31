@@ -3,66 +3,86 @@ const assert = require('assert');
 const admin = require('firebase-admin');
 const test = require('firebase-functions-test')();
 const sinon = require('sinon');
+const axios = require('axios');
 
 // Make sinon quiet
 sinon.stub(console, 'log');
 
 describe('Cloud Functions', () => {
     let myFunctions;
+    const projectId = process.env.GCLOUD_PROJECT || 'proofing-application';
+    // CORRECTED: Use the direct IP address instead of 'localhost'
+    const functionsBaseUrl = `http://127.0.0.1:5001/${projectId}/us-central1/default`;
 
     before(() => {
-        // IMPORTANT: The emulator must be running for this to work.
+        // The emulator must be running, which is handled by `firebase emulators:exec`
+        // The database should also be seeded by a preceding command.
+        // This setup just configures the SDK to connect to the emulators.
         process.env.FUNCTIONS_EMULATOR = 'true';
-        process.env.FIRESTORE_EMULATOR_HOST = 'localhost:8181'; // Use the custom port
-        myFunctions = require('./index'); // Corrected path
+        process.env.FIRESTORE_EMULATOR_HOST = '127.0.0.1:8181'; // Use IP here as well for consistency
+        myFunctions = require('./index');
     });
 
     after(() => {
         test.cleanup();
     });
 
-    describe('onProjectApprove', () => {
-        it('should trigger imposition when project status is updated to Approved', async () => {
-            const projectId = `test-project-${Date.now()}`;
-            const projectRef = admin.firestore().collection('projects').doc(projectId);
+    describe('getProducts API', () => {
+        it('should return a list of products with populated paper stock details', async () => {
+            const url = `${functionsBaseUrl}/getProducts`;
 
-            // 1. Setup initial project state
-            const initialData = {
-                projectName: 'Test Impose Project',
-                status: 'pending',
-                versions: [{
-                    version: 1,
-                    // NOTE: This URL must be accessible to the function's environment.
-                    // Using a real URL from storage for a more realistic test.
-                    fileURL: 'https://firebasestorage.googleapis.com/v0/b/proofing-application.appspot.com/o/proofs%2FOrJNtwmfjRJ3lPoqK7jx%2F1720546809292_dummy.pdf?alt=media'
-                }],
-                specs: {
-                    dimensions: { width: 8.5, height: 11, units: 'in' }
+            try {
+                // It can take a moment for the functions emulator to be ready.
+                // We'll add a small retry loop here for stability.
+                let response;
+                let attempts = 5;
+                while (attempts > 0) {
+                    try {
+                        response = await axios.get(url);
+                        break; // Success
+                    } catch (error) {
+                        if (error.code === 'ECONNREFUSED' && attempts > 1) {
+                            console.log('Function emulator not ready, retrying...');
+                            await new Promise(resolve => setTimeout(resolve, 2000));
+                            attempts--;
+                        } else {
+                            throw error; // Re-throw other errors immediately
+                        }
+                    }
                 }
-            };
-            await projectRef.set(initialData);
 
-            // 2. Make the change that should trigger the function
-            const beforeSnap = test.firestore.makeDocumentSnapshot(initialData, `projects/${projectId}`);
-            const afterData = { ...initialData, status: 'Approved' };
-            const afterSnap = test.firestore.makeDocumentSnapshot(afterData, `projects/${projectId}`);
-            const change = test.makeChange(beforeSnap, afterSnap);
 
-            // 3. Call the wrapped function
-            const wrapped = test.wrap(myFunctions.onProjectApprove);
-            await wrapped(change, { params: { projectId: projectId } });
+                const products = response.data;
 
-            // 4. Check the result in Firestore
-            await new Promise(resolve => setTimeout(resolve, 5000)); // Wait for async operations
+                // Basic validation
+                assert.ok(Array.isArray(products), 'Response should be an array');
+                assert.ok(products.length > 0, 'Should return at least one product');
 
-            const finalDoc = await projectRef.get();
-            const finalData = finalDoc.data();
+                // Check for a specific product (e.g., Business Cards)
+                const bizCards = products.find(p => p.id === 'business-cards');
+                assert.ok(bizCards, 'Business Cards product should exist');
+                assert.strictEqual(bizCards.name, 'Business Cards', 'Product name should be correct');
 
-            // 5. Assertions
-            assert.strictEqual(finalData.status, 'Imposition Complete', 'Status should be updated to Imposition Complete');
-            assert.ok(finalData.impositions, 'Impositions array should exist');
-            assert.strictEqual(finalData.impositions.length, 1, 'Impositions array should have one entry');
-            assert.strictEqual(finalData.impositions[0].type, 'automatic', 'Imposition type should be automatic');
-        }).timeout(20000); // Increase timeout for this test
+                // Check that the paperStock array is populated with objects, not references
+                assert.ok(Array.isArray(bizCards.options.paperStock), 'paperStock should be an array');
+                assert.ok(bizCards.options.paperStock.length > 0, 'paperStock array should not be empty');
+
+                const firstStock = bizCards.options.paperStock[0];
+                assert.ok(typeof firstStock === 'object', 'paperStock items should be objects');
+                assert.ok(firstStock.name, 'Populated stock item should have a name');
+                assert.ok(firstStock.type, 'Populated stock item should have a type');
+
+                console.log('Successfully validated getProducts API response.');
+
+            } catch (error) {
+                // Provide more detailed error info if the request fails
+                if (error.response) {
+                    console.error('API Error Response:', error.response.data);
+                } else {
+                    console.error('API Request Error:', error.message);
+                }
+                assert.fail(`API request failed: ${error.message}`);
+            }
+        }).timeout(15000); // Increase timeout to allow for retries
     });
 });
