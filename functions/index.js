@@ -214,6 +214,198 @@ exports.optimizePdf = onObjectFinalized({
   return null;
 });
 
+exports.upsertInventoryItem = onCall({ region: 'us-central1' }, async (request) => {
+    // 1. Authentication Check
+    if (!request.auth || !request.auth.token) {
+        throw new HttpsError('unauthenticated', 'The function must be called while authenticated.');
+    }
+    const userUid = request.auth.uid;
+    try {
+        const userDoc = await db.collection('users').doc(userUid).get();
+        if (!userDoc.exists || userDoc.data().role !== 'admin') {
+            throw new HttpsError('permission-denied', 'You must be an admin to perform this action.');
+        }
+    } catch (error) {
+        logger.error('Admin check failed', error);
+        throw new HttpsError('internal', 'An error occurred while verifying admin status.');
+    }
+
+    // 2. Data Validation
+    const { itemId, internalId, name, manufacturerSKU, sheetsPerPackage } = request.data;
+    if (!internalId || !name || !sheetsPerPackage) {
+        throw new HttpsError('invalid-argument', 'Missing required fields: internalId, name, or sheetsPerPackage.');
+    }
+
+    const itemData = {
+        internalId,
+        name,
+        manufacturerSKU: manufacturerSKU || '',
+        sheetsPerPackage: parseInt(sheetsPerPackage, 10),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    };
+
+    // 3. Upsert Logic
+    try {
+        if (itemId) {
+            // Update existing item
+            const itemRef = db.collection('inventory').doc(itemId);
+            await itemRef.update(itemData);
+            logger.log(`Successfully updated inventory item ${itemId}.`);
+        } else {
+            // Create new item
+            const itemRef = db.collection('inventory').doc(internalId);
+            itemData.createdAt = admin.firestore.FieldValue.serverTimestamp();
+            itemData.quantityInPackages = 0;
+            itemData.quantityLooseSheets = 0;
+            itemData.latestCostPerM = 0;
+            itemData.vendorCostPerM = 0;
+            await itemRef.set(itemData);
+            logger.log(`Successfully created new inventory item ${internalId}.`);
+        }
+        return { success: true };
+    } catch (error) {
+        logger.error('Error upserting inventory item:', error);
+        throw new HttpsError('internal', 'An unexpected error occurred while saving the item.');
+    }
+});
+
+exports.reconcileInventory = onCall({ region: 'us-central1' }, async (request) => {
+    // 1. Authentication Check
+    if (!request.auth || !request.auth.token) {
+        throw new HttpsError('unauthenticated', 'The function must be called while authenticated.');
+    }
+    const userUid = request.auth.uid;
+    try {
+        const userDoc = await db.collection('users').doc(userUid).get();
+        if (!userDoc.exists || userDoc.data().role !== 'admin') {
+            throw new HttpsError('permission-denied', 'You must be an admin to perform this action.');
+        }
+    } catch (error) {
+        logger.error('Admin check failed', error);
+        throw new HttpsError('internal', 'An error occurred while verifying admin status.');
+    }
+
+    // 2. Data Validation
+    const { inventoryItemId, totalBoxCount } = request.data;
+    if (!inventoryItemId || totalBoxCount === undefined) {
+        throw new HttpsError('invalid-argument', 'Missing required fields: inventoryItemId or totalBoxCount.');
+    }
+
+    const count = parseInt(totalBoxCount, 10);
+    if (isNaN(count) || count < 0) {
+        throw new HttpsError('invalid-argument', 'Invalid totalBoxCount.');
+    }
+
+    // 3. Firestore Transaction
+    try {
+        await db.runTransaction(async (transaction) => {
+            const inventoryRef = db.collection('inventory').doc(inventoryItemId);
+            const inventoryDoc = await transaction.get(inventoryRef);
+
+            if (!inventoryDoc.exists) {
+                throw new HttpsError('not-found', `Inventory item with ID ${inventoryItemId} not found.`);
+            }
+
+            const inventoryData = inventoryDoc.data();
+            const sheetsPerPackage = inventoryData.sheetsPerPackage || 500;
+
+            const newPackagesInStock = Math.max(0, count - 1);
+            const newLooseSheets = (count > 0) ? sheetsPerPackage : 0;
+
+            transaction.update(inventoryRef, {
+                quantityInPackages: newPackagesInStock,
+                quantityLooseSheets: newLooseSheets,
+                lastVerified: admin.firestore.FieldValue.serverTimestamp()
+            });
+        });
+
+        logger.log(`Successfully reconciled inventory for item ${inventoryItemId} to ${count} boxes.`);
+        return { success: true };
+
+    } catch (error) {
+        logger.error(`Error reconciling inventory for item ${inventoryItemId}:`, error);
+        if (error instanceof HttpsError) {
+            throw error;
+        }
+        throw new HttpsError('internal', 'An unexpected error occurred while reconciling inventory.');
+    }
+});
+
+exports.receiveInventory = onCall({ region: 'us-central1' }, async (request) => {
+    // 1. Authentication Check
+    if (!request.auth || !request.auth.token) {
+        throw new HttpsError('unauthenticated', 'The function must be called while authenticated.');
+    }
+    const userUid = request.auth.uid;
+    try {
+        const userDoc = await db.collection('users').doc(userUid).get();
+        if (!userDoc.exists || userDoc.data().role !== 'admin') {
+            throw new HttpsError('permission-denied', 'You must be an admin to perform this action.');
+        }
+    } catch (error) {
+        logger.error('Admin check failed', error);
+        throw new HttpsError('internal', 'An error occurred while verifying admin status.');
+    }
+
+    // 2. Data Validation
+    const { inventoryItemId, packagesQuantity, totalCost } = request.data;
+    if (!inventoryItemId || !packagesQuantity || !totalCost) {
+        throw new HttpsError('invalid-argument', 'Missing required fields: inventoryItemId, packagesQuantity, or totalCost.');
+    }
+
+    const packagesReceived = parseInt(packagesQuantity, 10);
+    const cost = parseFloat(totalCost);
+
+    if (isNaN(packagesReceived) || isNaN(cost) || packagesReceived <= 0 || cost <= 0) {
+        throw new HttpsError('invalid-argument', 'Invalid packagesQuantity or totalCost.');
+    }
+
+    // 3. Firestore Transaction
+    try {
+        await db.runTransaction(async (transaction) => {
+            const inventoryRef = db.collection('inventory').doc(inventoryItemId);
+            const inventoryDoc = await transaction.get(inventoryRef);
+
+            if (!inventoryDoc.exists) {
+                throw new HttpsError('not-found', `Inventory item with ID ${inventoryItemId} not found.`);
+            }
+
+            const inventoryData = inventoryDoc.data();
+            const sheetsPerPackage = inventoryData.sheetsPerPackage || 500; // Default if not set
+            const totalSheetsReceived = packagesReceived * sheetsPerPackage;
+            const costPerSheet = cost / totalSheetsReceived;
+            const costPerM = costPerSheet * 1000;
+
+            // Update inventory item
+            transaction.update(inventoryRef, {
+                quantityInPackages: admin.firestore.FieldValue.increment(packagesReceived),
+                latestCostPerM: costPerM
+            });
+
+            // Create purchase record
+            const purchaseRef = db.collection('inventoryPurchases').doc();
+            transaction.set(purchaseRef, {
+                inventoryItemRef: inventoryRef,
+                purchaseDate: admin.firestore.FieldValue.serverTimestamp(),
+                quantityPurchasedInPackages: packagesReceived,
+                totalCost: cost,
+                costPerM_atPurchase: costPerM,
+                receivedBy: userUid
+            });
+        });
+
+        logger.log(`Successfully received ${packagesReceived} packages for item ${inventoryItemId}.`);
+        return { success: true };
+
+    } catch (error) {
+        logger.error(`Error receiving inventory for item ${inventoryItemId}:`, error);
+        if (error instanceof HttpsError) {
+            throw error;
+        }
+        throw new HttpsError('internal', 'An unexpected error occurred while receiving inventory.');
+    }
+});
+
 
 // --- Helper Function for Preflight Checks (using pdfinfo) ---
 async function runPreflightChecks(filePath, logger) {
