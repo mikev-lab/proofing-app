@@ -1,6 +1,6 @@
 import { auth, db } from './firebase.js';
 import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { collection, getDocs, orderBy, query } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { collection, getDocs, orderBy, query, where, doc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -28,6 +28,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const addItemButton = document.getElementById('add-item-button');
     const cancelItemButton = document.getElementById('cancel-item-button');
     const itemForm = document.getElementById('item-form');
+
+    const costHistoryModal = document.getElementById('cost-history-modal');
+    const costHistoryChartCanvas = document.getElementById('cost-history-chart');
+    const closeCostHistoryModalButton = document.getElementById('close-cost-history-modal');
+    const costHistoryItemName = document.getElementById('cost-history-item-name');
+    let costHistoryChart = null;
+
 
     const functions = getFunctions();
     const receiveInventory = httpsCallable(functions, 'receiveInventory');
@@ -193,10 +200,39 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    inventoryTableBody.addEventListener('click', (e) => {
+    inventoryTableBody.addEventListener('click', async (e) => {
+        // Handle click on cost cell for graphing
+        if (e.target.classList.contains('cost-cell')) {
+            const itemId = e.target.dataset.itemId;
+            await showCostHistoryGraph(itemId);
+            return;
+        }
+
+        // Handle click on edit button
         if (e.target.classList.contains('edit-btn')) {
+            e.stopPropagation();
             const itemId = e.target.dataset.id;
             openEditModal(itemId);
+            return;
+        }
+
+        // Handle row expansion/collapse
+        const row = e.target.closest('tr');
+        if (row && row.classList.contains('main-row')) {
+            const detailsRow = row.nextElementSibling;
+            if (detailsRow && detailsRow.classList.contains('details-row')) {
+                const isHidden = detailsRow.classList.contains('hidden');
+
+                if (isHidden && !detailsRow.dataset.loaded) {
+                    const itemId = row.dataset.id;
+                    const contentDiv = detailsRow.querySelector('.details-content');
+                    contentDiv.innerHTML = '<div class="flex justify-center items-center p-4"><div class="loader"></div></div>'; // Show loader
+                    await loadPurchaseHistory(itemId, detailsRow);
+                    detailsRow.dataset.loaded = 'true';
+                }
+
+                detailsRow.classList.toggle('hidden');
+            }
         }
     });
 
@@ -227,8 +263,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 const dimensions = item.dimensions ? `${item.dimensions.width} x ${item.dimensions.height} ${item.dimensions.unit}` : 'N/A';
 
-                const row = `
-                    <tr>
+                const mainRow = `
+                    <tr class="main-row" data-id="${doc.id}" style="cursor: pointer;">
                         <td class="whitespace-nowrap py-4 pl-4 pr-3 text-sm font-medium text-white sm:pl-6">${item.name}</td>
                         <td class="whitespace-nowrap px-3 py-4 text-sm text-gray-300">${item.quantityInPackages}</td>
                         <td class="whitespace-nowrap px-3 py-4 text-sm text-gray-300 hidden sm:table-cell">${item.quantityLooseSheets}</td>
@@ -241,7 +277,16 @@ document.addEventListener('DOMContentLoaded', () => {
                         </td>
                     </tr>
                 `;
-                inventoryTableBody.innerHTML += row;
+
+                const detailsRow = `
+                    <tr class="details-row bg-slate-900/50 hidden" data-details-for="${doc.id}">
+                        <td colspan="8" class="p-4">
+                            <div class="details-content text-center text-gray-400">Loading details...</div>
+                        </td>
+                    </tr>
+                `;
+
+                inventoryTableBody.innerHTML += mainRow + detailsRow;
             });
         } catch (error) {
             console.error("Error loading inventory: ", error);
@@ -251,4 +296,142 @@ document.addEventListener('DOMContentLoaded', () => {
         loadingSpinner.classList.add('hidden');
         inventoryContent.classList.remove('hidden');
     }
+
+    async function loadPurchaseHistory(itemId, detailsRow) {
+        const contentDiv = detailsRow.querySelector('.details-content');
+        try {
+            const purchasesRef = collection(db, 'inventoryPurchases');
+            const q = query(purchasesRef, where("inventoryItemRef", "==", doc(db, "inventory", itemId)), orderBy("purchaseDate", "desc"));
+            const querySnapshot = await getDocs(q);
+
+            if (querySnapshot.empty) {
+                contentDiv.innerHTML = '<p class="text-gray-400">No purchase history found for this item.</p>';
+                return;
+            }
+
+            const purchases = [];
+            querySnapshot.forEach(doc => {
+                purchases.push(doc.data());
+            });
+
+            const lastPurchase = purchases[0]; // Most recent due to ordering
+            const lastPurchaseDate = lastPurchase.purchaseDate.toDate().toLocaleDateString();
+
+            let tableHtml = `
+                <div class="p-4 bg-slate-800 rounded-lg">
+                    <div class="flex justify-between items-center mb-4">
+                         <h4 class="text-md font-semibold text-white">Purchase History</h4>
+                         <div>
+                            <span class="text-sm text-gray-400">Last Purchased:</span>
+                            <span class="text-sm font-medium text-white">${lastPurchaseDate}</span>
+                         </div>
+                    </div>
+                    <table class="min-w-full divide-y divide-slate-700">
+                        <thead class="bg-slate-700/50">
+                            <tr>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Date</th>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Packages</th>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Total Cost</th>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Cost/M</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-700">
+                            ${purchases.map(p => `
+                                <tr>
+                                    <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-300">${p.purchaseDate.toDate().toLocaleDateString()}</td>
+                                    <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-300">${p.quantityPurchasedInPackages}</td>
+                                    <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-300">$${p.totalCost.toFixed(2)}</td>
+                                    <td class="px-3 py-2 whitespace-nowrap text-sm text-indigo-400 hover:text-indigo-300 cursor-pointer cost-cell" data-item-id="${itemId}">$${p.costPerM_atPurchase.toFixed(2)}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+            contentDiv.innerHTML = tableHtml;
+
+        } catch (error) {
+            console.error("Error loading purchase history:", error);
+            contentDiv.innerHTML = '<p class="text-red-400">Error loading purchase history.</p>';
+        }
+    }
+
+    async function showCostHistoryGraph(itemId) {
+        const item = inventoryItems.find(i => i.id === itemId);
+        if (!item) return;
+
+        costHistoryItemName.textContent = item.name;
+
+        try {
+            const purchasesRef = collection(db, 'inventoryPurchases');
+            const q = query(purchasesRef, where("inventoryItemRef", "==", doc(db, "inventory", itemId)), orderBy("purchaseDate", "asc"));
+            const querySnapshot = await getDocs(q);
+
+            const labels = [];
+            const data = [];
+            querySnapshot.forEach(doc => {
+                const purchase = doc.data();
+                labels.push(purchase.purchaseDate.toDate().toLocaleDateString());
+                data.push(purchase.costPerM_atPurchase);
+            });
+
+            if (costHistoryChart) {
+                costHistoryChart.destroy();
+            }
+
+            costHistoryChart = new Chart(costHistoryChartCanvas, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Cost per M',
+                        data: data,
+                        borderColor: 'rgba(79, 70, 229, 1)',
+                        backgroundColor: 'rgba(79, 70, 229, 0.2)',
+                        tension: 0.1,
+                        fill: true,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: false,
+                            ticks: {
+                                color: '#9ca3af' // text-gray-400
+                            },
+                            grid: {
+                                color: '#4b5563' // border-gray-600
+                            }
+                        },
+                        x: {
+                            ticks: {
+                                color: '#9ca3af'
+                            },
+                             grid: {
+                                display: false
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    }
+                }
+            });
+
+            costHistoryModal.classList.remove('hidden');
+
+        } catch (error) {
+            console.error("Error loading purchase history for graph:", error);
+            alert("Could not load cost history data.");
+        }
+    }
+
+    closeCostHistoryModalButton.addEventListener('click', () => {
+        costHistoryModal.classList.add('hidden');
+    });
+
 });
