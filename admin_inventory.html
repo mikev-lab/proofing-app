@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MCE Printing - Admin Inventory</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -13,6 +14,9 @@
             font-family: 'Inter', sans-serif;
             -webkit-font-smoothing: antialiased;
             -moz-osx-font-smoothing: grayscale;
+        }
+        .details-row {
+            display: none;
         }
     </style>
 </head>
@@ -86,136 +90,147 @@
 
     <script type="module" src="./js/admin-inventory.js"></script>
 
-    <!-- Receive Inventory Modal -->
-    <div id="receive-inventory-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+    <!-- Modals -->
+    <div id="receive-inventory-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
         <div class="bg-slate-800 rounded-lg shadow-xl p-6 w-full max-w-md">
             <h3 class="text-lg font-semibold text-white mb-4">Receive Inventory</h3>
             <form id="receive-inventory-form">
-                <div class="mb-4">
-                    <label for="receive-inventory-item" class="block text-sm font-medium text-gray-300">Inventory Item</label>
-                    <select id="receive-inventory-item" name="inventoryItem" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm"></select>
+                <div class="space-y-4">
+                    <div>
+                        <label for="receive-inventory-item" class="block text-sm font-medium text-gray-300">Item</label>
+                        <select id="receive-inventory-item" name="inventoryItem" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm p-2"></select>
+                    </div>
+                    <div>
+                        <label for="receive-packages-quantity" class="block text-sm font-medium text-gray-300">Number of Packages</label>
+                        <input type="number" id="receive-packages-quantity" name="packagesQuantity" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm p-2" required>
+                    </div>
+                    <div>
+                        <label for="receive-total-cost" class="block text-sm font-medium text-gray-300">Total Cost ($)</label>
+                        <input type="number" step="0.01" id="receive-total-cost" name="totalCost" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm p-2" required>
+                    </div>
                 </div>
-                <div class="mb-4">
-                    <label for="receive-packages-quantity" class="block text-sm font-medium text-gray-300">Packages Received</label>
-                    <input type="number" id="receive-packages-quantity" name="packagesQuantity" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm" required>
-                </div>
-                <div class="mb-4">
-                    <label for="receive-total-cost" class="block text-sm font-medium text-gray-300">Total Cost</label>
-                    <input type="number" id="receive-total-cost" name="totalCost" step="0.01" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm" required>
-                </div>
-                <div class="flex justify-end">
-                    <button type="button" id="cancel-receive-button" class="bg-gray-600 hover:bg-gray-500 text-white font-semibold py-2 px-4 rounded-md mr-2">Cancel</button>
-                    <button type="submit" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-4 rounded-md">Receive</button>
+                <div class="mt-6 flex justify-end space-x-2">
+                    <button type="button" id="cancel-receive-button" class="bg-slate-600 hover:bg-slate-500 text-white font-semibold py-2 px-4 rounded-md">Cancel</button>
+                    <button type="submit" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md">Receive</button>
                 </div>
             </form>
         </div>
     </div>
-
-    <!-- Reconcile Inventory Modal -->
-    <div id="reconcile-inventory-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+    <div id="reconcile-inventory-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
         <div class="bg-slate-800 rounded-lg shadow-xl p-6 w-full max-w-md">
             <h3 class="text-lg font-semibold text-white mb-4">Reconcile Inventory</h3>
             <form id="reconcile-inventory-form">
-                <div class="mb-4">
-                    <label for="reconcile-inventory-item" class="block text-sm font-medium text-gray-300">Inventory Item</label>
-                    <select id="reconcile-inventory-item" name="inventoryItem" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm"></select>
+                <div class="space-y-4">
+                    <div>
+                        <label for="reconcile-inventory-item" class="block text-sm font-medium text-gray-300">Item</label>
+                        <select id="reconcile-inventory-item" name="inventoryItem" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm p-2"></select>
+                    </div>
+                    <div>
+                        <label for="reconcile-total-box-count" class="block text-sm font-medium text-gray-300">Total Box Count (on shelf)</label>
+                        <input type="number" id="reconcile-total-box-count" name="totalBoxCount" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm p-2" required>
+                    </div>
                 </div>
-                <div class="mb-4">
-                    <label for="reconcile-total-box-count" class="block text-sm font-medium text-gray-300">Total Box Count</label>
-                    <input type="number" id="reconcile-total-box-count" name="totalBoxCount" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm" required>
-                </div>
-                <div class="flex justify-end">
-                    <button type="button" id="cancel-reconcile-button" class="bg-gray-600 hover:bg-gray-500 text-white font-semibold py-2 px-4 rounded-md mr-2">Cancel</button>
+                <div class="mt-6 flex justify-end space-x-2">
+                    <button type="button" id="cancel-reconcile-button" class="bg-slate-600 hover:bg-slate-500 text-white font-semibold py-2 px-4 rounded-md">Cancel</button>
                     <button type="submit" class="bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md">Reconcile</button>
                 </div>
             </form>
         </div>
     </div>
-
-    <!-- Add/Edit Inventory Item Modal -->
     <div id="item-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
-        <div class="bg-slate-800 rounded-lg shadow-xl p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto">
-            <h3 id="item-modal-title" class="text-lg font-semibold text-white mb-6">Add New Item</h3>
+         <div class="bg-slate-800 rounded-lg shadow-xl p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+            <h3 id="item-modal-title" class="text-lg font-semibold text-white mb-4">Add/Edit Item</h3>
             <form id="item-form">
                 <input type="hidden" id="item-id" name="itemId">
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <!-- Column 1 -->
-                    <div class="md:col-span-1 space-y-4">
+                    <div class="space-y-4">
                         <div>
-                            <label for="name" class="block text-sm font-medium text-gray-300">Name</label>
-                            <input type="text" id="name" name="name" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm" required>
+                            <label for="name" class="block text-sm font-medium text-gray-300">Item Name</label>
+                            <input type="text" id="name" name="name" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm p-2" required>
                         </div>
                         <div>
-                            <label for="sheetsPerPackage" class="block text-sm font-medium text-gray-300">Sheets Per Package</label>
-                            <input type="number" id="sheetsPerPackage" name="sheetsPerPackage" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm" required>
+                            <label for="sheetsPerPackage" class="block text-sm font-medium text-gray-300">Sheets per Package</label>
+                            <input type="number" id="sheetsPerPackage" name="sheetsPerPackage" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm p-2" required>
                         </div>
                         <div>
                             <label for="manufacturerSKU" class="block text-sm font-medium text-gray-300">Manufacturer SKU</label>
-                            <input type="text" id="manufacturerSKU" name="manufacturerSKU" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm">
+                            <input type="text" id="manufacturerSKU" name="manufacturerSKU" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm p-2">
                         </div>
                         <div>
-                            <label for="location" class="block text-sm font-medium text-gray-300">Location</label>
-                            <input type="text" id="location" name="location" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm">
+                            <label for="location" class="block text-sm font-medium text-gray-300">Storage Location</label>
+                            <input type="text" id="location" name="location" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm p-2">
                         </div>
                     </div>
-
                     <!-- Column 2 -->
-                    <div class="md:col-span-1 space-y-4">
+                    <div class="space-y-4">
                         <div>
                             <label class="block text-sm font-medium text-gray-300">Dimensions</label>
-                            <div class="mt-1 grid grid-cols-3 gap-2">
-                                <input type="number" step="any" id="dimension-width" name="dimension-width" placeholder="Width" class="block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm" required>
-                                <input type="number" step="any" id="dimension-height" name="dimension-height" placeholder="Height" class="block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm" required>
-                                <select id="dimension-unit" name="dimension-unit" class="block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm" required>
+                            <div class="flex items-center space-x-2 mt-1">
+                                <input type="number" step="any" name="dimension-width" id="dimension-width" placeholder="W" class="w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm p-2">
+                                <span class="text-gray-400">x</span>
+                                <input type="number" step="any" name="dimension-height" id="dimension-height" placeholder="H" class="w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm p-2">
+                                <select name="dimension-unit" id="dimension-unit" class="bg-slate-700 border-slate-600 text-white rounded-md shadow-sm p-2">
                                     <option>in</option>
                                     <option>mm</option>
-                                    <option>cm</option>
                                 </select>
                             </div>
                         </div>
                         <div>
                             <label for="grainDirection" class="block text-sm font-medium text-gray-300">Grain Direction</label>
-                            <select id="grainDirection" name="grainDirection" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm" required>
-                                <option value="">Select Grain...</option>
+                            <select id="grainDirection" name="grainDirection" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm p-2">
+                                <option value="">N/A</option>
                                 <option value="long">Long</option>
                                 <option value="short">Short</option>
                             </select>
                         </div>
                         <div>
-                            <label for="weight" class="block text-sm font-medium text-gray-300">Weight (e.g., 100)</label>
-                            <input type="number" id="weight" name="weight" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm">
+                            <label for="weight" class="block text-sm font-medium text-gray-300">Weight (e.g., 80, 100)</label>
+                            <input type="number" id="weight" name="weight" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm p-2">
                         </div>
-                         <div>
+                        <div>
                             <label for="thickness_caliper" class="block text-sm font-medium text-gray-300">Thickness / Caliper (pt)</label>
-                            <input type="number" step="any" id="thickness_caliper" name="thickness_caliper" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm">
+                            <input type="number" step="any" id="thickness_caliper" name="thickness_caliper" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm p-2">
                         </div>
                     </div>
-
                     <!-- Column 3 -->
-                    <div class="md:col-span-1 space-y-4">
+                    <div class="space-y-4">
                         <div>
-                            <label for="type" class="block text-sm font-medium text-gray-300">Type (e.g., Cover, Text)</label>
-                            <input type="text" id="type" name="type" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm">
+                            <label for="type" class="block text-sm font-medium text-gray-300">Type</label>
+                            <input type="text" id="type" name="type" placeholder="e.g., Cover, Text" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm p-2">
                         </div>
                         <div>
-                            <label for="finish" class="block text-sm font-medium text-gray-300">Finish (e.g., Gloss, Silk)</label>
-                            <input type="text" id="finish" name="finish" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm">
+                            <label for="finish" class="block text-sm font-medium text-gray-300">Finish</label>
+                            <input type="text" id="finish" name="finish" placeholder="e.g., Gloss, Silk, Matte" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm p-2">
                         </div>
-                        <div>
+                         <div>
                             <label for="brand" class="block text-sm font-medium text-gray-300">Brand (Optional)</label>
-                            <input type="text" id="brand" name="brand" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm">
+                            <input type="text" id="brand" name="brand" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm p-2">
                         </div>
                         <div>
                             <label for="color" class="block text-sm font-medium text-gray-300">Color (Optional)</label>
-                            <input type="text" id="color" name="color" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm">
+                            <input type="text" id="color" name="color" class="mt-1 block w-full bg-slate-700 border-slate-600 text-white rounded-md shadow-sm p-2">
                         </div>
                     </div>
                 </div>
-                <div class="flex justify-end mt-6 pt-4 border-t border-slate-700">
-                    <button type="button" id="cancel-item-button" class="bg-gray-600 hover:bg-gray-500 text-white font-semibold py-2 px-4 rounded-md mr-2">Cancel</button>
+                <div class="mt-6 flex justify-end space-x-2">
+                    <button type="button" id="cancel-item-button" class="bg-slate-600 hover:bg-slate-500 text-white font-semibold py-2 px-4 rounded-md">Cancel</button>
                     <button type="submit" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md">Save Item</button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- Cost History Chart Modal -->
+    <div id="cost-history-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
+        <div class="bg-slate-800 rounded-lg shadow-xl p-6 w-full max-w-3xl">
+            <div class="flex justify-between items-center mb-4">
+                <h3 id="cost-history-item-name" class="text-lg font-semibold text-white">Cost History</h3>
+                <button id="close-cost-history-modal" class="text-gray-400 hover:text-white">&times;</button>
+            </div>
+            <div class="bg-slate-900/50 p-4 rounded-lg" style="height: 400px">
+                <canvas id="cost-history-chart"></canvas>
+            </div>
         </div>
     </div>
 </body>
