@@ -230,39 +230,65 @@ exports.upsertInventoryItem = onCall({ region: 'us-central1' }, async (request) 
         throw new HttpsError('internal', 'An error occurred while verifying admin status.');
     }
 
-    // 2. Data Validation
-    const { itemId, internalId, name, manufacturerSKU, sheetsPerPackage } = request.data;
-    if (!internalId || !name || !sheetsPerPackage) {
-        throw new HttpsError('invalid-argument', 'Missing required fields: internalId, name, or sheetsPerPackage.');
+    // 2. Data Validation & Extraction
+    const {
+        itemId, name, manufacturerSKU, sheetsPerPackage, type, weight, finish,
+        thickness_caliper, location, reorderPoint, dimensions, grainDirection,
+        brand, color
+    } = request.data;
+
+    // Core fields validation
+    if (!name || !sheetsPerPackage || !dimensions || !dimensions.width || !dimensions.height || !dimensions.unit || !grainDirection) {
+        throw new HttpsError('invalid-argument', 'Missing required fields: name, sheetsPerPackage, dimensions, or grainDirection.');
     }
 
+    // 3. Build the data object for Firestore
     const itemData = {
-        internalId,
         name,
         manufacturerSKU: manufacturerSKU || '',
         sheetsPerPackage: parseInt(sheetsPerPackage, 10),
+        type: type || '',
+        weight: parseFloat(weight) || 0,
+        finish: finish || '',
+        thickness_caliper: parseFloat(thickness_caliper) || 0,
+        location: location || '',
+        reorderPoint: parseInt(reorderPoint, 10) || 0,
+        dimensions: {
+            width: parseFloat(dimensions.width),
+            height: parseFloat(dimensions.height),
+            unit: dimensions.unit
+        },
+        grainDirection,
+        brand: brand || '', // Optional
+        color: color || '', // Optional
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
     };
 
-    // 3. Upsert Logic
+
+    // 4. Upsert Logic
     try {
         if (itemId) {
             // Update existing item
             const itemRef = db.collection('inventory').doc(itemId);
             await itemRef.update(itemData);
             logger.log(`Successfully updated inventory item ${itemId}.`);
+            return { success: true, id: itemId };
         } else {
-            // Create new item
-            const itemRef = db.collection('inventory').doc(internalId);
+            // Create new item with a system-generated UUID
+            const newId = crypto.randomUUID();
+            const itemRef = db.collection('inventory').doc(newId);
+
+            // Add create-time fields
             itemData.createdAt = admin.firestore.FieldValue.serverTimestamp();
             itemData.quantityInPackages = 0;
             itemData.quantityLooseSheets = 0;
             itemData.latestCostPerM = 0;
             itemData.vendorCostPerM = 0;
+
             await itemRef.set(itemData);
-            logger.log(`Successfully created new inventory item ${internalId}.`);
+            logger.log(`Successfully created new inventory item ${newId}.`);
+            return { success: true, id: newId };
         }
-        return { success: true };
     } catch (error) {
         logger.error('Error upserting inventory item:', error);
         throw new HttpsError('internal', 'An unexpected error occurred while saving the item.');

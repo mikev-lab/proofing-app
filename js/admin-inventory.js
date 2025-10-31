@@ -1,6 +1,6 @@
 import { auth, db } from './firebase.js';
 import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { collection, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { collection, getDocs, orderBy, query } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -119,7 +119,7 @@ document.addEventListener('DOMContentLoaded', () => {
     addItemButton.addEventListener('click', () => {
         itemModalTitle.textContent = 'Add New Item';
         itemForm.reset();
-        document.getElementById('internalId').disabled = false;
+        document.getElementById('item-id').value = ''; // Ensure no ID is set for new items
         itemModal.classList.remove('hidden');
     });
 
@@ -130,7 +130,26 @@ document.addEventListener('DOMContentLoaded', () => {
     itemForm.addEventListener('submit', async (e) => {
         e.preventDefault();
         const formData = new FormData(e.target);
-        const data = Object.fromEntries(formData.entries());
+        const data = {
+            itemId: formData.get('itemId'),
+            name: formData.get('name'),
+            manufacturerSKU: formData.get('manufacturerSKU'),
+            sheetsPerPackage: formData.get('sheetsPerPackage'),
+            type: formData.get('type'),
+            weight: formData.get('weight'),
+            finish: formData.get('finish'),
+            thickness_caliper: formData.get('thickness_caliper'),
+            location: formData.get('location'),
+            reorderPoint: formData.get('reorderPoint'),
+            dimensions: {
+                width: formData.get('dimension-width'),
+                height: formData.get('dimension-height'),
+                unit: formData.get('dimension-unit')
+            },
+            grainDirection: formData.get('grainDirection'),
+            brand: formData.get('brand'),
+            color: formData.get('color')
+        };
 
         try {
             await upsertInventoryItem(data);
@@ -149,12 +168,27 @@ document.addEventListener('DOMContentLoaded', () => {
         if (item) {
             itemModalTitle.textContent = 'Edit Item';
             itemForm.reset();
+            // Populate form fields
             document.getElementById('item-id').value = item.id;
-            document.getElementById('internalId').value = item.internalId;
-            document.getElementById('internalId').disabled = true;
-            document.getElementById('name').value = item.name;
-            document.getElementById('manufacturerSKU').value = item.manufacturerSKU;
-            document.getElementById('sheetsPerPackage').value = item.sheetsPerPackage;
+            document.getElementById('name').value = item.name || '';
+            document.getElementById('sheetsPerPackage').value = item.sheetsPerPackage || '';
+            document.getElementById('manufacturerSKU').value = item.manufacturerSKU || '';
+            document.getElementById('location').value = item.location || '';
+
+            if (item.dimensions) {
+                document.getElementById('dimension-width').value = item.dimensions.width || '';
+                document.getElementById('dimension-height').value = item.dimensions.height || '';
+                document.getElementById('dimension-unit').value = item.dimensions.unit || 'in';
+            }
+
+            document.getElementById('grainDirection').value = item.grainDirection || '';
+            document.getElementById('weight').value = item.weight || '';
+            document.getElementById('thickness_caliper').value = item.thickness_caliper || '';
+            document.getElementById('type').value = item.type || '';
+            document.getElementById('finish').value = item.finish || '';
+            document.getElementById('brand').value = item.brand || '';
+            document.getElementById('color').value = item.color || '';
+
             itemModal.classList.remove('hidden');
         }
     }
@@ -184,18 +218,24 @@ document.addEventListener('DOMContentLoaded', () => {
         inventoryItems = []; // Reset cache
 
         try {
-            const querySnapshot = await getDocs(collection(db, "inventory"));
+            const q = query(collection(db, "inventory"), orderBy("name"));
+            const querySnapshot = await getDocs(q);
             inventoryTableBody.innerHTML = ''; // Clear existing rows
             querySnapshot.forEach((doc) => {
                 const item = doc.data();
                 inventoryItems.push({ id: doc.id, ...item }); // Cache item
+
+                const dimensions = item.dimensions ? `${item.dimensions.width} x ${item.dimensions.height} ${item.dimensions.unit}` : 'N/A';
+
                 const row = `
                     <tr>
                         <td class="whitespace-nowrap py-4 pl-4 pr-3 text-sm font-medium text-white sm:pl-6">${item.name}</td>
                         <td class="whitespace-nowrap px-3 py-4 text-sm text-gray-300">${item.quantityInPackages}</td>
-                        <td class="whitespace-nowrap px-3 py-4 text-sm text-gray-300">${item.quantityLooseSheets}</td>
-                        <td class="whitespace-nowrap px-3 py-4 text-sm text-gray-300">$${(item.latestCostPerM || 0).toFixed(2)}</td>
-                        <td class="whitespace-nowrap px-3 py-4 text-sm text-gray-300">$${(item.vendorCostPerM || 0).toFixed(2)}</td>
+                        <td class="whitespace-nowrap px-3 py-4 text-sm text-gray-300 hidden sm:table-cell">${item.quantityLooseSheets}</td>
+                        <td class="whitespace-nowrap px-3 py-4 text-sm text-gray-300 hidden md:table-cell">${dimensions}</td>
+                        <td class="whitespace-nowrap px-3 py-4 text-sm text-gray-300 hidden lg:table-cell">${item.grainDirection || 'N/A'}</td>
+                        <td class="whitespace-nowrap px-3 py-4 text-sm text-gray-300 hidden xl:table-cell">${item.weight || 'N/A'}</td>
+                        <td class="whitespace-nowrap px-3 py-4 text-sm text-gray-300 hidden xl:table-cell">${item.thickness_caliper ? `${item.thickness_caliper}pt` : 'N/A'}</td>
                         <td class="relative whitespace-nowrap py-4 pl-3 pr-4 text-right text-sm font-medium sm:pr-6">
                             <button data-id="${doc.id}" class="text-indigo-400 hover:text-indigo-300 edit-btn">Edit</button>
                         </td>
@@ -205,7 +245,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         } catch (error) {
             console.error("Error loading inventory: ", error);
-            inventoryTableBody.innerHTML = '<tr><td colspan="6" class="text-center py-4">Error loading inventory.</td></tr>';
+            inventoryTableBody.innerHTML = '<tr><td colspan="8" class="text-center py-4">Error loading inventory.</td></tr>';
         }
 
         loadingSpinner.classList.add('hidden');
