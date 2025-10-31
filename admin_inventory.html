@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCE Printing - Inventory Management</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+        .form-input, .form-select {
+             margin-top: 0.25rem;
+             display: block;
+             width: 100%;
+             border-radius: 0.5rem;
+             border: 0;
+             background-color: rgba(255, 255, 255, 0.05);
+             padding: 0.5rem 0.75rem;
+             color: white;
+             box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+             --tw-ring-color: rgba(255, 255, 255, 0.1);
+             ring: 1px solid transparent;
+        }
+        .form-input:focus, .form-select:focus {
+            outline: 2px solid transparent;
+            outline-offset: 2px;
+            --tw-ring-color: #6366f1;
+             box-shadow: 0 0 0 2px #6366f1;
+        }
+        .form-label {
+            display: block;
+            margin-bottom: 0.25rem;
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: #d1d5db;
+        }
+    </style>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-[#0f172a] to-[#334155] text-gray-100">
+    <div class="flex h-full">
+        <!-- Sidebar -->
+        <div class="flex flex-col w-64 bg-slate-900/70 backdrop-blur-sm border-r border-slate-700/50">
+            <div class="flex items-center justify-center h-16 border-b border-slate-700/50">
+                <h1 class="text-2xl font-bold text-white">MCE Admin</h1>
+            </div>
+            <div class="flex-grow">
+                <nav class="flex-grow md:block px-4 pb-4 md:pb-0 md:overflow-y-auto">
+                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="admin.html">All Projects</a>
+                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="admin_client_management.html">Clients</a>
+                    <a href="admin_inventory.html" class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-200 bg-slate-700/50 rounded-lg hover:bg-slate-600/50">Inventory</a>
+                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="admin_settings.html">Settings</a>
+                </nav>
+            </div>
+        </div>
+
+        <!-- Main content -->
+        <div class="flex flex-col flex-1">
+            <!-- Header -->
+            <header class="flex justify-between items-center h-16 px-6 bg-slate-800/60 backdrop-blur-sm border-b border-slate-700/50">
+                <div>
+                    <h2 class="text-xl font-semibold text-white">Inventory Management</h2>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <span id="user-email" class="text-sm text-gray-300 hidden sm:block"></span>
+                    <button id="logout-button" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm">Sign Out</button>
+                </div>
+            </header>
+
+            <main class="flex-1 p-6">
+                <div id="loading-spinner" class="text-center py-12">
+                    <div class="h-12 w-12 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900 mx-auto"></div>
+                    <p class="mt-4 text-gray-300">Loading inventory...</p>
+                </div>
+
+                <div id="inventory-content" class="hidden space-y-8">
+                    <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
+                        <h3 class="text-lg font-semibold text-white mb-4">Add/Edit Stock</h3>
+                        <form id="inventory-form" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                            <div>
+                                <label for="internalId" class="form-label">Internal ID</label>
+                                <input type="text" id="internalId" name="internalId" class="form-input" placeholder="e.g., PAPER-00123" required>
+                            </div>
+                            <div>
+                                <label for="name" class="form-label">Name</label>
+                                <input type="text" id="name" name="name" class="form-input" placeholder="e.g., 80# Silk Text" required>
+                            </div>
+                            <div>
+                                <label for="manufacturerSKU" class="form-label">Manufacturer SKU</label>
+                                <input type="text" id="manufacturerSKU" name="manufacturerSKU" class="form-input" placeholder="e.g., KELLY-SKU-789">
+                            </div>
+                            <div>
+                                <label for="vendor-select" class="form-label">Vendor</label>
+                                <select id="vendor-select" name="vendorRef" class="form-select" required></select>
+                            </div>
+                            <div>
+                                <label for="type" class="form-label">Type</label>
+                                <input type="text" id="type" name="type" class="form-input" placeholder="e.g., Cover, Text">
+                            </div>
+                            <div>
+                                <label for="weight" class="form-label">Weight</label>
+                                <input type="number" id="weight" name="weight" class="form-input" placeholder="e.g., 80">
+                            </div>
+                            <div>
+                                <label for="finish" class="form-label">Finish</label>
+                                <input type="text" id="finish" name="finish" class="form-input" placeholder="e.g., Silk, Gloss">
+                            </div>
+                            <div>
+                                <label for="thickness_caliper" class="form-label">Thickness (caliper)</label>
+                                <input type="number" id="thickness_caliper" name="thickness_caliper" step="any" class="form-input" placeholder="e.g., 0.005">
+                            </div>
+                            <div>
+                                <label for="currentCostPerSheet" class="form-label">Cost/Sheet</label>
+                                <input type="number" id="currentCostPerSheet" name="currentCostPerSheet" step="any" class="form-input" placeholder="e.g., 0.23">
+                            </div>
+                             <div>
+                                <label for="location" class="form-label">Location</label>
+                                <input type="text" id="location" name="location" class="form-input" placeholder="e.g., Aisle 3, Shelf B">
+                            </div>
+                            <div>
+                                <label for="quantity" class="form-label">Quantity</label>
+                                <input type="number" id="quantity" name="quantity" class="form-input" placeholder="e.g., 5000">
+                            </div>
+                            <div>
+                                <label for="reorderPoint" class="form-label">Reorder Point</label>
+                                <input type="number" id="reorderPoint" name="reorderPoint" class="form-input" placeholder="e.g., 1000">
+                            </div>
+                            <div class="col-span-full text-right mt-4">
+                                <button type="submit" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-6 rounded-md">Save Item</button>
+                            </div>
+                        </form>
+                    </div>
+                    <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
+                        <h3 class="text-lg font-semibold text-white mb-4">Current Inventory</h3>
+                        <div id="inventory-table-container" class="overflow-x-auto">
+                            <table id="inventory-table" class="min-w-full text-sm text-left text-gray-300">
+                                <thead class="text-xs text-gray-400 uppercase bg-slate-900/50">
+                                    <tr>
+                                        <th scope="col" class="px-6 py-3">Internal ID</th>
+                                        <th scope="col" class="px-6 py-3">Name</th>
+                                        <th scope="col" class="px-6 py-3">Vendor</th>
+                                        <th scope="col" class="px-6 py-3">Location</th>
+                                        <th scope="col" class="px-6 py-3">Current Qty</th>
+                                        <th scope="col" class="px-6 py-3">Cost/Sheet</th>
+                                        <th scope="col" class="px-6 py-3">Last Verified</th>
+                                        <th scope="col" class="px-6 py-3">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="inventory-list" class="divide-y divide-slate-700">
+                                    <!-- Rows will be injected here -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <script type="module" src="./js/admin_inventory.js"></script>
+</body>
+</html>
