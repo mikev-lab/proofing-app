@@ -1,7 +1,7 @@
-import { auth, db } from './firebase.js';
-import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { collection, getDocs, orderBy, query, where, doc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
+import { auth, db, functions } from './firebase.js';
+import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+import { collection, getDocs, orderBy, query, where, doc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js";
 
 document.addEventListener('DOMContentLoaded', () => {
     const userEmailElement = document.getElementById('user-email');
@@ -36,7 +36,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let costHistoryChart = null;
 
 
-    const functions = getFunctions();
+    // Use the 'functions' instance imported from firebase.js
     const receiveInventory = httpsCallable(functions, 'receiveInventory');
     const reconcileInventory = httpsCallable(functions, 'reconcileInventory');
     const upsertInventoryItem = httpsCallable(functions, 'upsertInventoryItem');
@@ -200,24 +200,30 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // *** THIS IS THE CORRECTED CLICK LISTENER ***
     inventoryTableBody.addEventListener('click', async (e) => {
+        // Get the element that was clicked, even if it's text
+        const targetElement = e.target.nodeType === 1 ? e.target : e.target.parentElement;
+
         // Handle click on cost cell for graphing
-        if (e.target.classList.contains('cost-cell')) {
-            const itemId = e.target.dataset.itemId;
+        const costCell = targetElement.closest('.cost-cell');
+        if (costCell) {
+            const itemId = costCell.dataset.itemId;
             await showCostHistoryGraph(itemId);
             return;
         }
 
         // Handle click on edit button
-        if (e.target.classList.contains('edit-btn')) {
-            e.stopPropagation();
-            const itemId = e.target.dataset.id;
+        const editButton = targetElement.closest('.edit-btn');
+        if (editButton) {
+            e.stopPropagation(); // Stop row from expanding
+            const itemId = editButton.dataset.id;
             openEditModal(itemId);
             return;
         }
 
         // Handle row expansion/collapse
-        const row = e.target.closest('tr');
+        const row = targetElement.closest('tr');
         if (row && row.classList.contains('main-row')) {
             const detailsRow = row.nextElementSibling;
             if (detailsRow && detailsRow.classList.contains('details-row')) {
@@ -235,6 +241,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
     });
+    // *** END OF CORRECTION ***
 
     function populateInventoryDropdowns() {
         receiveInventoryItemSelect.innerHTML = '';
@@ -271,7 +278,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         <td class="whitespace-nowrap px-3 py-4 text-sm text-gray-300 hidden md:table-cell">${dimensions}</td>
                         <td class="whitespace-nowrap px-3 py-4 text-sm text-gray-300 hidden lg:table-cell">${item.grainDirection || 'N/A'}</td>
                         <td class="whitespace-nowrap px-3 py-4 text-sm text-gray-300 hidden xl:table-cell">${item.weight || 'N/A'}</td>
-                        <td class="whitespace-nowrap px-3 py-4 text-sm text-gray-300 hidden xl:table-cell">${item.thickness_caliper ? `${item.thickness_caliper}pt` : 'N/A'}</td>
+                        <td class->${item.thickness_caliper ? `${item.thickness_caliper}pt` : 'N/A'}</td>
                         <td class="relative whitespace-nowrap py-4 pl-3 pr-4 text-right text-sm font-medium sm:pr-6">
                             <button data-id="${doc.id}" class="text-indigo-400 hover:text-indigo-300 edit-btn">Edit</button>
                         </td>
