@@ -191,6 +191,27 @@ service cloud.firestore {
       allow create: if hasValidGuestDataAccess(projectId, 'canAnnotate');
     }
 
+    // --- Rules for 'vendors' Collection ---
+    match /vendors/{vendorId} {
+      // Admins can manage vendors, staff can read
+      allow read, write: if isAdmin();
+    }
+
+    // --- Rules for 'inventory' Collection ---
+    match /inventory/{stockId} {
+      // Admins can manage inventory.
+      // We will add rules for staff/mobile app later.
+      allow read, write: if isAdmin();
+    }
+
+    // --- Rules for 'inventoryPurchases' Collection ---
+    match /inventoryPurchases/{purchaseId} {
+      // Admins can log new purchases.
+      allow read, create: if isAdmin();
+      // Lock records after creation
+      allow update, delete: if false;
+    }
+
     // ******** ADD THIS SECTION ********
 
     // --- Rules for 'settings' Collection (NEW) ---
