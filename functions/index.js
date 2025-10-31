@@ -214,6 +214,424 @@ exports.optimizePdf = onObjectFinalized({
   return null;
 });
 
+exports.estimators_calculateEstimate = onCall({ region: 'us-central1' }, async (request) => {
+// All logic from step 2 will go here
+const details = request.data;
+
+// We will inject the calculation logic here
+
+// --- Production Constants ---
+const COLOR_CLICK_COST = 0.039;
+const BW_CLICK_COST = 0.009;
+const GLOSS_LAMINATE_COST_PER_COVER = 0.30;
+const MATTE_LAMINATE_COST_PER_COVER = 0.60;
+const PRINTING_SPEED_SPM = 15; // Sheets per minute for c3080 (4 seconds per sheet)
+const LAMINATING_SPEED_MPM = 5; // Meters per minute
+const PERFECT_BINDER_SETUP_MINS = 15;
+const PERFECT_BINDER_SPEED_BPH = 300; // Books per hour
+const SADDLE_STITCHER_SETUP_MINS = 10;
+const SADDLE_STITCHER_SPEED_BPH = 400; // Books per hour (more realistic speed)
+const BASE_PREP_TIME_MINS = 20;
+const WASTAGE_FACTOR = 0.15; // 15% for materials and general time
+const BINDING_INEFFICIENCY_FACTOR = 1.20; // 20% slower than optimal speed to account for real-world conditions
+const TRIMMING_SETUP_MINS = 10;
+const TRIMMING_BOOKS_PER_CYCLE = 250; // How many books/sheets in a stack for the guillotine
+const TRIMMING_CYCLE_TIME_MINS = 5; // Time to load, clamp, cut 3 sides, unload a stack
+
+// --- Conversion Constants ---
+const SQ_INCH_TO_SQ_METER = 0.00064516;
+const GRAMS_TO_LBS = 0.00220462;
+
+// --- Data Types (for reference) ---
+/*
+export enum PrintColor {
+COLOR = 'COLOR',
+BW = 'BW',
+}
+
+export interface JobDetails {
+quantity: number;
+finishedWidth: number;
+finishedHeight: number;
+bwPages: number;
+bwPaperSku: string | null;
+colorPages: number;
+colorPaperSku: string | null;
+hasCover: boolean;
+coverPaperSku: string | null;
+coverPrintColor: PrintColor;
+coverPrintsOnBothSides: boolean;
+laminationType: 'gloss' | 'matte' | 'none';
+bindingMethod: 'perfectBound' | 'saddleStitch' | 'none';
+laborRate: number;
+markupPercent: number;
+spoilagePercent: number;
+calculateShipping: boolean;
+overrideShippingBoxName: string | null;
+}
+
+export interface PaperStock {
+name: string;
+gsm: number;
+type: 'Coated' | 'Uncoated';
+finish: string;
+parentWidth: number;
+parentHeight: number;
+sku: string | null;
+costPerSheet: number;
+usage: string;
+}
+*/
+
+// --- TEMPORARY Paper Data (Node B will replace this) ---
+const paperData = [
+{ name: 'Accent 40# Opaque Text 19x12.5', gsm: 59, type: 'Uncoated', finish: 'Uncoated', parentWidth: 19, parentHeight: 12.5, sku: '1301543', costPerSheet: 0.05, usage: 'B/W Text and Manga' },
+{ name: 'Accent 50# Opaque Text 11x17', gsm: 74, type: 'Uncoated', finish: 'Uncoated', parentWidth: 11, parentHeight: 17, sku: '1301480', costPerSheet: 0.04, usage: 'B/W Text and Manga' },
+{ name: 'Accent 50# Opaque Text 12x18', gsm: 74, type: 'Uncoated', finish: 'Uncoated', parentWidth: 12, parentHeight: 18, sku: '1301737', costPerSheet: 0.05, usage: 'B/W Text and Manga' },
+{ name: 'Accent 60# Opaque Text 19x12.5', gsm: 89, type: 'Uncoated', finish: 'Uncoated', parentWidth: 19, parentHeight: 12.5, sku: '1301542', costPerSheet: 0.06, usage: 'B/W Text and Manga' },
+{ name: 'Accent Opq Warm White 60# Opaque Text 12x18', gsm: 89, type: 'Uncoated', finish: 'Uncoated', parentWidth: 12, parentHeight: 18, sku: '1301969', costPerSheet: 0.06, usage: 'B/W Text and Manga' },
+{ name: 'Kelly Dig 60# Opaque Text 11x17', gsm: 89, type: 'Uncoated', finish: 'Uncoated', parentWidth: 11, parentHeight: 17, sku: '1300290', costPerSheet: 0.06, usage: 'B/W Text and Manga' },
+{ name: 'Kelly Dig 60# Opaque Text 12x18', gsm: 89, type: 'Uncoated', finish: 'Uncoated', parentWidth: 12, parentHeight: 18, sku: '1300295', costPerSheet: 0.07, usage: 'B/W Text and Manga' },
+{ name: 'Kelly Dig 60# Opaque Text 13x19', gsm: 89, type: 'Uncoated', finish: 'Uncoated', parentWidth: 13, parentHeight: 19, sku: '1300291', costPerSheet: 0.08, usage: 'B/W Text and Manga' },
+{ name: 'Kelly Dig 70# Opaque Text 11x17', gsm: 104, type: 'Uncoated', finish: 'Uncoated', parentWidth: 11, parentHeight: 17, sku: '1300293', costPerSheet: 0.07, usage: 'B/W Text and Manga' },
+{ name: 'Kelly Dig 70# Opaque Text 13x19', gsm: 104, type: 'Uncoated', finish: 'Uncoated', parentWidth: 13, parentHeight: 19, sku: '1300294', costPerSheet: 0.09, usage: 'B/W Text and Manga' },
+{ name: 'Kelly Dig 80# Opaque Text 11x17', gsm: 118, type: 'Uncoated', finish: 'Uncoated', parentWidth: 11, parentHeight: 17, sku: '1300304', costPerSheet: 0.08, usage: 'B/W Text and Manga' },
+{ name: 'Kelly Dig 80# Opaque Text 12x18', gsm: 118, type: 'Uncoated', finish: 'Uncoated', parentWidth: 12, parentHeight: 18, sku: '1300305', costPerSheet: 0.09, usage: 'B/W Text and Manga' },
+{ name: 'Kelly Dig 80# Opaque Text 13x19', gsm: 118, type: 'Uncoated', finish: 'Uncoated', parentWidth: 13, parentHeight: 19, sku: '1300306', costPerSheet: 0.1, usage: 'B/W Text and Manga' },
+{ name: 'Kelly Dig 100# Opaque Text 11x17', gsm: 148, type: 'Uncoated', finish: 'Uncoated', parentWidth: 11, parentHeight: 17, sku: '1300307', costPerSheet: 0.1, usage: 'B/W Text and Manga' },
+{ name: 'Finesse Dig 80# Gloss Text 12x18', gsm: 118, type: 'Coated', finish: 'Gloss', parentWidth: 12, parentHeight: 18, sku: '1111628', costPerSheet: 0.07, usage: 'Internal Color Images' },
+{ name: 'Kelly Dig 100# Gloss Text 13x19', gsm: 148, type: 'Coated', finish: 'Gloss', parentWidth: 13, parentHeight: 19, sku: '1106244', costPerSheet: 0.1, usage: 'Internal Color Images' },
+{ name: 'Kelly Dig 100# Gloss Text 18x12', gsm: 148, type: 'Coated', finish: 'Gloss', parentWidth: 18, parentHeight: 12, sku: '1107417', costPerSheet: 0.08, usage: 'Internal Color Images' },
+{ name: 'Kelly Dig 100# Silk Text 11x17', gsm: 148, type: 'Coated', finish: 'Silk', parentWidth: 11, parentHeight: 17, sku: '1106260', costPerSheet: 0.07, usage: 'Internal Color Images' },
+{ name: 'Kelly Dig 100# Silk Text 18x12', gsm: 148, type: 'Coated', finish: 'Silk', parentWidth: 18, parentHeight: 12, sku: '1107418', costPerSheet: 0.08, usage: 'Internal Color Images' },
+{ name: 'Kelly Dig 80# Gloss Text 11x17', gsm: 118, type: 'Coated', finish: 'Gloss', parentWidth: 11, parentHeight: 17, sku: '1111628-2', costPerSheet: 0.06, usage: 'Internal Color Images' },
+{ name: 'Kelly Dig 80# Gloss Text 12x18', gsm: 118, type: 'Coated', finish: 'Gloss', parentWidth: 12, parentHeight: 18, sku: '1100204', costPerSheet: 0.07, usage: 'Internal Color Images' },
+{ name: 'Kelly Dig 80# Gloss Text 18x12', gsm: 118, type: 'Coated', finish: 'Gloss', parentWidth: 18, parentHeight: 12, sku: '1107415', costPerSheet: 0.07, usage: 'Internal Color Images' },
+{ name: 'Kelly Dig 80# Gloss Text 13x19', gsm: 118, type: 'Coated', finish: 'Gloss', parentWidth: 13, parentHeight: 19, sku: '1106247', costPerSheet: 0.08, usage: 'Internal Color Images' },
+{ name: 'Kelly Dig 80# Silk Text 11x17', gsm: 118, type: 'Coated', finish: 'Silk', parentWidth: 11, parentHeight: 17, sku: '1106262', costPerSheet: 0.06, usage: 'Internal Color Images' },
+{ name: 'Kelly Dig 80# Silk Text 12x18', gsm: 118, type: 'Coated', finish: 'Silk', parentWidth: 12, parentHeight: 18, sku: '1106261', costPerSheet: 0.07, usage: 'Internal Color Images' },
+{ name: 'Pacesetter 80# Gloss Text 18x12', gsm: 118, type: 'Coated', finish: 'Gloss', parentWidth: 18, parentHeight: 12, sku: '1107415-2', costPerSheet: 0.07, usage: 'Internal Color Images' },
+{ name: 'Pacesetter 80# Silk Text 19x12.5', gsm: 118, type: 'Coated', finish: 'Silk', parentWidth: 19, parentHeight: 12.5, sku: '1106676', costPerSheet: 0.06, usage: 'Internal Color Images' },
+{ name: 'Accent 70# Opaque Text 19x12.5', gsm: 104, type: 'Uncoated', finish: 'Uncoated', parentWidth: 19, parentHeight: 12.5, sku: '1301350', costPerSheet: 0.07, usage: 'Internal Color Images' },
+{ name: 'Accent 100# Opaque Text 19x12.5', gsm: 148, type: 'Uncoated', finish: 'Uncoated', parentWidth: 19, parentHeight: 12.5, sku: '1301356', costPerSheet: 0.11, usage: 'Internal Color Images' },
+{ name: 'Accent 80# Opaque Text 19x12.5', gsm: 118, type: 'Uncoated', finish: 'Uncoated', parentWidth: 19, parentHeight: 12.5, sku: '1301351', costPerSheet: 0.08, usage: 'Internal Color Images' },
+{ name: 'Kelly Dig 100# Gloss Text 12x18', gsm: 148, type: 'Coated', finish: 'Gloss', parentWidth: 12, parentHeight: 18, sku: '1106245', costPerSheet: 0.08, usage: 'Internal Color Images' },
+{ name: 'Kelly Dig 100# Gloss Cover 13x19', gsm: 270, type: 'Coated', finish: 'Gloss', parentWidth: 13, parentHeight: 19, sku: '1107400', costPerSheet: 0.18, usage: 'Internal Color Images' },
+{ name: 'Kelly Dig 111# Gloss Cover 13x19', gsm: 300, type: 'Coated', finish: 'Gloss', parentWidth: 13, parentHeight: 19, sku: '1107401', costPerSheet: 0.2, usage: 'Internal Color Images' },
+{ name: 'Pacesetter 100# Silk Txt 19x12.5 (Forecast)', gsm: 148, type: 'Coated', finish: 'Silk', parentWidth: 19, parentHeight: 12.5, sku: '1106667', costPerSheet: 0.09, usage: 'Internal Color Images' },
+{ name: 'Kelly Dig 100# Silk Cover 11x17', gsm: 270, type: 'Coated', finish: 'Silk', parentWidth: 11, parentHeight: 17, sku: '1107391', costPerSheet: 0.14, usage: 'Covers' },
+{ name: 'Kelly Dig 100# Silk Cover 12x18', gsm: 270, type: 'Coated', finish: 'Silk', parentWidth: 12, parentHeight: 18, sku: '1106255', costPerSheet: 0.16, usage: 'Covers' },
+{ name: 'Kelly Dig 100# Silk Cover 13x19', gsm: 270, type: 'Coated', finish: 'Silk', parentWidth: 13, parentHeight: 19, sku: '1107392', costPerSheet: 0.18, usage: 'Covers' },
+{ name: 'Kelly Dig 111# Silk Cover 11x17', gsm: 300, type: 'Coated', finish: 'Silk', parentWidth: 11, parentHeight: 17, sku: '2207393', costPerSheet: 0.15, usage: 'Covers' },
+{ name: 'Kelly Dig 130# Gloss Cover 11x17', gsm: 350, type: 'Coated', finish: 'Gloss', parentWidth: 11, parentHeight: 17, sku: '1107402', costPerSheet: 0.18, usage: 'Covers' },
+{ name: 'Kelly Dig 130# Gloss Cover 12x18', gsm: 350, type: 'Coated', finish: 'Gloss', parentWidth: 12, parentHeight: 18, sku: '1107403', costPerSheet: 0.2, usage: 'Covers' },
+{ name: 'Kelly Dig 130# Gloss Cover 13x19', gsm: 350, type: 'Coated', finish: 'Gloss', parentWidth: 13, parentHeight: 19, sku: '1107404', costPerSheet: 0.23, usage: 'Covers' },
+{ name: 'Kelly Dig 130# Silk Cover 11x17', gsm: 350, type: 'Coated', finish: 'Silk', parentWidth: 11, parentHeight: 17, sku: '1105722', costPerSheet: 0.18, usage: 'Covers' },
+{ name: 'Kelly Dig 130# Silk Cover 12x18', gsm: 350, type: 'Coated', finish: 'Silk', parentWidth: 12, parentHeight: 18, sku: '1107395', costPerSheet: 0.2, usage: 'Covers' },
+{ name: 'Kelly Dig 80# Gloss Cover 13x19', gsm: 216, type: 'Coated', finish: 'Gloss', parentWidth: 13, parentHeight: 19, sku: '1105733', costPerSheet: 0.13, usage: 'Covers' },
+{ name: 'Kelly Dig 80# Silk Cover 11x17', gsm: 216, type: 'Coated', finish: 'Silk', parentWidth: 11, parentHeight: 17, sku: '1105734', costPerSheet: 0.11, usage: 'Covers' },
+{ name: 'Kelly Dig 80# Silk Cover 12x18', gsm: 216, type: 'Coated', finish: 'Silk', parentWidth: 12, parentHeight: 18, sku: '1105735', costPerSheet: 0.12, usage: 'Covers' },
+{ name: 'Kelly Dig 80# Silk Cover 13x19', gsm: 216, type: 'Coated', finish: 'Silk', parentWidth: 13, parentHeight: 19, sku: '1105736', costPerSheet: 0.14, usage: 'Covers' },
+{ name: 'Pacesetter 80# Gloss Cover 18x12', gsm: 216, type: 'Coated', finish: 'Gloss', parentWidth: 18, parentHeight: 12, sku: '1105732', costPerSheet: 0.11, usage: 'Covers' },
+{ name: 'Kelly Dig 111# Silk Cover 13x19', gsm: 300, type: 'Coated', finish: 'Silk', parentWidth: 19, parentHeight: 13, sku: '1107394', costPerSheet: 0.2, usage: 'Covers' },
+{ name: 'Tango Digital C1S SBS', gsm: 300, type: 'Coated', finish: 'C1S', parentWidth: 13, parentHeight: 19, sku: '1202429', costPerSheet: 0.2, usage: 'Covers' },
+{ name: 'Blanks Jumbo Door Hanger (4 up)', gsm: 80, type: 'Coated', finish: 'Gloss', parentWidth: 12, parentHeight: 18, sku: '3502479', costPerSheet: 0.58, usage: 'Specialty' },
+{ name: 'Jumbo Door Hanger w/ Bleeds | 12" x 18" Sheet', gsm: 118, type: 'Uncoated', finish: 'Uncoated', parentWidth: 18, parentHeight: 12, sku: 'JUMBO-BLEED', costPerSheet: 0.59, usage: 'Specialty' },
+{ name: '10 pt Jumbo Door Hanger w/ Bleeds | 12" x 18" Sheet', gsm: 118, type: 'Uncoated', finish: 'Uncoated', parentWidth: 18, parentHeight: 12, sku: '10PT-JUMBO', costPerSheet: 0.85, usage: 'Specialty' },
+{ name: 'Aspire Petallics Cvr Snow Willow', gsm: 285, type: 'Uncoated', finish: 'Petallic', parentWidth: 8.5, parentHeight: 11, sku: '2001592', costPerSheet: 0.31, usage: 'Specialty' },
+{ name: 'Kelly Copy 20# 92 B', gsm: 75, type: 'Uncoated', finish: 'Copy', parentWidth: 8.5, parentHeight: 11, sku: '1500772', costPerSheet: 0.02, usage: 'Copy Paper' },
+{ name: '24 X36 Newsprint', gsm: 75, type: 'Uncoated', finish: 'Uncoated', parentWidth: 12, parentHeight: 18, sku: '5514155', costPerSheet: 0.01, usage: 'Copy Paper' },
+{ name: 'BYOP (Bring Your Own Paper)', gsm: 118, type: 'Uncoated', finish: 'Uncoated', parentWidth: 8.5, parentHeight: 11, sku: '0', costPerSheet: 0, usage: 'Other' }
+];
+
+// --- Helper Functions ---
+const calculateImposition = (parentW, parentH, jobW, jobH) => {
+if (jobW <= 0 || jobH <= 0) return 0;
+const fit1 = Math.floor(parentW / jobW) * Math.floor(parentH / jobH);
+const fit2 = Math.floor(parentW / jobH) * Math.floor(parentH / jobW);
+return Math.max(fit1, fit2);
+};
+
+const getPaperThicknessInches = (paper) => {
+const caliperFactor = paper.type === 'Coated' ? 0.9 : 1.3;
+const caliperMicrons = paper.gsm * caliperFactor;
+return caliperMicrons / 25400;
+};
+
+const createEmptyCostBreakdown = (error) => ({
+error,
+bwPaperCost: 0, colorPaperCost: 0, coverPaperCost: 0,
+bwClickCost: 0, colorClickCost: 0, coverClickCost: 0,
+laminationCost: 0, laborCost: 0, shippingCost: 0, subtotal: 0, markupAmount: 0, totalCost: 0, pricePerUnit: 0,
+bwPressSheets: 0, colorPressSheets: 0, coverPressSheets: 0,
+bwImposition: 0, colorImposition: 0, coverImposition: 0,
+totalClicks: 0, productionTimeHours: 0,
+laborTimeBreakdown: { printingTimeMins: 0, laminatingTimeMins: 0, bindingTimeMins: 0, setupTimeMins: 0, trimmingTimeMins: 0, wastageTimeMins: 0 },
+shippingBreakdown: null,
+});
+
+// --- Shipping Data (Moved from constants/shippingData.ts) ---
+const MAX_WEIGHT_PER_BOX_LBS = 40;
+const shippingBoxes = [
+{ name: 'Uline S-4100 (6x6x6)', width: 6, length: 6, height: 6, cost: 0.65 },
+{ name: 'Uline S-4352 (8x6x4)', width: 8, length: 6, height: 4, cost: 0.61 },
+{ name: 'Uline S-167 (9x6x4)', width: 9, length: 6, height: 4, cost: 0.64 },
+{ name: 'Uline S-4115 (10x8x6)', width: 10, length: 8, height: 6, cost: 0.94 },
+{ name: 'Uline S-10557 (11x8.5x5.5)', width: 11, length: 8.5, height: 5.5, cost: 1.01 },
+{ name: 'Uline S-4123 (12x10x8)', width: 12, length: 10, height: 8, cost: 1.25 },
+{ name: 'Uline S-4519 (14x12x8)', width: 14, length: 12, height: 8, cost: 1.62 },
+{ name: 'Uline S-4133 (16x12x10)', width: 16, length: 12, height: 10, cost: 1.94 },
+{ name: 'USPS Large Flat Rate (12x12x5.5)', width: 12, length: 12, height: 5.5, cost: 19.20 },
+];
+
+// Simple carrier cost model (replace with real API)
+const getCarrierCost = (totalWeightLbs) => {
+if (totalWeightLbs <= 0) return 0;
+if (totalWeightLbs <= 1) return 5.00;
+if (totalWeightLbs <= 5) return 8.00;
+if (totalWeightLbs <= 10) return 12.00;
+if (totalWeightLbs <= 20) return 18.00;
+if (totalWeightLbs <= MAX_WEIGHT_PER_BOX_LBS) return 25.00;
+// For multi-box shipments, estimate per box
+const numBoxes = Math.ceil(totalWeightLbs / MAX_WEIGHT_PER_BOX_LBS);
+return numBoxes * 25.00;
+};
+
+const calculateSingleBookWeightLbs = (details, bwPaper, colorPaper, coverPaper, spineWidth) => {
+let totalWeightGrams = 0;
+const { finishedWidth, finishedHeight, bwPages, colorPages, hasCover } = details;
+
+if (bwPaper && bwPages > 0) {
+const bwSheetAreaSqIn = finishedWidth * finishedHeight;
+const totalBwPaperAreaSqM = (bwPages / 2) * bwSheetAreaSqIn * SQ_INCH_TO_SQ_METER;
+totalWeightGrams += totalBwPaperAreaSqM * bwPaper.gsm;
+}
+
+if (colorPaper && colorPages > 0) {
+const colorSheetAreaSqIn = finishedWidth * finishedHeight;
+const totalColorPaperAreaSqM = (colorPages / 2) * colorSheetAreaSqIn * SQ_INCH_TO_SQ_METER;
+totalWeightGrams += totalColorPaperAreaSqM * colorPaper.gsm;
+}
+
+if (hasCover && coverPaper && spineWidth !== undefined) {
+const coverSpreadWidth = (finishedWidth * 2) + spineWidth;
+const coverAreaSqIn = coverSpreadWidth * finishedHeight;
+const coverAreaSqM = coverAreaSqIn * SQ_INCH_TO_SQ_METER;
+totalWeightGrams += coverAreaSqM * coverPaper.gsm;
+}
+
+return totalWeightGrams * GRAMS_TO_LBS;
+};
+
+const calculateShipping = (quantity, bookWidth, bookLength, bookSpine, bookWeightLbs, overrideBoxName) => {
+if (quantity <= 0 || bookWeightLbs <= 0) {
+return { shippingCost: 0, breakdown: null };
+}
+
+const bookDims = [bookWidth, bookLength, bookSpine].sort((a, b) => b - a);
+
+const flatBoxes = shippingBoxes.flatMap(box => {
+if (Array.isArray(box.height)) {
+return box.height.map(h => ({ ...box, height: h, name: `${box.name} (${h}")` }));
+}
+return { ...box, height: box.height };
+});
+
+const boxesToConsider = overrideBoxName
+? flatBoxes.filter(box => box.name === overrideBoxName)
+: flatBoxes;
+
+let bestOption = {
+cost: Infinity,
+breakdown: null,
+};
+
+for (const box of boxesToConsider) {
+const boxDims = [box.width, box.length, box.height].sort((a, b) => b - a);
+if (bookDims[0] > boxDims[0] || bookDims[1] > boxDims[1] || bookDims[2] > boxDims[2]) {
+continue;
+}
+
+const w = bookWidth, l = bookLength, s = bookSpine;
+const W = box.width, L = box.length, H = box.height;
+const orientations = [
+Math.floor(W/w) * Math.floor(L/l) * Math.floor(H/s),
+Math.floor(W/w) * Math.floor(L/s) * Math.floor(H/l),
+Math.floor(W/l) * Math.floor(L/w) * Math.floor(H/s),
+Math.floor(W/l) * Math.floor(L/s) * Math.floor(H/w),
+Math.floor(W/s) * Math.floor(L/w) * Math.floor(H/l),
+Math.floor(W/s) * Math.floor(L/l) * Math.floor(H/w),
+];
+let booksPerBox = Math.max(...orientations);
+if (booksPerBox === 0) continue;
+
+const maxBooksByWeight = Math.floor(MAX_WEIGHT_PER_BOX_LBS / bookWeightLbs);
+if (maxBooksByWeight > 0) {
+booksPerBox = Math.min(booksPerBox, maxBooksByWeight);
+} else {
+continue;
+}
+
+const boxCount = Math.ceil(quantity / booksPerBox);
+const handlingCost = boxCount * box.cost;
+const totalWeightLbs = quantity * bookWeightLbs;
+const carrierCost = getCarrierCost(totalWeightLbs);
+const totalCost = handlingCost + carrierCost;
+
+if (totalCost < bestOption.cost) {
+bestOption = {
+cost: totalCost,
+breakdown: {
+boxName: box.name,
+boxCount,
+booksPerBox,
+totalWeightLbs,
+},
+};
+}
+}
+
+return { shippingCost: bestOption.cost === Infinity ? 0 : bestOption.cost, breakdown: bestOption.breakdown };
+};
+
+// --- Main Calculation Function ---
+const calculateCosts = (details) => {
+const {
+quantity, finishedWidth, finishedHeight,
+bwPages, bwPaperSku, colorPages, colorPaperSku,
+hasCover, coverPaperSku, coverPrintColor, coverPrintsOnBothSides, laminationType, bindingMethod,
+laborRate, markupPercent, spoilagePercent, calculateShipping: shouldCalcShipping
+} = details;
+
+const bwPaper = paperData.find(p => p.sku === bwPaperSku);
+const colorPaper = paperData.find(p => p.sku === colorPaperSku);
+const coverPaper = paperData.find(p => p.sku === coverPaperSku);
+
+const totalInteriorPages = (bwPages > 0 ? bwPages : 0) + (colorPages > 0 ? colorPages : 0);
+if (bindingMethod === 'saddleStitch' && totalInteriorPages > 0 && totalInteriorPages % 4 !== 0) {
+return createEmptyCostBreakdown('Saddle stitch requires the total interior page count to be a multiple of 4.');
+}
+
+const spoilageMultiplier = 1 + ((spoilagePercent || 0) / 100);
+
+const bwImposition = bwPaper ? calculateImposition(bwPaper.parentWidth, bwPaper.parentHeight, finishedWidth, finishedHeight) : 0;
+const colorImposition = colorPaper ? calculateImposition(colorPaper.parentWidth, colorPaper.parentHeight, finishedWidth, finishedHeight) : 0;
+
+let coverImposition = 0;
+let spineWidth = 0;
+if (hasCover && coverPaper) {
+if (bindingMethod === 'perfectBound') {
+const bwLeaves = Math.ceil((bwPages > 0 ? bwPages : 0) / 2);
+const colorLeaves = Math.ceil((colorPages > 0 ? colorPages : 0) / 2);
+
+const bwPaperThickness = (bwPaper && bwPages > 0) ? getPaperThicknessInches(bwPaper) : 0;
+const colorPaperThickness = (colorPaper && colorPages > 0) ? getPaperThicknessInches(colorPaper) : 0;
+
+spineWidth = (bwLeaves * bwPaperThickness) + (colorLeaves * colorPaperThickness);
+}
+const coverSpreadWidth = (finishedWidth * 2) + spineWidth;
+const coverSpreadHeight = finishedHeight;
+const maxPossibleImposition = calculateImposition(coverPaper.parentWidth, coverPaper.parentHeight, coverSpreadWidth, coverSpreadHeight);
+
+if (maxPossibleImposition >= 1) {
+coverImposition = 1;
+} else {
+coverImposition = 0;
+}
+}
+
+if (bwPaper && bwImposition === 0 && bwPages > 0) return createEmptyCostBreakdown('Finished size does not fit on the B/W interior paper.');
+if (colorPaper && colorImposition === 0 && colorPages > 0) return createEmptyCostBreakdown('Finished size does not fit on the Color interior paper.');
+if (hasCover && coverPaper && coverImposition === 0) return createEmptyCostBreakdown('Full cover spread (including spine) does not fit on the selected cover paper.');
+
+const bwPressSheets = Math.ceil((bwImposition > 0 ? Math.ceil(quantity * Math.ceil((bwPages > 0 ? bwPages : 0) / 2) / bwImposition) : 0) * spoilageMultiplier);
+const bwPaperCost = bwPaper ? bwPressSheets * bwPaper.costPerSheet : 0;
+const bwClicks = bwPressSheets * 2;
+const bwClickCost = bwClicks * BW_CLICK_COST;
+
+const colorPressSheets = Math.ceil((colorImposition > 0 ? Math.ceil(quantity * Math.ceil((colorPages > 0 ? colorPages : 0) / 2) / colorImposition) : 0) * spoilageMultiplier);
+const colorPaperCost = colorPaper ? colorPressSheets * colorPaper.costPerSheet : 0;
+const colorClicks = colorPressSheets * 2;
+const colorClickCost = colorClicks * COLOR_CLICK_COST;
+
+let coverPressSheets = 0, coverPaperCost = 0, coverClickCost = 0, coverClicks = 0;
+if (hasCover) {
+coverPressSheets = Math.ceil((coverImposition > 0 ? Math.ceil(quantity / coverImposition) : 0) * spoilageMultiplier);
+coverPaperCost = coverPaper ? coverPressSheets * coverPaper.costPerSheet : 0;
+const coverClickRate = coverPrintColor === 'COLOR' ? COLOR_CLICK_COST : BW_CLICK_COST; // Use string literal
+coverClicks = coverPressSheets * (coverPrintsOnBothSides ? 2 : 1);
+coverClickCost = coverClicks * coverClickRate;
+}
+
+const laminationCost = (hasCover && laminationType !== 'none' && quantity > 0) ? (laminationType === 'gloss' ? GLOSS_LAMINATE_COST_PER_COVER : MATTE_LAMINATE_COST_PER_COVER) * quantity : 0;
+
+const totalPressSheets = bwPressSheets + colorPressSheets + coverPressSheets;
+const printingTimeMins = totalPressSheets / PRINTING_SPEED_SPM;
+
+let laminatingTimeMins = 0;
+if (hasCover && laminationType !== 'none' && coverPaper && coverPressSheets > 0) {
+const sheetLengthMeters = coverPaper.parentHeight * 0.0254;
+laminatingTimeMins = (coverPressSheets * sheetLengthMeters) / LAMINATING_SPEED_MPM;
+}
+
+let bindingTimeMins = 0;
+let bindingSetupMins = 0;
+if (quantity > 0 && bindingMethod !== 'none') {
+if (bindingMethod === 'perfectBound') {
+bindingSetupMins = PERFECT_BINDER_SETUP_MINS;
+bindingTimeMins = (quantity / (PERFECT_BINDER_SPEED_BPH / 60));
+} else if (bindingMethod === 'saddleStitch') {
+bindingSetupMins = SADDLE_STITCHER_SETUP_MINS;
+bindingTimeMins = (quantity / (SADDLE_STITCHER_SPEED_BPH / 60));
+}
+bindingTimeMins *= BINDING_INEFFICIENCY_FACTOR;
+}
+
+const trimmingTimeMins = quantity > 0 ? TRIMMING_SETUP_MINS + (Math.ceil(quantity / TRIMMING_BOOKS_PER_CYCLE) * TRIMMING_CYCLE_TIME_MINS) : 0;
+
+const setupTimeMins = BASE_PREP_TIME_MINS + bindingSetupMins;
+const totalProductionTimeMins = setupTimeMins + printingTimeMins + laminatingTimeMins + bindingTimeMins + trimmingTimeMins;
+const wastageTimeMins = totalProductionTimeMins * WASTAGE_FACTOR;
+const totalTimeMins = totalProductionTimeMins + wastageTimeMins;
+const productionTimeHours = totalTimeMins / 60;
+const laborCost = productionTimeHours * laborRate;
+
+const laborTimeBreakdown = { printingTimeMins, laminatingTimeMins, bindingTimeMins, setupTimeMins, trimmingTimeMins, wastageTimeMins };
+
+const subtotal = (bwPaperCost + colorPaperCost + coverPaperCost) + (bwClickCost + colorClickCost + coverClickCost) + laminationCost + laborCost;
+const markupAmount = subtotal * (markupPercent / 100);
+
+let shippingCost = 0;
+let shippingBreakdown = null;
+if (shouldCalcShipping) {
+const bookWeightLbs = calculateSingleBookWeightLbs(details, bwPaper, colorPaper, coverPaper, spineWidth);
+const shippingResult = calculateShipping(quantity, finishedWidth, finishedHeight, spineWidth, bookWeightLbs, details.overrideShippingBoxName);
+shippingCost = shippingResult.shippingCost;
+shippingBreakdown = shippingResult.breakdown;
+}
+
+const totalCost = subtotal + markupAmount + shippingCost;
+const pricePerUnit = quantity > 0 ? totalCost / quantity : 0;
+const totalClicks = bwClicks + colorClicks + coverClicks;
+
+return {
+bwPaperCost, colorPaperCost, coverPaperCost,
+bwClickCost, colorClickCost, coverClickCost,
+laminationCost, laborCost, shippingCost, subtotal, markupAmount, totalCost, pricePerUnit,
+bwPressSheets, colorPressSheets, coverPressSheets,
+bwImposition, colorImposition, coverImposition,
+totalClicks, productionTimeHours, laborTimeBreakdown, shippingBreakdown
+};
+};
+
+// --- EXECUTION ---
+// The 'details' object is already available from request.data
+const costBreakdown = calculateCosts(details);
+
+// Node C will modify this return logic
+return costBreakdown;
+});
+
 exports.upsertInventoryItem = onCall({ region: 'us-central1' }, async (request) => {
     // 1. Authentication Check
     if (!request.auth || !request.auth.token) {
