@@ -215,8 +215,59 @@ exports.optimizePdf = onObjectFinalized({
 });
 
 exports.estimators_calculateEstimate = onCall({ region: 'us-central1' }, async (request) => {
+// --- Fetch Estimator Defaults ---
+let estimatorDefaults = {
+    laborRate: 50, // Hardcoded fallback
+    markupPercent: 35, // Hardcoded fallback
+    spoilagePercent: 5  // Hardcoded fallback
+};
+
+try {
+    const defaultsDoc = await db.collection('settings').doc('globalEstimatorDefaults').get();
+    if (defaultsDoc.exists) {
+        const data = defaultsDoc.data();
+        estimatorDefaults = {
+            laborRate: data.laborRate || 50,
+            markupPercent: data.markupPercent || 35,
+            spoilagePercent: data.spoilagePercent || 5
+        };
+    }
+} catch (err) {
+    logger.error("Failed to fetch estimator defaults, using fallbacks.", err);
+}
+// --- End Fetch ---
 // All logic from step 2 will go here
-const details = request.data;
+// --- START: Dynamic Pricing Default Patch ---
+
+const clientDetails = request.data;
+let isAdmin = false;
+
+if (request.auth && request.auth.uid) {
+    try {
+        const userDoc = await db.collection('users').doc(request.auth.uid).get();
+        if (userDoc.exists && userDoc.data().role === 'admin') {
+            isAdmin = true;
+        }
+    } catch (err) {
+        console.warn("Auth check failed for user:", request.auth.uid, err);
+    }
+}
+
+const finalDetails = { ...clientDetails };
+
+if (!isAdmin) {
+    // If user is a customer, FORCE our *dynamic* internal defaults.
+    finalDetails.laborRate = estimatorDefaults.laborRate;
+    finalDetails.markupPercent = estimatorDefaults.markupPercent;
+    finalDetails.spoilagePercent = estimatorDefaults.spoilagePercent;
+
+    // Also force other sensible defaults
+    finalDetails.calculateShipping = true;
+    finalDetails.coverPrintColor = 'COLOR';
+    finalDetails.coverPrintsOnBothSides = false;
+}
+
+// --- END: Dynamic Pricing Default Patch ---
 
 // We will inject the calculation logic here
 
@@ -618,26 +669,7 @@ totalClicks, productionTimeHours, laborTimeBreakdown, shippingBreakdown
 };
 
 // --- EXECUTION ---
-// The 'details' object is already available from request.data
-const costBreakdown = calculateCosts(details);
-
-// --- START: Role-Based Security Patch ---
-// This REPLACES the original 'return costBreakdown;'
-
-let isAdmin = false;
-// Check if the user is authenticated at all
-if (request.auth && request.auth.uid) {
-try {
-// Check if the authenticated user is an admin
-const userDoc = await db.collection('users').doc(request.auth.uid).get();
-if (userDoc.exists && userDoc.data().role === 'admin') {
-isAdmin = true;
-}
-} catch (err) {
-// Log the error but proceed as a non-admin
-console.warn("Auth check failed for user:", request.auth.uid, err);
-}
-}
+const costBreakdown = calculateCosts(finalDetails);
 
 if (isAdmin) {
 // Staff/Admins get the full breakdown with all cost details
@@ -651,7 +683,6 @@ shippingCost: costBreakdown.shippingCost,
 error: costBreakdown.error || null
 };
 }
-// --- END: Role-Based Security Patch ---
 });
 
 exports.upsertInventoryItem = onCall({ region: 'us-central1' }, async (request) => {
