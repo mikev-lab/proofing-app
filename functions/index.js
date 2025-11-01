@@ -685,6 +685,47 @@ error: costBreakdown.error || null
 }
 });
 
+exports.estimators_getPublicPaperList = onCall({ region: 'us-central1' }, async (request) => {
+    const papers = [];
+    try {
+        const inventorySnapshot = await db.collection('inventory').get();
+        inventorySnapshot.forEach(doc => {
+            const data = doc.data();
+            const sku = data.manufacturerSKU;
+            // 1. Check for minimum required data
+            if (data.dimensions && data.dimensions.width && data.dimensions.height && sku) {
+                // 2. Check for a valid price
+                const costPerM = Math.max(data.latestCostPerM || 0, data.vendorCostPerM || 0);
+                // 3. Only include the paper if it has a valid price
+                if (costPerM > 0) {
+                    papers.push({
+                        sku: sku,
+                        name: data.name,
+                        gsm: data.weight || 0,
+                        finish: data.finish || 'Uncoated',
+                        type: data.type || 'Uncoated',
+                        usage: data.usage || 'General' // Used to sort papers in the UI
+                    });
+                }
+            }
+        });
+
+        // Sort papers by usage group, then by name
+        papers.sort((a, b) => {
+            if (a.usage < b.usage) return -1;
+            if (a.usage > b.usage) return 1;
+            if (a.name < b.name) return -1;
+            if (a.name > b.name) return 1;
+            return 0;
+        });
+
+        return { papers: papers };
+    } catch (error) {
+        console.error("Failed to fetch public paper list:", error);
+        throw new HttpsError('internal', 'Could not load paper list.');
+    }
+});
+
 exports.upsertInventoryItem = onCall({ region: 'us-central1' }, async (request) => {
     // 1. Authentication Check
     if (!request.auth || !request.auth.token) {
