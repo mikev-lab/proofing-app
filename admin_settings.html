@@ -101,6 +101,29 @@
                         </form>
                     </div>
 
+                    <!-- Estimator Defaults -->
+                    <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
+                        <h3 class="text-lg font-semibold text-white mb-4">Estimator Defaults</h3>
+                        <form id="estimator-defaults-form" class="space-y-4">
+                            <div>
+                                <label for="default-labor-rate" class="form-label">Default Labor Rate ($/hr)</label>
+                                <input type="number" id="default-labor-rate" step="1" class="form-input">
+                            </div>
+                            <div>
+                                <label for="default-markup" class="form-label">Default Markup (%)</label>
+                                <input type="number" id="default-markup" step="1" class="form-input">
+                            </div>
+                            <div>
+                                <label for="default-spoilage" class="form-label">Default Spoilage (%)</label>
+                                <input type="number" id="default-spoilage" step="0.5" class="form-input">
+                            </div>
+                            <div class="pt-4 text-right">
+                                <button type="submit" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-4 rounded-md">Save Estimator Defaults</button>
+                            </div>
+                            <p id="estimator-status" class="text-sm text-gray-400 mt-2 text-right"></p>
+                        </form>
+                    </div>
+
                     <!-- Sheet Sizes -->
                     <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
                         <h3 class="text-lg font-semibold text-white mb-4">Manage Press Sheet Sizes</h3>
