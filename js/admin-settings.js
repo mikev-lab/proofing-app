@@ -14,10 +14,6 @@ const globalDefaultsForm = document.getElementById('global-defaults-form');
 const bleedInchesInput = document.getElementById('bleed-inches');
 const safetyInchesInput = document.getElementById('safety-inches');
 
-// --- Estimator Defaults ---
-const estimatorForm = document.getElementById('estimator-defaults-form');
-const estimatorStatus = document.getElementById('estimator-status');
-
 // --- Sheet Sizes ---
 const sheetSizesList = document.getElementById('sheet-sizes-list');
 const addSheetSizeForm = document.getElementById('add-sheet-size-form');
@@ -159,47 +155,6 @@ async function deleteImpositionRule(e) {
     }
 }
 
-// --- Estimator Defaults Logic ---
-async function loadEstimatorDefaults() {
-    if (!estimatorForm) return;
-    const estimatorDefaultsRef = doc(db, "settings", "globalEstimatorDefaults");
-    try {
-        const docSnap = await getDoc(estimatorDefaultsRef);
-        if (docSnap.exists()) {
-            const data = docSnap.data();
-            document.getElementById('default-labor-rate').value = data.laborRate || 50;
-            document.getElementById('default-markup').value = data.markupPercent || 35;
-            document.getElementById('default-spoilage').value = data.spoilagePercent || 5;
-        } else {
-            document.getElementById('default-labor-rate').value = 50;
-            document.getElementById('default-markup').value = 35;
-            document.getElementById('default-spoilage').value = 5;
-        }
-    } catch (err) {
-        console.error(err);
-        estimatorStatus.textContent = "Error loading defaults.";
-    }
-}
-
-async function saveEstimatorDefaults(e) {
-    e.preventDefault();
-    estimatorStatus.textContent = "Saving...";
-    try {
-        const data = {
-            laborRate: parseFloat(document.getElementById('default-labor-rate').value),
-            markupPercent: parseFloat(document.getElementById('default-markup').value),
-            spoilagePercent: parseFloat(document.getElementById('default-spoilage').value)
-        };
-        const estimatorDefaultsRef = doc(db, "settings", "globalEstimatorDefaults");
-        await setDoc(estimatorDefaultsRef, data, { merge: true });
-        estimatorStatus.textContent = "Defaults saved!";
-    } catch (err) {
-        console.error(err);
-        estimatorStatus.textContent = "Error saving defaults.";
-    }
-}
-
-
 onAuthStateChanged(auth, (user) => {
     if (user) {
         userEmailSpan.textContent = user.email;
@@ -207,8 +162,7 @@ onAuthStateChanged(auth, (user) => {
             loadGlobalDefaults(),
             loadSheetSizes(),
             loadImpositionRules(),
-            populateDocSizeSelect(),
-            loadEstimatorDefaults()
+            populateDocSizeSelect()
         ]).then(() => {
             loadingSpinner.classList.add('hidden');
             settingsContent.classList.remove('hidden');
@@ -227,7 +181,3 @@ addSheetSizeForm.addEventListener('submit', addSheetSize);
 sheetSizesList.addEventListener('click', deleteSheetSize);
 addImpositionRuleForm.addEventListener('submit', addImpositionRule);
 impositionRulesList.addEventListener('click', deleteImpositionRule);
-
-if (estimatorForm) {
-    estimatorForm.addEventListener('submit', saveEstimatorDefaults);
-}
