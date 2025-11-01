@@ -621,8 +621,37 @@ totalClicks, productionTimeHours, laborTimeBreakdown, shippingBreakdown
 // The 'details' object is already available from request.data
 const costBreakdown = calculateCosts(details);
 
-// Node C will modify this return logic
+// --- START: Role-Based Security Patch ---
+// This REPLACES the original 'return costBreakdown;'
+
+let isAdmin = false;
+// Check if the user is authenticated at all
+if (request.auth && request.auth.uid) {
+try {
+// Check if the authenticated user is an admin
+const userDoc = await db.collection('users').doc(request.auth.uid).get();
+if (userDoc.exists && userDoc.data().role === 'admin') {
+isAdmin = true;
+}
+} catch (err) {
+// Log the error but proceed as a non-admin
+console.warn("Auth check failed for user:", request.auth.uid, err);
+}
+}
+
+if (isAdmin) {
+// Staff/Admins get the full breakdown with all cost details
 return costBreakdown;
+} else {
+// Customers/Anonymous users get the sanitized, public-facing price
+return {
+totalPrice: costBreakdown.totalCost,
+pricePerUnit: costBreakdown.pricePerUnit,
+shippingCost: costBreakdown.shippingCost,
+error: costBreakdown.error || null
+};
+}
+// --- END: Role-Based Security Patch ---
 });
 
 exports.upsertInventoryItem = onCall({ region: 'us-central1' }, async (request) => {
