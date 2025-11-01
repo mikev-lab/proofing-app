@@ -214,12 +214,6 @@ exports.optimizePdf = onObjectFinalized({
   return null;
 });
 
-exports.estimators_calculateEstimate = onCall({ region: 'us-central1' }, async (request) => {
-// All logic from step 2 will go here
-const details = request.data;
-
-// We will inject the calculation logic here
-
 // --- Production Constants ---
 const COLOR_CLICK_COST = 0.039;
 const BW_CLICK_COST = 0.009;
@@ -242,387 +236,554 @@ const TRIMMING_CYCLE_TIME_MINS = 5; // Time to load, clamp, cut 3 sides, unload 
 const SQ_INCH_TO_SQ_METER = 0.00064516;
 const GRAMS_TO_LBS = 0.00220462;
 
-// --- Data Types (for reference) ---
-/*
-export enum PrintColor {
-COLOR = 'COLOR',
-BW = 'BW',
-}
-
-export interface JobDetails {
-quantity: number;
-finishedWidth: number;
-finishedHeight: number;
-bwPages: number;
-bwPaperSku: string | null;
-colorPages: number;
-colorPaperSku: string | null;
-hasCover: boolean;
-coverPaperSku: string | null;
-coverPrintColor: PrintColor;
-coverPrintsOnBothSides: boolean;
-laminationType: 'gloss' | 'matte' | 'none';
-bindingMethod: 'perfectBound' | 'saddleStitch' | 'none';
-laborRate: number;
-markupPercent: number;
-spoilagePercent: number;
-calculateShipping: boolean;
-overrideShippingBoxName: string | null;
-}
-
-export interface PaperStock {
-name: string;
-gsm: number;
-type: 'Coated' | 'Uncoated';
-finish: string;
-parentWidth: number;
-parentHeight: number;
-sku: string | null;
-costPerSheet: number;
-usage: string;
-}
-*/
-
-// This is the FINAL logic for the Firestore query in 'estimators_calculateEstimate'
-
-let paperData = [];
-try {
-    const inventorySnapshot = await db.collection('inventory').get();
-    inventorySnapshot.forEach(doc => {
-        const data = doc.data();
-        const sku = data.manufacturerSKU;
-
-        // 1. Check for minimum required data
-        if (data.dimensions && data.dimensions.width && data.dimensions.height && sku) {
-
-            // 2. Calculate cost
-            const costPerM = Math.max(data.latestCostPerM || 0, data.vendorCostPerM || 0);
-
-            // 3. --- NEW RULE ---
-            // Only include the paper if it has a valid price.
-            if (costPerM > 0) {
-                const costPerSheet = costPerM / 1000;
-                paperData.push({
-                    sku: sku,
-                    name: data.name,
-                    gsm: data.weight || 0,
-                    type: data.type || 'Uncoated',
-                    finish: data.finish || 'Uncoated',
-                    parentWidth: data.dimensions.width,
-                    parentHeight: data.dimensions.height,
-                    costPerSheet: costPerSheet,
-                    usage: data.usage || 'General'
-                });
-            }
-            // Papers with a cost of 0 are now excluded.
-        }
-    });
-} catch (error) {
-    console.error("Failed to fetch inventory data:", error);
-    throw new HttpsError('internal', 'Could not load pricing data. Please try again later.');
-}
-
 // --- Helper Functions ---
 const calculateImposition = (parentW, parentH, jobW, jobH) => {
-if (jobW <= 0 || jobH <= 0) return 0;
-const fit1 = Math.floor(parentW / jobW) * Math.floor(parentH / jobH);
-const fit2 = Math.floor(parentW / jobH) * Math.floor(parentH / jobW);
-return Math.max(fit1, fit2);
+    if (jobW <= 0 || jobH <= 0) return 0;
+    const fit1 = Math.floor(parentW / jobW) * Math.floor(parentH / jobH);
+    const fit2 = Math.floor(parentW / jobH) * Math.floor(parentH / jobW);
+    return Math.max(fit1, fit2);
 };
 
 const getPaperThicknessInches = (paper) => {
-const caliperFactor = paper.type === 'Coated' ? 0.9 : 1.3;
-const caliperMicrons = paper.gsm * caliperFactor;
-return caliperMicrons / 25400;
+    const caliperFactor = paper.type === 'Coated' ? 0.9 : 1.3;
+    const caliperMicrons = paper.gsm * caliperFactor;
+    return caliperMicrons / 25400;
 };
 
 const createEmptyCostBreakdown = (error) => ({
-error,
-bwPaperCost: 0, colorPaperCost: 0, coverPaperCost: 0,
-bwClickCost: 0, colorClickCost: 0, coverClickCost: 0,
-laminationCost: 0, laborCost: 0, shippingCost: 0, subtotal: 0, markupAmount: 0, totalCost: 0, pricePerUnit: 0,
-bwPressSheets: 0, colorPressSheets: 0, coverPressSheets: 0,
-bwImposition: 0, colorImposition: 0, coverImposition: 0,
-totalClicks: 0, productionTimeHours: 0,
-laborTimeBreakdown: { printingTimeMins: 0, laminatingTimeMins: 0, bindingTimeMins: 0, setupTimeMins: 0, trimmingTimeMins: 0, wastageTimeMins: 0 },
-shippingBreakdown: null,
+    error,
+    bwPaperCost: 0, colorPaperCost: 0, coverPaperCost: 0,
+    bwClickCost: 0, colorClickCost: 0, coverClickCost: 0,
+    laminationCost: 0, laborCost: 0, shippingCost: 0, subtotal: 0, markupAmount: 0, totalCost: 0, pricePerUnit: 0,
+    bwPressSheets: 0, colorPressSheets: 0, coverPressSheets: 0,
+    bwImposition: 0, colorImposition: 0, coverImposition: 0,
+    totalClicks: 0, productionTimeHours: 0,
+    laborTimeBreakdown: { printingTimeMins: 0, laminatingTimeMins: 0, bindingTimeMins: 0, setupTimeMins: 0, trimmingTimeMins: 0, wastageTimeMins: 0 },
+    shippingBreakdown: null,
 });
 
 // --- Shipping Data (Moved from constants/shippingData.ts) ---
 const MAX_WEIGHT_PER_BOX_LBS = 40;
 const shippingBoxes = [
-{ name: 'Uline S-4100 (6x6x6)', width: 6, length: 6, height: 6, cost: 0.65 },
-{ name: 'Uline S-4352 (8x6x4)', width: 8, length: 6, height: 4, cost: 0.61 },
-{ name: 'Uline S-167 (9x6x4)', width: 9, length: 6, height: 4, cost: 0.64 },
-{ name: 'Uline S-4115 (10x8x6)', width: 10, length: 8, height: 6, cost: 0.94 },
-{ name: 'Uline S-10557 (11x8.5x5.5)', width: 11, length: 8.5, height: 5.5, cost: 1.01 },
-{ name: 'Uline S-4123 (12x10x8)', width: 12, length: 10, height: 8, cost: 1.25 },
-{ name: 'Uline S-4519 (14x12x8)', width: 14, length: 12, height: 8, cost: 1.62 },
-{ name: 'Uline S-4133 (16x12x10)', width: 16, length: 12, height: 10, cost: 1.94 },
-{ name: 'USPS Large Flat Rate (12x12x5.5)', width: 12, length: 12, height: 5.5, cost: 19.20 },
+    { name: 'Uline S-4100 (6x6x6)', width: 6, length: 6, height: 6, cost: 0.65 },
+    { name: 'Uline S-4352 (8x6x4)', width: 8, length: 6, height: 4, cost: 0.61 },
+    { name: 'Uline S-167 (9x6x4)', width: 9, length: 6, height: 4, cost: 0.64 },
+    { name: 'Uline S-4115 (10x8x6)', width: 10, length: 8, height: 6, cost: 0.94 },
+    { name: 'Uline S-10557 (11x8.5x5.5)', width: 11, length: 8.5, height: 5.5, cost: 1.01 },
+    { name: 'Uline S-4123 (12x10x8)', width: 12, length: 10, height: 8, cost: 1.25 },
+    { name: 'Uline S-4519 (14x12x8)', width: 14, length: 12, height: 8, cost: 1.62 },
+    { name: 'Uline S-4133 (16x12x10)', width: 16, length: 12, height: 10, cost: 1.94 },
+    { name: 'USPS Large Flat Rate (12x12x5.5)', width: 12, length: 12, height: 5.5, cost: 19.20 },
 ];
 
 // Simple carrier cost model (replace with real API)
 const getCarrierCost = (totalWeightLbs) => {
-if (totalWeightLbs <= 0) return 0;
-if (totalWeightLbs <= 1) return 5.00;
-if (totalWeightLbs <= 5) return 8.00;
-if (totalWeightLbs <= 10) return 12.00;
-if (totalWeightLbs <= 20) return 18.00;
-if (totalWeightLbs <= MAX_WEIGHT_PER_BOX_LBS) return 25.00;
-// For multi-box shipments, estimate per box
-const numBoxes = Math.ceil(totalWeightLbs / MAX_WEIGHT_PER_BOX_LBS);
-return numBoxes * 25.00;
+    if (totalWeightLbs <= 0) return 0;
+    if (totalWeightLbs <= 1) return 5.00;
+    if (totalWeightLbs <= 5) return 8.00;
+    if (totalWeightLbs <= 10) return 12.00;
+    if (totalWeightLbs <= 20) return 18.00;
+    if (totalWeightLbs <= MAX_WEIGHT_PER_BOX_LBS) return 25.00;
+    // For multi-box shipments, estimate per box
+    const numBoxes = Math.ceil(totalWeightLbs / MAX_WEIGHT_PER_BOX_LBS);
+    return numBoxes * 25.00;
 };
 
 const calculateSingleBookWeightLbs = (details, bwPaper, colorPaper, coverPaper, spineWidth) => {
-let totalWeightGrams = 0;
-const { finishedWidth, finishedHeight, bwPages, colorPages, hasCover } = details;
+    let totalWeightGrams = 0;
+    const { finishedWidth, finishedHeight, bwPages, colorPages, hasCover } = details;
 
-if (bwPaper && bwPages > 0) {
-const bwSheetAreaSqIn = finishedWidth * finishedHeight;
-const totalBwPaperAreaSqM = (bwPages / 2) * bwSheetAreaSqIn * SQ_INCH_TO_SQ_METER;
-totalWeightGrams += totalBwPaperAreaSqM * bwPaper.gsm;
-}
+    if (bwPaper && bwPages > 0) {
+        const bwSheetAreaSqIn = finishedWidth * finishedHeight;
+        const totalBwPaperAreaSqM = (bwPages / 2) * bwSheetAreaSqIn * SQ_INCH_TO_SQ_METER;
+        totalWeightGrams += totalBwPaperAreaSqM * bwPaper.gsm;
+    }
 
-if (colorPaper && colorPages > 0) {
-const colorSheetAreaSqIn = finishedWidth * finishedHeight;
-const totalColorPaperAreaSqM = (colorPages / 2) * colorSheetAreaSqIn * SQ_INCH_TO_SQ_METER;
-totalWeightGrams += totalColorPaperAreaSqM * colorPaper.gsm;
-}
+    if (colorPaper && colorPages > 0) {
+        const colorSheetAreaSqIn = finishedWidth * finishedHeight;
+        const totalColorPaperAreaSqM = (colorPages / 2) * colorSheetAreaSqIn * SQ_INCH_TO_SQ_METER;
+        totalWeightGrams += totalColorPaperAreaSqM * colorPaper.gsm;
+    }
 
-if (hasCover && coverPaper && spineWidth !== undefined) {
-const coverSpreadWidth = (finishedWidth * 2) + spineWidth;
-const coverAreaSqIn = coverSpreadWidth * finishedHeight;
-const coverAreaSqM = coverAreaSqIn * SQ_INCH_TO_SQ_METER;
-totalWeightGrams += coverAreaSqM * coverPaper.gsm;
-}
+    if (hasCover && coverPaper && spineWidth !== undefined) {
+        const coverSpreadWidth = (finishedWidth * 2) + spineWidth;
+        const coverAreaSqIn = coverSpreadWidth * finishedHeight;
+        const coverAreaSqM = coverAreaSqIn * SQ_INCH_TO_SQ_METER;
+        totalWeightGrams += coverAreaSqM * coverPaper.gsm;
+    }
 
-return totalWeightGrams * GRAMS_TO_LBS;
+    return totalWeightGrams * GRAMS_TO_LBS;
 };
 
 const calculateShipping = (quantity, bookWidth, bookLength, bookSpine, bookWeightLbs, overrideBoxName) => {
-if (quantity <= 0 || bookWeightLbs <= 0) {
-return { shippingCost: 0, breakdown: null };
-}
+    if (quantity <= 0 || bookWeightLbs <= 0) {
+        return { shippingCost: 0, breakdown: null };
+    }
 
-const bookDims = [bookWidth, bookLength, bookSpine].sort((a, b) => b - a);
+    const bookDims = [bookWidth, bookLength, bookSpine].sort((a, b) => b - a);
 
-const flatBoxes = shippingBoxes.flatMap(box => {
-if (Array.isArray(box.height)) {
-return box.height.map(h => ({ ...box, height: h, name: `${box.name} (${h}")` }));
-}
-return { ...box, height: box.height };
-});
+    const flatBoxes = shippingBoxes.flatMap(box => {
+        if (Array.isArray(box.height)) {
+            return box.height.map(h => ({ ...box, height: h, name: `${box.name} (${h}")` }));
+        }
+        return { ...box, height: box.height };
+    });
 
-const boxesToConsider = overrideBoxName
-? flatBoxes.filter(box => box.name === overrideBoxName)
-: flatBoxes;
+    const boxesToConsider = overrideBoxName
+        ? flatBoxes.filter(box => box.name === overrideBoxName)
+        : flatBoxes;
 
-let bestOption = {
-cost: Infinity,
-breakdown: null,
-};
+    let bestOption = {
+        cost: Infinity,
+        breakdown: null,
+    };
 
-for (const box of boxesToConsider) {
-const boxDims = [box.width, box.length, box.height].sort((a, b) => b - a);
-if (bookDims[0] > boxDims[0] || bookDims[1] > boxDims[1] || bookDims[2] > boxDims[2]) {
-continue;
-}
+    for (const box of boxesToConsider) {
+        const boxDims = [box.width, box.length, box.height].sort((a, b) => b - a);
+        if (bookDims[0] > boxDims[0] || bookDims[1] > boxDims[1] || bookDims[2] > boxDims[2]) {
+            continue;
+        }
 
-const w = bookWidth, l = bookLength, s = bookSpine;
-const W = box.width, L = box.length, H = box.height;
-const orientations = [
-Math.floor(W/w) * Math.floor(L/l) * Math.floor(H/s),
-Math.floor(W/w) * Math.floor(L/s) * Math.floor(H/l),
-Math.floor(W/l) * Math.floor(L/w) * Math.floor(H/s),
-Math.floor(W/l) * Math.floor(L/s) * Math.floor(H/w),
-Math.floor(W/s) * Math.floor(L/w) * Math.floor(H/l),
-Math.floor(W/s) * Math.floor(L/l) * Math.floor(H/w),
-];
-let booksPerBox = Math.max(...orientations);
-if (booksPerBox === 0) continue;
+        const w = bookWidth, l = bookLength, s = bookSpine;
+        const W = box.width, L = box.length, H = box.height;
+        const orientations = [
+            Math.floor(W / w) * Math.floor(L / l) * Math.floor(H / s),
+            Math.floor(W / w) * Math.floor(L / s) * Math.floor(H / l),
+            Math.floor(W / l) * Math.floor(L / w) * Math.floor(H / s),
+            Math.floor(W / l) * Math.floor(L / s) * Math.floor(H / w),
+            Math.floor(W / s) * Math.floor(L / w) * Math.floor(H / l),
+            Math.floor(W / s) * Math.floor(L / l) * Math.floor(H / w),
+        ];
+        let booksPerBox = Math.max(...orientations);
+        if (booksPerBox === 0) continue;
 
-const maxBooksByWeight = Math.floor(MAX_WEIGHT_PER_BOX_LBS / bookWeightLbs);
-if (maxBooksByWeight > 0) {
-booksPerBox = Math.min(booksPerBox, maxBooksByWeight);
-} else {
-continue;
-}
+        const maxBooksByWeight = Math.floor(MAX_WEIGHT_PER_BOX_LBS / bookWeightLbs);
+        if (maxBooksByWeight > 0) {
+            booksPerBox = Math.min(booksPerBox, maxBooksByWeight);
+        } else {
+            continue;
+        }
 
-const boxCount = Math.ceil(quantity / booksPerBox);
-const handlingCost = boxCount * box.cost;
-const totalWeightLbs = quantity * bookWeightLbs;
-const carrierCost = getCarrierCost(totalWeightLbs);
-const totalCost = handlingCost + carrierCost;
+        const boxCount = Math.ceil(quantity / booksPerBox);
+        const handlingCost = boxCount * box.cost;
+        const totalWeightLbs = quantity * bookWeightLbs;
+        const carrierCost = getCarrierCost(totalWeightLbs);
+        const totalCost = handlingCost + carrierCost;
 
-if (totalCost < bestOption.cost) {
-bestOption = {
-cost: totalCost,
-breakdown: {
-boxName: box.name,
-boxCount,
-booksPerBox,
-totalWeightLbs,
-},
-};
-}
-}
+        if (totalCost < bestOption.cost) {
+            bestOption = {
+                cost: totalCost,
+                breakdown: {
+                    boxName: box.name,
+                    boxCount,
+                    booksPerBox,
+                    totalWeightLbs,
+                },
+            };
+        }
+    }
 
-return { shippingCost: bestOption.cost === Infinity ? 0 : bestOption.cost, breakdown: bestOption.breakdown };
+    return { shippingCost: bestOption.cost === Infinity ? 0 : bestOption.cost, breakdown: bestOption.breakdown };
 };
 
 // --- Main Calculation Function ---
-const calculateCosts = (details) => {
-const {
-quantity, finishedWidth, finishedHeight,
-bwPages, bwPaperSku, colorPages, colorPaperSku,
-hasCover, coverPaperSku, coverPrintColor, coverPrintsOnBothSides, laminationType, bindingMethod,
-laborRate, markupPercent, spoilagePercent, calculateShipping: shouldCalcShipping
-} = details;
+const calculateCosts = (details, paperData) => {
+    const {
+        quantity, finishedWidth, finishedHeight,
+        bwPages, bwPaperSku, colorPages, colorPaperSku,
+        hasCover, coverPaperSku, coverPrintColor, coverPrintsOnBothSides, laminationType, bindingMethod,
+        laborRate, markupPercent, spoilagePercent, calculateShipping: shouldCalcShipping
+    } = details;
 
-const bwPaper = paperData.find(p => p.sku === bwPaperSku);
-const colorPaper = paperData.find(p => p.sku === colorPaperSku);
-const coverPaper = paperData.find(p => p.sku === coverPaperSku);
+    const bwPaper = paperData.find(p => p.sku === bwPaperSku);
+    const colorPaper = paperData.find(p => p.sku === colorPaperSku);
+    const coverPaper = paperData.find(p => p.sku === coverPaperSku);
 
-// --- START: Validation Patch ---
-// This ensures that if a SKU was provided, it was found in our (price-filtered) inventory.
+    // --- START: Validation Patch ---
+    // This ensures that if a SKU was provided, it was found in our (price-filtered) inventory.
 
-if (details.bwPages > 0 && !bwPaper) {
-    return createEmptyCostBreakdown('The selected B/W paper (SKU: ' + details.bwPaperSku + ') was not found or has no price in our inventory.');
-}
-if (details.colorPages > 0 && !colorPaper) {
-    return createEmptyCostBreakdown('The selected Color paper (SKU: ' + details.colorPaperSku + ') was not found or has no price in our inventory.');
-}
-if (details.hasCover && !coverPaper) {
-    return createEmptyCostBreakdown('The selected Cover paper (SKU: ' + details.coverPaperSku + ') was not found or has no price in our inventory.');
-}
+    if (details.bwPages > 0 && !bwPaper) {
+        return createEmptyCostBreakdown('The selected B/W paper (SKU: ' + details.bwPaperSku + ') was not found or has no price in our inventory.');
+    }
+    if (details.colorPages > 0 && !colorPaper) {
+        return createEmptyCostBreakdown('The selected Color paper (SKU: ' + details.colorPaperSku + ') was not found or has no price in our inventory.');
+    }
+    if (details.hasCover && !coverPaper) {
+        return createEmptyCostBreakdown('The selected Cover paper (SKU: ' + details.coverPaperSku + ') was not found or has no price in our inventory.');
+    }
 
-// --- END: Validation Patch ---
+    // --- END: Validation Patch ---
 
-const totalInteriorPages = (bwPages > 0 ? bwPages : 0) + (colorPages > 0 ? colorPages : 0);
-if (bindingMethod === 'saddleStitch' && totalInteriorPages > 0 && totalInteriorPages % 4 !== 0) {
-return createEmptyCostBreakdown('Saddle stitch requires the total interior page count to be a multiple of 4.');
-}
+    const totalInteriorPages = (bwPages > 0 ? bwPages : 0) + (colorPages > 0 ? colorPages : 0);
+    if (bindingMethod === 'saddleStitch' && totalInteriorPages > 0 && totalInteriorPages % 4 !== 0) {
+        return createEmptyCostBreakdown('Saddle stitch requires the total interior page count to be a multiple of 4.');
+    }
 
-const spoilageMultiplier = 1 + ((spoilagePercent || 0) / 100);
+    const spoilageMultiplier = 1 + ((spoilagePercent || 0) / 100);
 
-const bwImposition = bwPaper ? calculateImposition(bwPaper.parentWidth, bwPaper.parentHeight, finishedWidth, finishedHeight) : 0;
-const colorImposition = colorPaper ? calculateImposition(colorPaper.parentWidth, colorPaper.parentHeight, finishedWidth, finishedHeight) : 0;
+    const bwImposition = bwPaper ? calculateImposition(bwPaper.parentWidth, bwPaper.parentHeight, finishedWidth, finishedHeight) : 0;
+    const colorImposition = colorPaper ? calculateImposition(colorPaper.parentWidth, colorPaper.parentHeight, finishedWidth, finishedHeight) : 0;
 
-let coverImposition = 0;
-let spineWidth = 0;
-if (hasCover && coverPaper) {
-if (bindingMethod === 'perfectBound') {
-const bwLeaves = Math.ceil((bwPages > 0 ? bwPages : 0) / 2);
-const colorLeaves = Math.ceil((colorPages > 0 ? colorPages : 0) / 2);
+    let coverImposition = 0;
+    let spineWidth = 0;
+    if (hasCover && coverPaper) {
+        if (bindingMethod === 'perfectBound') {
+            const bwLeaves = Math.ceil((bwPages > 0 ? bwPages : 0) / 2);
+            const colorLeaves = Math.ceil((colorPages > 0 ? colorPages : 0) / 2);
 
-const bwPaperThickness = (bwPaper && bwPages > 0) ? getPaperThicknessInches(bwPaper) : 0;
-const colorPaperThickness = (colorPaper && colorPages > 0) ? getPaperThicknessInches(colorPaper) : 0;
+            const bwPaperThickness = (bwPaper && bwPages > 0) ? getPaperThicknessInches(bwPaper) : 0;
+            const colorPaperThickness = (colorPaper && colorPages > 0) ? getPaperThicknessInches(colorPaper) : 0;
 
-spineWidth = (bwLeaves * bwPaperThickness) + (colorLeaves * colorPaperThickness);
-}
-const coverSpreadWidth = (finishedWidth * 2) + spineWidth;
-const coverSpreadHeight = finishedHeight;
-const maxPossibleImposition = calculateImposition(coverPaper.parentWidth, coverPaper.parentHeight, coverSpreadWidth, coverSpreadHeight);
+            spineWidth = (bwLeaves * bwPaperThickness) + (colorLeaves * colorPaperThickness);
+        }
+        const coverSpreadWidth = (finishedWidth * 2) + spineWidth;
+        const coverSpreadHeight = finishedHeight;
+        const maxPossibleImposition = calculateImposition(coverPaper.parentWidth, coverPaper.parentHeight, coverSpreadWidth, coverSpreadHeight);
 
-if (maxPossibleImposition >= 1) {
-coverImposition = 1;
-} else {
-coverImposition = 0;
-}
-}
+        if (maxPossibleImposition >= 1) {
+            coverImposition = 1;
+        } else {
+            coverImposition = 0;
+        }
+    }
 
-if (bwPaper && bwImposition === 0 && bwPages > 0) return createEmptyCostBreakdown('Finished size does not fit on the B/W interior paper.');
-if (colorPaper && colorImposition === 0 && colorPages > 0) return createEmptyCostBreakdown('Finished size does not fit on the Color interior paper.');
-if (hasCover && coverPaper && coverImposition === 0) return createEmptyCostBreakdown('Full cover spread (including spine) does not fit on the selected cover paper.');
+    if (bwPaper && bwImposition === 0 && bwPages > 0) return createEmptyCostBreakdown('Finished size does not fit on the B/W interior paper.');
+    if (colorPaper && colorImposition === 0 && colorPages > 0) return createEmptyCostBreakdown('Finished size does not fit on the Color interior paper.');
+    if (hasCover && coverPaper && coverImposition === 0) return createEmptyCostBreakdown('Full cover spread (including spine) does not fit on the selected cover paper.');
 
-const bwPressSheets = Math.ceil((bwImposition > 0 ? Math.ceil(quantity * Math.ceil((bwPages > 0 ? bwPages : 0) / 2) / bwImposition) : 0) * spoilageMultiplier);
-const bwPaperCost = bwPaper ? bwPressSheets * bwPaper.costPerSheet : 0;
-const bwClicks = bwPressSheets * 2;
-const bwClickCost = bwClicks * BW_CLICK_COST;
+    const bwPressSheets = Math.ceil((bwImposition > 0 ? Math.ceil(quantity * Math.ceil((bwPages > 0 ? bwPages : 0) / 2) / bwImposition) : 0) * spoilageMultiplier);
+    const bwPaperCost = bwPaper ? bwPressSheets * bwPaper.costPerSheet : 0;
+    const bwClicks = bwPressSheets * 2;
+    const bwClickCost = bwClicks * BW_CLICK_COST;
 
-const colorPressSheets = Math.ceil((colorImposition > 0 ? Math.ceil(quantity * Math.ceil((colorPages > 0 ? colorPages : 0) / 2) / colorImposition) : 0) * spoilageMultiplier);
-const colorPaperCost = colorPaper ? colorPressSheets * colorPaper.costPerSheet : 0;
-const colorClicks = colorPressSheets * 2;
-const colorClickCost = colorClicks * COLOR_CLICK_COST;
+    const colorPressSheets = Math.ceil((colorImposition > 0 ? Math.ceil(quantity * Math.ceil((colorPages > 0 ? colorPages : 0) / 2) / colorImposition) : 0) * spoilageMultiplier);
+    const colorPaperCost = colorPaper ? colorPressSheets * colorPaper.costPerSheet : 0;
+    const colorClicks = colorPressSheets * 2;
+    const colorClickCost = colorClicks * COLOR_CLICK_COST;
 
-let coverPressSheets = 0, coverPaperCost = 0, coverClickCost = 0, coverClicks = 0;
-if (hasCover) {
-coverPressSheets = Math.ceil((coverImposition > 0 ? Math.ceil(quantity / coverImposition) : 0) * spoilageMultiplier);
-coverPaperCost = coverPaper ? coverPressSheets * coverPaper.costPerSheet : 0;
-const coverClickRate = coverPrintColor === 'COLOR' ? COLOR_CLICK_COST : BW_CLICK_COST; // Use string literal
-coverClicks = coverPressSheets * (coverPrintsOnBothSides ? 2 : 1);
-coverClickCost = coverClicks * coverClickRate;
-}
+    let coverPressSheets = 0, coverPaperCost = 0, coverClickCost = 0, coverClicks = 0;
+    if (hasCover) {
+        coverPressSheets = Math.ceil((coverImposition > 0 ? Math.ceil(quantity / coverImposition) : 0) * spoilageMultiplier);
+        coverPaperCost = coverPaper ? coverPressSheets * coverPaper.costPerSheet : 0;
+        const coverClickRate = coverPrintColor === 'COLOR' ? COLOR_CLICK_COST : BW_CLICK_COST; // Use string literal
+        coverClicks = coverPressSheets * (coverPrintsOnBothSides ? 2 : 1);
+        coverClickCost = coverClicks * coverClickRate;
+    }
 
-const laminationCost = (hasCover && laminationType !== 'none' && quantity > 0) ? (laminationType === 'gloss' ? GLOSS_LAMINATE_COST_PER_COVER : MATTE_LAMINATE_COST_PER_COVER) * quantity : 0;
+    const laminationCost = (hasCover && laminationType !== 'none' && quantity > 0) ? (laminationType === 'gloss' ? GLOSS_LAMINATE_COST_PER_COVER : MATTE_LAMINATE_COST_PER_COVER) * quantity : 0;
 
-const totalPressSheets = bwPressSheets + colorPressSheets + coverPressSheets;
-const printingTimeMins = totalPressSheets / PRINTING_SPEED_SPM;
+    const totalPressSheets = bwPressSheets + colorPressSheets + coverPressSheets;
+    const printingTimeMins = totalPressSheets / PRINTING_SPEED_SPM;
 
-let laminatingTimeMins = 0;
-if (hasCover && laminationType !== 'none' && coverPaper && coverPressSheets > 0) {
-const sheetLengthMeters = coverPaper.parentHeight * 0.0254;
-laminatingTimeMins = (coverPressSheets * sheetLengthMeters) / LAMINATING_SPEED_MPM;
-}
+    let laminatingTimeMins = 0;
+    if (hasCover && laminationType !== 'none' && coverPaper && coverPressSheets > 0) {
+        const sheetLengthMeters = coverPaper.parentHeight * 0.0254;
+        laminatingTimeMins = (coverPressSheets * sheetLengthMeters) / LAMINATING_SPEED_MPM;
+    }
 
-let bindingTimeMins = 0;
-let bindingSetupMins = 0;
-if (quantity > 0 && bindingMethod !== 'none') {
-if (bindingMethod === 'perfectBound') {
-bindingSetupMins = PERFECT_BINDER_SETUP_MINS;
-bindingTimeMins = (quantity / (PERFECT_BINDER_SPEED_BPH / 60));
-} else if (bindingMethod === 'saddleStitch') {
-bindingSetupMins = SADDLE_STITCHER_SETUP_MINS;
-bindingTimeMins = (quantity / (SADDLE_STITCHER_SPEED_BPH / 60));
-}
-bindingTimeMins *= BINDING_INEFFICIENCY_FACTOR;
-}
+    let bindingTimeMins = 0;
+    let bindingSetupMins = 0;
+    if (quantity > 0 && bindingMethod !== 'none') {
+        if (bindingMethod === 'perfectBound') {
+            bindingSetupMins = PERFECT_BINDER_SETUP_MINS;
+            bindingTimeMins = (quantity / (PERFECT_BINDER_SPEED_BPH / 60));
+        } else if (bindingMethod === 'saddleStitch') {
+            bindingSetupMins = SADDLE_STITCHER_SETUP_MINS;
+            bindingTimeMins = (quantity / (SADDLE_STITCHER_SPEED_BPH / 60));
+        }
+        bindingTimeMins *= BINDING_INEFFICIENCY_FACTOR;
+    }
 
-const trimmingTimeMins = quantity > 0 ? TRIMMING_SETUP_MINS + (Math.ceil(quantity / TRIMMING_BOOKS_PER_CYCLE) * TRIMMING_CYCLE_TIME_MINS) : 0;
+    const trimmingTimeMins = quantity > 0 ? TRIMMING_SETUP_MINS + (Math.ceil(quantity / TRIMMING_BOOKS_PER_CYCLE) * TRIMMING_CYCLE_TIME_MINS) : 0;
 
-const setupTimeMins = BASE_PREP_TIME_MINS + bindingSetupMins;
-const totalProductionTimeMins = setupTimeMins + printingTimeMins + laminatingTimeMins + bindingTimeMins + trimmingTimeMins;
-const wastageTimeMins = totalProductionTimeMins * WASTAGE_FACTOR;
-const totalTimeMins = totalProductionTimeMins + wastageTimeMins;
-const productionTimeHours = totalTimeMins / 60;
-const laborCost = productionTimeHours * laborRate;
+    const setupTimeMins = BASE_PREP_TIME_MINS + bindingSetupMins;
+    const totalProductionTimeMins = setupTimeMins + printingTimeMins + laminatingTimeMins + bindingTimeMins + trimmingTimeMins;
+    const wastageTimeMins = totalProductionTimeMins * WASTAGE_FACTOR;
+    const totalTimeMins = totalProductionTimeMins + wastageTimeMins;
+    const productionTimeHours = totalTimeMins / 60;
+    const laborCost = productionTimeHours * laborRate;
 
-const laborTimeBreakdown = { printingTimeMins, laminatingTimeMins, bindingTimeMins, setupTimeMins, trimmingTimeMins, wastageTimeMins };
+    const laborTimeBreakdown = { printingTimeMins, laminatingTimeMins, bindingTimeMins, setupTimeMins, trimmingTimeMins, wastageTimeMins };
 
-const subtotal = (bwPaperCost + colorPaperCost + coverPaperCost) + (bwClickCost + colorClickCost + coverClickCost) + laminationCost + laborCost;
-const markupAmount = subtotal * (markupPercent / 100);
+    const subtotal = (bwPaperCost + colorPaperCost + coverPaperCost) + (bwClickCost + colorClickCost + coverClickCost) + laminationCost + laborCost;
+    const markupAmount = subtotal * (markupPercent / 100);
 
-let shippingCost = 0;
-let shippingBreakdown = null;
-if (shouldCalcShipping) {
-const bookWeightLbs = calculateSingleBookWeightLbs(details, bwPaper, colorPaper, coverPaper, spineWidth);
-const shippingResult = calculateShipping(quantity, finishedWidth, finishedHeight, spineWidth, bookWeightLbs, details.overrideShippingBoxName);
-shippingCost = shippingResult.shippingCost;
-shippingBreakdown = shippingResult.breakdown;
-}
+    let shippingCost = 0;
+    let shippingBreakdown = null;
+    if (shouldCalcShipping) {
+        const bookWeightLbs = calculateSingleBookWeightLbs(details, bwPaper, colorPaper, coverPaper, spineWidth);
+        const shippingResult = calculateShipping(quantity, finishedWidth, finishedHeight, spineWidth, bookWeightLbs, details.overrideShippingBoxName);
+        shippingCost = shippingResult.shippingCost;
+        shippingBreakdown = shippingResult.breakdown;
+    }
 
-const totalCost = subtotal + markupAmount + shippingCost;
-const pricePerUnit = quantity > 0 ? totalCost / quantity : 0;
-const totalClicks = bwClicks + colorClicks + coverClicks;
+    const totalCost = subtotal + markupAmount + shippingCost;
+    const pricePerUnit = quantity > 0 ? totalCost / quantity : 0;
+    const totalClicks = bwClicks + colorClicks + coverClicks;
 
-return {
-bwPaperCost, colorPaperCost, coverPaperCost,
-bwClickCost, colorClickCost, coverClickCost,
-laminationCost, laborCost, shippingCost, subtotal, markupAmount, totalCost, pricePerUnit,
-bwPressSheets, colorPressSheets, coverPressSheets,
-bwImposition, colorImposition, coverImposition,
-totalClicks, productionTimeHours, laborTimeBreakdown, shippingBreakdown
+    return {
+        bwPaperCost, colorPaperCost, coverPaperCost,
+        bwClickCost, colorClickCost, coverClickCost,
+        laminationCost, laborCost, shippingCost, subtotal, markupAmount, totalCost, pricePerUnit,
+        bwPressSheets, colorPressSheets, coverPressSheets,
+        bwImposition, colorImposition, coverImposition,
+        totalClicks, productionTimeHours, laborTimeBreakdown, shippingBreakdown
+    };
 };
-};
 
-// --- EXECUTION ---
-// The 'details' object is already available from request.data
-const costBreakdown = calculateCosts(details);
 
-// Node C will modify this return logic
-return costBreakdown;
+exports.estimators_calculateEstimate = onCall({ region: 'us-central1' }, async (request) => {
+    // --- Fetch Estimator Defaults ---
+    let estimatorDefaults = {
+        laborRate: 50, // Hardcoded fallback
+        markupPercent: 35, // Hardcoded fallback
+        spoilagePercent: 5  // Hardcoded fallback
+    };
+
+    try {
+        const defaultsDoc = await db.collection('settings').doc('globalEstimatorDefaults').get();
+        if (defaultsDoc.exists) {
+            const data = defaultsDoc.data();
+            estimatorDefaults = {
+                laborRate: data.laborRate || 50,
+                markupPercent: data.markupPercent || 35,
+                spoilagePercent: data.spoilagePercent || 5
+            };
+        }
+    } catch (err) {
+        logger.error("Failed to fetch estimator defaults, using fallbacks.", err);
+    }
+    // --- End Fetch ---
+    // All logic from step 2 will go here
+    // --- START: Dynamic Pricing Default Patch ---
+
+    const clientDetails = request.data;
+    let isAdmin = false;
+
+    if (request.auth && request.auth.uid) {
+        try {
+            const userDoc = await db.collection('users').doc(request.auth.uid).get();
+            if (userDoc.exists && userDoc.data().role === 'admin') {
+                isAdmin = true;
+            }
+        } catch (err) {
+            console.warn("Auth check failed for user:", request.auth.uid, err);
+        }
+    }
+
+    const finalDetails = { ...clientDetails };
+
+    if (!isAdmin) {
+        // If user is a customer, FORCE our *dynamic* internal defaults.
+        finalDetails.laborRate = estimatorDefaults.laborRate;
+        finalDetails.markupPercent = estimatorDefaults.markupPercent;
+        finalDetails.spoilagePercent = estimatorDefaults.spoilagePercent;
+
+        // Also force other sensible defaults
+        finalDetails.calculateShipping = true;
+        finalDetails.coverPrintColor = 'COLOR';
+        finalDetails.coverPrintsOnBothSides = false;
+    }
+
+    // --- END: Dynamic Pricing Default Patch ---
+
+    // This is the FINAL logic for the Firestore query in 'estimators_calculateEstimate'
+    let paperData = [];
+    try {
+        const inventorySnapshot = await db.collection('inventory').get();
+        inventorySnapshot.forEach(doc => {
+            const data = doc.data();
+            const sku = data.manufacturerSKU;
+
+            // 1. Check for minimum required data
+            if (data.dimensions && data.dimensions.width && data.dimensions.height && sku) {
+
+                // 2. Calculate cost
+                const costPerM = Math.max(data.latestCostPerM || 0, data.vendorCostPerM || 0);
+
+                // 3. --- NEW RULE ---
+                // Only include the paper if it has a valid price.
+                if (costPerM > 0) {
+                    const costPerSheet = costPerM / 1000;
+                    paperData.push({
+                        sku: sku,
+                        name: data.name,
+                        gsm: data.weight || 0,
+                        type: data.type || 'Uncoated',
+                        finish: data.finish || 'Uncoated',
+                        parentWidth: data.dimensions.width,
+                        parentHeight: data.dimensions.height,
+                        costPerSheet: costPerSheet,
+                        usage: data.usage || 'General'
+                    });
+                }
+                // Papers with a cost of 0 are now excluded.
+            }
+        });
+    } catch (error) {
+        console.error("Failed to fetch inventory data:", error);
+        throw new HttpsError('internal', 'Could not load pricing data. Please try again later.');
+    }
+
+
+    // --- EXECUTION ---
+    const costBreakdown = calculateCosts(finalDetails, paperData);
+
+    if (isAdmin) {
+        // Staff/Admins get the full breakdown with all cost details
+        return costBreakdown;
+    } else {
+        // Customers/Anonymous users get the sanitized, public-facing price
+        return {
+            totalPrice: costBreakdown.totalCost,
+            pricePerUnit: costBreakdown.pricePerUnit,
+            shippingCost: costBreakdown.shippingCost,
+            error: costBreakdown.error || null
+        };
+    }
+});
+
+exports.estimators_getQuantityAnalysis = onCall({ region: 'us-central1' }, async (request) => { // 1. Admin-only check
+    if (!request.auth || !request.auth.uid) {
+        throw new HttpsError('unauthenticated', 'You must be authenticated.');
+    }
+    try {
+        const userDoc = await db.collection('users').doc(request.auth.uid).get();
+        if (!userDoc.exists || userDoc.data().role !== 'admin') {
+            throw new HttpsError('permission-denied', 'You must be an admin.');
+        }
+    } catch (err) {
+        throw new HttpsError('internal', 'Admin check failed.');
+    } // 2. Get data from client
+    const { details, isOwnersLabor } = request.data;
+    if (!details || details.quantity <= 0) {
+        throw new HttpsError('invalid-argument', 'Valid job details are required.');
+    } // 3. Fetch live paper data
+    let paperData = [];
+    try { // This is the SAME paper query logic from 'estimators_calculateEstimate'
+        const inventorySnapshot = await db.collection('inventory').get();
+        inventorySnapshot.forEach(doc => {
+            const data = doc.data();
+            const sku = data.manufacturerSKU;
+            if (data.dimensions && data.dimensions.width && data.dimensions.height && sku) {
+                const costPerM = Math.max(data.latestCostPerM || 0, data.vendorCostPerM || 0);
+                if (costPerM > 0) {
+                    paperData.push({
+                        sku: sku,
+                        name: data.name,
+                        gsm: data.weight || 0,
+                        type: data.type || 'Uncoated',
+                        finish: data.finish || 'Uncoated',
+                        parentWidth: data.dimensions.width,
+                        parentHeight: data.dimensions.height,
+                        costPerSheet: (costPerM / 1000),
+                        usage: data.usage || 'General'
+                    });
+                }
+            }
+        });
+    } catch (error) {
+        logger.error("Failed to fetch inventory data:", error);
+        throw new HttpsError('internal', 'Could not load pricing data.');
+    } // 4. Run the analysis loop
+    const quantityTiers = [
+        Math.round(details.quantity * 0.25),
+        Math.round(details.quantity * 0.5),
+        details.quantity,
+        Math.round(details.quantity * 2),
+        Math.round(details.quantity * 5),
+        Math.round(details.quantity * 10),
+    ].filter(q => q >= 10);
+    const uniqueTiers = [...new Set(quantityTiers)].sort((a, b) => a - b);
+    if (uniqueTiers.length === 0) uniqueTiers.push(details.quantity);
+    const labels = [],
+        expenses = [],
+        labor = [],
+        profit = [],
+        totalPrice = [],
+        summaryData = [];
+    uniqueTiers.forEach(quantity => { // Call the shared calculateCosts function
+        const result = calculateCosts({ ...details,
+            quantity
+        }, paperData);
+        if (result && !result.error && isFinite(result.pricePerUnit) && result.pricePerUnit > 0) {
+            labels.push(quantity.toLocaleString());
+            const totalExpenses = result.bwPaperCost + result.colorPaperCost + result.coverPaperCost + result.bwClickCost + result.colorClickCost + result.coverClickCost + result.laminationCost;
+            let laborValue = result.laborCost;
+            let profitValue = result.markupAmount;
+            let totalProfitValue = result.markupAmount;
+            if (isOwnersLabor) {
+                profitValue += laborValue;
+                totalProfitValue += laborValue;
+                laborValue = 0;
+            }
+            expenses.push(parseFloat((totalExpenses / quantity).toFixed(4)));
+            labor.push(parseFloat((laborValue / quantity).toFixed(4)));
+            profit.push(parseFloat((profitValue / quantity).toFixed(4)));
+            totalPrice.push(parseFloat(result.pricePerUnit.toFixed(4)));
+            summaryData.push({
+                quantity,
+                totalProfit: totalProfitValue,
+                profitPerHour: result.productionTimeHours > 0 ? totalProfitValue / result.productionTimeHours : 0,
+            });
+        }
+    });
+    if (labels.length === 0) return {
+        chartData: null,
+        summaryData: []
+    };
+    const chartData = {
+        labels,
+        expenses,
+        labor,
+        profit,
+        totalPrice
+    };
+    return {
+        chartData,
+        summaryData
+    };
+});
+
+exports.estimators_getPublicPaperList = onCall({ region: 'us-central1' }, async (request) => {
+    const papers = [];
+    try {
+        const inventorySnapshot = await db.collection('inventory').get();
+        inventorySnapshot.forEach(doc => {
+            const data = doc.data();
+            const sku = data.manufacturerSKU;
+            // 1. Check for minimum required data
+            if (data.dimensions && data.dimensions.width && data.dimensions.height && sku) {
+                // 2. Check for a valid price
+                const costPerM = Math.max(data.latestCostPerM || 0, data.vendorCostPerM || 0);
+                // 3. Only include the paper if it has a valid price
+                if (costPerM > 0) {
+                    papers.push({
+                        sku: sku,
+                        name: data.name,
+                        gsm: data.weight || 0,
+                        finish: data.finish || 'Uncoated',
+                        type: data.type || 'Uncoated',
+                        usage: data.usage || 'General' // Used to sort papers in the UI
+                    });
+                }
+            }
+        });
+
+        // Sort papers by usage group, then by name
+        papers.sort((a, b) => {
+            if (a.usage < b.usage) return -1;
+            if (a.usage > b.usage) return 1;
+            if (a.name < b.name) return -1;
+            if (a.name > b.name) return 1;
+            return 0;
+        });
+
+        return { papers: papers };
+    } catch (error) {
+        console.error("Failed to fetch public paper list:", error);
+        throw new HttpsError('internal', 'Could not load paper list.');
+    }
 });
 
 exports.upsertInventoryItem = onCall({ region: 'us-central1' }, async (request) => {
