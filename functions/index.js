@@ -283,66 +283,44 @@ usage: string;
 }
 */
 
-// --- TEMPORARY Paper Data (Node B will replace this) ---
-const paperData = [
-{ name: 'Accent 40# Opaque Text 19x12.5', gsm: 59, type: 'Uncoated', finish: 'Uncoated', parentWidth: 19, parentHeight: 12.5, sku: '1301543', costPerSheet: 0.05, usage: 'B/W Text and Manga' },
-{ name: 'Accent 50# Opaque Text 11x17', gsm: 74, type: 'Uncoated', finish: 'Uncoated', parentWidth: 11, parentHeight: 17, sku: '1301480', costPerSheet: 0.04, usage: 'B/W Text and Manga' },
-{ name: 'Accent 50# Opaque Text 12x18', gsm: 74, type: 'Uncoated', finish: 'Uncoated', parentWidth: 12, parentHeight: 18, sku: '1301737', costPerSheet: 0.05, usage: 'B/W Text and Manga' },
-{ name: 'Accent 60# Opaque Text 19x12.5', gsm: 89, type: 'Uncoated', finish: 'Uncoated', parentWidth: 19, parentHeight: 12.5, sku: '1301542', costPerSheet: 0.06, usage: 'B/W Text and Manga' },
-{ name: 'Accent Opq Warm White 60# Opaque Text 12x18', gsm: 89, type: 'Uncoated', finish: 'Uncoated', parentWidth: 12, parentHeight: 18, sku: '1301969', costPerSheet: 0.06, usage: 'B/W Text and Manga' },
-{ name: 'Kelly Dig 60# Opaque Text 11x17', gsm: 89, type: 'Uncoated', finish: 'Uncoated', parentWidth: 11, parentHeight: 17, sku: '1300290', costPerSheet: 0.06, usage: 'B/W Text and Manga' },
-{ name: 'Kelly Dig 60# Opaque Text 12x18', gsm: 89, type: 'Uncoated', finish: 'Uncoated', parentWidth: 12, parentHeight: 18, sku: '1300295', costPerSheet: 0.07, usage: 'B/W Text and Manga' },
-{ name: 'Kelly Dig 60# Opaque Text 13x19', gsm: 89, type: 'Uncoated', finish: 'Uncoated', parentWidth: 13, parentHeight: 19, sku: '1300291', costPerSheet: 0.08, usage: 'B/W Text and Manga' },
-{ name: 'Kelly Dig 70# Opaque Text 11x17', gsm: 104, type: 'Uncoated', finish: 'Uncoated', parentWidth: 11, parentHeight: 17, sku: '1300293', costPerSheet: 0.07, usage: 'B/W Text and Manga' },
-{ name: 'Kelly Dig 70# Opaque Text 13x19', gsm: 104, type: 'Uncoated', finish: 'Uncoated', parentWidth: 13, parentHeight: 19, sku: '1300294', costPerSheet: 0.09, usage: 'B/W Text and Manga' },
-{ name: 'Kelly Dig 80# Opaque Text 11x17', gsm: 118, type: 'Uncoated', finish: 'Uncoated', parentWidth: 11, parentHeight: 17, sku: '1300304', costPerSheet: 0.08, usage: 'B/W Text and Manga' },
-{ name: 'Kelly Dig 80# Opaque Text 12x18', gsm: 118, type: 'Uncoated', finish: 'Uncoated', parentWidth: 12, parentHeight: 18, sku: '1300305', costPerSheet: 0.09, usage: 'B/W Text and Manga' },
-{ name: 'Kelly Dig 80# Opaque Text 13x19', gsm: 118, type: 'Uncoated', finish: 'Uncoated', parentWidth: 13, parentHeight: 19, sku: '1300306', costPerSheet: 0.1, usage: 'B/W Text and Manga' },
-{ name: 'Kelly Dig 100# Opaque Text 11x17', gsm: 148, type: 'Uncoated', finish: 'Uncoated', parentWidth: 11, parentHeight: 17, sku: '1300307', costPerSheet: 0.1, usage: 'B/W Text and Manga' },
-{ name: 'Finesse Dig 80# Gloss Text 12x18', gsm: 118, type: 'Coated', finish: 'Gloss', parentWidth: 12, parentHeight: 18, sku: '1111628', costPerSheet: 0.07, usage: 'Internal Color Images' },
-{ name: 'Kelly Dig 100# Gloss Text 13x19', gsm: 148, type: 'Coated', finish: 'Gloss', parentWidth: 13, parentHeight: 19, sku: '1106244', costPerSheet: 0.1, usage: 'Internal Color Images' },
-{ name: 'Kelly Dig 100# Gloss Text 18x12', gsm: 148, type: 'Coated', finish: 'Gloss', parentWidth: 18, parentHeight: 12, sku: '1107417', costPerSheet: 0.08, usage: 'Internal Color Images' },
-{ name: 'Kelly Dig 100# Silk Text 11x17', gsm: 148, type: 'Coated', finish: 'Silk', parentWidth: 11, parentHeight: 17, sku: '1106260', costPerSheet: 0.07, usage: 'Internal Color Images' },
-{ name: 'Kelly Dig 100# Silk Text 18x12', gsm: 148, type: 'Coated', finish: 'Silk', parentWidth: 18, parentHeight: 12, sku: '1107418', costPerSheet: 0.08, usage: 'Internal Color Images' },
-{ name: 'Kelly Dig 80# Gloss Text 11x17', gsm: 118, type: 'Coated', finish: 'Gloss', parentWidth: 11, parentHeight: 17, sku: '1111628-2', costPerSheet: 0.06, usage: 'Internal Color Images' },
-{ name: 'Kelly Dig 80# Gloss Text 12x18', gsm: 118, type: 'Coated', finish: 'Gloss', parentWidth: 12, parentHeight: 18, sku: '1100204', costPerSheet: 0.07, usage: 'Internal Color Images' },
-{ name: 'Kelly Dig 80# Gloss Text 18x12', gsm: 118, type: 'Coated', finish: 'Gloss', parentWidth: 18, parentHeight: 12, sku: '1107415', costPerSheet: 0.07, usage: 'Internal Color Images' },
-{ name: 'Kelly Dig 80# Gloss Text 13x19', gsm: 118, type: 'Coated', finish: 'Gloss', parentWidth: 13, parentHeight: 19, sku: '1106247', costPerSheet: 0.08, usage: 'Internal Color Images' },
-{ name: 'Kelly Dig 80# Silk Text 11x17', gsm: 118, type: 'Coated', finish: 'Silk', parentWidth: 11, parentHeight: 17, sku: '1106262', costPerSheet: 0.06, usage: 'Internal Color Images' },
-{ name: 'Kelly Dig 80# Silk Text 12x18', gsm: 118, type: 'Coated', finish: 'Silk', parentWidth: 12, parentHeight: 18, sku: '1106261', costPerSheet: 0.07, usage: 'Internal Color Images' },
-{ name: 'Pacesetter 80# Gloss Text 18x12', gsm: 118, type: 'Coated', finish: 'Gloss', parentWidth: 18, parentHeight: 12, sku: '1107415-2', costPerSheet: 0.07, usage: 'Internal Color Images' },
-{ name: 'Pacesetter 80# Silk Text 19x12.5', gsm: 118, type: 'Coated', finish: 'Silk', parentWidth: 19, parentHeight: 12.5, sku: '1106676', costPerSheet: 0.06, usage: 'Internal Color Images' },
-{ name: 'Accent 70# Opaque Text 19x12.5', gsm: 104, type: 'Uncoated', finish: 'Uncoated', parentWidth: 19, parentHeight: 12.5, sku: '1301350', costPerSheet: 0.07, usage: 'Internal Color Images' },
-{ name: 'Accent 100# Opaque Text 19x12.5', gsm: 148, type: 'Uncoated', finish: 'Uncoated', parentWidth: 19, parentHeight: 12.5, sku: '1301356', costPerSheet: 0.11, usage: 'Internal Color Images' },
-{ name: 'Accent 80# Opaque Text 19x12.5', gsm: 118, type: 'Uncoated', finish: 'Uncoated', parentWidth: 19, parentHeight: 12.5, sku: '1301351', costPerSheet: 0.08, usage: 'Internal Color Images' },
-{ name: 'Kelly Dig 100# Gloss Text 12x18', gsm: 148, type: 'Coated', finish: 'Gloss', parentWidth: 12, parentHeight: 18, sku: '1106245', costPerSheet: 0.08, usage: 'Internal Color Images' },
-{ name: 'Kelly Dig 100# Gloss Cover 13x19', gsm: 270, type: 'Coated', finish: 'Gloss', parentWidth: 13, parentHeight: 19, sku: '1107400', costPerSheet: 0.18, usage: 'Internal Color Images' },
-{ name: 'Kelly Dig 111# Gloss Cover 13x19', gsm: 300, type: 'Coated', finish: 'Gloss', parentWidth: 13, parentHeight: 19, sku: '1107401', costPerSheet: 0.2, usage: 'Internal Color Images' },
-{ name: 'Pacesetter 100# Silk Txt 19x12.5 (Forecast)', gsm: 148, type: 'Coated', finish: 'Silk', parentWidth: 19, parentHeight: 12.5, sku: '1106667', costPerSheet: 0.09, usage: 'Internal Color Images' },
-{ name: 'Kelly Dig 100# Silk Cover 11x17', gsm: 270, type: 'Coated', finish: 'Silk', parentWidth: 11, parentHeight: 17, sku: '1107391', costPerSheet: 0.14, usage: 'Covers' },
-{ name: 'Kelly Dig 100# Silk Cover 12x18', gsm: 270, type: 'Coated', finish: 'Silk', parentWidth: 12, parentHeight: 18, sku: '1106255', costPerSheet: 0.16, usage: 'Covers' },
-{ name: 'Kelly Dig 100# Silk Cover 13x19', gsm: 270, type: 'Coated', finish: 'Silk', parentWidth: 13, parentHeight: 19, sku: '1107392', costPerSheet: 0.18, usage: 'Covers' },
-{ name: 'Kelly Dig 111# Silk Cover 11x17', gsm: 300, type: 'Coated', finish: 'Silk', parentWidth: 11, parentHeight: 17, sku: '2207393', costPerSheet: 0.15, usage: 'Covers' },
-{ name: 'Kelly Dig 130# Gloss Cover 11x17', gsm: 350, type: 'Coated', finish: 'Gloss', parentWidth: 11, parentHeight: 17, sku: '1107402', costPerSheet: 0.18, usage: 'Covers' },
-{ name: 'Kelly Dig 130# Gloss Cover 12x18', gsm: 350, type: 'Coated', finish: 'Gloss', parentWidth: 12, parentHeight: 18, sku: '1107403', costPerSheet: 0.2, usage: 'Covers' },
-{ name: 'Kelly Dig 130# Gloss Cover 13x19', gsm: 350, type: 'Coated', finish: 'Gloss', parentWidth: 13, parentHeight: 19, sku: '1107404', costPerSheet: 0.23, usage: 'Covers' },
-{ name: 'Kelly Dig 130# Silk Cover 11x17', gsm: 350, type: 'Coated', finish: 'Silk', parentWidth: 11, parentHeight: 17, sku: '1105722', costPerSheet: 0.18, usage: 'Covers' },
-{ name: 'Kelly Dig 130# Silk Cover 12x18', gsm: 350, type: 'Coated', finish: 'Silk', parentWidth: 12, parentHeight: 18, sku: '1107395', costPerSheet: 0.2, usage: 'Covers' },
-{ name: 'Kelly Dig 80# Gloss Cover 13x19', gsm: 216, type: 'Coated', finish: 'Gloss', parentWidth: 13, parentHeight: 19, sku: '1105733', costPerSheet: 0.13, usage: 'Covers' },
-{ name: 'Kelly Dig 80# Silk Cover 11x17', gsm: 216, type: 'Coated', finish: 'Silk', parentWidth: 11, parentHeight: 17, sku: '1105734', costPerSheet: 0.11, usage: 'Covers' },
-{ name: 'Kelly Dig 80# Silk Cover 12x18', gsm: 216, type: 'Coated', finish: 'Silk', parentWidth: 12, parentHeight: 18, sku: '1105735', costPerSheet: 0.12, usage: 'Covers' },
-{ name: 'Kelly Dig 80# Silk Cover 13x19', gsm: 216, type: 'Coated', finish: 'Silk', parentWidth: 13, parentHeight: 19, sku: '1105736', costPerSheet: 0.14, usage: 'Covers' },
-{ name: 'Pacesetter 80# Gloss Cover 18x12', gsm: 216, type: 'Coated', finish: 'Gloss', parentWidth: 18, parentHeight: 12, sku: '1105732', costPerSheet: 0.11, usage: 'Covers' },
-{ name: 'Kelly Dig 111# Silk Cover 13x19', gsm: 300, type: 'Coated', finish: 'Silk', parentWidth: 19, parentHeight: 13, sku: '1107394', costPerSheet: 0.2, usage: 'Covers' },
-{ name: 'Tango Digital C1S SBS', gsm: 300, type: 'Coated', finish: 'C1S', parentWidth: 13, parentHeight: 19, sku: '1202429', costPerSheet: 0.2, usage: 'Covers' },
-{ name: 'Blanks Jumbo Door Hanger (4 up)', gsm: 80, type: 'Coated', finish: 'Gloss', parentWidth: 12, parentHeight: 18, sku: '3502479', costPerSheet: 0.58, usage: 'Specialty' },
-{ name: 'Jumbo Door Hanger w/ Bleeds | 12" x 18" Sheet', gsm: 118, type: 'Uncoated', finish: 'Uncoated', parentWidth: 18, parentHeight: 12, sku: 'JUMBO-BLEED', costPerSheet: 0.59, usage: 'Specialty' },
-{ name: '10 pt Jumbo Door Hanger w/ Bleeds | 12" x 18" Sheet', gsm: 118, type: 'Uncoated', finish: 'Uncoated', parentWidth: 18, parentHeight: 12, sku: '10PT-JUMBO', costPerSheet: 0.85, usage: 'Specialty' },
-{ name: 'Aspire Petallics Cvr Snow Willow', gsm: 285, type: 'Uncoated', finish: 'Petallic', parentWidth: 8.5, parentHeight: 11, sku: '2001592', costPerSheet: 0.31, usage: 'Specialty' },
-{ name: 'Kelly Copy 20# 92 B', gsm: 75, type: 'Uncoated', finish: 'Copy', parentWidth: 8.5, parentHeight: 11, sku: '1500772', costPerSheet: 0.02, usage: 'Copy Paper' },
-{ name: '24 X36 Newsprint', gsm: 75, type: 'Uncoated', finish: 'Uncoated', parentWidth: 12, parentHeight: 18, sku: '5514155', costPerSheet: 0.01, usage: 'Copy Paper' },
-{ name: 'BYOP (Bring Your Own Paper)', gsm: 118, type: 'Uncoated', finish: 'Uncoated', parentWidth: 8.5, parentHeight: 11, sku: '0', costPerSheet: 0, usage: 'Other' }
-];
+// This is the FINAL logic for the Firestore query in 'estimators_calculateEstimate'
+
+let paperData = [];
+try {
+    const inventorySnapshot = await db.collection('inventory').get();
+    inventorySnapshot.forEach(doc => {
+        const data = doc.data();
+        const sku = data.manufacturerSKU;
+
+        // 1. Check for minimum required data
+        if (data.dimensions && data.dimensions.width && data.dimensions.height && sku) {
+
+            // 2. Calculate cost
+            const costPerM = Math.max(data.latestCostPerM || 0, data.vendorCostPerM || 0);
+
+            // 3. --- NEW RULE ---
+            // Only include the paper if it has a valid price.
+            if (costPerM > 0) {
+                const costPerSheet = costPerM / 1000;
+                paperData.push({
+                    sku: sku,
+                    name: data.name,
+                    gsm: data.weight || 0,
+                    type: data.type || 'Uncoated',
+                    finish: data.finish || 'Uncoated',
+                    parentWidth: data.dimensions.width,
+                    parentHeight: data.dimensions.height,
+                    costPerSheet: costPerSheet,
+                    usage: data.usage || 'General'
+                });
+            }
+            // Papers with a cost of 0 are now excluded.
+        }
+    });
+} catch (error) {
+    console.error("Failed to fetch inventory data:", error);
+    throw new HttpsError('internal', 'Could not load pricing data. Please try again later.');
+}
 
 // --- Helper Functions ---
 const calculateImposition = (parentW, parentH, jobW, jobH) => {
@@ -506,6 +484,21 @@ laborRate, markupPercent, spoilagePercent, calculateShipping: shouldCalcShipping
 const bwPaper = paperData.find(p => p.sku === bwPaperSku);
 const colorPaper = paperData.find(p => p.sku === colorPaperSku);
 const coverPaper = paperData.find(p => p.sku === coverPaperSku);
+
+// --- START: Validation Patch ---
+// This ensures that if a SKU was provided, it was found in our (price-filtered) inventory.
+
+if (details.bwPages > 0 && !bwPaper) {
+    return createEmptyCostBreakdown('The selected B/W paper (SKU: ' + details.bwPaperSku + ') was not found or has no price in our inventory.');
+}
+if (details.colorPages > 0 && !colorPaper) {
+    return createEmptyCostBreakdown('The selected Color paper (SKU: ' + details.colorPaperSku + ') was not found or has no price in our inventory.');
+}
+if (details.hasCover && !coverPaper) {
+    return createEmptyCostBreakdown('The selected Cover paper (SKU: ' + details.coverPaperSku + ') was not found or has no price in our inventory.');
+}
+
+// --- END: Validation Patch ---
 
 const totalInteriorPages = (bwPages > 0 ? bwPages : 0) + (colorPages > 0 ? colorPages : 0);
 if (bindingMethod === 'saddleStitch' && totalInteriorPages > 0 && totalInteriorPages % 4 !== 0) {
