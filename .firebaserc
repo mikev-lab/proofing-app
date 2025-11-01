@@ -1,5 +1,8 @@
 {
   "projects": {
-    "default": "proofing-application"
-  }
+    "default": "proofing-application",
+    "main": "proofing-application"
+  },
+  "targets": {},
+  "etags": {}
 }
