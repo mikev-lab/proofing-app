@@ -220,6 +220,12 @@ service cloud.firestore {
       allow read, write: if isAdmin();
     }
 
+    // Add this new rule
+    match /settings/globalEstimatorDefaults {
+      allow read: if request.auth != null; // Allow all users (even public) to read
+      allow write: if isAdmin(); // Only admins can change them
+    }
+
     // This matches the path: 'settings/sheetSizes'
     match /settings/sheetSizes {
       // This document isn't used directly, but we need the path
