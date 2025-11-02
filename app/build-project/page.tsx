@@ -3,18 +3,11 @@
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
-import { onAuthStateChanged, getAuth } from 'firebase/auth';
-import { collection, addDoc, doc, getDoc, updateDoc, serverTimestamp, getFirestore } from 'firebase/firestore';
-import { ref, getDownloadURL, getStorage } from 'firebase/storage';
-import { getFunctions, httpsCallable } from 'firebase/functions';
-
-// Initialize Firebase services
-const auth = getAuth();
-const db = getFirestore();
-const storage = getStorage();
-const functions = getFunctions();
-const generateFinalPdf = httpsCallable(functions, 'generateFinalPdf');
-
+import { onAuthStateChanged } from 'firebase/auth';
+import { collection, addDoc, doc, getDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { ref, getDownloadURL } from 'firebase/storage';
+import { httpsCallable } from 'firebase/functions';
+import { auth, db, storage, functions } from '../firebase/config';
 
 // Dynamically import the ProjectFileUploader to prevent SSR issues with dnd-kit
 const ProjectFileUploader = dynamic(() => import('../components/ProjectFileUploader'), { ssr: false });
@@ -85,6 +78,7 @@ const BuildProjectPage = () => {
       const projectId = newProjectRef.id;
 
       // 2. Prepare paths and call generateFinalPdf
+      const generateFinalPdf = httpsCallable(functions, 'generateFinalPdf');
       const orderedTempSourcePaths = pages.map(p => p.tempSourcePath);
       const result = await generateFinalPdf({ projectId, orderedTempSourcePaths });
       const { finalPdfPath } = (result.data as any);
@@ -121,7 +115,8 @@ const BuildProjectPage = () => {
         router.push(`/checkout?projectId=${projectId}`);
       }
 
-    } catch (err: any)      console.error("Error creating project:", err);
+    } catch (err: any) {
+      console.error("Error creating project:", err);
       setError(`Project creation failed: ${err.message}`);
       setIsCreatingProject(false);
     }

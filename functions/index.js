@@ -1275,6 +1275,63 @@ const axios = require('axios');
 const { PDFDocument } = require('pdf-lib');
 const FormData = require('form-data');
 const jszip = require('jszip');
+// It's recommended to set your Stripe secret key in a secure way, for example, using environment variables.
+// const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const stripe = require('stripe')('YOUR_STRIPE_SECRET_KEY'); // Replace with your actual secret key or use environment variables
+
+
+exports.createPaymentIntent = onCall({ region: 'us-central1' }, async (request) => {
+    if (!request.auth) {
+        throw new HttpsError('unauthenticated', 'The function must be called while authenticated.');
+    }
+
+    const { projectId } = request.data;
+    if (!projectId) {
+        throw new HttpsError('invalid-argument', 'The function must be called with a "projectId".');
+    }
+
+    try {
+        const projectRef = db.collection('projects').doc(projectId);
+        const projectDoc = await projectRef.get();
+
+        if (!projectDoc.exists) {
+            throw new HttpsError('not-found', `Project ${projectId} not found.`);
+        }
+
+        const projectData = projectDoc.data();
+
+        if (projectData.status !== 'Pending') {
+            throw new HttpsError('failed-precondition', `Project ${projectId} is not in 'Pending' state.`);
+        }
+
+        const totalPrice = projectData.jobDetails?.totalPrice;
+        if (!totalPrice || typeof totalPrice !== 'number' || totalPrice <= 0) {
+            throw new HttpsError('failed-precondition', 'Invalid or missing total price for this project.');
+        }
+
+        // Amount in cents
+        const amount = Math.round(totalPrice * 100);
+
+        const paymentIntent = await stripe.paymentIntents.create({
+            amount: amount,
+            currency: 'usd',
+            automatic_payment_methods: {
+                enabled: true,
+            },
+        });
+
+        return {
+            clientSecret: paymentIntent.client_secret,
+        };
+    } catch (error) {
+        logger.error(`Error creating payment intent for project ${projectId}:`, error);
+        if (error instanceof HttpsError) {
+            throw error;
+        }
+        throw new HttpsError('internal', 'An unexpected error occurred while creating the payment intent.');
+    }
+});
+
 
 const GOTENBERG_URL = 'https://gotenberg-service-452256252711.us-central1.run.app'; //gotenberg service
 const GOTENBERG_AUDIENCE = GOTENBERG_URL; // Audience must be the base URL
