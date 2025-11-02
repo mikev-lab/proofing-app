@@ -7,8 +7,8 @@ import Footer from "./components/Footer";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "MCE Printing",
-  description: "High-Quality Book, Manga, & Doujinshi Printing",
+  title: "MCE Printing - High-Quality Book & Doujinshi Printing",
+  description: "MCE Printing offers high-quality book and doujinshi printing services. We specialize in manga, comics, and art books for independent creators.",
 };
 
 export default function RootLayout({
@@ -20,7 +20,9 @@ export default function RootLayout({
     <html lang="en">
       <body className={`${inter.className} flex flex-col min-h-screen`}>
         <Navbar />
-        <main className="flex-grow">{children}</main>
+        <main className="flex-grow">
+          {children}
+        </main>
         <Footer />
       </body>
     </html>

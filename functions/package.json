@@ -24,7 +24,8 @@
     "google-auth-library": "^10.5.0",
     "jszip": "^3.10.1",
     "pdf-lib": "^1.17.1",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "stripe": "^19.2.0"
   },
   "devDependencies": {
     "chai": "^6.2.0",
