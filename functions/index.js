@@ -578,7 +578,14 @@ exports.estimators_calculateEstimate = onCall({ region: 'us-central1' }, async (
         }
     }
 
-    const finalDetails = { ...clientDetails };
+    // Start with the secure defaults, then layer the client's details on top.
+    // This ensures that if the client (even an admin) doesn't send a value,
+    // the calculation doesn't fail with NaN. For non-admins, these are
+    // overwritten again below to be extra safe.
+    const finalDetails = {
+        ...estimatorDefaults,
+        ...clientDetails
+    };
 
     if (!isAdmin) {
         // If user is a customer, FORCE our *dynamic* internal defaults.

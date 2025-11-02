@@ -93,11 +93,15 @@ form.addEventListener('submit', async (e) => {
             // Show calculation errors (e.g., "Saddle stitch needs 4 pages")
             priceDisplay.innerHTML = `<p class="error">Error: ${data.error}</p>`;
         } else {
+            // --- FIX: Handle both admin (totalCost) and user (totalPrice) responses ---
+            const totalPrice = data.totalPrice ?? data.totalCost;
+            const pricePerUnit = data.pricePerUnit;
+
             // Success! Display the price.
             priceDisplay.innerHTML = `
                 <h3>Your Quote</h3>
-                <p>Total Price: <strong>$${data.totalPrice.toFixed(2)}</strong></p>
-                <p>Price Per Unit: <strong>$${data.pricePerUnit.toFixed(2)}</strong></p>
+                <p>Total Price: <strong>$${totalPrice.toFixed(2)}</strong></p>
+                <p>Price Per Unit: <strong>$${pricePerUnit.toFixed(2)}</strong></p>
             `;
         }
     } catch (error) {
