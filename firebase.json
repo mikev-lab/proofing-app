@@ -14,11 +14,21 @@
     }
   ,
   "hosting": {
-    "public": ".",
+    "public": "out",
     "ignore": [
       "firebase.json",
       "**/.*",
       "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "/portal/**",
+        "destination": "/legacy-portal/index.html"
+      },
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
     ]
   },
   "firestore": {
