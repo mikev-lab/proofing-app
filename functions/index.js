@@ -544,19 +544,26 @@ exports.estimators_calculateEstimate = onCall({ region: 'us-central1' }, async (
         const defaultsDoc = await db.collection('settings').doc('globalEstimatorDefaults').get();
         if (defaultsDoc.exists) {
             const data = defaultsDoc.data();
+            
+            // --- FIX #1 START: Ensure defaults are valid numbers ---
             estimatorDefaults = {
-                laborRate: data.laborRate || 50,
-                markupPercent: data.markupPercent || 35,
-                spoilagePercent: data.spoilagePercent || 5
+                laborRate: data.laborRate !== undefined && data.laborRate !== null ? parseFloat(data.laborRate) : 50,
+                markupPercent: data.markupPercent !== undefined && data.markupPercent !== null ? parseFloat(data.markupPercent) : 35,
+                spoilagePercent: data.spoilagePercent !== undefined && data.spoilagePercent !== null ? parseFloat(data.spoilagePercent) : 5
             };
+
+            // Final check to prevent NaN (e.g., from parseFloat("abc"))
+            if (isNaN(estimatorDefaults.laborRate)) estimatorDefaults.laborRate = 50;
+            if (isNaN(estimatorDefaults.markupPercent)) estimatorDefaults.markupPercent = 35;
+            if (isNaN(estimatorDefaults.spoilagePercent)) estimatorDefaults.spoilagePercent = 5;
+            // --- FIX #1 END ---
+
         }
     } catch (err) {
         logger.error("Failed to fetch estimator defaults, using fallbacks.", err);
     }
     // --- End Fetch ---
-    // All logic from step 2 will go here
-    // --- START: Dynamic Pricing Default Patch ---
-
+    
     const clientDetails = request.data;
     let isAdmin = false;
 
@@ -595,24 +602,46 @@ exports.estimators_calculateEstimate = onCall({ region: 'us-central1' }, async (
             const data = doc.data();
             const sku = data.manufacturerSKU;
 
-            // 1. Check for minimum required data
+            // 1. Check for minimum required data (just existence)
             if (data.dimensions && data.dimensions.width && data.dimensions.height && sku) {
 
-                // 2. Calculate cost
-                const costPerM = Math.max(data.latestCostPerM || 0, data.vendorCostPerM || 0);
+                // 2. --- NEW FIX: Parse ALL numeric data from Firestore ---
+                const latestCost = parseFloat(data.latestCostPerM);
+                const vendorCost = parseFloat(data.vendorCostPerM);
+                
+                // Use isNaN to check for valid numbers, default to 0 if invalid
+                const latestCostPerM = isNaN(latestCost) ? 0 : latestCost;
+                const vendorCostPerM = isNaN(vendorCost) ? 0 : vendorCost;
 
+                const costPerM = Math.max(latestCostPerM, vendorCostPerM);
+                
                 // 3. --- NEW RULE ---
                 // Only include the paper if it has a valid price.
                 if (costPerM > 0) {
                     const costPerSheet = costPerM / 1000;
+
+                    // --- FIX #2 START: Parse all measurements to prevent NaN ---
+                    // 1. Define and parse all three variables
+                    const parentWidth = parseFloat(data.dimensions.width);
+                    const parentHeight = parseFloat(data.dimensions.height);
+                    const gsm = parseFloat(data.weight) || 0; // || 0 is safe here as gsm can be 0
+
+                    // 2. Check all parsed variables for invalid numbers
+                    if (isNaN(parentWidth) || parentWidth <= 0 || isNaN(parentHeight) || parentHeight <= 0) {
+                        logger.warn(`Skipping paper ${sku}: Invalid dimensions.`);
+                        return; // Use 'return' to skip this item in a .forEach
+                    }
+                    // --- FIX #2 END ---
+
+                    // 3. Push the new, clean variables into the array
                     paperData.push({
                         sku: sku,
                         name: data.name,
-                        gsm: data.weight || 0,
+                        gsm: gsm, // Use parsed gsm
                         type: data.type || 'Uncoated',
                         finish: data.finish || 'Uncoated',
-                        parentWidth: data.dimensions.width,
-                        parentHeight: data.dimensions.height,
+                        parentWidth: parentWidth, // Use parsed parentWidth
+                        parentHeight: parentHeight, // Use parsed parentHeight
                         costPerSheet: costPerSheet,
                         usage: data.usage || 'General'
                     });
