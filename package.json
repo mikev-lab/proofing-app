@@ -10,7 +10,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "build:export": "next build && next export"
+    "build:export": "next build"
   },
   "keywords": [],
   "author": "",
