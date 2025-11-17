@@ -87,20 +87,21 @@ async function handleGuestAccess(projectId, guestToken) {
         console.log('[Guest Flow] Guest claim document created successfully.');
 
 
-        // 4. Log the view event
-        console.log('[Guest Flow] Skipping view history update for debugging.');
-        // updateDoc(linkRef, { ... }).catch(...)
-
-        // 5. Hide unnecessary UI for guests
-        console.log('[Guest Flow] Hiding guest UI elements...');
+        // 4. Apply Guest UI Mode (Hide Nav & Dashboard Links)
+        // We do this for ALL users (anonymous or logged in) to ensure the "Guest Experience"
+        console.log('[Guest Flow] Enabling Guest UI (Hiding Nav & Dashboard links)...');
+        
         document.querySelector('nav')?.classList.add('hidden');
-        const backButton = document.querySelector('a[href="dashboard.html"]');
-        if(backButton) backButton.classList.add('hidden');
+        
+        // Find and hide ALL links to the dashboard (including the "Back to Dashboard" button)
+        const dashboardLinks = document.querySelectorAll('a[href="dashboard.html"]');
+        dashboardLinks.forEach(link => link.classList.add('hidden'));
+        
         const accountButton = document.querySelector('a[href="account.html"]');
         if(accountButton) accountButton.classList.add('hidden');
 
 
-        // 6. Proceed with loading the project
+        // 5. Proceed with loading the project
         console.log('[Guest Flow] Calling loadProjectForUser...');
         loadProjectForUser(user);
 
