@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Get a Quote - MCE Printing</title>
+    <style>
+        /* Basic styling for now */
+        body {
+            font-family: sans-serif;
+            margin: 2em;
+        }
+
+        form {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1em;
+            max-width: 800px;
+        }
+
+        label {
+            display: block;
+            font-weight: bold;
+            margin-bottom: 0.25em;
+        }
+
+        input,
+        select,
+        button {
+            width: 100%;
+            padding: 0.5em;
+            box-sizing: border-box;
+        }
+
+        #price-display {
+            margin-top: 1em;
+            padding: 1em;
+            background: #f4f4f4;
+            border-radius: 8px;
+        }
+
+        .error {
+            color: red;
+        }
+
+        .full-width {
+            grid-column: 1 / -1;
+        }
+    </style>
+</head>
+
+<body>
+    <h2>Get an Instant Quote</h2>
+
+    <form id="quote-form">
+        <div class="full-width">
+            <label for="quantity">Quantity:</label>
+            <input type="number" id="quantity" value="100" required>
+        </div>
+
+        <div>
+            <label for="width">Finished Width (in):</label>
+            <input type="number" id="width" value="5.5" step="0.125" required>
+        </div>
+
+        <div>
+            <label for="height">Finished Height (in):</label>
+            <input type="number" id="height" value="8.5" step="0.125" required>
+        </div>
+
+        <div>
+            <label for="bw-pages">B&W Pages:</label>
+            <input type="number" id="bw-pages" value="100">
+        </div>
+
+        <div>
+            <label for="bw-paper">B&W Paper:</label>
+            <select id="bw-paper">
+                <option value="">Loading...</option>
+            </select>
+        </div>
+
+        <div>
+            <label for="color-pages">Color Pages:</label>
+            <input type="number" id="color-pages" value="0">
+        </div>
+
+        <div>
+            <label for="color-paper">Color Paper:</label>
+            <select id="color-paper">
+                <option value="">Loading...</option>
+            </select>
+        </div>
+
+        <div class="full-width">
+            <input type="checkbox" id="has-cover" checked style="width: auto;">
+            <label for="has-cover" style="display: inline;">Add Cover</label>
+        </div>
+
+        <div>
+            <label for="cover-paper">Cover Paper:</label>
+            <select id="cover-paper">
+                <option value="">Loading...</option>
+            </select>
+        </div>
+
+        <div>
+            <label for="lamination">Lamination:</label>
+            <select id="lamination">
+                <option value="gloss">Gloss Lamination</option>
+                <option value="matte">Matte Lamination</option>
+                <option value="none">No Lamination</option>
+            </select>
+        </div>
+
+        <div>
+            <label for="binding">Binding:</label>
+            <select id="binding">
+                <option value="perfectBound">Perfect Bound</option>
+                <option value="saddleStitch">Saddle Stitch</option>
+                <option value="none">Loose Leaf (Unbound)</option>
+            </select>
+        </div>
+
+        <div class="full-width">
+            <button type="submit" id="get-quote-button">Get Quote</button>
+        </div>
+    </form>
+
+    <div id="price-display">
+        </div>
+
+<script type="module" src="js/quote.js"></script>
+
+</body>
+
+</html>

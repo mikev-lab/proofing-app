@@ -16,7 +16,7 @@ const storage = getStorage(app);
 export const functions = getFunctions(app);
 
 // Export services
-export { auth, db, storage, firebaseConfig };
+export { app, auth, db, storage, firebaseConfig };
 
 export const generatePreviews = httpsCallable(functions, 'generatePreviews');
 export const generateFinalPdf = httpsCallable(functions, 'generateFinalPdf');
