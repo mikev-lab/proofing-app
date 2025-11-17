@@ -143,41 +143,70 @@ function drawTrimGuide(ctx, params) {
  * @param {boolean} isLeftPage - Whether this is the left page of the spread.
  */
 function drawBleedGuide(ctx, params, isSpread, isLeftPage) {
-    const { bleedX, bleedY, bleedWidth, bleedHeight } = params;
-    if (bleedWidth <= 0 || bleedHeight <= 0) return; // Don't draw invalid boxes
+    // Extract trim params as well needed for the "hole"
+    const { bleedX, bleedY, bleedWidth, bleedHeight, trimX, trimY, trimWidth, trimHeight } = params;
+    if (bleedWidth <= 0 || bleedHeight <= 0) return; 
 
     ctx.save();
-    ctx.strokeStyle = 'red';
-    const currentScale = ctx.getTransform().a; // Assuming uniform scaling (a=d)
-    ctx.lineWidth = 1 / currentScale; // Counteract the scale
-    const dashPattern = [5 / currentScale, 5 / currentScale]; // Counteract the scale for dash
-    ctx.setLineDash(dashPattern);
+    
+    // --- 1. Fill the Danger Zone (Red Area) ---
+    ctx.fillStyle = 'rgba(255, 0, 0, 0.3)'; // Semi-transparent red
 
+    ctx.beginPath();
     if (!isSpread) {
-        // Single page view: draw the full rectangle
-        ctx.strokeRect(bleedX, bleedY, bleedWidth, bleedHeight);
+        // Single Page: Standard Donut (Outer Bleed - Inner Trim)
+        // Draw Outer Rect (Clockwise)
+        ctx.rect(bleedX, bleedY, bleedWidth, bleedHeight); 
+        // Draw Inner Rect (Counter-Clockwise) to subtract it
+        ctx.rect(trimX + trimWidth, trimY, -trimWidth, trimHeight); 
     } else {
-        // Spread view: draw only the outer 3 lines
-        ctx.beginPath();
+        // Spread Page: Handle the spine edge
+        let visBleedX = bleedX;
+        let visBleedW = bleedWidth;
+
         if (isLeftPage) {
-            // Left page: Draw left, top, bottom lines based on the bleed box coords/dims
-            ctx.moveTo(bleedX, bleedY);                     // Top-left
-            ctx.lineTo(bleedX, bleedY + bleedHeight);       // Bottom-left
-            ctx.moveTo(bleedX, bleedY);                     // Top-left again
-            ctx.lineTo(bleedX + bleedWidth, bleedY);        // Top-right
-            ctx.moveTo(bleedX, bleedY + bleedHeight);       // Bottom-left again
-            ctx.lineTo(bleedX + bleedWidth, bleedY + bleedHeight); // Bottom-right
+            // Left Page: Clip right side to spine (trimX + trimWidth)
+            visBleedW = (trimX + trimWidth) - bleedX;
         } else {
-            // Right page: Draw right, top, bottom lines based on the bleed box coords/dims
-            ctx.moveTo(bleedX + bleedWidth, bleedY);        // Top-right
-            ctx.lineTo(bleedX + bleedWidth, bleedY + bleedHeight); // Bottom-right
-            ctx.moveTo(bleedX + bleedWidth, bleedY);        // Top-right again
-            ctx.lineTo(bleedX, bleedY);                     // Top-left
-            ctx.moveTo(bleedX + bleedWidth, bleedY + bleedHeight); // Bottom-right again
-            ctx.lineTo(bleedX, bleedY + bleedHeight);       // Bottom-left
+            // Right Page: Clip left side to spine (trimX)
+            visBleedX = trimX;
+            visBleedW = (bleedX + bleedWidth) - trimX;
         }
-        ctx.stroke();
+
+        // Draw Outer Visible Bleed Rect (Clockwise)
+        ctx.rect(visBleedX, bleedY, visBleedW, bleedHeight);
+        
+        // Draw Inner Trim Rect (Counter-Clockwise)
+        ctx.rect(trimX + trimWidth, trimY, -trimWidth, trimHeight);
     }
+    ctx.fill();
+
+    // --- 2. Draw the Outer Border Line (Red) ---
+    ctx.strokeStyle = 'red';
+    const currentScale = ctx.getTransform().a; 
+    ctx.lineWidth = 1 / currentScale; 
+    
+    ctx.beginPath();
+    if (!isSpread) {
+        ctx.rect(bleedX, bleedY, bleedWidth, bleedHeight);
+    } else {
+        // Spread: Draw 'U' shape for outer boundary (skipping the spine side)
+        if (isLeftPage) {
+            // Left Page: Top, Left, Bottom
+            ctx.moveTo(trimX + trimWidth, bleedY); 
+            ctx.lineTo(bleedX, bleedY);
+            ctx.lineTo(bleedX, bleedY + bleedHeight);
+            ctx.lineTo(trimX + trimWidth, bleedY + bleedHeight);
+        } else {
+             // Right Page: Top, Right, Bottom
+             ctx.moveTo(trimX, bleedY);
+             ctx.lineTo(bleedX + bleedWidth, bleedY);
+             ctx.lineTo(bleedX + bleedWidth, bleedY + bleedHeight);
+             ctx.lineTo(trimX, bleedY + bleedHeight);
+        }
+    }
+    ctx.stroke();
+
     ctx.restore();
 }
 
