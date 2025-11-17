@@ -67,22 +67,21 @@ async function handleGuestAccess(projectId, guestToken) {
         guestPermissions = linkData.permissions;
         console.log('[Guest Flow] Set guest permissions:', guestPermissions);
 
-        // 2. Sign In Anonymously (Ensure we only do this if not already anon)
-        let userCredential;
-        if (!auth.currentUser || !auth.currentUser.isAnonymous) {
-            console.log('[Guest Flow] Attempting anonymous sign-in...');
-            userCredential = await signInAnonymously(auth);
-            const guestUid = userCredential.user.uid;
-            console.log('[Guest Flow] Anonymous sign-in successful, UID:', guestUid);
+        // 2. Ensure Authentication (Anonymous or Existing)
+        let user = auth.currentUser;
+        if (!user) {
+             console.log('[Guest Flow] No active user, attempting anonymous sign-in...');
+             const userCredential = await signInAnonymously(auth);
+             user = userCredential.user;
+             console.log('[Guest Flow] Anonymous sign-in successful, UID:', user.uid);
         } else {
-            userCredential = { user: auth.currentUser }; // Use existing anon user
-            console.log('[Guest Flow] Using existing anonymous user, UID:', userCredential.user.uid);
+             console.log('[Guest Flow] Using existing user session, UID:', user.uid);
         }
 
 
-        // 3. Create a 'claim' to link anon UID to the token for security rules
+        // 3. Create a 'claim' to link user UID to the token for security rules
         console.log('[Guest Flow] Attempting to create guest claim document...');
-        const claimRef = doc(db, "guest_claims", userCredential.user.uid);
+        const claimRef = doc(db, "guest_claims", user.uid);
         // Ensure projectId passed here is the one from the function argument
         await setDoc(claimRef, { projectId: projectId, guestToken: guestToken });
         console.log('[Guest Flow] Guest claim document created successfully.');
@@ -103,7 +102,7 @@ async function handleGuestAccess(projectId, guestToken) {
 
         // 6. Proceed with loading the project
         console.log('[Guest Flow] Calling loadProjectForUser...');
-        loadProjectForUser(userCredential.user); // Pass the anonymous user object
+        loadProjectForUser(user);
 
     } catch (error) {
         console.error("[Guest Flow] Detailed guest access error:", error);
@@ -340,65 +339,45 @@ onAuthStateChanged(auth, (user) => {
     console.log(`[Auth State] Fired. User: ${user ? user.uid + (user.isAnonymous ? ' (anon)' : '') : 'null'}, Initial Guest Token: ${initialGuestToken}, Initial Project ID: ${initialProjectId}, isProcessing: ${isProcessingGuestLink}, isGuest: ${isGuest}`);
 
     // Clear previous listener if it exists and we are changing context
-     if (unsubscribeProjectListener && (isProcessingGuestLink || (initialGuestToken && initialProjectId) || (user && !user.isAnonymous))) {
-         console.log('[Auth State] Unsubscribing existing project listener.');
+    // Note: We do NOT unsubscribe if we are merely processing a guest link for an existing user, as that would kill the view we are trying to build.
+     if (unsubscribeProjectListener && !isProcessingGuestLink && (!initialGuestToken || !initialProjectId)) {
+         console.log('[Auth State] Unsubscribing existing project listener due to context change.');
          unsubscribeProjectListener();
          unsubscribeProjectListener = null;
      }
-     // Reset guest status at the start unless we are already processing a guest link
-     if (!isProcessingGuestLink) {
+     
+     // Reset guest status at the start unless we are actively processing a guest link
+     if (!isProcessingGuestLink && !initialGuestToken) {
         isGuest = false;
         guestPermissions = {};
      }
 
 
-    // --- PRIORITY 1: Handle Guest Link ---
+    // --- PRIORITY 1: Handle Guest Link (For ANY user state) ---
     // We use the constants parsed at the top of the script
     if (initialGuestToken && initialProjectId) {
         console.log('[Auth State] Condition MET: Initial guestToken and projectId found.');
+        
         if (!isProcessingGuestLink) {
             isProcessingGuestLink = true;
-            console.log('[Auth State] Setting isProcessingGuestLink = true.');
+            console.log('[Auth State] Starting guest link processing. Preserving current auth state.');
 
-            if (user && !user.isAnonymous) {
-                console.log('[Auth State] Signing out existing non-anonymous user for guest flow...');
-                signOut(auth).then(() => {
-                    console.log('[Auth State] Sign out complete. Proceeding with handleGuestAccess.');
-                    // handleGuestAccess will call signInAnonymously, triggering another auth state change
-                    handleGuestAccess(initialProjectId, initialGuestToken).finally(() => { // Use initial values
-                        isProcessingGuestLink = false;
-                        console.log('[Auth State] Reset isProcessingGuestLink = false (after signout flow).');
-                    });
-                }).catch(err => {
-                    console.error('[Auth State] Error signing out before guest flow:', err);
-                    loadingSpinner.innerHTML = `<p class="text-red-400">Error preparing guest access. Please try again.</p>`;
-                    isProcessingGuestLink = false;
-                    console.log('[Auth State] Reset isProcessingGuestLink = false (on signout error).');
-                });
-            } else {
-                // User is null or already anonymous, proceed
-                console.log('[Auth State] User is null or anonymous. Proceeding directly with handleGuestAccess.');
-                handleGuestAccess(initialProjectId, initialGuestToken).finally(() => { // Use initial values
-                    isProcessingGuestLink = false;
-                    console.log('[Auth State] Reset isProcessingGuestLink = false (after direct guest flow).');
-                });
-            }
+            // We simply pass whatever user state exists (logged in or not) to handleGuestAccess.
+            // It will handle signing in anonymously IF needed.
+            handleGuestAccess(initialProjectId, initialGuestToken).finally(() => { 
+                isProcessingGuestLink = false;
+                console.log('[Auth State] Guest link processing complete. isProcessingGuestLink = false.');
+            });
         } else {
-            console.log('[Auth State] Guest token found, but isProcessingGuestLink is true. Skipping handleGuestAccess call.');
-            // This block will run when signInAnonymously completes
-            if (user && user.isAnonymous) {
-                 console.log('[Auth State] Processing guest, anonymous user confirmed. Calling loadProjectForUser.');
-                 isGuest = true; // Make sure isGuest is set (handleGuestAccess might not have set it yet if it's still running)
-                 loadProjectForUser(user);
-            }
+             console.log('[Auth State] Guest processing already in progress. Skipping duplicate call.');
         }
-        return; // Stop further checks if guest token exists
+        return; // Stop further checks; handleGuestAccess drives the flow from here.
     }
 
     // --- PRIORITY 2: Handle Regular Logged-In User (only if no guest token) ---
     else if (user && !user.isAnonymous) {
         console.log('[Auth State] Condition MET: Regular user (no guest token). Loading project.');
-        isGuest = false; // Ensure flag is correct
+        isGuest = false; 
         loadProjectForUser(user);
     }
 
@@ -407,7 +386,7 @@ onAuthStateChanged(auth, (user) => {
         console.warn('[Auth State] Condition MET: Anonymous user (no guest token). Signing out and redirecting.');
         signOut(auth);
         window.location.href = 'index.html';
-        return; // Exit
+        return; 
     }
 
     // --- PRIORITY 4: No User, No Guest Token (Redirect) ---

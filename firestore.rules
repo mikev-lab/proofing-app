@@ -28,14 +28,11 @@ service cloud.firestore {
     }
 
     // --- NEW Guest Helper Functions ---
-    // Check for a valid guest token by looking up the claim associated with the anon UID
+    // Check for a valid guest token by looking up the claim associated with the user's UID
     function hasValidGuestDataAccess(projectId, permission) {
-      // User must be authenticated (anonymously)
-      // Look up the claim document created by the client after anonymous sign-in
-      // Get the actual guest link document using the token from the claim
-      // Check if link exists, is not expired, and has the required permission
+      // CHANGE: Removed "request.auth.token.firebase.sign_in_provider == 'anonymous'" check.
+      // This allows both Anonymous AND Logged-in users to pass if they have a valid claim.
       return request.auth != null &&
-            request.auth.token.firebase.sign_in_provider == 'anonymous' &&
             exists(/databases/$(database)/documents/guest_claims/$(request.auth.uid)) && // Check claim exists first
             get(/databases/$(database)/documents/guest_claims/$(request.auth.uid)).data.projectId == projectId && // Check claim is for the right project
             exists(/databases/$(database)/documents/projects/$(projectId)/guestLinks/$(get(/databases/$(database)/documents/guest_claims/$(request.auth.uid)).data.guestToken)) && // Check link exists using token from claim
@@ -46,15 +43,12 @@ service cloud.firestore {
 
     // --- NEW Rules for 'guest_claims' Collection ---
     match /guest_claims/{userId} {
-      // Allow an anonymous user to create OR UPDATE their own claim doc.
-      // This is crucial because setDoc() acts as an update if the doc exists
-      // from a previous session.
-      allow create, update: if request.auth.uid == userId &&
-                                request.auth.token.firebase.sign_in_provider == 'anonymous';
+      // CHANGE: Removed "firebase.sign_in_provider == 'anonymous'".
+      // Allows ANY authenticated user (logged in or anon) to create/update their own claim.
+      allow create, update: if request.auth.uid == userId;
       
       // Allow the user to read their own claim doc (needed for hasValidGuestDataAccess)
-      allow read: if request.auth.uid == userId &&
-                      request.auth.token.firebase.sign_in_provider == 'anonymous';
+      allow read: if request.auth.uid == userId;
       
       // Prevent deletion by anyone
       allow delete: if false;
@@ -134,6 +128,7 @@ service cloud.firestore {
                         getUserData(request.auth.uid).companyId == resource.data.companyId &&
                         (
                           (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])) ||
+                        
                           (resource.data.isAwaitingClientUpload == true &&
                             request.resource.data.isAwaitingClientUpload == false &&
                             request.resource.data.status == 'pending' &&
@@ -155,16 +150,17 @@ service cloud.firestore {
       match /guestLinks/{linkId} {
           // Admins have full control
           allow read, write: if isAdmin();
-          // The very first step for a guest is to fetch the link details.
-          // At this point, they are unauthenticated (or anon). 
-          allow get: if request.auth == null ||
-                     request.auth.token.firebase.sign_in_provider == 'anonymous';
+          
+          // CHANGE: Simplified to "if true". 
+          // Since we query by ID, if you have the Link ID, you can read it.
+          // This is required so logged-in users can fetch the link to verify it.
+          allow get: if true;
       }
 
       // --- Rules for 'pages' Sub-collection ---
       match /pages/{pageId} {
           allow read, write: if isAdmin() ||
-                        (request.auth != null && isCompanyMember(getProject(projectId).companyId));
+            (request.auth != null && isCompanyMember(getProject(projectId).companyId));
       }
     }
 
