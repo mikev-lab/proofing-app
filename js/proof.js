@@ -10,7 +10,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = "https://mozilla.github.io/pdf.js/build
 // --- PARSE URL PARAMS ONCE AT SCRIPT LOAD ---
 const urlParams = new URLSearchParams(window.location.search);
 const initialGuestToken = urlParams.get('guestToken');
-const initialProjectId = urlParams.get('id');
+const initialProjectId = urlParams.get('id') || urlParams.get('projectId');
 console.log(`[Init] Parsed URL Params - Guest Token: ${initialGuestToken}, Project ID: ${initialProjectId}`);
 // --- END PARSE URL PARAMS ---
 

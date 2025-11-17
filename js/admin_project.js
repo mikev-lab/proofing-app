@@ -1,4 +1,4 @@
-import { auth, db, storage, generatePreviews, generateFinalPdf, firebaseConfig } from './firebase.js';
+import { auth, db, storage, generatePreviews, generateFinalPdf, generateGuestLink, firebaseConfig } from './firebase.js';
 import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 import { doc, onSnapshot, getDoc, updateDoc, Timestamp, collection, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 import { ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
@@ -444,7 +444,10 @@ shareLinkForm.addEventListener('submit', async (e) => {
     };
 
     try {
-        const generateGuestLink = httpsCallable(functions, 'generateGuestLink');
+        // DELETE or COMMENT OUT this line causing the error:
+        // const generateGuestLink = httpsCallable(functions, 'generateGuestLink'); 
+
+        // Call the imported function directly
         const result = await generateGuestLink({ projectId, permissions });
 
         if (result.data.success) {

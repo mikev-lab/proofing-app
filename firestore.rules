@@ -101,31 +101,31 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
-    // --- Rules for 'projects' Collection ---
+// --- Rules for 'projects' Collection ---
     match /projects/{projectId} {
       // ** Admins have full access **
-      allow write: if isAdmin(); // Write is simpler, keep it separate.
+      allow write: if isAdmin();
+      // Write is simpler, keep it separate.
       allow read: if isAdmin();  // Admins can read anything.
-
+      
       // ** Client & Guest Access for GET (reading a single document) **
-      // This rule uses `resource.data`, which is valid for `get` operations.
       allow get: if (
+                      // 1. REGULAR CLIENT ACCESS (Skip if Anonymous)
                       request.auth != null &&
+                      request.auth.token.firebase.sign_in_provider != 'anonymous' && 
                       exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
                       (
-                        getUserData(request.auth.uid).companyId == resource.data.companyId ||
+                        getUserData(request.auth.uid).companyId == resource.data.companyId 
+                        ||
                         request.auth.uid == resource.data.clientId // Backward Compatibility
                       )
                     )
-                    // ** OR Guest Read Access **
+                    // 2. OR GUEST READ ACCESS
                     || hasValidGuestDataAccess(projectId, 'canSeeComments');
 
       // ** Client & Guest Access for LIST (querying documents) **
-      // This rule is broad, but Firestore requires the client's query (e.g., `where("companyId", "==", user.companyId)`)
-      // to be structured so that every document returned also passes the `get` rule above. This prevents data leakage.
       allow list: if request.auth != null;
-
-
+      
       // Client & Guest 'update' (for status changes or file uploads)
       allow update: if (
                         // Client update logic
@@ -145,26 +145,26 @@ service cloud.firestore {
                         )
                       )
                       // ** OR Guest Approval Logic **
-                      || (
+                      ||
+                      (
                         hasValidGuestDataAccess(projectId, 'canApprove') &&
                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
                       );
 
-      // --- NEW Rules for 'guestLinks' Sub-collection ---
+      // --- Rules for 'guestLinks' Sub-collection ---
       match /guestLinks/{linkId} {
           // Admins have full control
           allow read, write: if isAdmin();
-
           // The very first step for a guest is to fetch the link details.
-          // At this point, they are unauthenticated. The linkId (token) is the secret.
+          // At this point, they are unauthenticated (or anon). 
           allow get: if request.auth == null ||
-                         request.auth.token.firebase.sign_in_provider == 'anonymous';
+                     request.auth.token.firebase.sign_in_provider == 'anonymous';
       }
 
       // --- Rules for 'pages' Sub-collection ---
       match /pages/{pageId} {
           allow read, write: if isAdmin() ||
-                                (request.auth != null && isCompanyMember(getProject(projectId).companyId));
+                        (request.auth != null && isCompanyMember(getProject(projectId).companyId));
       }
     }
 

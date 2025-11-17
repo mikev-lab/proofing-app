@@ -20,3 +20,4 @@ export { app, auth, db, storage, firebaseConfig };
 
 export const generatePreviews = httpsCallable(functions, 'generatePreviews');
 export const generateFinalPdf = httpsCallable(functions, 'generateFinalPdf');
+export const generateGuestLink = httpsCallable(functions, 'generateGuestLink');
