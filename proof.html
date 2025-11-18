@@ -249,5 +249,83 @@
            </form>
        </div>
     </div>
+    <div id="approval-modal" class="fixed inset-0 bg-gray-900/90 backdrop-blur-sm flex items-center justify-center hidden z-[60]">
+    <div class="bg-slate-800 rounded-xl shadow-2xl p-8 w-full max-w-lg mx-4 border border-slate-700/50 relative">
+        
+        <h3 class="text-2xl font-bold text-white mb-2">Final Approval</h3>
+        
+        <form id="approval-modal-form" class="space-y-4">
+            
+            <p class="text-gray-300 text-sm mb-2">By approving this, you acknowledge that:</p>
+
+            <div class="pl-4 space-y-3 border-l-2 border-slate-700 ml-1">
+                
+                <div class="flex items-start">
+                    <input type="checkbox" id="check-ready" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
+                    <label for="check-ready" class="ml-3 text-sm text-gray-300 leading-tight">
+                        Your project is <strong>print-ready</strong>.
+                    </label>
+                </div>
+
+                <div class="flex items-start">
+                    <input type="checkbox" id="check-spelling" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
+                    <label for="check-spelling" class="ml-3 text-sm text-gray-300 leading-tight">
+                        You've checked for <strong>spelling errors</strong>.
+                    </label>
+                </div>
+
+                <div class="flex items-start">
+                    <input type="checkbox" id="check-layout" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
+                    <label for="check-layout" class="ml-3 text-sm text-gray-300 leading-tight">
+                        You've checked for <strong>layout issues</strong>.
+                    </label>
+                </div>
+
+                <div class="flex items-start">
+                    <input type="checkbox" id="check-artwork" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
+                    <label for="check-artwork" class="ml-3 text-sm text-gray-300 leading-tight">
+                        You've checked for <strong>artwork issues</strong>.
+                    </label>
+                </div>
+
+                <div class="flex items-start">
+                    <input type="checkbox" id="check-colors" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
+                    <label for="check-colors" class="ml-3 text-sm text-gray-300 leading-tight">
+                        You are satisfied with the estimated colors, or have ordered a physical proof to see what the printed colors will look like.
+                    </label>
+                </div>
+
+                <div class="flex items-start">
+                    <input type="checkbox" id="check-responsibility" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
+                    <label for="check-responsibility" class="ml-3 text-sm text-red-200/90 leading-tight">
+                        If the proof containing errors is approved, you're responsible for all costs, including corrections and reprints.
+                    </label>
+                </div>
+
+                <div class="flex items-start bg-indigo-900/20 p-2 -ml-2 rounded-lg border border-indigo-500/30">
+                    <input type="checkbox" id="check-specs" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
+                    <label for="check-specs" class="ml-3 text-sm text-gray-200 leading-tight" id="approval-specs-text">
+                        You are approving this to be printed on <span class="font-bold text-white">{STOCK}</span> in <span class="font-bold text-white">{COLOR}</span>.
+                    </label>
+                </div>
+
+            </div>
+
+            <div class="pt-4 mt-4 border-t border-slate-700">
+                <label for="signature-input" class="block text-sm font-medium text-gray-400 mb-2">Electronic Signature (Type Full Name)</label>
+                <input type="text" id="signature-input" class="w-full rounded-lg bg-slate-900/50 border border-slate-600 text-white px-4 py-2 focus:ring-2 focus:ring-indigo-500 focus:border-transparent placeholder-gray-600" placeholder="e.g. John Doe">
+            </div>
+
+            <div class="flex justify-end space-x-3 mt-8 pt-2">
+                <button type="button" id="modal-approval-cancel" class="px-5 py-2 rounded-lg bg-slate-700 text-white hover:bg-slate-600 transition-colors">
+                    Cancel
+                </button>
+                <button type="submit" id="modal-approval-confirm" disabled class="px-5 py-2 rounded-lg bg-green-600 text-white font-semibold shadow-lg hover:bg-green-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all">
+                    Approve Project
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
 </body>
 </html>

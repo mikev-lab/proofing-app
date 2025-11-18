@@ -23,6 +23,14 @@ const projectName = document.getElementById('project-name');
 // const approvalForm = document.getElementById('approval-form'); // Defined later, inside onSnapshot
 const decisionButtons = document.getElementById('decision-buttons');
 const confirmationSection = document.getElementById('confirmation-section');
+const approvalModal = document.getElementById('approval-modal');
+const approvalFormModal = document.getElementById('approval-modal-form');
+const modalCancelBtn = document.getElementById('modal-approval-cancel');
+const modalConfirmBtn = document.getElementById('modal-approval-confirm');
+const signatureInput = document.getElementById('signature-input');
+const approvalSpecsText = document.getElementById('approval-specs-text');
+// Select all approval checkboxes
+const approvalCheckboxes = document.querySelectorAll('#approval-modal-form input[type="checkbox"]');
 
 
 let currentProjectId = initialProjectId; // Use the initially parsed ID
@@ -32,11 +40,73 @@ let isGuest = false;
 let guestPermissions = {};
 
 // Define these functions in the main script scope
-function showApproveConfirmation() {
-    showConfirmation('approve');
+function showApproveConfirmation(projectData) {
+    if (!approvalModal) return;
+
+    // 1. Populate the dynamic text placeholder (Shorter version)
+    const stock = projectData.specs?.paperType || projectData.specs?.stock || "Standard Stock";
+    const color = projectData.specs?.colorType || projectData.specs?.ink || "Standard Color";
+    
+    if (approvalSpecsText) {
+        // Notice the removal of "By approving this, you acknowledge that..."
+        approvalSpecsText.innerHTML = `You are approving this to be printed on <span class="font-bold text-white">${stock}</span> in <span class="font-bold text-white">${color}</span>.`;
+    }
+
+    // 2. Reset the form (uncheck boxes, clear signature)
+    approvalFormModal.reset();
+    modalConfirmBtn.disabled = true;
+    modalConfirmBtn.classList.add('opacity-50', 'cursor-not-allowed');
+
+    // 3. Show the modal
+    approvalModal.classList.remove('hidden');
 }
+
 function showRequestChangesConfirmation() {
     showConfirmation('request-changes');
+}
+
+function checkApprovalValidity() {
+    const allChecked = Array.from(approvalCheckboxes).every(cb => cb.checked);
+    const isSigned = signatureInput.value.trim().length > 0;
+    
+    if (allChecked && isSigned) {
+        modalConfirmBtn.disabled = false;
+        modalConfirmBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+    } else {
+        modalConfirmBtn.disabled = true;
+        modalConfirmBtn.classList.add('opacity-50', 'cursor-not-allowed');
+    }
+}
+
+// Attach listeners to all checkboxes and the signature input
+if (approvalCheckboxes) {
+    approvalCheckboxes.forEach(cb => cb.addEventListener('change', checkApprovalValidity));
+}
+if (signatureInput) {
+    signatureInput.addEventListener('input', checkApprovalValidity);
+}
+
+// Handle Cancel Button
+if (modalCancelBtn) {
+    modalCancelBtn.addEventListener('click', () => {
+        approvalModal.classList.add('hidden');
+    });
+}
+
+// Handle Form Submission (The actual approval)
+if (approvalFormModal) {
+    approvalFormModal.addEventListener('submit', (e) => {
+        e.preventDefault();
+        // Disable button to prevent double-clicks
+        modalConfirmBtn.disabled = true;
+        modalConfirmBtn.textContent = "Processing...";
+        
+        // Call your existing update status function
+        updateProjectStatus('approved');
+        
+        // Close modal
+        approvalModal.classList.add('hidden');
+    });
 }
 
 
@@ -286,7 +356,7 @@ async function updateProjectStatus(status) {
                      const requestChangesButton = document.getElementById('request-changes-button');
                      const cancelActionButton = document.getElementById('cancel-action-button');
 
-                     if (approveButton) approveButton.addEventListener('click', showApproveConfirmation);
+                     if (approveButton) approveButton.addEventListener('click', () => showApproveConfirmation(projectData));
                      if (requestChangesButton) requestChangesButton.addEventListener('click', showRequestChangesConfirmation);
                      if (cancelActionButton) cancelActionButton.addEventListener('click', hideConfirmation);
                  }
