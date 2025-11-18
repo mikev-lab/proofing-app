@@ -33,7 +33,7 @@ const uploadStatusContainer = document.getElementById('upload-status-container')
 const generatePdfButton = document.getElementById('generate-pdf-button');
 const coverUploadForm = document.getElementById('cover-upload-form');
 const coverFileInput = document.getElementById('cover-file-input');
-const coverUploadButton = coverUploadForm.querySelector('button[type="submit"]');
+const coverUploadButton = coverUploadForm ? coverUploadForm.querySelector('button[type="submit"]') : null;
 const coverUploadStatusContainer = document.getElementById('cover-upload-status-container');
 
 // Spec form elements
@@ -273,12 +273,16 @@ onAuthStateChanged(auth, (user) => {
 
                     // Disable upload forms if project is approved
                     if (currentProjectData.status === 'Approved' || currentProjectData.status === 'In Production') {
-                        uploadButton.disabled = true;
-                        coverUploadButton.disabled = true;
-                        fileInput.disabled = true;
-                        coverFileInput.disabled = true;
-                        uploadButton.textContent = 'Project Approved';
-                        coverUploadButton.textContent = 'Project Approved';
+                        if (uploadButton) {
+                            uploadButton.disabled = true;
+                            fileInput.disabled = true;
+                            uploadButton.textContent = 'Project Approved';
+                        }
+                        if (coverUploadButton) {
+                            coverUploadButton.disabled = true;
+                            coverFileInput.disabled = true;
+                            coverUploadButton.textContent = 'Project Approved';
+                        }
                     }
 
                     // --- End Real-time Update Logic ---
@@ -319,15 +323,19 @@ document.addEventListener('click', (event) => {
 });
 
 // --- File Upload Logic ---
-fileUploadForm.addEventListener('submit', (e) => {
-    e.preventDefault();
-    handleExpertUpload(fileInput.files[0], uploadStatusContainer, uploadButton, false);
-});
+if (fileUploadForm) {
+    fileUploadForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        handleExpertUpload(fileInput.files[0], uploadStatusContainer, uploadButton, false);
+    });
+}
 
-coverUploadForm.addEventListener('submit', (e) => {
-    e.preventDefault();
-    handleExpertUpload(coverFileInput.files[0], coverUploadStatusContainer, coverUploadButton, true);
-});
+if (coverUploadForm) {
+    coverUploadForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        handleExpertUpload(coverFileInput.files[0], coverUploadStatusContainer, coverUploadButton, true);
+    });
+}
 
 async function handleExpertUpload(file, statusContainer, button, isCover) {
     if (!file) {

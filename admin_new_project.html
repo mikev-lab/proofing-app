@@ -223,8 +223,17 @@
 
                             <!-- Quick Upload Panel -->
                             <div id="quick-panel" class="hidden">
-                                <label for="advanced-file-input" class="block text-sm font-medium text-gray-300">Proof File (PDF)</label>
-                                <input type="file" id="advanced-file-input" accept=".pdf" class="mt-1 block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-600/20 file:text-indigo-300 hover:file:bg-indigo-600/30">
+                                <form id="file-upload-form">
+                                    <label for="file-input" class="block text-sm font-medium text-gray-300">Proof File (PDF)</label>
+                                    <input type="file" id="file-input" accept=".pdf" class="mt-1 block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-600/20 file:text-indigo-300 hover:file:bg-indigo-600/30">
+                                </form>
+
+                                <div class="mt-6 border-t border-slate-700/50 pt-4">
+                                    <form id="cover-upload-form">
+                                        <label for="cover-file-input" class="block text-sm font-medium text-gray-300">Cover File (PDF)</label>
+                                        <input type="file" id="cover-file-input" accept=".pdf" class="mt-1 block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-purple-600/20 file:text-purple-300 hover:file:bg-purple-600/30">
+                                    </form>
+                                </div>
                             </div>
                         </div>
 
