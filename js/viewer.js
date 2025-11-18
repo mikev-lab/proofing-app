@@ -887,7 +887,7 @@ export async function initializeSharedViewer(config) {
         initializeAnnotations(
             db, auth, projectId, pdfCanvas, commentsSection,
             () => pageNum,
-            () => queueRenderPage(pageNum),
+            queueRenderPage,
             (callback) => { onPageRenderedCallback = callback; },
             () => transformState,
             () => viewRenderInfo, // Use overall view info for coordinate mapping
