@@ -31,6 +31,10 @@ const fileInput = document.getElementById('file-input');
 const uploadButton = fileUploadForm.querySelector('button[type="submit"]');
 const uploadStatusContainer = document.getElementById('upload-status-container');
 const generatePdfButton = document.getElementById('generate-pdf-button');
+const coverUploadForm = document.getElementById('cover-upload-form');
+const coverFileInput = document.getElementById('cover-file-input');
+const coverUploadButton = coverUploadForm.querySelector('button[type="submit"]');
+const coverUploadStatusContainer = document.getElementById('cover-upload-status-container');
 
 // Spec form elements
 const specsForm = document.getElementById('specs-form');
@@ -266,6 +270,17 @@ onAuthStateChanged(auth, (user) => {
                              versionSelector.value = selectedVersion;
                         }
                     }
+
+                    // Disable upload forms if project is approved
+                    if (currentProjectData.status === 'Approved' || currentProjectData.status === 'In Production') {
+                        uploadButton.disabled = true;
+                        coverUploadButton.disabled = true;
+                        fileInput.disabled = true;
+                        coverFileInput.disabled = true;
+                        uploadButton.textContent = 'Project Approved';
+                        coverUploadButton.textContent = 'Project Approved';
+                    }
+
                     // --- End Real-time Update Logic ---
 
                     loadingSpinner.classList.add('hidden');
@@ -304,75 +319,63 @@ document.addEventListener('click', (event) => {
 });
 
 // --- File Upload Logic ---
-fileUploadForm.addEventListener('submit', async (e) => {
+fileUploadForm.addEventListener('submit', (e) => {
     e.preventDefault();
-    const files = fileInput.files;
-    if (!files.length) {
-        alert('Please select one or more files to upload.');
+    handleExpertUpload(fileInput.files[0], uploadStatusContainer, uploadButton, false);
+});
+
+coverUploadForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    handleExpertUpload(coverFileInput.files[0], coverUploadStatusContainer, coverUploadButton, true);
+});
+
+async function handleExpertUpload(file, statusContainer, button, isCover) {
+    if (!file) {
+        alert('Please select a file to upload.');
         return;
     }
 
-    uploadButton.disabled = true;
-    generatePdfButton.disabled = true;
-    uploadStatusContainer.innerHTML = ''; // Clear previous statuses
+    button.disabled = true;
+    statusContainer.innerHTML = ''; // Clear previous status
 
-    // Create status elements for each file
-    const statusElements = Array.from(files).map(file => {
-        const statusEl = document.createElement('div');
-        statusEl.className = 'p-2 bg-slate-700/50 rounded-md text-sm flex justify-between items-center';
-        statusEl.innerHTML = `
-            <span class="truncate mr-2">${file.name}</span>
-            <span class="font-medium text-gray-400">Waiting...</span>
-        `;
-        uploadStatusContainer.appendChild(statusEl);
-        return statusEl;
-    });
+    const statusEl = document.createElement('div');
+    statusEl.className = 'p-2 bg-slate-700/50 rounded-md text-sm flex justify-between items-center';
+    statusEl.innerHTML = `
+        <span class="truncate mr-2">${file.name}</span>
+        <span class="font-medium text-blue-400">Uploading...</span>
+    `;
+    statusContainer.appendChild(statusEl);
+    const statusSpan = statusEl.querySelector('.font-medium');
 
-    for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const statusEl = statusElements[i];
-        const statusSpan = statusEl.querySelector('.font-medium');
+    try {
+        const timestamp = Date.now();
+        const fileName = isCover ? `${timestamp}_cover_${file.name}` : `${timestamp}_${file.name}`;
+        const storagePath = `proofs/${projectId}/${fileName}`;
+        const storageRef = ref(storage, storagePath);
 
-        try {
-            // 1. Upload file to temp location
-            statusSpan.textContent = 'Uploading...';
-            statusSpan.className = 'font-medium text-blue-400';
-            const storagePath = `uploads/${projectId}/${Date.now()}-${file.name}`;
-            const storageRef = ref(storage, storagePath);
-            await uploadBytes(storageRef, file);
+        await uploadBytes(storageRef, file);
 
-            // 2. Call Cloud Function to generate previews
-            statusSpan.textContent = 'Processing...';
-            statusSpan.className = 'font-medium text-yellow-400 animate-pulse';
-            const result = await generatePreviews({
-                projectId: projectId,
-                originalFilePath: storagePath,
-                originalFileName: file.name
-            });
+        statusSpan.textContent = 'Processing...';
+        statusSpan.className = 'font-medium text-yellow-400 animate-pulse';
 
-            // 3. Update UI with new pages
-            // This function needs to be created in the next step.
-            // For now, we assume it exists and works correctly.
-            addPagesToThumbnailList(result.data);
+        // The onObjectFinalized function will take over from here.
+        // We can just wait for the Firestore onSnapshot listener to update the UI.
+        // For a better user experience, we could poll the document, but for now, this is sufficient.
+        setTimeout(() => {
+             statusSpan.textContent = 'Upload complete. Processing may take a few minutes.';
+             statusSpan.className = 'font-medium text-green-400';
+             button.disabled = false;
+        }, 3000);
 
-            statusSpan.textContent = 'Complete';
-            statusSpan.className = 'font-medium text-green-400';
-            statusEl.classList.remove('animate-pulse');
 
-        } catch (error) {
-            console.error("Error processing file:", file.name, error);
-            const errorMessage = error.message || 'An unknown error occurred.';
-            statusSpan.textContent = `Error: ${errorMessage}`;
-            statusSpan.className = 'font-medium text-red-400';
-            statusEl.classList.remove('animate-pulse');
-        }
+    } catch (error) {
+        console.error("Error uploading file:", file.name, error);
+        const errorMessage = error.message || 'An unknown error occurred.';
+        statusSpan.textContent = `Error: ${errorMessage}`;
+        statusSpan.className = 'font-medium text-red-400';
+        button.disabled = false;
     }
-
-    // Re-enable buttons and clear input
-    uploadButton.disabled = false;
-    generatePdfButton.disabled = false;
-    fileInput.value = ''; // Clear the file input
-});
+}
 
 // --- Helper function to render new pages ---
 async function addPagesToThumbnailList(newPages) {
