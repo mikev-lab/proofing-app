@@ -961,7 +961,8 @@ export async function initializeSharedViewer(config) {
     }
 
     // --- Tab Logic ---
-    if (viewerTabs && projectData.cover && projectData.cover.previewURL) {
+    // Check for filePath, which is present as soon as the cover is uploaded.
+    if (viewerTabs && projectData.cover && projectData.cover.filePath) {
         viewerTabs.classList.remove('hidden');
 
         const latestVersion = projectData.versions && projectData.versions.length > 0
@@ -970,6 +971,7 @@ export async function initializeSharedViewer(config) {
 
         internalsTab.addEventListener('click', () => {
             currentView = 'internals';
+            projectSpecs = projectData.specs; // Reset to main project specs
             internalsTab.classList.add('border-indigo-500', 'text-indigo-400');
             internalsTab.classList.remove('border-transparent', 'text-gray-400');
             coverTab.classList.add('border-transparent', 'text-gray-400');
@@ -980,6 +982,7 @@ export async function initializeSharedViewer(config) {
 
         coverTab.addEventListener('click', () => {
             currentView = 'cover';
+            projectSpecs = projectData.cover.specs || projectData.specs; // Use cover specs, fallback to main
             coverTab.classList.add('border-indigo-500', 'text-indigo-400');
             coverTab.classList.remove('border-transparent', 'text-gray-400');
             internalsTab.classList.add('border-transparent', 'text-gray-400');

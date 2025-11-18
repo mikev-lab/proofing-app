@@ -79,8 +79,8 @@ exports.optimizePdf = onObjectFinalized({
 
     // --- STEP 1: Run Preflight Checks & Update Firestore ---
     const { spawn } = require('child-process-promise');
-    const { preflightStatus, preflightResults } = await runPreflightChecks(tempFilePath, logger);
-    logger.log('Preflight checks completed.', { preflightStatus, preflightResults });
+    const { preflightStatus, preflightResults, dimensions } = await runPreflightChecks(tempFilePath, logger);
+    logger.log('Preflight checks completed.', { preflightStatus, preflightResults, dimensions });
 
     await db.runTransaction(async (transaction) => {
         const projectDoc = await transaction.get(projectRef);
@@ -94,10 +94,11 @@ exports.optimizePdf = onObjectFinalized({
                 preflightStatus: preflightStatus,
                 preflightResults: preflightResults,
                 processingStatus: 'processing',
-                uploadedAt: admin.firestore.FieldValue.serverTimestamp()
+                uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
+                specs: dimensions ? { dimensions: dimensions } : {} // Save dimensions in a specs object
             };
             transaction.update(projectRef, { cover: coverData });
-            logger.log(`Successfully updated Firestore for project ${projectId} with COVER preflight results.`);
+            logger.log(`Successfully updated Firestore for project ${projectId} with COVER preflight results and dimensions.`);
         } else {
             const projectData = projectDoc.data();
             const versions = projectData.versions || [];
@@ -1075,11 +1076,33 @@ async function runPreflightChecks(filePath, logger) {
     const { spawn } = require('child-process-promise');
 
     let preflightStatus = 'passed';
+    let dimensions = null;
     let preflightResults = {
         dpiCheck: { status: 'skipped', details: 'DPI check not implemented yet.' },
         colorSpaceCheck: { status: 'failed', details: 'Color space analysis not run.' },
         fontCheck: { status: 'failed', details: 'Font analysis not run.' }
     };
+
+    // --- Get Dimensions and Basic Info ---
+    try {
+        const pdfInfoResult = await spawn('pdfinfo', [filePath], { capture: ['stdout', 'stderr'] });
+        const pdfInfoOutput = pdfInfoResult.stdout.toString();
+
+        const sizeMatch = pdfInfoOutput.match(/Page size:\s*([\d\.]+) x ([\d\.]+) pts/);
+        if (sizeMatch && sizeMatch.length === 3) {
+            const widthInPts = parseFloat(sizeMatch[1]);
+            const heightInPts = parseFloat(sizeMatch[2]);
+            dimensions = {
+                width: parseFloat((widthInPts / 72).toFixed(3)),
+                height: parseFloat((heightInPts / 72).toFixed(3)),
+                units: 'in'
+            };
+        }
+    } catch (error) {
+        logger.error('Error getting PDF dimensions:', error.stderr || error.message);
+        // Do not fail the whole process, just log the error.
+    }
+
 
     // --- Font Check ---
     try {
@@ -1172,7 +1195,8 @@ async function runPreflightChecks(filePath, logger) {
 
     return {
         preflightStatus,
-        preflightResults
+        preflightResults,
+        dimensions
     };
 }
 
