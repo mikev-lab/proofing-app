@@ -887,12 +887,13 @@ export async function initializeSharedViewer(config) {
         initializeAnnotations(
             db, auth, projectId, pdfCanvas, commentsSection,
             () => pageNum,
-            queueRenderPage,
+            queueRenderPage, // Use the direct function reference
             (callback) => { onPageRenderedCallback = callback; },
             () => transformState,
-            () => viewRenderInfo, // Use overall view info for coordinate mapping
+            () => viewRenderInfo,
             isGuest,
-            getGuestDisplayName
+            getGuestDisplayName,
+            () => currentTool // <--- NEW: Pass function to get current tool
         );
     } else {
         console.warn("Could not initialize annotations: canvas or comments section missing.");
