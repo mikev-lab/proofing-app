@@ -52,6 +52,74 @@ const paperTypeSelect = document.getElementById('paper-type');
 const saveSpecsButton = document.getElementById('save-specs-button');
 const specsStatusMessage = document.getElementById('specs-status-message');
 
+// --- Selectors for Cover Specs ---
+const coverSpecsForm = document.getElementById('cover-specs-form');
+const coverWidthInput = document.getElementById('cover-width');
+const coverHeightInput = document.getElementById('cover-height');
+const coverUnitsSelect = document.getElementById('cover-units');
+const saveCoverSpecsButton = document.getElementById('save-cover-specs-button');
+const coverSpecsStatusMessage = document.getElementById('cover-specs-status-message');
+
+// --- Function to Populate Cover Form ---
+function populateCoverForm(coverData) {
+    if (coverData && coverData.specs && coverData.specs.dimensions) {
+        coverWidthInput.value = coverData.specs.dimensions.width || '';
+        coverHeightInput.value = coverData.specs.dimensions.height || '';
+        coverUnitsSelect.value = coverData.specs.dimensions.units || 'in';
+    } else {
+        // Clear inputs if no data exists
+        coverWidthInput.value = '';
+        coverHeightInput.value = '';
+        coverUnitsSelect.value = 'in';
+    }
+}
+
+// --- Save Cover Specs Handler ---
+if (coverSpecsForm) {
+    coverSpecsForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        
+        // Basic Validation
+        const width = parseFloat(coverWidthInput.value);
+        const height = parseFloat(coverHeightInput.value);
+
+        if (isNaN(width) || width <= 0 || isNaN(height) || height <= 0) {
+            alert("Please enter valid positive numbers for width and height.");
+            return;
+        }
+
+        saveCoverSpecsButton.disabled = true;
+        saveCoverSpecsButton.textContent = 'Saving...';
+        coverSpecsStatusMessage.textContent = '';
+
+        try {
+            // Construct the object expected by your logic
+            const dimensionsObj = {
+                width: width,
+                height: height,
+                units: coverUnitsSelect.value
+            };
+
+            const projectRef = doc(db, "projects", projectId);
+            
+            // Update specific dot-notation path to avoid overwriting other cover data
+            await updateDoc(projectRef, {
+                "cover.specs.dimensions": dimensionsObj
+            });
+
+            coverSpecsStatusMessage.textContent = 'Cover dimensions saved successfully.';
+            coverSpecsStatusMessage.className = 'mt-2 text-center text-sm text-green-400';
+        } catch (error) {
+            console.error("Error saving cover specs:", error);
+            coverSpecsStatusMessage.textContent = `Error: ${error.message}`;
+            coverSpecsStatusMessage.className = 'mt-2 text-center text-sm text-red-400';
+        } finally {
+            saveCoverSpecsButton.disabled = false;
+            saveCoverSpecsButton.textContent = 'Save Cover Dimensions';
+            setTimeout(() => { coverSpecsStatusMessage.textContent = ''; }, 4000);
+        }
+    });
+}
 
 const urlParams = new URLSearchParams(window.location.search);
 const projectId = urlParams.get('id');
@@ -241,6 +309,10 @@ onAuthStateChanged(auth, (user) => {
 
                     // Populate the specs form
                     populateSpecsForm(currentProjectData.specs);
+
+                    // --- ADD THIS LINE ---
+                    // Populate the manual cover specs form
+                    populateCoverForm(currentProjectData.cover);
 
                     // --- Real-time Update Logic ---
                     // Check which version is currently selected in the dropdown

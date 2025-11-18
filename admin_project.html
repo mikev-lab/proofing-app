@@ -318,6 +318,39 @@
                             </form>
                         </div>
                     </div>
+                    <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50">
+                        <button class="accordion-header w-full flex justify-between items-center p-6 text-left">
+                            <h3 class="text-lg font-semibold text-white">Cover Specifications (Manual Override)</h3>
+                            <svg class="w-6 h-6 text-gray-400 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                        </button>
+                        <div class="accordion-content p-6 border-t border-slate-700/50">
+                            <form id="cover-specs-form">
+                                <div class="grid grid-cols-2 gap-4">
+                                    <div class="form-group">
+                                        <label for="cover-width" class="block text-sm font-medium text-gray-300">Cover Width</label>
+                                        <input type="number" id="cover-width" name="coverWidth" step="0.001" placeholder="Width" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-indigo-500">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="cover-height" class="block text-sm font-medium text-gray-300">Cover Height</label>
+                                        <input type="number" id="cover-height" name="coverHeight" step="0.001" placeholder="Height" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-indigo-500">
+                                    </div>
+                                </div>
+                                <div class="form-group mt-4">
+                                    <label for="cover-units" class="block text-sm font-medium text-gray-300">Units</label>
+                                    <select id="cover-units" name="coverUnits" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-indigo-500">
+                                        <option value="in">Inches (in)</option>
+                                        <option value="mm">Millimeters (mm)</option>
+                                    </select>
+                                </div>
+                                <div class="mt-6 border-t border-slate-700/50 pt-4">
+                                    <button type="submit" id="save-cover-specs-button" class="w-full bg-purple-600 hover:bg-purple-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-purple-800 disabled:cursor-not-allowed">
+                                        Save Cover Dimensions
+                                    </button>
+                                    <p id="cover-specs-status-message" class="mt-2 text-center text-sm"></p>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
                     <!-- Preflight Check Results Section -->
                     <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50">
                         <button class="accordion-header w-full flex justify-between items-center p-6 text-left">

@@ -75,6 +75,9 @@ export async function initializeSharedViewer(config) {
     const pdfPageCache = {}; // Cache for PDFPageProxy objects
     const renderedThumbnails = new Set(); // Keep track of rendered thumbnails
 
+    // --- NEW: Document Cache to prevent re-downloading ---
+    const documentCache = new Map();
+
     // App state
     let currentTool = 'pan'; // 'pan' or 'comment'
 
@@ -353,16 +356,16 @@ export async function initializeSharedViewer(config) {
 
 
     /**
-     * Loads a PDF document from a URL.
+     * Loads a PDF document from a URL, with CACHING.
      */
     async function loadPdf(pdfUrl) {
         try {
             renderingThrobber.classList.remove('hidden'); // Show loading indicator
-            // Safely destroy previous document instance if exists
-            if (pdfDoc && typeof pdfDoc.destroy === 'function') {
-                await pdfDoc.destroy().catch(e => console.warn("Error destroying previous pdfDoc:", e));
-            }
-            pdfDoc = null; // Reset pdfDoc
+            
+            // --- UPDATED CACHING LOGIC ---
+            // Reset current pdfDoc reference and page cache, but do NOT destroy the document
+            // if we intend to keep it in the cache.
+            pdfDoc = null; 
             Object.keys(pdfPageCache).forEach(key => delete pdfPageCache[key]); // Clear page cache
 
             // Dynamically import guides module if not already loaded
@@ -371,16 +374,34 @@ export async function initializeSharedViewer(config) {
             }
             if (guidesSection) guidesSection.classList.remove('hidden'); // Show guides section
 
-            // Load the new PDF document
-            console.log("Loading PDF from:", pdfUrl.substring(0, 100) + '...');
-            const loadingTask = pdfjsLib.getDocument(pdfUrl);
-            pdfDoc = await loadingTask.promise;
+            if (documentCache.has(pdfUrl)) {
+                console.log("Loading PDF from cache:", pdfUrl.substring(0, 50) + '...');
+                pdfDoc = await documentCache.get(pdfUrl);
+            } else {
+                console.log("Loading PDF from URL:", pdfUrl.substring(0, 50) + '...');
+                const loadingTask = pdfjsLib.getDocument(pdfUrl);
+                
+                // Cache the promise immediately
+                documentCache.set(pdfUrl, loadingTask.promise);
+                
+                pdfDoc = await loadingTask.promise;
+            }
 
             // Check if pdfDoc was successfully loaded
             if (!pdfDoc) throw new Error("PDF document loading failed or returned null.");
 
             currentlyLoadedURL = pdfUrl; // Update the tracking variable
-            console.log("PDF loaded successfully. Currently loaded URL updated.");
+            console.log("PDF loaded successfully.");
+
+            // Optional: Implement simple cache cleanup (e.g. keep max 3 docs)
+            if (documentCache.size > 3) {
+                 const oldestKey = documentCache.keys().next().value;
+                 if (oldestKey !== pdfUrl) {
+                     const oldDoc = await documentCache.get(oldestKey);
+                     if (oldDoc && typeof oldDoc.destroy === 'function') oldDoc.destroy();
+                     documentCache.delete(oldestKey);
+                 }
+            }
 
             const totalViews = getViewCount(pdfDoc.numPages);
             pageCountSpan.textContent = totalViews; // Update total views display
@@ -394,6 +415,9 @@ export async function initializeSharedViewer(config) {
 
         } catch (error) {
             console.error("Error loading PDF:", error);
+            // If loading failed, remove from cache so we can retry later
+            documentCache.delete(pdfUrl);
+            
             pdfDoc = null; // Ensure pdfDoc is null on error
             currentlyLoadedURL = null; // Reset currently loaded URL on error
             if(pdfViewer) pdfViewer.innerHTML = `<p class="text-red-400 p-4">Error loading PDF: ${error.message}</p>`;
