@@ -61,8 +61,9 @@ exports.optimizePdf = onObjectFinalized({
   }
   const projectId = parts[1];
   const fullFileName = parts[parts.length - 1]; // Filename including timestamp prefix
+  const isCover = fullFileName.includes('_cover_');
 
-  logger.log(`Processing storage file: ${fullFileName} for project: ${projectId}`);
+  logger.log(`Processing storage file: ${fullFileName} for project: ${projectId}. Is cover: ${isCover}`);
 
 
   const bucket = storage.bucket(fileBucket);
@@ -78,33 +79,45 @@ exports.optimizePdf = onObjectFinalized({
 
     // --- STEP 1: Run Preflight Checks & Update Firestore ---
     const { spawn } = require('child-process-promise');
-    const { preflightStatus, preflightResults } = await runPreflightChecks(tempFilePath, logger);
-    logger.log('Preflight checks completed.', { preflightStatus, preflightResults });
+    const { preflightStatus, preflightResults, dimensions } = await runPreflightChecks(tempFilePath, logger);
+    logger.log('Preflight checks completed.', { preflightStatus, preflightResults, dimensions });
 
     await db.runTransaction(async (transaction) => {
         const projectDoc = await transaction.get(projectRef);
         if (!projectDoc.exists) {
             throw new Error(`Project ${projectId} not found in Firestore.`);
         }
-        const projectData = projectDoc.data();
-        const versions = projectData.versions || [];
-        const versionIndex = versions.findIndex(v => v.filePath === filePath);
 
-        if (versionIndex === -1) {
-            logger.warn(`No version found matching filePath "${filePath}" in project ${projectId}.`);
-            return;
+        if (isCover) {
+            const coverData = {
+                filePath: filePath, // Store the path to identify it later
+                preflightStatus: preflightStatus,
+                preflightResults: preflightResults,
+                processingStatus: 'processing',
+                uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
+                specs: dimensions ? { dimensions: dimensions } : {} // Save dimensions in a specs object
+            };
+            transaction.update(projectRef, { cover: coverData });
+            logger.log(`Successfully updated Firestore for project ${projectId} with COVER preflight results and dimensions.`);
+        } else {
+            const projectData = projectDoc.data();
+            const versions = projectData.versions || [];
+            const versionIndex = versions.findIndex(v => v.filePath === filePath);
+
+            if (versionIndex === -1) {
+                logger.warn(`No version found matching filePath "${filePath}" in project ${projectId}.`);
+                return; // Don't throw, just exit the transaction
+            }
+
+            versions[versionIndex].preflightStatus = preflightStatus;
+            versions[versionIndex].preflightResults = preflightResults;
+            if (versions[versionIndex].processingStatus !== 'error') {
+                versions[versionIndex].processingStatus = 'processing';
+            }
+
+            transaction.update(projectRef, { versions: versions });
+            logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with preflight results.`);
         }
-
-        // Update the version with preflight results
-        versions[versionIndex].preflightStatus = preflightStatus;
-        versions[versionIndex].preflightResults = preflightResults;
-        // Also set initial processing status if not already set to an error
-        if (versions[versionIndex].processingStatus !== 'error') {
-            versions[versionIndex].processingStatus = 'processing';
-        }
-
-        transaction.update(projectRef, { versions: versions });
-        logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with preflight results.`);
     });
 
 
@@ -155,21 +168,30 @@ exports.optimizePdf = onObjectFinalized({
         if (!projectDoc.exists) {
             throw new Error(`Project ${projectId} not found in Firestore.`);
         }
-        const projectData = projectDoc.data();
-        const versions = projectData.versions || [];
-        const versionIndex = versions.findIndex(v => v.filePath === filePath);
 
-        if (versionIndex === -1) {
-            logger.warn(`No version found matching filePath "${filePath}" in project ${projectId}.`);
-            return;
+        if (isCover) {
+            const coverData = projectDoc.data().cover || {};
+            coverData.previewURL = signedUrl;
+            coverData.processingStatus = 'complete';
+            coverData.processingError = null;
+            transaction.update(projectRef, { cover: coverData });
+            logger.log(`Successfully updated Firestore for project ${projectId} with COVER previewURL and status 'complete'.`);
+        } else {
+            const projectData = projectDoc.data();
+            const versions = projectData.versions || [];
+            const versionIndex = versions.findIndex(v => v.filePath === filePath);
+
+            if (versionIndex === -1) {
+                logger.warn(`No version found matching filePath "${filePath}" in project ${projectId} to update with success status.`);
+                return;
+            }
+
+            versions[versionIndex].previewURL = signedUrl;
+            versions[versionIndex].processingStatus = 'complete';
+            versions[versionIndex].processingError = null;
+            transaction.update(projectRef, { versions: versions });
+            logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with previewURL and status 'complete'.`);
         }
-
-        // Update the found version with the previewURL and final status
-        versions[versionIndex].previewURL = signedUrl;
-        versions[versionIndex].processingStatus = 'complete';
-        versions[versionIndex].processingError = null; // Clear any previous error
-        transaction.update(projectRef, { versions: versions });
-        logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with previewURL and status 'complete'.`);
     });
 
   } catch (error) {
@@ -179,23 +201,31 @@ exports.optimizePdf = onObjectFinalized({
       await db.runTransaction(async (transaction) => {
         const projectDoc = await transaction.get(projectRef);
         if (!projectDoc.exists) {
-          logger.error(`Project ${projectId} not found. Cannot update with error status.`);
-          return;
-        }
-        const projectData = projectDoc.data();
-        const versions = projectData.versions || [];
-        const versionIndex = versions.findIndex(v => v.filePath === filePath);
-
-        if (versionIndex === -1) {
-          logger.warn(`No version found matching filePath "${filePath}" in project ${projectId} to update with error status.`);
-          return;
+            logger.error(`Project ${projectId} not found. Cannot update with error status.`);
+            return;
         }
 
-        // Update with error, but preserve the preflight results from the first update
-        versions[versionIndex].processingStatus = 'error';
-        versions[versionIndex].processingError = error.message || 'An unknown error occurred during processing.';
-        transaction.update(projectRef, { versions: versions });
-        logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with status 'error'.`);
+        if (isCover) {
+            const coverData = projectDoc.data().cover || {};
+            coverData.processingStatus = 'error';
+            coverData.processingError = error.message || 'An unknown error occurred during processing.';
+            transaction.update(projectRef, { cover: coverData });
+            logger.log(`Successfully updated Firestore for project ${projectId} with COVER status 'error'.`);
+        } else {
+            const projectData = projectDoc.data();
+            const versions = projectData.versions || [];
+            const versionIndex = versions.findIndex(v => v.filePath === filePath);
+
+            if (versionIndex === -1) {
+                logger.warn(`No version found matching filePath "${filePath}" in project ${projectId} to update with error status.`);
+                return;
+            }
+
+            versions[versionIndex].processingStatus = 'error';
+            versions[versionIndex].processingError = error.message || 'An unknown error occurred during processing.';
+            transaction.update(projectRef, { versions: versions });
+            logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with status 'error'.`);
+        }
       });
     } catch (dbError) {
       logger.error('FATAL: Could not update Firestore with error state.', dbError);
@@ -1046,11 +1076,33 @@ async function runPreflightChecks(filePath, logger) {
     const { spawn } = require('child-process-promise');
 
     let preflightStatus = 'passed';
+    let dimensions = null;
     let preflightResults = {
         dpiCheck: { status: 'skipped', details: 'DPI check not implemented yet.' },
         colorSpaceCheck: { status: 'failed', details: 'Color space analysis not run.' },
         fontCheck: { status: 'failed', details: 'Font analysis not run.' }
     };
+
+    // --- Get Dimensions and Basic Info ---
+    try {
+        const pdfInfoResult = await spawn('pdfinfo', [filePath], { capture: ['stdout', 'stderr'] });
+        const pdfInfoOutput = pdfInfoResult.stdout.toString();
+
+        const sizeMatch = pdfInfoOutput.match(/Page size:\s*([\d\.]+) x ([\d\.]+) pts/);
+        if (sizeMatch && sizeMatch.length === 3) {
+            const widthInPts = parseFloat(sizeMatch[1]);
+            const heightInPts = parseFloat(sizeMatch[2]);
+            dimensions = {
+                width: parseFloat((widthInPts / 72).toFixed(3)),
+                height: parseFloat((heightInPts / 72).toFixed(3)),
+                units: 'in'
+            };
+        }
+    } catch (error) {
+        logger.error('Error getting PDF dimensions:', error.stderr || error.message);
+        // Do not fail the whole process, just log the error.
+    }
+
 
     // --- Font Check ---
     try {
@@ -1143,7 +1195,8 @@ async function runPreflightChecks(filePath, logger) {
 
     return {
         preflightStatus,
-        preflightResults
+        preflightResults,
+        dimensions
     };
 }
 

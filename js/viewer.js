@@ -52,6 +52,12 @@ export async function initializeSharedViewer(config) {
     const preflightIssuesList = document.getElementById('preflight-issues-list');
     const preflightDataList = document.getElementById('preflight-data-list');
 
+    // Tab elements
+    const viewerTabs = document.getElementById('viewer-tabs');
+    const internalsTab = document.getElementById('internals-tab');
+    const coverTab = document.getElementById('cover-tab');
+    let currentView = 'internals'; // 'internals' or 'cover'
+
     // Dynamically imported module
     let guidesModule = null;
 
@@ -953,6 +959,39 @@ export async function initializeSharedViewer(config) {
              }
         });
     }
+
+    // --- Tab Logic ---
+    // Check for filePath, which is present as soon as the cover is uploaded.
+    if (viewerTabs && projectData.cover && projectData.cover.filePath) {
+        viewerTabs.classList.remove('hidden');
+
+        const latestVersion = projectData.versions && projectData.versions.length > 0
+            ? projectData.versions.reduce((latest, v) => (v.versionNumber > latest.versionNumber ? v : latest))
+            : null;
+
+        internalsTab.addEventListener('click', () => {
+            currentView = 'internals';
+            projectSpecs = projectData.specs; // Reset to main project specs
+            internalsTab.classList.add('border-indigo-500', 'text-indigo-400');
+            internalsTab.classList.remove('border-transparent', 'text-gray-400');
+            coverTab.classList.add('border-transparent', 'text-gray-400');
+            coverTab.classList.remove('border-indigo-500', 'text-indigo-400');
+            loadVersion(latestVersion);
+            displayPreflightResults(latestVersion);
+        });
+
+        coverTab.addEventListener('click', () => {
+            currentView = 'cover';
+            projectSpecs = projectData.cover.specs || projectData.specs; // Use cover specs, fallback to main
+            coverTab.classList.add('border-indigo-500', 'text-indigo-400');
+            coverTab.classList.remove('border-transparent', 'text-gray-400');
+            internalsTab.classList.add('border-transparent', 'text-gray-400');
+            internalsTab.classList.remove('border-indigo-500', 'text-indigo-400');
+            loadVersion(projectData.cover);
+            displayPreflightResults(projectData.cover);
+        });
+    }
+
 
     // --- Initial PDF Load ---
     let versionToLoad = null;
