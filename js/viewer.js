@@ -882,18 +882,22 @@ export async function initializeSharedViewer(config) {
         return name || "Guest";
     }
 
+    // --- Variable to hold annotation API ---
+    let annotationsManager = null;
+
     // Initialize annotation functionality
     if (pdfCanvas && commentsSection) {
-        initializeAnnotations(
+        annotationsManager = initializeAnnotations(
             db, auth, projectId, pdfCanvas, commentsSection,
             () => pageNum,
-            queueRenderPage, // Use the direct function reference
+            queueRenderPage, 
             (callback) => { onPageRenderedCallback = callback; },
             () => transformState,
             () => viewRenderInfo,
             isGuest,
             getGuestDisplayName,
-            () => currentTool // <--- NEW: Pass function to get current tool
+            () => currentTool,
+            () => currentView // <--- NEW: Pass current context ('internals' or 'cover')
         );
     } else {
         console.warn("Could not initialize annotations: canvas or comments section missing.");
@@ -996,24 +1000,30 @@ export async function initializeSharedViewer(config) {
 
         internalsTab.addEventListener('click', () => {
             currentView = 'internals';
-            projectSpecs = projectData.specs; // Reset to main project specs
+            projectSpecs = projectData.specs; 
             internalsTab.classList.add('border-indigo-500', 'text-indigo-400');
             internalsTab.classList.remove('border-transparent', 'text-gray-400');
             coverTab.classList.add('border-transparent', 'text-gray-400');
             coverTab.classList.remove('border-indigo-500', 'text-indigo-400');
             loadVersion(latestVersion);
             displayPreflightResults(latestVersion);
+            
+            // --- NEW: Refresh Annotations Sidebar ---
+            if (annotationsManager) annotationsManager.refresh();
         });
 
         coverTab.addEventListener('click', () => {
             currentView = 'cover';
-            projectSpecs = projectData.cover.specs || projectData.specs; // Use cover specs, fallback to main
+            projectSpecs = projectData.cover.specs || projectData.specs;
             coverTab.classList.add('border-indigo-500', 'text-indigo-400');
             coverTab.classList.remove('border-transparent', 'text-gray-400');
             internalsTab.classList.add('border-transparent', 'text-gray-400');
             internalsTab.classList.remove('border-indigo-500', 'text-indigo-400');
             loadVersion(projectData.cover);
             displayPreflightResults(projectData.cover);
+
+            // --- NEW: Refresh Annotations Sidebar ---
+            if (annotationsManager) annotationsManager.refresh();
         });
     }
 
