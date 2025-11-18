@@ -347,17 +347,41 @@ onAuthStateChanged(auth, (user) => {
                         }
                     }
 
+                    // --- Button Visibility & Form Disabling based on Status ---
+                    const isApproved = currentProjectData.status === 'Approved' || currentProjectData.status === 'In Production';
+
+                    // Toggle approve/unapprove buttons
+                    approveButton.classList.toggle('hidden', isApproved);
+                    unapproveButton.classList.toggle('hidden', !isApproved);
+
                     // Disable upload forms if project is approved
-                    if (currentProjectData.status === 'Approved' || currentProjectData.status === 'In Production') {
+                    if (isApproved) {
                         if (uploadButton) {
                             uploadButton.disabled = true;
                             fileInput.disabled = true;
                             uploadButton.textContent = 'Project Approved';
+                            // Also disable guided upload
+                            document.getElementById('guided-tab').style.pointerEvents = 'none';
+                            document.getElementById('guided-tab').style.opacity = '0.5';
                         }
                         if (coverUploadButton) {
                             coverUploadButton.disabled = true;
                             coverFileInput.disabled = true;
                             coverUploadButton.textContent = 'Project Approved';
+                        }
+                    } else {
+                        // Re-enable forms if project is not approved
+                        if (uploadButton) {
+                            uploadButton.disabled = false;
+                            fileInput.disabled = false;
+                            uploadButton.textContent = 'Upload New Version';
+                            document.getElementById('guided-tab').style.pointerEvents = 'auto';
+                            document.getElementById('guided-tab').style.opacity = '1';
+                        }
+                        if (coverUploadButton) {
+                            coverUploadButton.disabled = false;
+                            coverFileInput.disabled = false;
+                            coverUploadButton.textContent = 'Upload Cover';
                         }
                     }
 
@@ -640,15 +664,24 @@ if (projectId) {
 
 // --- Approve Button Logic ---
 const approveButton = document.getElementById('approve-button');
+const unapproveButton = document.getElementById('unapprove-button');
+
 approveButton.addEventListener('click', async () => {
     if (!projectId) return;
-    if (confirm('Are you sure you want to mark this project as approved?')) {
+    if (confirm('Are you sure you want to mark this project as approved? This will lock the project for the client.')) {
         approveButton.disabled = true;
         approveButton.textContent = 'Approving...';
         try {
             const projectRef = doc(db, "projects", projectId);
             await updateDoc(projectRef, { status: 'Approved' });
-            // The onSnapshot listener will handle the UI update.
+
+            // Record history
+            const recordHistory = httpsCallable(functions, 'recordHistory');
+            await recordHistory({
+                projectId: projectId,
+                action: 'admin_approved_proof'
+            });
+
             alert('Project marked as approved.');
         } catch (error) {
             console.error("Error approving project:", error);
@@ -656,6 +689,33 @@ approveButton.addEventListener('click', async () => {
         } finally {
             approveButton.disabled = false;
             approveButton.textContent = 'Mark as Approved';
+        }
+    }
+});
+
+unapproveButton.addEventListener('click', async () => {
+    if (!projectId) return;
+    if (confirm('Are you sure you want to un-approve this project? This will unlock it and allow the client to make changes.')) {
+        unapproveButton.disabled = true;
+        unapproveButton.textContent = 'Un-approving...';
+        try {
+            const projectRef = doc(db, "projects", projectId);
+            await updateDoc(projectRef, { status: 'Pending' }); // Revert to a neutral status
+
+            // Record history
+            const recordHistory = httpsCallable(functions, 'recordHistory');
+            await recordHistory({
+                projectId: projectId,
+                action: 'admin_unapproved_proof'
+            });
+
+            alert('Project has been un-approved and unlocked.');
+        } catch (error) {
+            console.error("Error un-approving project:", error);
+            alert('Could not un-approve the project. Please try again.');
+        } finally {
+            unapproveButton.disabled = false;
+            unapproveButton.textContent = 'Unlock / Un-approve';
         }
     }
 });
