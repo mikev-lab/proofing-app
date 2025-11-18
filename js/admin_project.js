@@ -1,5 +1,6 @@
-import { auth, db, storage, generatePreviews, generateFinalPdf, generateGuestLink, firebaseConfig } from './firebase.js';
+import { auth, db, storage, functions, generatePreviews, generateFinalPdf, generateGuestLink, firebaseConfig } from './firebase.js';
 import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+import { httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js";
 import { doc, onSnapshot, getDoc, updateDoc, Timestamp, collection, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 import { ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
 import { initializeSharedViewer } from './viewer.js';
@@ -347,17 +348,41 @@ onAuthStateChanged(auth, (user) => {
                         }
                     }
 
+                    // --- Button Visibility & Form Disabling based on Status ---
+                    const isApproved = currentProjectData.status === 'Approved' || currentProjectData.status === 'In Production';
+
+                    // Toggle approve/unapprove buttons
+                    approveButton.classList.toggle('hidden', isApproved);
+                    unapproveButton.classList.toggle('hidden', !isApproved);
+
                     // Disable upload forms if project is approved
-                    if (currentProjectData.status === 'Approved' || currentProjectData.status === 'In Production') {
+                    if (isApproved) {
                         if (uploadButton) {
                             uploadButton.disabled = true;
                             fileInput.disabled = true;
                             uploadButton.textContent = 'Project Approved';
+                            // Also disable guided upload
+                            document.getElementById('guided-tab').style.pointerEvents = 'none';
+                            document.getElementById('guided-tab').style.opacity = '0.5';
                         }
                         if (coverUploadButton) {
                             coverUploadButton.disabled = true;
                             coverFileInput.disabled = true;
                             coverUploadButton.textContent = 'Project Approved';
+                        }
+                    } else {
+                        // Re-enable forms if project is not approved
+                        if (uploadButton) {
+                            uploadButton.disabled = false;
+                            fileInput.disabled = false;
+                            uploadButton.textContent = 'Upload New Version';
+                            document.getElementById('guided-tab').style.pointerEvents = 'auto';
+                            document.getElementById('guided-tab').style.opacity = '1';
+                        }
+                        if (coverUploadButton) {
+                            coverUploadButton.disabled = false;
+                            coverFileInput.disabled = false;
+                            coverUploadButton.textContent = 'Upload Cover';
                         }
                     }
 
@@ -638,17 +663,54 @@ if (projectId) {
     });
 }
 
+// --- Firestore Listener for Project History ---
+if (projectId) {
+    const historyQuery = query(collection(db, "projects", projectId, "history"), orderBy("timestamp", "desc"));
+    onSnapshot(historyQuery, (snapshot) => {
+        const historyList = document.getElementById('project-history-list');
+        if (historyList) {
+            historyList.innerHTML = '';
+            if (snapshot.empty) {
+                historyList.innerHTML = '<p class="text-gray-400">No history events found.</p>';
+                return;
+            }
+            snapshot.forEach(doc => {
+                const event = doc.data();
+                const eventTime = event.timestamp ? new Date(event.timestamp.seconds * 1000).toLocaleString() : 'N/A';
+                const signature = event.details && event.details.signature ? `<span class="italic text-gray-400"> - E-Signature: ${event.details.signature}</span>` : '';
+                const item = document.createElement('div');
+                item.className = 'p-3 bg-slate-700/50 rounded-md text-sm';
+                item.innerHTML = `
+                    <p class="font-semibold text-white">${event.action.replace(/_/g, ' ')}</p>
+                    <p class="text-gray-300">by <span class="font-medium">${event.userDisplay || 'System'}</span>${signature}</p>
+                    <p class="text-xs text-gray-500 mt-1">${eventTime} (IP: ${event.ipAddress || 'N/A'})</p>
+                `;
+                historyList.appendChild(item);
+            });
+        }
+    });
+}
+
 // --- Approve Button Logic ---
 const approveButton = document.getElementById('approve-button');
+const unapproveButton = document.getElementById('unapprove-button');
+
 approveButton.addEventListener('click', async () => {
     if (!projectId) return;
-    if (confirm('Are you sure you want to mark this project as approved?')) {
+    if (confirm('Are you sure you want to mark this project as approved? This will lock the project for the client.')) {
         approveButton.disabled = true;
         approveButton.textContent = 'Approving...';
         try {
             const projectRef = doc(db, "projects", projectId);
             await updateDoc(projectRef, { status: 'Approved' });
-            // The onSnapshot listener will handle the UI update.
+
+            // Record history
+            const recordHistory = httpsCallable(functions, 'recordHistory');
+            await recordHistory({
+                projectId: projectId,
+                action: 'admin_approved_proof'
+            });
+
             alert('Project marked as approved.');
         } catch (error) {
             console.error("Error approving project:", error);
@@ -656,6 +718,33 @@ approveButton.addEventListener('click', async () => {
         } finally {
             approveButton.disabled = false;
             approveButton.textContent = 'Mark as Approved';
+        }
+    }
+});
+
+unapproveButton.addEventListener('click', async () => {
+    if (!projectId) return;
+    if (confirm('Are you sure you want to un-approve this project? This will unlock it and allow the client to make changes.')) {
+        unapproveButton.disabled = true;
+        unapproveButton.textContent = 'Un-approving...';
+        try {
+            const projectRef = doc(db, "projects", projectId);
+            await updateDoc(projectRef, { status: 'Pending' }); // Revert to a neutral status
+
+            // Record history
+            const recordHistory = httpsCallable(functions, 'recordHistory');
+            await recordHistory({
+                projectId: projectId,
+                action: 'admin_unapproved_proof'
+            });
+
+            alert('Project has been un-approved and unlocked.');
+        } catch (error) {
+            console.error("Error un-approving project:", error);
+            alert('Could not un-approve the project. Please try again.');
+        } finally {
+            unapproveButton.disabled = false;
+            unapproveButton.textContent = 'Unlock / Un-approve';
         }
     }
 });
