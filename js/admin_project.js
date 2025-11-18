@@ -52,6 +52,8 @@ const paperTypeSelect = document.getElementById('paper-type');
 const saveSpecsButton = document.getElementById('save-specs-button');
 const specsStatusMessage = document.getElementById('specs-status-message');
 
+let previousImpositionCount = -1;
+
 // --- Selectors for Cover Specs ---
 const coverSpecsForm = document.getElementById('cover-specs-form');
 const coverWidthInput = document.getElementById('cover-width');
@@ -59,6 +61,8 @@ const coverHeightInput = document.getElementById('cover-height');
 const coverUnitsSelect = document.getElementById('cover-units');
 const saveCoverSpecsButton = document.getElementById('save-cover-specs-button');
 const coverSpecsStatusMessage = document.getElementById('cover-specs-status-message');
+
+
 
 // --- Function to Populate Cover Form ---
 function populateCoverForm(coverData) {
@@ -331,7 +335,7 @@ onAuthStateChanged(auth, (user) => {
                         isAdmin: true
                     });
 
-                    initializeImpositionUI({ projectData: currentProjectData, db });
+                    initializeImpositionUI({ projectData: currentProjectData, db, projectId });
 
                     // After initialization, ensure the dropdown reflects the correct version if it exists.
                     // The viewer's internal logic selects the latest, but we might need to respect the dropdown.
@@ -356,6 +360,48 @@ onAuthStateChanged(auth, (user) => {
                             coverUploadButton.textContent = 'Project Approved';
                         }
                     }
+
+                    // --- START NEW: Imposition Notification Logic ---
+                        const impositions = currentProjectData.impositions || [];
+                        
+                        // 1. Initialize count on first load
+                        if (previousImpositionCount === -1) {
+                            previousImpositionCount = impositions.length;
+                        } 
+                        // 2. Detect New Imposition
+                        else if (impositions.length > previousImpositionCount) {
+                            const latestImposition = impositions[impositions.length - 1];
+                            
+                            // Update Bell Indicator
+                            const indicator = document.getElementById('notification-indicator');
+                            if (indicator) indicator.classList.remove('hidden');
+                            
+                            // Add to Dropdown List
+                            const list = document.getElementById('notification-list');
+                            // Remove "No notifications" text if it exists
+                            const emptyMsg = list.querySelector('p.text-gray-400');
+                            if (emptyMsg && emptyMsg.textContent.includes('No new')) emptyMsg.remove();
+                            
+                            const notifItem = document.createElement('div');
+                            notifItem.className = "px-4 py-3 hover:bg-slate-700 border-b border-slate-700 last:border-0 cursor-pointer transition-colors group";
+                            notifItem.innerHTML = `
+                                <div class="flex justify-between items-start">
+                                    <p class="text-sm text-white font-semibold">Imposition Generated</p>
+                                    <span class="text-[10px] text-green-400 bg-green-900/30 px-1.5 py-0.5 rounded">NEW</span>
+                                </div>
+                                <p class="text-xs text-gray-400 mt-1 group-hover:text-blue-300 transition-colors">Click to download PDF</p>
+                                <p class="text-[10px] text-gray-500 mt-1">${new Date().toLocaleTimeString()}</p>
+                            `;
+                            
+                            // Click to download
+                            notifItem.onclick = () => window.open(latestImposition.fileURL, '_blank');
+                            
+                            list.prepend(notifItem);
+                            
+                            // Update count
+                            previousImpositionCount = impositions.length;
+                        }
+                        // --- END NEW Logic ---
 
                     // --- End Real-time Update Logic ---
 

@@ -1323,7 +1323,7 @@ exports.scheduledProjectDeletion = onSchedule("every day 03:00", async (event) =
 
 // --- NEW Imposition Functions ---
 const { onDocumentUpdated } = require('firebase-functions/v2/firestore');
-const { imposePdf: imposePdfLogic } = require('./imposition'); // Import the core logic
+const { imposePdfLogic } = require('./imposition'); // Import the core logic
 const axios = require('axios');
 const { PDFDocument } = require('pdf-lib');
 const FormData = require('form-data');
@@ -1681,7 +1681,7 @@ exports.generateFinalPdf = onCall({
 
 exports.imposePdf = onCall({
   region: 'us-central1',
-  memory: '4GiB', // Imposition can be memory intensive
+  memory: '8GiB', // Imposition can be memory intensive
   timeoutSeconds: 540
 }, async (request) => {
   // 1. Authentication Check
@@ -1724,24 +1724,33 @@ exports.imposePdf = onCall({
     const filePath = new URL(latestVersion.fileURL).pathname.split('/o/')[1].replace(/%2F/g, '/');
     const file = bucket.file(decodeURIComponent(filePath));
 
-    // 3. Call main imposition logic
-    const imposedPdfBytes = await imposePdfLogic({
+    // 3. Call main imposition logic (Now returns a file path)
+    const { filePath: localImposedPath } = await imposePdfLogic({
       inputFile: file,
       settings: settings,
       jobInfo: projectData,
     });
 
-    // 4. Upload result to storage
+    // 4. Upload result to storage (Stream from disk)
     const imposedFileName = `imposed_manual_${Date.now()}.pdf`;
     const imposedFilePath = `imposed/${projectId}/${imposedFileName}`;
     const imposedFile = bucket.file(imposedFilePath);
-    await imposedFile.save(imposedPdfBytes, { contentType: 'application/pdf' });
+    
+    // Use upload() instead of save() to handle large files
+    await bucket.upload(localImposedPath, {
+        destination: imposedFilePath,
+        contentType: 'application/pdf'
+    });
+
+    // Clean up local file
+    try { require('fs').unlinkSync(localImposedPath); } catch(e) {}
+    
     const [imposedFileUrl] = await imposedFile.getSignedUrl({ action: 'read', expires: '03-09-2491' });
 
     // 5. Update Firestore
     await projectRef.update({
       impositions: admin.firestore.FieldValue.arrayUnion({
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt: admin.firestore.Timestamp.now(),
         fileURL: imposedFileUrl,
         settings: settings,
         type: 'manual',
@@ -1791,7 +1800,7 @@ exports.onProjectApprove = onDocumentUpdated('projects/{projectId}', async (even
       logger.log(`Optimal layout for project ${projectId}: ${settings.columns}x${settings.rows} on ${settings.sheet.name}`);
 
       // 4. Call the main imposition logic
-      const imposedPdfBytes = await imposePdfLogic({
+      const { filePath: localImposedPath } = await imposePdfLogic({
         inputFile: file,
         settings: settings,
         jobInfo: afterData
@@ -1801,13 +1810,20 @@ exports.onProjectApprove = onDocumentUpdated('projects/{projectId}', async (even
       const imposedFileName = `imposed_${Date.now()}.pdf`;
       const imposedFilePath = `imposed/${projectId}/${imposedFileName}`;
       const imposedFile = bucket.file(imposedFilePath);
-      await imposedFile.save(imposedPdfBytes, { contentType: 'application/pdf' });
+      
+      await bucket.upload(localImposedPath, {
+          destination: imposedFilePath,
+          contentType: 'application/pdf'
+      });
+
+      // Clean up
+      try { require('fs').unlinkSync(localImposedPath); } catch(e) {}
 
       // 6. Update Firestore with the new imposition record
       const projectRef = db.collection('projects').doc(projectId);
       await projectRef.update({
         impositions: admin.firestore.FieldValue.arrayUnion({
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          createdAt: admin.firestore.Timestamp.now(), // <--- FIX: Use Timestamp.now()
           fileURL: await imposedFile.getSignedUrl({ action: 'read', expires: '03-09-2491' })[0],
           settings: settings,
           type: 'automatic'

@@ -1,9 +1,10 @@
 // js/imposition-ui.js
 
 import { maximizeNUp, getSheetSizes, getPageSequenceForSheet } from './imposition-logic.js';
-import { drawCropMarks, drawSlugInfo, drawSpineIndicator, drawSpineSlugText, drawPageNumber } from './imposition-drawing.js';
+import { drawCropMarks, drawSlugInfo, drawPageNumber } from './imposition-drawing.js';
 import { INCH_TO_POINTS } from './constants.js';
 import { collection, query, where, getDocs, doc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js"; // NEW IMPORT
 
 // --- STATE MANAGEMENT ---
 let pdfDoc = null;
@@ -20,8 +21,8 @@ let zoomState = {
     startX: 0,
     startY: 0,
 };
-let animationFrameRequest = null; // NEW: To throttle rendering
-let contentCanvas = document.createElement('canvas'); // NEW: Off-screen canvas for rendering
+let animationFrameRequest = null;
+let contentCanvas = document.createElement('canvas');
 
 // --- CONSTANTS ---
 const IMPOSITION_TYPE_OPTIONS = [
@@ -33,7 +34,6 @@ const IMPOSITION_TYPE_OPTIONS = [
 
 // --- HELPERS ---
 
-// NEW HELPER FUNCTION
 function getTrimSizeInPoints(projectData) {
     const specs = projectData.specs;
     if (!specs || !specs.dimensions) {
@@ -42,22 +42,17 @@ function getTrimSizeInPoints(projectData) {
     }
 
     if (typeof specs.dimensions === 'object') {
-        // This is for "Custom"
         const w = specs.dimensions.width || 8.5;
         const h = specs.dimensions.height || 11;
-        // NOTE: This assumes units are 'in'. A more robust
-        // solution would check specs.dimensions.units
         return { width: w * INCH_TO_POINTS, height: h * INCH_TO_POINTS };
     }
 
-    // Handle string-based dimensions
     const dimStr = String(specs.dimensions).toLowerCase();
     switch (dimStr) {
         case 'letter':
             return { width: 8.5 * INCH_TO_POINTS, height: 11 * INCH_TO_POINTS };
         case 'tabloid':
             return { width: 11 * INCH_TO_POINTS, height: 17 * INCH_TO_POINTS };
-        // Add other common sizes from your dropdown
         default:
             console.warn(`Unknown dimension string: ${specs.dimensions}, defaulting to Letter.`);
             return { width: 8.5 * INCH_TO_POINTS, height: 11 * INCH_TO_POINTS };
@@ -90,33 +85,26 @@ function populateForm(settings) {
 // --- CORE RENDERING ---
 async function renderAllPreviews(projectData) {
     if (!pdfDoc) return;
-    // await renderMainPreview(projectData); // MODIFICATION: renderContentCanvas handles this
-    await renderContentCanvas(projectData); // MODIFICATION: Render to off-screen canvas
-    await renderSheetPreview(projectData); // This is likely for a different view, leaving as-is
+    await renderContentCanvas(projectData);
+    await renderThumbnailList(projectData);
 }
 
-/**
- * FAST RENDER: Draws the pre-rendered contentCanvas to the visible canvas
- * with current zoom/pan. This is called by rAF on pan/zoom.
- */
 function renderMainPreview(projectData) {
     const canvas = document.getElementById('imposition-preview-canvas');
     const zoomLevelDisplay = document.getElementById('imposition-zoom-level-display');
     
-    if (!canvas || !zoomLevelDisplay || !contentCanvas.width) return; // Don't render if content isn't ready
+    if (!canvas || !zoomLevelDisplay || !contentCanvas.width) return;
 
     try {
         const ctx = canvas.getContext('2d');
         const sheetConfig = sheetSizes.find(s => s.name === currentSettings.sheet);
         if (!sheetConfig) return; 
 
-        // Get sheet dimensions (these are also on contentCanvas, but good for scaling)
         let sheetWidth = contentCanvas.width;
         let sheetHeight = contentCanvas.height;
        
         const parent = canvas.parentElement;
 
-        // Resize visible canvas if needed
         if (canvas.width !== parent.clientWidth) {
             canvas.width = parent.clientWidth;
         }
@@ -124,21 +112,17 @@ function renderMainPreview(projectData) {
             canvas.height = parent.clientHeight;
         }
 
-        // Calculate the scale to fit the sheet within the canvas
         const fitScale = Math.min((canvas.width - 20) / sheetWidth, (canvas.height - 20) / sheetHeight);
         const totalScale = fitScale * zoomState.scale;
 
-        // Clear canvas
         ctx.fillStyle = '#262626';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
         ctx.save();
-        // Center the view and apply transformations
         ctx.translate(canvas.width / 2 + zoomState.offsetX, canvas.height / 2 + zoomState.offsetY);
         ctx.scale(totalScale, totalScale);
         ctx.translate(-sheetWidth / 2, -sheetHeight / 2);
 
-        // FAST RENDER: Draw the pre-rendered canvas. No awaits!
         ctx.drawImage(contentCanvas, 0, 0);
 
         ctx.restore();
@@ -150,10 +134,6 @@ function renderMainPreview(projectData) {
     }
 }
 
-/**
- * SLOW RENDER: Renders the PDF pages onto the off-screen contentCanvas.
- * This is called when data changes (form, sheet click).
- */
 async function renderContentCanvas(projectData) {
     const sheetConfig = sheetSizes.find(s => s.name === currentSettings.sheet);
     if (!pdfDoc || !sheetConfig) return;
@@ -164,30 +144,23 @@ async function renderContentCanvas(projectData) {
         [sheetWidth, sheetHeight] = [sheetHeight, sheetWidth];
     }
 
-    // Set off-screen canvas to the exact sheet size
     contentCanvas.width = sheetWidth;
     contentCanvas.height = sheetHeight;
 
     const ctx = contentCanvas.getContext('2d');
 
-    // All drawing logic now goes to the off-screen canvas context
     await renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, currentSheetIndex, currentViewSide, projectData);
 
-    // After the expensive render is done, trigger one fast render
-    // to show the new content.
     requestRender(projectData);
 }
 
-// NEW: Render function to be called by rAF
-// MODIFICATION: This is now SYNCHRONOUS, calling the fast renderMainPreview
 function requestRender(projectData) {
     if (animationFrameRequest) {
-        return; // A frame is already requested, ignore this call
+        return;
     }
-    // Queue up a render for the next browser paint cycle
     animationFrameRequest = requestAnimationFrame(() => {
-        renderMainPreview(projectData); // This is the fast, synchronous render
-        animationFrameRequest = null; // Clear the lock *after* render is done
+        renderMainPreview(projectData);
+        animationFrameRequest = null;
     });
 }
 
@@ -196,9 +169,8 @@ async function renderSheetAndThumbnails(projectData) {
     if (!pdfDoc) return;
 
     totalSheets = calculateTotalSheets();
-    // await renderMainPreview(projectData); // MODIFICATION: Replaced with content render
-    await renderContentCanvas(projectData); // MODIFICATION: Do the slow render
-    await renderThumbnailList(projectData); // Render thumbnails separately
+    await renderContentCanvas(projectData);
+    await renderThumbnailList(projectData);
 }
 
 async function renderThumbnailList(projectData) {
@@ -241,19 +213,14 @@ async function renderThumbnailList(projectData) {
             const ctx = canvas.getContext('2d');
             ctx.save();
             ctx.scale(scale, scale);
-            // This is async, but thumbnail race conditions are less critical
-            // and less likely to be triggered by a user.
-            renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, i, side, projectData).finally(() => { // MODIFICATION: Use finally
+            renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, i, side, projectData).finally(() => {
                  ctx.restore();
             });
         }
     }
 }
 
-
-// --- 🛑 FULLY REPLACED FUNCTION 🛑 ---
 async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, side, projectData) {
-    // Slip sheet logic
     const slipSheetColor = currentSettings.slipSheetColor;
     if (slipSheetColor && slipSheetColor !== 'none' && sheetIndex === 0 && side === 'front') {
         ctx.fillStyle = slipSheetColor;
@@ -267,41 +234,28 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
     const sequence = getPageSequenceForSheet(sheetIndex, pdfDoc.numPages, currentSettings);
     const pagesOnThisSide = sequence[side];
     if (!pagesOnThisSide || pagesOnThisSide.every(p => p === null)) {
-        // Still draw QR code on blank back sides if needed
         if (currentSettings.showQRCode) {
             await drawSlugInfo(ctx, sheetIndex + 1, totalSheets, projectData, currentSettings.qrCodePosition);
         }
         return;
     };
 
-    // --- START FIX ---
-
-    // 1. Get project-defined TRIM size (e.g., 8.5x11)
     const { width: trimWidth, height: trimHeight } = getTrimSizeInPoints(projectData);
-
-    // 2. Get bleed from settings
     const bleedPoints = (currentSettings.bleedInches || 0) * INCH_TO_POINTS;
-    
-    // 3. Define the *correct* ART-PLUS-BLEED box size
-    const artBoxWidth = trimWidth + (2 * bleedPoints);  // e.g., 612 + 18 = 630pt (8.75")
-    const artBoxHeight = trimHeight + (2 * bleedPoints); // e.g., 792 + 18 = 810pt (11.25")
+    const artBoxWidth = trimWidth + (2 * bleedPoints);
+    const artBoxHeight = trimHeight + (2 * bleedPoints);
 
-    // 4. Get the *actual* FILE page size (e.g., 9x11.5)
     const firstPageProxy = await pdfDoc.getPage(1);
     const pageViewport = firstPageProxy.getViewport({ scale: 1 });
-    const { width: actualFileWidth, height: actualFileHeight } = pageViewport; // e.g., 648pt, 828pt
+    const { width: actualFileWidth, height: actualFileHeight } = pageViewport;
 
-    // 5. Calculate clipping offsets, assuming art is centered in the file
-    const clipX = (actualFileWidth - artBoxWidth) / 2;   // e.g., (648 - 630) / 2 = 9pt
-    const clipY = (actualFileHeight - artBoxHeight) / 2; // e.g., (828 - 810) / 2 = 9pt
+    const clipX = (actualFileWidth - artBoxWidth) / 2;
+    const clipY = (actualFileHeight - artBoxHeight) / 2;
 
-    // 6. Use the *correct* artBoxWidth/Height for layout calculations
     const totalRequiredWidth = (artBoxWidth * currentSettings.columns) + (Math.max(0, currentSettings.columns - 1) * (currentSettings.horizontalGutterInches * INCH_TO_POINTS));
     const totalRequiredHeight = (artBoxHeight * currentSettings.rows) + (Math.max(0, currentSettings.rows - 1) * (currentSettings.verticalGutterInches * INCH_TO_POINTS));
     const startX = (sheetWidth - totalRequiredWidth) / 2;
     const startY = (sheetHeight - totalRequiredHeight) / 2;
-
-    // --- END FIX ---
 
 
     for (let row = 0; row < currentSettings.rows; row++) {
@@ -312,48 +266,37 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
 
             const page = await pdfDoc.getPage(pageNum);
             
-            // --- MODIFICATION ---
-            // Use the *correct* artBoxWidth/Height for layout
             const x = startX + col * (artBoxWidth + (currentSettings.horizontalGutterInches * INCH_TO_POINTS));
             const y = startY + row * (artBoxHeight + (currentSettings.verticalGutterInches * INCH_TO_POINTS));
-            // --- END MODIFICATION ---
 
             const specificViewport = page.getViewport({ scale: 1 });
             const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = specificViewport.width; // Still render the *full* 9"
+            tempCanvas.width = specificViewport.width;
             tempCanvas.height = specificViewport.height;
             
             await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport: specificViewport }).promise;
             
-            // --- MODIFICATION ---
-            // Use 9-argument drawImage to clip the excess "slug" area
             ctx.drawImage(tempCanvas, 
-                clipX, clipY,                     // Source X, Y (start clipping)
-                artBoxWidth, artBoxHeight,        // Source W, H (grab only the art+bleed)
-                x, y,                             // Dest X, Y
-                artBoxWidth, artBoxHeight         // Dest W, H (draw at correct size)
+                clipX, clipY,                     
+                artBoxWidth, artBoxHeight,        
+                x, y,                             
+                artBoxWidth, artBoxHeight         
             );
-            // --- END MODIFICATION ---
 
             drawPageNumber(ctx, pageNum, x, y);
 
-            // --- MODIFICATION ---
-            // Draw crop marks based on the *correct* trim box
             drawCropMarks(ctx, 
-                x + bleedPoints,  // trim box X
-                y + bleedPoints,  // trim box Y
-                trimWidth,        // trim box W (e.g., 612pt / 8.5")
-                trimHeight,       // trim box H (e.g., 792pt / 11")
+                x + bleedPoints,
+                y + bleedPoints,
+                trimWidth,
+                trimHeight,
                 {});
-            // --- END MODIFICATION ---
         }
     }
-    // QR Code logic
     if (currentSettings.showQRCode) {
         await drawSlugInfo(ctx, sheetIndex + 1, totalSheets, projectData, currentSettings.qrCodePosition);
     }
 }
-// --- END OF REPLACED FUNCTION ---
 
 
 function calculateTotalSheets() {
@@ -363,9 +306,8 @@ function calculateTotalSheets() {
     if (!slotsPerSheet) return 0;
 
     if (impositionType === 'booklet') {
-        // Booklet pages are always in sets of 4
         const roundedPages = Math.ceil(pdfDoc.numPages / 4) * 4;
-        if (roundedPages === 0) return 0; // Handle 0-page doc
+        if (roundedPages === 0) return 0;
         return roundedPages / 4;
     }
     if (impositionType === 'repeat') {
@@ -380,14 +322,15 @@ function calculateTotalSheets() {
 }
 
 // --- INITIALIZATION ---
-export async function initializeImpositionUI({ projectData, db }) {
+// Updated to accept projectId
+export async function initializeImpositionUI({ projectData, db, projectId }) {
     const imposePdfButton = document.getElementById('impose-pdf-button');
     const impositionModal = document.getElementById('imposition-modal');
     const closeModalButton = document.getElementById('imposition-modal-close-button');
+    const generateButton = document.getElementById('imposition-generate-button'); // Get Generate Button
     const form = document.getElementById('imposition-form');
     const thumbnailList = document.getElementById('imposition-thumbnail-list');
     const sideSelectorContainer = document.getElementById('side-selector-container');
-    const sideSelector = document.getElementById('side-selector');
 
     // Populate dropdowns first
     const impTypeSelect = document.getElementById('imposition-type');
@@ -395,14 +338,13 @@ export async function initializeImpositionUI({ projectData, db }) {
     IMPOSITION_TYPE_OPTIONS.forEach(opt => impTypeSelect.add(new Option(opt.label, opt.value)));
     const sheetSelect = document.getElementById('sheet-size');
 
-    // Fetch sheet sizes from Firestore
+    // Fetch sheet sizes
     try {
         sheetSizes = await getSheetSizes(db);
         sheetSelect.innerHTML = '';
         sheetSizes.forEach(s => sheetSelect.add(new Option(s.name, s.name)));
     } catch (e) {
         console.error("Could not load sheet sizes:", e);
-        // Add a default fallback?
         if (sheetSizes.length === 0) {
             sheetSizes = [{ name: "Letter (11x8.5)", longSideInches: 11, shortSideInches: 8.5 }];
             sheetSizes.forEach(s => sheetSelect.add(new Option(s.name, s.name)));
@@ -420,15 +362,14 @@ export async function initializeImpositionUI({ projectData, db }) {
         });
 
         currentSheetIndex = 0;
-        currentViewSide = 'front'; // Default to front view
+        currentViewSide = 'front';
         if (sideSelectorContainer) sideSelectorContainer.classList.add('hidden');
 
-        // Reset zoom and pan when settings change
-        resetZoom(); // This is fast, just updates state and queues a fast render
-        await renderSheetAndThumbnails(projectData); // This will do the slow render
+        resetZoom(); 
+        await renderSheetAndThumbnails(projectData); 
     }
 
-    thumbnailList.addEventListener('click', async (e) => { // MODIFICATION: Make async
+    thumbnailList.addEventListener('click', async (e) => {
         const item = e.target.closest('.thumbnail-item');
         if (!item || !item.dataset.sheet || !item.dataset.side) return;
 
@@ -437,17 +378,95 @@ export async function initializeImpositionUI({ projectData, db }) {
 
         if (newIndex === currentSheetIndex && newSide === currentViewSide) return;
 
-        // Update highlighting
         const currentItem = thumbnailList.querySelector(`[data-sheet="${currentSheetIndex}"][data-side="${currentViewSide}"]`);
         if (currentItem) currentItem.classList.remove('border-indigo-400');
         item.classList.add('border-indigo-400');
 
         currentSheetIndex = newIndex;
         currentViewSide = newSide;
-        // renderMainPreview(projectData); // MODIFICATION: Replace direct call
-        // requestRender(projectData); // MODIFICATION: Replace with slow render
-        await renderContentCanvas(projectData); // MODIFICATION: Do expensive re-render
+        await renderContentCanvas(projectData);
     });
+
+    // --- Generate Button Listener (Background Mode) ---
+    if (generateButton) {
+        generateButton.addEventListener('click', () => { // Removed 'async' to not block
+            if (!projectId) {
+                alert("Error: Project ID not found.");
+                return;
+            }
+
+            // 1. Prepare Payload
+            const sheetConfig = sheetSizes.find(s => s.name === currentSettings.sheet);
+            const settingsPayload = { ...currentSettings };
+            if (sheetConfig) {
+                settingsPayload.sheetLongSideInches = sheetConfig.longSideInches;
+                settingsPayload.sheetShortSideInches = sheetConfig.shortSideInches;
+            }
+
+            // 2. Close Modal & Show Feedback Immediately
+            impositionModal.classList.add('hidden');
+            
+            // Create "Processing" Toast
+            const toastId = 'toast-' + Date.now();
+            const processingToast = document.createElement('div');
+            processingToast.id = toastId;
+            processingToast.className = "fixed bottom-6 right-6 bg-slate-800 border border-slate-600 text-white px-6 py-4 rounded-lg shadow-2xl z-[100] flex items-center space-x-3 animate-pulse";
+            processingToast.innerHTML = `
+                <div class="h-4 w-4 animate-spin rounded-full border-2 border-t-transparent border-blue-400"></div>
+                <span>Generating Imposition... you can continue working.</span>
+            `;
+            document.body.appendChild(processingToast);
+
+            // 3. Fire Request in Background
+            const functions = getFunctions();
+            const imposePdf = httpsCallable(functions, 'imposePdf', { timeout: 3600000 });
+
+            imposePdf({
+                projectId: projectId,
+                settings: settingsPayload
+            }).then((result) => {
+                // 4. Handle Success
+                document.getElementById(toastId)?.remove(); // Remove processing toast
+
+                if (result.data.success) {
+                    const successToast = document.createElement('div');
+                    successToast.className = "fixed bottom-6 right-6 bg-slate-800 border border-green-500 text-white px-6 py-4 rounded-lg shadow-2xl z-[100]";
+                    successToast.innerHTML = `
+                        <div class="flex flex-col gap-2">
+                            <div class="flex items-center gap-2">
+                                <svg class="w-5 h-5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                                <span class="font-semibold text-green-400">Imposition Ready!</span>
+                            </div>
+                            <a href="${result.data.url}" target="_blank" class="bg-green-600 hover:bg-green-500 text-white text-center py-2 px-4 rounded text-sm font-bold transition-colors">
+                                Download PDF
+                            </a>
+                            <button onclick="this.parentElement.parentElement.remove()" class="text-xs text-gray-400 hover:text-white mt-1 text-right">Dismiss</button>
+                        </div>
+                    `;
+                    document.body.appendChild(successToast);
+                    
+                    // Auto-dismiss after 30 seconds
+                    setTimeout(() => { if(successToast.parentElement) successToast.remove() }, 30000);
+                }
+            }).catch((error) => {
+                // 5. Handle Error
+                document.getElementById(toastId)?.remove();
+                console.error("Imposition error:", error);
+                
+                const errorToast = document.createElement('div');
+                errorToast.className = "fixed bottom-6 right-6 bg-slate-800 border border-red-500 text-white px-6 py-4 rounded-lg shadow-2xl z-[100]";
+                errorToast.innerHTML = `
+                    <div class="flex items-center gap-2 mb-1">
+                         <svg class="w-5 h-5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                         <span class="font-semibold text-red-400">Imposition Failed</span>
+                    </div>
+                    <p class="text-sm text-gray-300">${error.message}</p>
+                    <button onclick="this.parentElement.remove()" class="text-xs text-gray-500 hover:text-white mt-2 w-full text-right">Close</button>
+                `;
+                document.body.appendChild(errorToast);
+            });
+        });
+    }
 
     async function loadDataAndRender() {
         if (!projectData.versions || projectData.versions.length === 0) {
@@ -483,10 +502,9 @@ export async function initializeImpositionUI({ projectData, db }) {
              const { width, height } = firstPage.getViewport({scale: 1});
             if (ruleSettings) {
                 initialSettings = { ...globalDefaults, ...ruleSettings, sheet: ruleSettings.pressSheet, impositionType: 'stack' };
-            } else if (sheetSizes.length > 0) { // Ensure sheet sizes are loaded
+            } else if (sheetSizes.length > 0) { 
                 initialSettings = { ...globalDefaults, ...maximizeNUp(width, height, sheetSizes) };
             } else {
-                // Fallback if sheet sizes *still* aren't loaded
                 initialSettings = { ...globalDefaults, sheet: sheetSizes[0].name, impositionType: 'stack', rows: 1, columns: 1 };
             }
         }
@@ -507,14 +525,12 @@ export async function initializeImpositionUI({ projectData, db }) {
 
     function zoom(factor) {
         zoomState.scale = Math.max(0.5, Math.min(zoomState.scale * factor, 5));
-        // renderMainPreview(projectData); // MODIFICATION: Replace direct call
-        requestRender(projectData); // MODIFICATION: Use rAF (This is FAST)
+        requestRender(projectData); 
     }
 
     function resetZoom() {
-        zoomState = { scale: 1.0, offsetX: 0, offsetY: 0, isDragging: false, startX: 0, startY: 0 }; // MODIFICATION: Remove isRendering
-        // renderMainPreview(projectData); // MODIFICATION: Replace direct call
-        requestRender(projectData); // MODIFICATION: Use rAF (This is FAST)
+        zoomState = { scale: 1.0, offsetX: 0, offsetY: 0, isDragging: false, startX: 0, startY: 0 };
+        requestRender(projectData);
     }
 
     if (zoomInButton) zoomInButton.addEventListener('click', () => zoom(1.25));
@@ -525,12 +541,11 @@ export async function initializeImpositionUI({ projectData, db }) {
         canvas.addEventListener('wheel', (e) => {
             e.preventDefault();
             const factor = e.deltaY > 0 ? 0.95 : 1.05;
-            zoom(factor); // This now calls requestRender
+            zoom(factor);
         });
 
         canvas.addEventListener('mousedown', (e) => {
             zoomState.isDragging = true;
-            // Capture start position relative to the current pan offset
             zoomState.startX = e.clientX;
             zoomState.startY = e.clientY;
             canvas.style.cursor = 'grabbing';
@@ -538,24 +553,19 @@ export async function initializeImpositionUI({ projectData, db }) {
 
         canvas.addEventListener('mousemove', (e) => {
             if (!zoomState.isDragging) return;
-
-            // This check is redundant now thanks to the render lock, but harmless
             const sheetConfig = sheetSizes.find(s => s.name === currentSettings.sheet);
             if (!sheetConfig) return;
             
-            // Adjust movement by the current zoom level
             const dx = e.clientX - zoomState.startX;
             const dy = e.clientY - zoomState.startY;
 
             zoomState.offsetX += dx;
             zoomState.offsetY += dy;
 
-            // Update start position for next movement delta
             zoomState.startX = e.clientX;
             zoomState.startY = e.clientY;
 
-            // renderMainPreview(projectData); // MODIFICATION: Replace direct call
-            requestRender(projectData); // MODIFICATION: Use rAF (This is FAST)
+            requestRender(projectData);
         });
 
         canvas.addEventListener('mouseup', () => {
@@ -569,17 +579,14 @@ export async function initializeImpositionUI({ projectData, db }) {
         });
     }
 
-
-    // Logic for the actual page vs the test harness
-    if (imposePdfButton) { // We are in the main app
+    if (imposePdfButton) {
         const openModal = () => {
             impositionModal.classList.remove('hidden');
-            // loadDataAndRender().then(resetZoom); // MODIFICATION: resetZoom is now called *inside* loadData
-            loadDataAndRender(); // This will reset zoom and render
+            loadDataAndRender();
         }
         imposePdfButton.addEventListener('click', openModal);
         if (closeModalButton) closeModalButton.addEventListener('click', () => impositionModal.classList.add('hidden'));
-    } else { // We are in the test harness
+    } else {
         loadDataAndRender();
     }
 }
