@@ -26,7 +26,12 @@ service cloud.firestore {
         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
         getUserData(request.auth.uid).companyId == companyId;
     }
-
+    // --- Rules for 'admin_notifications' Collection ---
+        match /admin_notifications/{notificationId} {
+          // Only Admins can read or write these from the client-side
+          // (The Cloud Function writes via Admin SDK, which bypasses this, but the frontend needs this to READ it)
+          allow read, write: if isAdmin();
+        }
     // --- NEW Guest Helper Functions ---
     // Check for a valid guest token by looking up the claim associated with the user's UID
     function hasValidGuestDataAccess(projectId, permission) {

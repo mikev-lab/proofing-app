@@ -1322,12 +1322,12 @@ exports.scheduledProjectDeletion = onSchedule("every day 03:00", async (event) =
 });
 
 // --- NEW Imposition Functions ---
-const { onDocumentUpdated } = require('firebase-functions/v2/firestore');
 const { imposePdfLogic } = require('./imposition'); // Import the core logic
 const axios = require('axios');
 const { PDFDocument } = require('pdf-lib');
 const FormData = require('form-data');
 const jszip = require('jszip');
+const { onDocumentUpdated, onDocumentCreated } = require('firebase-functions/v2/firestore');
 
 const GOTENBERG_URL = 'https://gotenberg-service-452256252711.us-central1.run.app'; //gotenberg service
 const GOTENBERG_AUDIENCE = GOTENBERG_URL; // Audience must be the base URL
@@ -1759,6 +1759,17 @@ exports.imposePdf = onCall({
     });
 
     logger.log(`Successfully created manual imposition for project ${projectId}`);
+
+    // Add Notification
+    await createAdminNotification({
+        title: "Imposition Ready",
+        message: `Manual imposition generated for "${projectData.projectName}".`,
+        type: "success",
+        projectId: projectId,
+        link: imposedFileUrl, // Direct download link
+        isExternalLink: true
+    });
+    
     return { success: true, url: imposedFileUrl };
 
   } catch (error) {
@@ -1833,6 +1844,15 @@ exports.onProjectApprove = onDocumentUpdated('projects/{projectId}', async (even
 
       logger.log(`Successfully imposed and updated project ${projectId}`);
 
+      // Add Notification
+      await createAdminNotification({
+          title: "Auto-Imposition Complete",
+          message: `Automatic imposition generated for "${afterData.projectName}".`,
+          type: "success",
+          projectId: projectId,
+          link: `admin_project.html?id=${projectId}`
+      });
+
     } catch (error) {
       logger.error(`Error during automatic imposition for project ${projectId}:`, error);
       // 7. Handle errors
@@ -1845,4 +1865,65 @@ exports.onProjectApprove = onDocumentUpdated('projects/{projectId}', async (even
   }
 
   return null;
+});
+
+// --- Notification Helper ---
+async function createAdminNotification(data) {
+    try {
+        await db.collection('admin_notifications').add({
+            ...data,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            read: false
+        });
+        logger.log(`Notification created: ${data.title}`);
+    } catch (e) {
+        logger.error("Failed to create notification:", e);
+    }
+}
+
+// Trigger: User Approves a Job (or status changes)
+exports.notifyOnStatusChange = onDocumentUpdated('projects/{projectId}', async (event) => {
+    const before = event.data.before.data();
+    const after = event.data.after.data();
+    const projectId = event.params.projectId;
+
+    // Check for Client Approval
+    if (before.status !== 'Approved' && after.status === 'Approved') {
+        await createAdminNotification({
+            title: "Project Approved",
+            message: `Project "${after.projectName}" has been approved by the client.`,
+            type: "success",
+            projectId: projectId,
+            link: `admin_project.html?id=${projectId}`
+        });
+    }
+
+    // Check for "Changes Requested"
+    if (before.status !== 'Changes Requested' && after.status === 'Changes Requested') {
+        await createAdminNotification({
+            title: "Changes Requested",
+            message: `Client requested changes for "${after.projectName}".`,
+            type: "warning",
+            projectId: projectId,
+            link: `admin_project.html?id=${projectId}`
+        });
+    }
+});
+
+// Trigger: User makes an Annotation
+exports.notifyOnAnnotation = onDocumentCreated('projects/{projectId}/annotations/{annotationId}', async (event) => {
+    const projectId = event.params.projectId;
+    const annotation = event.data.data();
+    
+    // Fetch project name for context
+    const projectDoc = await db.collection('projects').doc(projectId).get();
+    const projectName = projectDoc.exists ? projectDoc.data().projectName : projectId;
+
+    await createAdminNotification({
+        title: "New Annotation",
+        message: `${annotation.author} commented on "${projectName}": "${annotation.text.substring(0, 50)}..."`,
+        type: "info",
+        projectId: projectId,
+        link: `admin_project.html?id=${projectId}`
+    });
 });

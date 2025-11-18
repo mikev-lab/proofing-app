@@ -362,6 +362,7 @@ onAuthStateChanged(auth, (user) => {
                     }
 
                     // --- START NEW: Imposition Notification Logic ---
+                        /*
                         const impositions = currentProjectData.impositions || [];
                         
                         // 1. Initialize count on first load
@@ -401,6 +402,7 @@ onAuthStateChanged(auth, (user) => {
                             // Update count
                             previousImpositionCount = impositions.length;
                         }
+                        */
                         // --- END NEW Logic ---
 
                     // --- End Real-time Update Logic ---

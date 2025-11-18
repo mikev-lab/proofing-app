@@ -15,7 +15,7 @@ const QR_CODE_SIZE_POINTS = 56.69;
 const SLUG_TEXT_FONT_SIZE_POINTS = 7;
 const SLUG_TEXT_QR_PADDING_POINTS = 7;
 const QR_GENERATION_PIXEL_SIZE = 236;
-const BATCH_SIZE = 20; // Process 20 sheets at a time to manage memory
+const BATCH_SIZE = 10; // REDUCED: 10 sheets per batch to save RAM
 
 // Internal list for Auto-Imposition fallback
 const SHEET_SIZES = [
@@ -296,6 +296,7 @@ async function imposePdfLogic(params) {
 
                 outputSheetBack.drawPage(embeddedPage, { x, y, width: pageContentWidth, height: pageContentHeight });
 
+                // Added Crop Marks for Back Side
                 const trimAreaX = x + bleedPoints;
                 const trimAreaY = y + bleedPoints;
                 const trimAreaW = pageContentWidth - (2 * bleedPoints);
@@ -318,18 +319,13 @@ async function imposePdfLogic(params) {
         partialFiles.push(batchPath);
     }
 
-    // Merge Partials with Ghostscript
+    // Merge Partials with Ghostscript - PREPRESS QUALITY (300 DPI) WITH JPEG COMPRESSION
     const finalOutputPath = path.join(os.tmpdir(), `imposed_final_${Date.now()}.pdf`);
     await spawn('gs', [
         '-q', '-dNOPAUSE', '-dSAFER', '-sDEVICE=pdfwrite',
-        '-dPDFSETTINGS=/prepress',                 // Use Prepress (300dpi) as base settings
-        '-dDownsampleColorImages=false',           // Disable Downsampling (keep original dpi)
-        '-dDownsampleGrayImages=false',
-        '-dDownsampleMonoImages=false',
-        '-dAutoFilterColorImages=false',           // Disable Auto-Filter (don't convert to JPEG)
-        '-dAutoFilterGrayImages=false',
-        '-dColorImageFilter=/FlateEncode',         // Use Flate (Lossless/Zip) instead of DCT (JPEG)
-        '-dGrayImageFilter=/FlateEncode',
+        '-dPDFSETTINGS=/prepress',      // Standard 300 DPI downsampling (Safe for print)
+        '-dCompatibilityLevel=1.4',
+        '-dJPEGQ=95',                   // High Quality JPEG Compression
         '-dAutoRotatePages=/None',
         `-sOutputFile=${finalOutputPath}`, '-dBATCH',
         ...partialFiles
