@@ -318,13 +318,14 @@ async function handleGuidedProjectCreation(client, projectName, specs) {
 }
 
 async function handleAdvancedProjectCreation(client, projectName, specs) {
-    const file = document.getElementById('advanced-file-input').files[0];
+    const proofFile = document.getElementById('file-input').files[0];
+    const coverFile = document.getElementById('cover-file-input').files[0];
 
-    if (!file) {
-        throw new Error("Please select a PDF file for quick upload.");
+    if (!proofFile) {
+        throw new Error("Please select a main proof PDF file.");
     }
 
-    // Create project data *without* versions initially
+    // Create project data, including an empty cover object
     const projectData = {
         projectName: projectName,
         companyId: client.companyId,
@@ -332,6 +333,7 @@ async function handleAdvancedProjectCreation(client, projectName, specs) {
         specs: specs,
         createdAt: serverTimestamp(),
         versions: [],
+        cover: {}, // Initialize the cover object
         status: 'pending',
         isAwaitingClientUpload: false,
         systemVersion: 2
@@ -341,33 +343,48 @@ async function handleAdvancedProjectCreation(client, projectName, specs) {
     const docRef = await addDoc(collection(db, "projects"), projectData);
     const projectId = docRef.id;
 
-    // Now construct the storage path using the projectId
-    const timestampedFileName = `${Date.now()}_${file.name}`;
-    const storagePath = `proofs/${projectId}/${timestampedFileName}`;
-    const storageRef = ref(storage, storagePath);
-    const uploadResult = await uploadBytes(storageRef, file);
-    const downloadURL = await getDownloadURL(uploadResult.ref);
+    // --- Upload Main Proof File ---
+    const proofTimestamp = Date.now();
+    const proofFileName = `${proofTimestamp}_${proofFile.name}`;
+    const proofStoragePath = `proofs/${projectId}/${proofFileName}`;
+    const proofStorageRef = ref(storage, proofStoragePath);
+    await uploadBytes(proofStorageRef, proofFile);
+    const proofDownloadURL = await getDownloadURL(proofStorageRef);
 
-    // Prepare the first version entry
     const firstVersion = {
-        fileName: file.name,
-        fileURL: downloadURL,
-        filePath: storagePath,
+        fileName: proofFile.name,
+        fileURL: proofDownloadURL,
+        filePath: proofStoragePath,
         uploadedAt: new Date(),
         versionNumber: 1,
         processingStatus: 'processing'
     };
 
-    // Update the project document with the first version
-    await updateDoc(docRef, {
+    const updateData = {
         versions: [firstVersion]
-    });
+    };
+
+    // --- Upload Cover File (if it exists) ---
+    if (coverFile) {
+        const coverTimestamp = Date.now();
+        const coverFileName = `${coverTimestamp}_cover_${coverFile.name}`;
+        const coverStoragePath = `proofs/${projectId}/${coverFileName}`;
+        const coverStorageRef = ref(storage, coverStoragePath);
+        await uploadBytes(coverStorageRef, coverFile);
+
+        // The cover data will be updated by the `optimizePdf` cloud function.
+        // We just need to upload the file with the correct name.
+        // No need to set the `cover` object fields here.
+    }
+
+    // Update the project document with the new version data
+    await updateDoc(docRef, updateData);
 
     // Redirect
     statusMessage.textContent = 'Project created successfully! Redirecting...';
     statusMessage.className = 'mt-4 text-center text-green-400';
     setTimeout(() => {
-        window.location.href = `admin_project.html?id=${docRef.id}`;
+        window.location.href = `admin_project.html?id=${projectId}`;
     }, 2000);
 }
 

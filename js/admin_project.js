@@ -31,6 +31,10 @@ const fileInput = document.getElementById('file-input');
 const uploadButton = fileUploadForm.querySelector('button[type="submit"]');
 const uploadStatusContainer = document.getElementById('upload-status-container');
 const generatePdfButton = document.getElementById('generate-pdf-button');
+const coverUploadForm = document.getElementById('cover-upload-form');
+const coverFileInput = document.getElementById('cover-file-input');
+const coverUploadButton = coverUploadForm ? coverUploadForm.querySelector('button[type="submit"]') : null;
+const coverUploadStatusContainer = document.getElementById('cover-upload-status-container');
 
 // Spec form elements
 const specsForm = document.getElementById('specs-form');
@@ -47,6 +51,16 @@ const readingDirectionSelect = document.getElementById('readingDirection');
 const paperTypeSelect = document.getElementById('paper-type');
 const saveSpecsButton = document.getElementById('save-specs-button');
 const specsStatusMessage = document.getElementById('specs-status-message');
+
+// Cover spec form elements
+const coverSpecsSection = document.getElementById('cover-specs-section');
+const coverDimensionsSelect = document.getElementById('cover-dimensions');
+const coverCustomDimensionInputs = document.getElementById('cover-custom-dimension-inputs');
+const coverCustomWidthInput = document.getElementById('cover-custom-width');
+const coverCustomHeightInput = document.getElementById('cover-custom-height');
+const coverCustomUnitsSelect = document.getElementById('cover-custom-units');
+const coverBleedInchesInput = document.getElementById('cover-bleedInches');
+const coverSafetyInchesInput = document.getElementById('cover-safetyInches');
 
 
 const urlParams = new URLSearchParams(window.location.search);
@@ -83,12 +97,48 @@ function populateDimensionsSelect() {
 }
 populateDimensionsSelect(); // Call on page load
 
+// --- Populate Cover Dimensions Select ---
+function populateCoverDimensionsSelect() {
+    if (!coverDimensionsSelect) return;
+    coverDimensionsSelect.innerHTML = ''; // Clear existing
+    const groupedSizes = {};
+    for (const key in STANDARD_PAPER_SIZES) {
+        const size = STANDARD_PAPER_SIZES[key];
+        if (!groupedSizes[size.group]) {
+            groupedSizes[size.group] = document.createElement('optgroup');
+            groupedSizes[size.group].label = size.group;
+        }
+        const option = document.createElement('option');
+        option.value = key;
+        const dimString = size.width_mm && size.height_mm
+            ? ` (${size.width_mm} x ${size.height_mm} mm)`
+            : '';
+        option.textContent = `${size.name}${dimString}`;
+        groupedSizes[size.group].appendChild(option);
+    }
+    Object.values(groupedSizes).forEach(group => coverDimensionsSelect.appendChild(group));
+    const customOption = document.createElement('option');
+    customOption.value = 'custom';
+    customOption.textContent = 'Custom';
+    coverDimensionsSelect.appendChild(customOption);
+}
+populateCoverDimensionsSelect(); // Call on page load
+
+
 // --- Handle Dimension Select Change ---
 dimensionsSelect.addEventListener('change', () => {
      customDimensionInputs.classList.toggle('hidden', dimensionsSelect.value !== 'custom');
      customWidthInput.required = dimensionsSelect.value === 'custom';
      customHeightInput.required = dimensionsSelect.value === 'custom';
 });
+if (coverDimensionsSelect) {
+    coverDimensionsSelect.addEventListener('change', () => {
+        coverCustomDimensionInputs.classList.toggle('hidden', coverDimensionsSelect.value !== 'custom');
+        coverCustomWidthInput.required = coverDimensionsSelect.value === 'custom';
+        coverCustomHeightInput.required = coverDimensionsSelect.value === 'custom';
+    });
+}
+
 
 // --- Populate Form from Data ---
 function populateSpecsForm(specs) {
@@ -134,6 +184,35 @@ function populateSpecsForm(specs) {
     paperTypeSelect.value = specs.paperType || 'Gloss';
 }
 
+// --- Populate Cover Form from Data ---
+function populateCoverSpecsForm(specs) {
+    if (!coverSpecsSection || !specs) return;
+
+    // Dimensions
+    if (typeof specs.dimensions === 'object' && specs.dimensions !== null) {
+        coverDimensionsSelect.value = 'custom';
+        coverCustomDimensionInputs.classList.remove('hidden');
+        coverCustomWidthInput.value = specs.dimensions.width || '';
+        coverCustomHeightInput.value = specs.dimensions.height || '';
+        coverCustomUnitsSelect.value = specs.dimensions.units || 'in';
+    } else if (typeof specs.dimensions === 'string') {
+        if (coverDimensionsSelect.querySelector(`option[value="${specs.dimensions}"]`)) {
+            coverDimensionsSelect.value = specs.dimensions;
+        } else {
+            coverDimensionsSelect.value = 'custom';
+        }
+    } else {
+        coverDimensionsSelect.value = 'US_Letter'; // Default
+    }
+    // Trigger change to show/hide custom inputs
+    coverDimensionsSelect.dispatchEvent(new Event('change'));
+
+
+    coverBleedInchesInput.value = specs.bleedInches ?? 0.125;
+    coverSafetyInchesInput.value = specs.safetyInches ?? 0.125;
+}
+
+
 // --- Save Spec Changes Handler ---
 specsForm.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -176,9 +255,40 @@ specsForm.addEventListener('submit', async (e) => {
              throw new Error('Please enter a valid, positive page count.');
          }
 
+        // --- Cover Specs Logic ---
+        let coverSpecs = null;
+        if (coverSpecsSection && !coverSpecsSection.classList.contains('hidden')) {
+            coverSpecs = {
+                bleedInches: parseFloat(coverBleedInchesInput.value) || 0,
+                safetyInches: parseFloat(coverSafetyInchesInput.value) || 0,
+            };
+            if (coverDimensionsSelect.value === 'custom') {
+                const width = parseFloat(coverCustomWidthInput.value);
+                const height = parseFloat(coverCustomHeightInput.value);
+                if (isNaN(width) || isNaN(height) || width <= 0 || height <= 0) {
+                    throw new Error('Please enter valid, positive numbers for cover custom width and height.');
+                }
+                coverSpecs.dimensions = {
+                    width: width,
+                    height: height,
+                    units: coverCustomUnitsSelect.value
+                };
+            } else {
+                coverSpecs.dimensions = coverDimensionsSelect.value;
+            }
+        }
+
+        // --- Prepare data for update ---
+        const updateData = { specs: updatedSpecs };
+        if (coverSpecs) {
+            // Use dot notation to update a nested object
+            updateData['cover.specs'] = coverSpecs;
+        }
+
+
         // Update Firestore
         const projectRef = doc(db, "projects", projectId);
-        await updateDoc(projectRef, { specs: updatedSpecs });
+        await updateDoc(projectRef, updateData);
 
         specsStatusMessage.textContent = 'Specifications saved successfully!';
         specsStatusMessage.className = 'mt-2 text-center text-sm text-green-400';
@@ -238,6 +348,16 @@ onAuthStateChanged(auth, (user) => {
                     // Populate the specs form
                     populateSpecsForm(currentProjectData.specs);
 
+                    // Show and populate cover specs form if a cover exists
+                    if (currentProjectData.cover && currentProjectData.cover.filePath) {
+                        coverSpecsSection.classList.remove('hidden');
+                        // If cover specs don't exist yet, pass the main specs as a starting point
+                        populateCoverSpecsForm(currentProjectData.cover.specs || currentProjectData.specs);
+                    } else {
+                        coverSpecsSection.classList.add('hidden');
+                    }
+
+
                     // --- Real-time Update Logic ---
                     // Check which version is currently selected in the dropdown
                     const versionSelector = document.getElementById('version-selector');
@@ -266,6 +386,21 @@ onAuthStateChanged(auth, (user) => {
                              versionSelector.value = selectedVersion;
                         }
                     }
+
+                    // Disable upload forms if project is approved
+                    if (currentProjectData.status === 'Approved' || currentProjectData.status === 'In Production') {
+                        if (uploadButton) {
+                            uploadButton.disabled = true;
+                            fileInput.disabled = true;
+                            uploadButton.textContent = 'Project Approved';
+                        }
+                        if (coverUploadButton) {
+                            coverUploadButton.disabled = true;
+                            coverFileInput.disabled = true;
+                            coverUploadButton.textContent = 'Project Approved';
+                        }
+                    }
+
                     // --- End Real-time Update Logic ---
 
                     loadingSpinner.classList.add('hidden');
@@ -304,75 +439,67 @@ document.addEventListener('click', (event) => {
 });
 
 // --- File Upload Logic ---
-fileUploadForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const files = fileInput.files;
-    if (!files.length) {
-        alert('Please select one or more files to upload.');
+if (fileUploadForm) {
+    fileUploadForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        handleExpertUpload(fileInput.files[0], uploadStatusContainer, uploadButton, false);
+    });
+}
+
+if (coverUploadForm) {
+    coverUploadForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        handleExpertUpload(coverFileInput.files[0], coverUploadStatusContainer, coverUploadButton, true);
+    });
+}
+
+async function handleExpertUpload(file, statusContainer, button, isCover) {
+    if (!file) {
+        alert('Please select a file to upload.');
         return;
     }
 
-    uploadButton.disabled = true;
-    generatePdfButton.disabled = true;
-    uploadStatusContainer.innerHTML = ''; // Clear previous statuses
+    button.disabled = true;
+    statusContainer.innerHTML = ''; // Clear previous status
 
-    // Create status elements for each file
-    const statusElements = Array.from(files).map(file => {
-        const statusEl = document.createElement('div');
-        statusEl.className = 'p-2 bg-slate-700/50 rounded-md text-sm flex justify-between items-center';
-        statusEl.innerHTML = `
-            <span class="truncate mr-2">${file.name}</span>
-            <span class="font-medium text-gray-400">Waiting...</span>
-        `;
-        uploadStatusContainer.appendChild(statusEl);
-        return statusEl;
-    });
+    const statusEl = document.createElement('div');
+    statusEl.className = 'p-2 bg-slate-700/50 rounded-md text-sm flex justify-between items-center';
+    statusEl.innerHTML = `
+        <span class="truncate mr-2">${file.name}</span>
+        <span class="font-medium text-blue-400">Uploading...</span>
+    `;
+    statusContainer.appendChild(statusEl);
+    const statusSpan = statusEl.querySelector('.font-medium');
 
-    for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const statusEl = statusElements[i];
-        const statusSpan = statusEl.querySelector('.font-medium');
+    try {
+        const timestamp = Date.now();
+        const fileName = isCover ? `${timestamp}_cover_${file.name}` : `${timestamp}_${file.name}`;
+        const storagePath = `proofs/${projectId}/${fileName}`;
+        const storageRef = ref(storage, storagePath);
 
-        try {
-            // 1. Upload file to temp location
-            statusSpan.textContent = 'Uploading...';
-            statusSpan.className = 'font-medium text-blue-400';
-            const storagePath = `uploads/${projectId}/${Date.now()}-${file.name}`;
-            const storageRef = ref(storage, storagePath);
-            await uploadBytes(storageRef, file);
+        await uploadBytes(storageRef, file);
 
-            // 2. Call Cloud Function to generate previews
-            statusSpan.textContent = 'Processing...';
-            statusSpan.className = 'font-medium text-yellow-400 animate-pulse';
-            const result = await generatePreviews({
-                projectId: projectId,
-                originalFilePath: storagePath,
-                originalFileName: file.name
-            });
+        statusSpan.textContent = 'Processing...';
+        statusSpan.className = 'font-medium text-yellow-400 animate-pulse';
 
-            // 3. Update UI with new pages
-            // This function needs to be created in the next step.
-            // For now, we assume it exists and works correctly.
-            addPagesToThumbnailList(result.data);
+        // The onObjectFinalized function will take over from here.
+        // We can just wait for the Firestore onSnapshot listener to update the UI.
+        // For a better user experience, we could poll the document, but for now, this is sufficient.
+        setTimeout(() => {
+             statusSpan.textContent = 'Upload complete. Processing may take a few minutes.';
+             statusSpan.className = 'font-medium text-green-400';
+             button.disabled = false;
+        }, 3000);
 
-            statusSpan.textContent = 'Complete';
-            statusSpan.className = 'font-medium text-green-400';
-            statusEl.classList.remove('animate-pulse');
 
-        } catch (error) {
-            console.error("Error processing file:", file.name, error);
-            const errorMessage = error.message || 'An unknown error occurred.';
-            statusSpan.textContent = `Error: ${errorMessage}`;
-            statusSpan.className = 'font-medium text-red-400';
-            statusEl.classList.remove('animate-pulse');
-        }
+    } catch (error) {
+        console.error("Error uploading file:", file.name, error);
+        const errorMessage = error.message || 'An unknown error occurred.';
+        statusSpan.textContent = `Error: ${errorMessage}`;
+        statusSpan.className = 'font-medium text-red-400';
+        button.disabled = false;
     }
-
-    // Re-enable buttons and clear input
-    uploadButton.disabled = false;
-    generatePdfButton.disabled = false;
-    fileInput.value = ''; // Clear the file input
-});
+}
 
 // --- Helper function to render new pages ---
 async function addPagesToThumbnailList(newPages) {

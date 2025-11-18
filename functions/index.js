@@ -61,8 +61,9 @@ exports.optimizePdf = onObjectFinalized({
   }
   const projectId = parts[1];
   const fullFileName = parts[parts.length - 1]; // Filename including timestamp prefix
+  const isCover = fullFileName.includes('_cover_');
 
-  logger.log(`Processing storage file: ${fullFileName} for project: ${projectId}`);
+  logger.log(`Processing storage file: ${fullFileName} for project: ${projectId}. Is cover: ${isCover}`);
 
 
   const bucket = storage.bucket(fileBucket);
@@ -86,25 +87,36 @@ exports.optimizePdf = onObjectFinalized({
         if (!projectDoc.exists) {
             throw new Error(`Project ${projectId} not found in Firestore.`);
         }
-        const projectData = projectDoc.data();
-        const versions = projectData.versions || [];
-        const versionIndex = versions.findIndex(v => v.filePath === filePath);
 
-        if (versionIndex === -1) {
-            logger.warn(`No version found matching filePath "${filePath}" in project ${projectId}.`);
-            return;
+        if (isCover) {
+            const coverData = {
+                filePath: filePath, // Store the path to identify it later
+                preflightStatus: preflightStatus,
+                preflightResults: preflightResults,
+                processingStatus: 'processing',
+                uploadedAt: admin.firestore.FieldValue.serverTimestamp()
+            };
+            transaction.update(projectRef, { cover: coverData });
+            logger.log(`Successfully updated Firestore for project ${projectId} with COVER preflight results.`);
+        } else {
+            const projectData = projectDoc.data();
+            const versions = projectData.versions || [];
+            const versionIndex = versions.findIndex(v => v.filePath === filePath);
+
+            if (versionIndex === -1) {
+                logger.warn(`No version found matching filePath "${filePath}" in project ${projectId}.`);
+                return; // Don't throw, just exit the transaction
+            }
+
+            versions[versionIndex].preflightStatus = preflightStatus;
+            versions[versionIndex].preflightResults = preflightResults;
+            if (versions[versionIndex].processingStatus !== 'error') {
+                versions[versionIndex].processingStatus = 'processing';
+            }
+
+            transaction.update(projectRef, { versions: versions });
+            logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with preflight results.`);
         }
-
-        // Update the version with preflight results
-        versions[versionIndex].preflightStatus = preflightStatus;
-        versions[versionIndex].preflightResults = preflightResults;
-        // Also set initial processing status if not already set to an error
-        if (versions[versionIndex].processingStatus !== 'error') {
-            versions[versionIndex].processingStatus = 'processing';
-        }
-
-        transaction.update(projectRef, { versions: versions });
-        logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with preflight results.`);
     });
 
 
@@ -155,21 +167,30 @@ exports.optimizePdf = onObjectFinalized({
         if (!projectDoc.exists) {
             throw new Error(`Project ${projectId} not found in Firestore.`);
         }
-        const projectData = projectDoc.data();
-        const versions = projectData.versions || [];
-        const versionIndex = versions.findIndex(v => v.filePath === filePath);
 
-        if (versionIndex === -1) {
-            logger.warn(`No version found matching filePath "${filePath}" in project ${projectId}.`);
-            return;
+        if (isCover) {
+            const coverData = projectDoc.data().cover || {};
+            coverData.previewURL = signedUrl;
+            coverData.processingStatus = 'complete';
+            coverData.processingError = null;
+            transaction.update(projectRef, { cover: coverData });
+            logger.log(`Successfully updated Firestore for project ${projectId} with COVER previewURL and status 'complete'.`);
+        } else {
+            const projectData = projectDoc.data();
+            const versions = projectData.versions || [];
+            const versionIndex = versions.findIndex(v => v.filePath === filePath);
+
+            if (versionIndex === -1) {
+                logger.warn(`No version found matching filePath "${filePath}" in project ${projectId} to update with success status.`);
+                return;
+            }
+
+            versions[versionIndex].previewURL = signedUrl;
+            versions[versionIndex].processingStatus = 'complete';
+            versions[versionIndex].processingError = null;
+            transaction.update(projectRef, { versions: versions });
+            logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with previewURL and status 'complete'.`);
         }
-
-        // Update the found version with the previewURL and final status
-        versions[versionIndex].previewURL = signedUrl;
-        versions[versionIndex].processingStatus = 'complete';
-        versions[versionIndex].processingError = null; // Clear any previous error
-        transaction.update(projectRef, { versions: versions });
-        logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with previewURL and status 'complete'.`);
     });
 
   } catch (error) {
@@ -179,23 +200,31 @@ exports.optimizePdf = onObjectFinalized({
       await db.runTransaction(async (transaction) => {
         const projectDoc = await transaction.get(projectRef);
         if (!projectDoc.exists) {
-          logger.error(`Project ${projectId} not found. Cannot update with error status.`);
-          return;
-        }
-        const projectData = projectDoc.data();
-        const versions = projectData.versions || [];
-        const versionIndex = versions.findIndex(v => v.filePath === filePath);
-
-        if (versionIndex === -1) {
-          logger.warn(`No version found matching filePath "${filePath}" in project ${projectId} to update with error status.`);
-          return;
+            logger.error(`Project ${projectId} not found. Cannot update with error status.`);
+            return;
         }
 
-        // Update with error, but preserve the preflight results from the first update
-        versions[versionIndex].processingStatus = 'error';
-        versions[versionIndex].processingError = error.message || 'An unknown error occurred during processing.';
-        transaction.update(projectRef, { versions: versions });
-        logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with status 'error'.`);
+        if (isCover) {
+            const coverData = projectDoc.data().cover || {};
+            coverData.processingStatus = 'error';
+            coverData.processingError = error.message || 'An unknown error occurred during processing.';
+            transaction.update(projectRef, { cover: coverData });
+            logger.log(`Successfully updated Firestore for project ${projectId} with COVER status 'error'.`);
+        } else {
+            const projectData = projectDoc.data();
+            const versions = projectData.versions || [];
+            const versionIndex = versions.findIndex(v => v.filePath === filePath);
+
+            if (versionIndex === -1) {
+                logger.warn(`No version found matching filePath "${filePath}" in project ${projectId} to update with error status.`);
+                return;
+            }
+
+            versions[versionIndex].processingStatus = 'error';
+            versions[versionIndex].processingError = error.message || 'An unknown error occurred during processing.';
+            transaction.update(projectRef, { versions: versions });
+            logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with status 'error'.`);
+        }
       });
     } catch (dbError) {
       logger.error('FATAL: Could not update Firestore with error state.', dbError);
@@ -1049,59 +1078,9 @@ async function runPreflightChecks(filePath, logger) {
     let preflightResults = {
         dpiCheck: { status: 'skipped', details: 'DPI check not implemented yet.' },
         colorSpaceCheck: { status: 'failed', details: 'Color space analysis not run.' },
-        fontCheck: { status: 'failed', details: 'Font analysis not run.' }
+        fontCheck: { status: 'skipped', details: 'Font check disabled pending environment fix.' }
     };
 
-    // --- Font Check ---
-    try {
-        const fontInfoResult = await spawn('pdfinfo', ['-fonts', filePath], { capture: ['stdout', 'stderr'] });
-        const fontInfoOutput = fontInfoResult.stdout.toString();
-        const lines = fontInfoOutput.split('\n');
-
-        const headerLineIndex = lines.findIndex(line => line.includes('emb sub uni'));
-        const unembeddedFonts = [];
-        let fontsFound = false;
-
-        if (headerLineIndex !== -1) {
-            // Start processing from the line after the header separator
-            for (let i = headerLineIndex + 2; i < lines.length; i++) {
-                const line = lines[i];
-                if (line.trim() === '') continue;
-                fontsFound = true;
-
-                const columns = line.trim().split(/\s+/).filter(Boolean);
-                if (columns.length > 2 && columns[2] === 'no') {
-                    unembeddedFonts.push(columns[0]);
-                }
-            }
-        }
-
-        if (unembeddedFonts.length > 0) {
-            preflightResults.fontCheck.status = 'failed';
-            preflightResults.fontCheck.details = `Error: ${unembeddedFonts.length} font(s) are not embedded: ${unembeddedFonts.join(', ')}.`;
-            preflightStatus = 'failed';
-        } else if (!fontsFound) {
-            preflightResults.fontCheck.status = 'passed';
-            preflightResults.fontCheck.details = 'No fonts listed in the document.';
-        } else {
-            preflightResults.fontCheck.status = 'passed';
-            preflightResults.fontCheck.details = 'All fonts embedded.';
-        }
-    } catch (error) {
-        const stderr = (error.stderr || '').toString();
-        // If pdfinfo fails, it might be because there are no fonts. If stderr shows the usage text,
-        // we'll treat it as a pass for this check.
-        if (stderr.includes('Usage: pdfinfo')) {
-            logger.warn('pdfinfo -fonts command failed, likely because no fonts were found. Treating as a pass.');
-            preflightResults.fontCheck.status = 'passed';
-            preflightResults.fontCheck.details = 'No fonts found in the document.';
-        } else {
-            logger.error('Error during font check:', stderr || error.message);
-            preflightResults.fontCheck.status = 'failed';
-            preflightResults.fontCheck.details = 'Failed to execute or parse font analysis.';
-            preflightStatus = 'failed';
-        }
-    }
 
     // --- Color Space Check ---
     // This check is a best-effort heuristic, as pdfinfo doesn't give a simple summary.

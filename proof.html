@@ -122,6 +122,17 @@
                     </div>
                     <!-- Center Column: Proof Viewer -->
                     <div class="lg:col-span-3 bg-slate-900/50 rounded-lg shadow-2xl min-h-[600px] flex flex-col p-4 max-h-[80vh]">
+                        <!-- Tab Navigation -->
+                        <div id="viewer-tabs" class="hidden mb-4 border-b border-slate-700">
+                            <nav class="-mb-px flex space-x-6" aria-label="Tabs">
+                                <button id="internals-tab" type="button" class="whitespace-nowrap py-3 px-1 border-b-2 font-semibold text-sm border-indigo-500 text-indigo-400">
+                                    Internals
+                                </button>
+                                <button id="cover-tab" type="button" class="whitespace-nowrap py-3 px-1 border-b-2 font-semibold text-sm border-transparent text-gray-400 hover:text-gray-200 hover:border-gray-500">
+                                    Cover
+                                </button>
+                            </nav>
+                        </div>
                         <!-- Container for viewer controls -->
                         <div id="pdf-viewer" class="flex-1 bg-black/20 rounded-md flex justify-center items-center relative">
                             <canvas id="pdf-canvas"></canvas>
