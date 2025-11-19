@@ -49,9 +49,10 @@ function getStatusBadge(status) {
     let classes = "px-3 py-1 rounded-full text-xs font-medium";
     let text = status.charAt(0).toUpperCase() + status.slice(1);
 
-    switch (status) {
+    switch (status.toLowerCase()) {
         case 'pending':
             classes += " bg-yellow-500/20 text-yellow-300";
+            text = "Pending";
             break;
         case 'approved':
             classes += " bg-green-500/20 text-green-300";

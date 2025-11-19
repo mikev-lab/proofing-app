@@ -1,5 +1,6 @@
-import { auth, db } from './firebase.js';
+import { auth, db, functions } from './firebase.js';
 import { onAuthStateChanged, signOut, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+import { httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js";
 import { initializeSharedViewer } from './viewer.js';
 import { doc, onSnapshot, updateDoc, collection, getDocs, Timestamp, addDoc, getDoc, arrayUnion, serverTimestamp, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 import * as pdfjsLib from "https://mozilla.github.io/pdf.js/build/pdf.mjs";
@@ -95,15 +96,30 @@ if (modalCancelBtn) {
 
 // Handle Form Submission (The actual approval)
 if (approvalFormModal) {
-    approvalFormModal.addEventListener('submit', (e) => {
+    approvalFormModal.addEventListener('submit', async (e) => {
         e.preventDefault();
         // Disable button to prevent double-clicks
         modalConfirmBtn.disabled = true;
         modalConfirmBtn.textContent = "Processing...";
-        
+
+        // Record the approval event in history with the signature
+        try {
+            const recordHistory = httpsCallable(functions, 'recordHistory');
+            await recordHistory({
+                projectId: currentProjectId,
+                action: 'approved_proof',
+                details: {
+                    signature: signatureInput.value.trim()
+                }
+            });
+        } catch (error) {
+            console.error("Error recording approval history:", error);
+            // Optionally, show an error to the user and re-enable the form
+        }
+
         // Call your existing update status function
-        updateProjectStatus('approved');
-        
+        await updateProjectStatus('Approved'); // Use 'Approved' to match admin side
+
         // Close modal
         approvalModal.classList.add('hidden');
     });
@@ -290,8 +306,9 @@ async function updateProjectStatus(status) {
 
             const actionPanel = document.querySelector('#approval-form')?.parentElement;
             const commentTool = document.getElementById('tool-comment');
+            const approvalBanner = document.getElementById('approval-banner');
 
-            if (actionPanel && commentTool) {
+            if (actionPanel && commentTool && approvalBanner) {
                 // Reset action panel HTML to original state
                 // This fixes the issue where buttons disappeared after a status change
                 actionPanel.innerHTML = `
@@ -345,11 +362,17 @@ async function updateProjectStatus(status) {
                 }
 
                 // Check Project Status (AFTER resetting HTML)
-                if (projectData.status === 'approved' || projectData.status === 'changes_requested') {
-                     actionPanel.innerHTML = `<p class="text-center text-lg font-semibold ${projectData.status === 'approved' ? 'text-green-400' : 'text-red-400'}">${projectData.status === 'approved' ? 'Proof Approved' : 'Changes Requested'}</p>`;
+                 if (projectData.status === 'Approved' || projectData.status === 'approved' || projectData.status === 'In Production') {
+                     approvalBanner.classList.remove('hidden');
+                     actionPanel.innerHTML = `<p class="text-center text-lg font-semibold text-green-400">Proof Approved</p>`;
                      commentTool.style.display = 'none';
                      console.log(`[Load Project] Project status is ${projectData.status}, hiding action buttons and comment tool.`);
+                 } else if (projectData.status === 'changes_requested') {
+                     approvalBanner.classList.add('hidden');
+                     actionPanel.innerHTML = `<p class="text-center text-lg font-semibold text-red-400">Changes Requested</p>`;
+                     commentTool.style.display = 'none'; // Still disable comments if changes are requested
                  } else {
+                    approvalBanner.classList.add('hidden');
                      // Status is pending, add listeners to the (now existing) buttons
                      console.log(`[Load Project] Project status is ${projectData.status}, adding button listeners.`);
                      const approveButton = document.getElementById('approve-button');
@@ -480,6 +503,34 @@ if (logoutButton) {
     });
 } else {
      console.warn('[Init] Logout button not found.');
+}
+
+// --- Firestore Listener for Project History ---
+if (currentProjectId) {
+    const historyQuery = query(collection(db, "projects", currentProjectId, "history"), orderBy("timestamp", "desc"));
+    onSnapshot(historyQuery, (snapshot) => {
+        const historyList = document.getElementById('project-history-list');
+        if (historyList) {
+            historyList.innerHTML = '';
+            if (snapshot.empty) {
+                historyList.innerHTML = '<p class="text-gray-400">No history events found.</p>';
+                return;
+            }
+            snapshot.forEach(doc => {
+                const event = doc.data();
+                const eventTime = event.timestamp ? new Date(event.timestamp.seconds * 1000).toLocaleString() : 'N/A';
+                const signature = event.details && event.details.signature ? `<span class="italic text-gray-400"> - Signature: ${event.details.signature}</span>` : '';
+                const item = document.createElement('div');
+                item.className = 'p-3 bg-slate-700/50 rounded-md text-sm';
+                item.innerHTML = `
+                    <p class="font-semibold text-white">${event.action.replace(/_/g, ' ')}</p>
+                    <p class="text-gray-300">by <span class="font-medium">${event.userDisplay || 'System'}</span>${signature}</p>
+                    <p class="text-xs text-gray-500 mt-1">${eventTime}</p>
+                `;
+                historyList.appendChild(item);
+            });
+        }
+    });
 }
 
 
