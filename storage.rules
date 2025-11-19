@@ -27,7 +27,7 @@ service firebase.storage {
     
     // Allow an authenticated user to read their own temporary previews (for thumbnails)
     match /temp_previews/{userId}/{allPaths=**} {
-      allow read: if request.auth != null && request.auth.uid == userId;
+      allow read: if (request.auth != null && request.auth.uid == userId) || isAdmin();
     }
     
     // Allow user to manage their own temporary source files (e.g., for cleanup)
@@ -38,17 +38,6 @@ service firebase.storage {
     // ADD THIS RULE to allow admins to read from the path in your error
     match /temp_pages/{userId}/{allPaths=**} {
       // Allow read if user owns it OR if user is an admin
-      allow read: if (request.auth != null && request.auth.uid == userId) || isAdmin();
-    }
-
-    // Allow an authenticated user to write files to their own temporary upload folder
-    match /temp_uploads/{userId}/{allPaths=**} {
-      allow write: if request.auth != null && request.auth.uid == userId;
-    }
-    
-    // Allow an authenticated user to read their own temporary previews (for thumbnails)
-    match /temp_previews/{userId}/{allPaths=**} {
-      // Also add admin access here, it's good practice
       allow read: if (request.auth != null && request.auth.uid == userId) || isAdmin();
     }
     // --- END: New Rules ---
