@@ -1075,137 +1075,6 @@ exports.receiveInventory = onCall({ region: 'us-central1' }, async (request) => 
     }
 });
 
-
-// --- Helper Function for Preflight Checks (using pdfinfo) ---
-async function runPreflightChecks(filePath, logger) {
-    const { spawn } = require('child-process-promise');
-
-    let preflightStatus = 'passed';
-    let dimensions = null;
-    let preflightResults = {
-        dpiCheck: { status: 'skipped', details: 'DPI check not implemented yet.' },
-        colorSpaceCheck: { status: 'failed', details: 'Color space analysis not run.' },
-        fontCheck: { status: 'failed', details: 'Font analysis not run.' }
-    };
-
-    // --- Get Dimensions and Basic Info ---
-    try {
-        const pdfInfoResult = await spawn('pdfinfo', [filePath], { capture: ['stdout', 'stderr'] });
-        const pdfInfoOutput = pdfInfoResult.stdout.toString();
-
-        const sizeMatch = pdfInfoOutput.match(/Page size:\s*([\d\.]+) x ([\d\.]+) pts/);
-        if (sizeMatch && sizeMatch.length === 3) {
-            const widthInPts = parseFloat(sizeMatch[1]);
-            const heightInPts = parseFloat(sizeMatch[2]);
-            dimensions = {
-                width: parseFloat((widthInPts / 72).toFixed(3)),
-                height: parseFloat((heightInPts / 72).toFixed(3)),
-                units: 'in'
-            };
-        }
-    } catch (error) {
-        logger.error('Error getting PDF dimensions:', error.stderr || error.message);
-        // Do not fail the whole process, just log the error.
-    }
-
-
-    // --- Font Check ---
-    try {
-        const fontInfoResult = await spawn('pdfinfo', ['-fonts', filePath], { capture: ['stdout', 'stderr'] });
-        const fontInfoOutput = fontInfoResult.stdout.toString();
-        const lines = fontInfoOutput.split('\n');
-
-        const headerLineIndex = lines.findIndex(line => line.includes('emb sub uni'));
-        const unembeddedFonts = [];
-        let fontsFound = false;
-
-        if (headerLineIndex !== -1) {
-            // Start processing from the line after the header separator
-            for (let i = headerLineIndex + 2; i < lines.length; i++) {
-                const line = lines[i];
-                if (line.trim() === '') continue;
-                fontsFound = true;
-
-                const columns = line.trim().split(/\s+/).filter(Boolean);
-                if (columns.length > 2 && columns[2] === 'no') {
-                    unembeddedFonts.push(columns[0]);
-                }
-            }
-        }
-
-        if (unembeddedFonts.length > 0) {
-            preflightResults.fontCheck.status = 'failed';
-            preflightResults.fontCheck.details = `Error: ${unembeddedFonts.length} font(s) are not embedded: ${unembeddedFonts.join(', ')}.`;
-            preflightStatus = 'failed';
-        } else if (!fontsFound) {
-            preflightResults.fontCheck.status = 'passed';
-            preflightResults.fontCheck.details = 'No fonts listed in the document.';
-        } else {
-            preflightResults.fontCheck.status = 'passed';
-            preflightResults.fontCheck.details = 'All fonts embedded.';
-        }
-    } catch (error) {
-        const stderr = (error.stderr || '').toString();
-        // If pdfinfo fails, it might be because there are no fonts. If stderr shows the usage text,
-        // we'll treat it as a pass for this check.
-        if (stderr.includes('Usage: pdfinfo')) {
-            logger.warn('pdfinfo -fonts command failed, likely because no fonts were found. Treating as a pass.');
-            preflightResults.fontCheck.status = 'passed';
-            preflightResults.fontCheck.details = 'No fonts found in the document.';
-        } else {
-            logger.error('Error during font check:', stderr || error.message);
-            preflightResults.fontCheck.status = 'failed';
-            preflightResults.fontCheck.details = 'Failed to execute or parse font analysis.';
-            preflightStatus = 'failed';
-        }
-    }
-
-    // --- Color Space Check ---
-    // This check is a best-effort heuristic, as pdfinfo doesn't give a simple summary.
-    try {
-        const pdfInfoResult = await spawn('pdfinfo', [filePath], { capture: ['stdout', 'stderr'] });
-        const pdfInfoOutput = pdfInfoResult.stdout.toString();
-
-        const nonCmykIndicators = ['DeviceRGB', 'CalRGB', 'Separation', 'DeviceN'];
-        const detectedIssues = [];
-
-        for (const indicator of nonCmykIndicators) {
-            if (pdfInfoOutput.includes(indicator)) {
-                detectedIssues.push(indicator);
-            }
-        }
-        // ICCBased can be tricky, check if it's not CMYK
-        if (pdfInfoOutput.includes('ICCBased') && !pdfInfoOutput.includes('CMYK')) {
-             if(!detectedIssues.includes('ICCBased RGB or other')) {
-                detectedIssues.push('ICCBased RGB or other');
-             }
-        }
-
-        if (detectedIssues.length > 0) {
-            preflightResults.colorSpaceCheck.status = 'warning';
-            preflightResults.colorSpaceCheck.details = `Warning: Non-CMYK color indicators found: ${[...new Set(detectedIssues)].join(', ')}.`;
-            if (preflightStatus !== 'failed') {
-                preflightStatus = 'warning';
-            }
-        } else {
-            preflightResults.colorSpaceCheck.status = 'passed';
-            preflightResults.colorSpaceCheck.details = 'No non-CMYK color indicators found.';
-        }
-    } catch (error) {
-        logger.error('Error during color space check:', error.stderr || error.message);
-        preflightResults.colorSpaceCheck.status = 'failed';
-        preflightResults.colorSpaceCheck.details = 'Failed to execute or parse color space analysis.';
-        if (preflightStatus !== 'failed') preflightStatus = 'failed';
-    }
-
-    return {
-        preflightStatus,
-        preflightResults,
-        dimensions
-    };
-}
-
-
 // --- NEW Callable Function for Generating Guest Links ---
 exports.generateGuestLink = onCall({ region: 'us-central1' }, async (request) => {
   // 1. Authentication Check: Ensure the user is a logged-in admin.
@@ -2098,5 +1967,183 @@ exports.getNotifications = onCall({ region: 'us-central1' }, async (request) => 
     } catch (error) {
         logger.error(`Error fetching notifications for user ${userId}:`, error);
         throw new HttpsError('internal', 'Failed to fetch notifications.');
+    }
+});
+
+// --- Helper Function for Preflight Checks (Robust Version) ---
+async function runPreflightChecks(filePath, logger) {
+    const { spawn } = require('child-process-promise');
+    const fs = require('fs');
+
+    let preflightStatus = 'passed';
+    let dimensions = null;
+    let preflightResults = {
+        dpiCheck: { status: 'skipped', details: 'DPI check not implemented yet.' },
+        colorSpaceCheck: { status: 'skipped', details: 'Analysis skipped (Tool unavailable).' },
+        fontCheck: { status: 'skipped', details: 'Analysis skipped (Tool unavailable).' }
+    };
+
+    // --- 1. Get Dimensions (With Fallback) ---
+    try {
+        const pdfInfoResult = await spawn('pdfinfo', [filePath], { capture: ['stdout', 'stderr'] });
+        const pdfInfoOutput = pdfInfoResult.stdout.toString();
+
+        const sizeMatch = pdfInfoOutput.match(/Page size:\s*([\d\.]+) x ([\d\.]+) pts/);
+        if (sizeMatch && sizeMatch.length === 3) {
+            const widthInPts = parseFloat(sizeMatch[1]);
+            const heightInPts = parseFloat(sizeMatch[2]);
+            dimensions = {
+                width: parseFloat((widthInPts / 72).toFixed(3)),
+                height: parseFloat((heightInPts / 72).toFixed(3)),
+                units: 'in'
+            };
+        }
+    } catch (error) {
+        // Fallback: Use pdf-lib if pdfinfo fails (ENOENT)
+        if (error.code === 'ENOENT' || error.message.includes('ENOENT')) {
+            logger.warn('pdfinfo not found. Falling back to pdf-lib for dimensions.');
+            try {
+                const { PDFDocument } = require('pdf-lib');
+                const pdfBuffer = fs.readFileSync(filePath);
+                
+                const pdfDoc = await PDFDocument.load(pdfBuffer);
+                const page = pdfDoc.getPage(0);
+                const { width, height } = page.getSize();
+                
+                dimensions = {
+                    width: parseFloat((width / 72).toFixed(3)),
+                    height: parseFloat((height / 72).toFixed(3)),
+                    units: 'in'
+                };
+                
+                if (global.gc) { try { global.gc(); } catch(e) {} }
+                
+            } catch (libError) {
+                logger.error('Fallback dimension check failed:', libError);
+            }
+        } else {
+            logger.error('Error getting PDF dimensions:', error.stderr || error.message);
+        }
+    }
+
+    // --- 2. Font Check (Requires pdfinfo) ---
+    try {
+        const fontInfoResult = await spawn('pdfinfo', ['-fonts', filePath], { capture: ['stdout', 'stderr'] });
+        const fontInfoOutput = fontInfoResult.stdout.toString();
+        const lines = fontInfoOutput.split('\n');
+
+        const headerLineIndex = lines.findIndex(line => line.includes('emb sub uni'));
+        const unembeddedFonts = [];
+        let fontsFound = false;
+
+        if (headerLineIndex !== -1) {
+            for (let i = headerLineIndex + 2; i < lines.length; i++) {
+                const line = lines[i];
+                if (line.trim() === '') continue;
+                fontsFound = true;
+
+                const columns = line.trim().split(/\s+/).filter(Boolean);
+                if (columns.length > 2 && columns[2] === 'no') {
+                    unembeddedFonts.push(columns[0]);
+                }
+            }
+        }
+
+        if (unembeddedFonts.length > 0) {
+            preflightResults.fontCheck.status = 'failed';
+            preflightResults.fontCheck.details = `Error: ${unembeddedFonts.length} font(s) are not embedded: ${unembeddedFonts.join(', ')}.`;
+            preflightStatus = 'failed';
+        } else if (!fontsFound) {
+            preflightResults.fontCheck.status = 'passed';
+            preflightResults.fontCheck.details = 'No fonts listed in the document.';
+        } else {
+            preflightResults.fontCheck.status = 'passed';
+            preflightResults.fontCheck.details = 'All fonts embedded.';
+        }
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            preflightResults.fontCheck.status = 'skipped';
+            preflightResults.fontCheck.details = 'Server tool (poppler-utils) missing.';
+        } else {
+            const stderr = (error.stderr || '').toString();
+            if (stderr.includes('Usage: pdfinfo')) {
+                preflightResults.fontCheck.status = 'passed';
+                preflightResults.fontCheck.details = 'No fonts found in the document.';
+            } else {
+                logger.error('Error during font check:', stderr || error.message);
+                preflightResults.fontCheck.status = 'failed';
+                preflightResults.fontCheck.details = 'Failed to execute font analysis.';
+            }
+        }
+    }
+
+    // --- 3. Color Space Check (Requires pdfinfo) ---
+    try {
+        const pdfInfoResult = await spawn('pdfinfo', [filePath], { capture: ['stdout', 'stderr'] });
+        const pdfInfoOutput = pdfInfoResult.stdout.toString();
+
+        const nonCmykIndicators = ['DeviceRGB', 'CalRGB', 'Separation', 'DeviceN'];
+        const detectedIssues = [];
+
+        for (const indicator of nonCmykIndicators) {
+            if (pdfInfoOutput.includes(indicator)) {
+                detectedIssues.push(indicator);
+            }
+        }
+        if (pdfInfoOutput.includes('ICCBased') && !pdfInfoOutput.includes('CMYK')) {
+             if(!detectedIssues.includes('ICCBased RGB or other')) {
+                detectedIssues.push('ICCBased RGB or other');
+             }
+        }
+
+        if (detectedIssues.length > 0) {
+            preflightResults.colorSpaceCheck.status = 'warning';
+            preflightResults.colorSpaceCheck.details = `Warning: Non-CMYK color indicators found: ${[...new Set(detectedIssues)].join(', ')}.`;
+            if (preflightStatus !== 'failed') {
+                preflightStatus = 'warning';
+            }
+        } else {
+            preflightResults.colorSpaceCheck.status = 'passed';
+            preflightResults.colorSpaceCheck.details = 'No non-CMYK color indicators found.';
+        }
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            preflightResults.colorSpaceCheck.status = 'skipped';
+            preflightResults.colorSpaceCheck.details = 'Server tool (poppler-utils) missing.';
+        } else {
+            logger.error('Error during color space check:', error.stderr || error.message);
+            preflightResults.colorSpaceCheck.status = 'failed';
+            preflightResults.colorSpaceCheck.details = 'Failed to execute color space analysis.';
+        }
+    }
+
+    return {
+        preflightStatus,
+        preflightResults,
+        dimensions
+    };
+}
+
+// --- Worker Function (Runs in Cloud Run Container) ---
+exports.analyzePdfToolbox = onCall({
+    region: 'us-central1',
+    memory: '2GiB',
+    timeoutSeconds: 300,
+}, async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Auth required.');
+
+    const { gcsPath } = request.data; 
+    const bucket = admin.storage().bucket();
+    const path = require('path'); // Ensure path is available
+    const os = require('os');     // Ensure os is available
+    const tempFilePath = path.join(os.tmpdir(), `analyze_${Date.now()}.pdf`);
+    
+    await bucket.file(gcsPath).download({ destination: tempFilePath });
+
+    try {
+        const result = await runPreflightChecks(tempFilePath, logger);
+        return result;
+    } finally {
+        try { require('fs').unlinkSync(tempFilePath); } catch(e) {}
     }
 });
