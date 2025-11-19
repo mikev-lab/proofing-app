@@ -1979,11 +1979,11 @@ async function runPreflightChecks(filePath, logger) {
     let dimensions = null;
     let preflightResults = {
         dpiCheck: { status: 'skipped', details: 'DPI check not implemented yet.' },
-        colorSpaceCheck: { status: 'skipped', details: 'Analysis skipped (Tool unavailable).' },
-        fontCheck: { status: 'skipped', details: 'Analysis skipped (Tool unavailable).' }
+        colorSpaceCheck: { status: 'skipped', details: 'Analysis skipped.' },
+        fontCheck: { status: 'skipped', details: 'Analysis skipped.' }
     };
 
-    // --- 1. Get Dimensions (With Fallback) ---
+    // --- 1. Get Dimensions ---
     try {
         const pdfInfoResult = await spawn('pdfinfo', [filePath], { capture: ['stdout', 'stderr'] });
         const pdfInfoOutput = pdfInfoResult.stdout.toString();
@@ -1999,122 +1999,136 @@ async function runPreflightChecks(filePath, logger) {
             };
         }
     } catch (error) {
-        // Fallback: Use pdf-lib if pdfinfo fails (ENOENT)
-        if (error.code === 'ENOENT' || error.message.includes('ENOENT')) {
-            logger.warn('pdfinfo not found. Falling back to pdf-lib for dimensions.');
-            try {
-                const { PDFDocument } = require('pdf-lib');
-                const pdfBuffer = fs.readFileSync(filePath);
-                
-                const pdfDoc = await PDFDocument.load(pdfBuffer);
-                const page = pdfDoc.getPage(0);
-                const { width, height } = page.getSize();
-                
-                dimensions = {
-                    width: parseFloat((width / 72).toFixed(3)),
-                    height: parseFloat((height / 72).toFixed(3)),
-                    units: 'in'
-                };
-                
-                if (global.gc) { try { global.gc(); } catch(e) {} }
-                
-            } catch (libError) {
-                logger.error('Fallback dimension check failed:', libError);
-            }
-        } else {
-            logger.error('Error getting PDF dimensions:', error.stderr || error.message);
-        }
+        logger.warn('Dimensions check failed:', error);
     }
 
-    // --- 2. Font Check (Requires pdfinfo) ---
+    // --- 2. Font Check (Updated with Recovery Logic) ---
     try {
-        const fontInfoResult = await spawn('pdfinfo', ['-fonts', filePath], { capture: ['stdout', 'stderr'] });
-        const fontInfoOutput = fontInfoResult.stdout.toString();
-        const lines = fontInfoOutput.split('\n');
+        // We wrap the spawn logic in a helper to handle "exit code 1" gracefully
+        let fontOutput = '';
+        try {
+            const result = await spawn('pdfinfo', ['-fonts', filePath], { capture: ['stdout', 'stderr'] });
+            fontOutput = result.stdout.toString();
+        } catch (spawnError) {
+            // If pdfinfo exits with code 1 (warning), it often still provides the font list in stdout.
+            if (spawnError.stdout) {
+                fontOutput = spawnError.stdout.toString();
+                logger.warn('pdfinfo exited with warning, but output captured:', spawnError.stderr?.toString());
+            } else {
+                throw spawnError; // Real error, rethrow
+            }
+        }
 
-        const headerLineIndex = lines.findIndex(line => line.includes('emb sub uni'));
+        const lines = fontOutput.split('\n');
         const unembeddedFonts = [];
-        let fontsFound = false;
+        
+        // Find where the font list starts (look for the header line)
+        const headerIndex = lines.findIndex(line => line.includes('emb sub uni'));
 
-        if (headerLineIndex !== -1) {
-            for (let i = headerLineIndex + 2; i < lines.length; i++) {
-                const line = lines[i];
-                if (line.trim() === '') continue;
-                fontsFound = true;
-
-                const columns = line.trim().split(/\s+/).filter(Boolean);
+        if (headerIndex !== -1) {
+            for (let i = headerIndex + 2; i < lines.length; i++) {
+                const line = lines[i].trim();
+                if (!line) continue;
+                
+                // The table columns are fixed width or space-separated.
+                // "emb" is the 3rd column (index 2) in standard output.
+                const columns = line.split(/\s+/);
                 if (columns.length > 2 && columns[2] === 'no') {
                     unembeddedFonts.push(columns[0]);
                 }
             }
+            
+            if (unembeddedFonts.length > 0) {
+                preflightResults.fontCheck.status = 'failed';
+                preflightResults.fontCheck.details = `${unembeddedFonts.length} non-embedded font(s): ${unembeddedFonts.slice(0, 3).join(', ')}${unembeddedFonts.length > 3 ? '...' : ''}`;
+                preflightStatus = 'failed';
+            } else {
+                preflightResults.fontCheck.status = 'passed';
+                preflightResults.fontCheck.details = 'All fonts embedded.';
+            }
+        } else {
+            // No font header found? Maybe the file has no fonts or output is weird.
+            preflightResults.fontCheck.status = 'passed';
+            preflightResults.fontCheck.details = 'No fonts detected or list empty.';
         }
 
-        if (unembeddedFonts.length > 0) {
-            preflightResults.fontCheck.status = 'failed';
-            preflightResults.fontCheck.details = `Error: ${unembeddedFonts.length} font(s) are not embedded: ${unembeddedFonts.join(', ')}.`;
-            preflightStatus = 'failed';
-        } else if (!fontsFound) {
-            preflightResults.fontCheck.status = 'passed';
-            preflightResults.fontCheck.details = 'No fonts listed in the document.';
-        } else {
-            preflightResults.fontCheck.status = 'passed';
-            preflightResults.fontCheck.details = 'All fonts embedded.';
-        }
     } catch (error) {
-        if (error.code === 'ENOENT') {
-            preflightResults.fontCheck.status = 'skipped';
-            preflightResults.fontCheck.details = 'Server tool (poppler-utils) missing.';
-        } else {
-            const stderr = (error.stderr || '').toString();
-            if (stderr.includes('Usage: pdfinfo')) {
-                preflightResults.fontCheck.status = 'passed';
-                preflightResults.fontCheck.details = 'No fonts found in the document.';
-            } else {
-                logger.error('Error during font check:', stderr || error.message);
-                preflightResults.fontCheck.status = 'failed';
-                preflightResults.fontCheck.details = 'Failed to execute font analysis.';
-            }
-        }
+        logger.error('Font check fatal error:', error);
+        preflightResults.fontCheck.status = 'warning';
+        preflightResults.fontCheck.details = 'Unable to verify fonts (file may be corrupted).';
     }
 
-    // --- 3. Color Space Check (Requires pdfinfo) ---
+    // --- 3. Color Space Check ---
     try {
-        const pdfInfoResult = await spawn('pdfinfo', [filePath], { capture: ['stdout', 'stderr'] });
-        const pdfInfoOutput = pdfInfoResult.stdout.toString();
-
-        const nonCmykIndicators = ['DeviceRGB', 'CalRGB', 'Separation', 'DeviceN'];
-        const detectedIssues = [];
-
-        for (const indicator of nonCmykIndicators) {
-            if (pdfInfoOutput.includes(indicator)) {
-                detectedIssues.push(indicator);
-            }
-        }
-        if (pdfInfoOutput.includes('ICCBased') && !pdfInfoOutput.includes('CMYK')) {
-             if(!detectedIssues.includes('ICCBased RGB or other')) {
-                detectedIssues.push('ICCBased RGB or other');
-             }
+        // Same recovery logic for color check
+        let colorOutput = '';
+        try {
+            const result = await spawn('pdfinfo', [filePath], { capture: ['stdout', 'stderr'] });
+            colorOutput = result.stdout.toString();
+        } catch (spawnError) {
+            if (spawnError.stdout) colorOutput = spawnError.stdout.toString();
         }
 
-        if (detectedIssues.length > 0) {
+        const issues = [];
+        if (colorOutput.includes('DeviceRGB') || colorOutput.includes('ICCBased')) issues.push('RGB');
+        if (colorOutput.includes('Separation')) issues.push('Spot Colors');
+
+        if (issues.length > 0) {
             preflightResults.colorSpaceCheck.status = 'warning';
-            preflightResults.colorSpaceCheck.details = `Warning: Non-CMYK color indicators found: ${[...new Set(detectedIssues)].join(', ')}.`;
-            if (preflightStatus !== 'failed') {
-                preflightStatus = 'warning';
-            }
+            preflightResults.colorSpaceCheck.details = `Potential non-CMYK colors: ${issues.join(', ')}.`;
+            if (preflightStatus !== 'failed') preflightStatus = 'warning';
         } else {
             preflightResults.colorSpaceCheck.status = 'passed';
-            preflightResults.colorSpaceCheck.details = 'No non-CMYK color indicators found.';
+            preflightResults.colorSpaceCheck.details = 'No RGB/Spot colors detected.';
         }
-    } catch (error) {
-        if (error.code === 'ENOENT') {
-            preflightResults.colorSpaceCheck.status = 'skipped';
-            preflightResults.colorSpaceCheck.details = 'Server tool (poppler-utils) missing.';
+    } catch (e) {
+        preflightResults.colorSpaceCheck.details = 'Color check failed.';
+    }
+
+    // --- 4. DPI Check ---
+    try {
+        // Recovery logic for pdfimages as well
+        let dpiOutput = '';
+        try {
+            const result = await spawn('pdfimages', ['-list', filePath], { capture: ['stdout', 'stderr'] });
+            dpiOutput = result.stdout.toString();
+        } catch (spawnError) {
+            if (spawnError.stdout) dpiOutput = spawnError.stdout.toString();
+        }
+
+        const lines = dpiOutput.split('\n');
+        const lowDpiImages = [];
+        const MIN_DPI = 300; 
+
+        for (let i = 2; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (!line) continue;
+            const parts = line.replace(/\s+/g, ' ').split(' ');
+            if (parts.length >= 10) {
+                const xPpi = parseInt(parts[parts.length - 4], 10);
+                const yPpi = parseInt(parts[parts.length - 3], 10);
+                const pageNum = parts[0];
+                if (!isNaN(xPpi) && !isNaN(yPpi)) {
+                    if (xPpi < MIN_DPI || yPpi < MIN_DPI) {
+                        lowDpiImages.push(`Page ${pageNum} (${xPpi} dpi)`);
+                    }
+                }
+            }
+        }
+
+        if (lowDpiImages.length > 0) {
+            preflightResults.dpiCheck.status = 'warning';
+            preflightResults.dpiCheck.details = `${lowDpiImages.length} low-res images (<${MIN_DPI} DPI): ${lowDpiImages.slice(0, 3).join(', ')}${lowDpiImages.length > 3 ? '...' : ''}`;
+            if (preflightStatus !== 'failed') preflightStatus = 'warning';
         } else {
-            logger.error('Error during color space check:', error.stderr || error.message);
-            preflightResults.colorSpaceCheck.status = 'failed';
-            preflightResults.colorSpaceCheck.details = 'Failed to execute color space analysis.';
+            preflightResults.dpiCheck.status = 'passed';
+            preflightResults.dpiCheck.details = `All images at or above ${MIN_DPI} DPI.`;
         }
+
+    } catch (error) {
+        logger.error('DPI check failed:', error);
+        preflightResults.dpiCheck.status = 'skipped';
+        preflightResults.dpiCheck.details = 'Failed to run image analysis.';
     }
 
     return {

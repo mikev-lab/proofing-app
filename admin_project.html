@@ -323,7 +323,12 @@
                                 </div>
                                 <!-- Preflight Checks -->
                                 <div class="md:col-span-1 bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
-                                    <h3 class="text-lg font-semibold text-white mb-4">Preflight Check Results</h3>
+                                    <div class="flex justify-between items-center mb-4">
+                                        <h3 class="text-lg font-semibold text-white">Preflight Check Results</h3>
+                                        <button id="rerun-preflight-button" class="text-xs bg-indigo-600 hover:bg-indigo-500 text-white py-1.5 px-3 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                                            Rerun Check
+                                        </button>
+                                    </div>
                                     <div id="preflight-results-container">
                                         <div id="preflight-status-message" class="text-gray-400"></div>
                                         <ul id="preflight-issues-list" class="space-y-2 list-disc list-inside text-red-400"></ul>
@@ -475,6 +480,7 @@
                 <h3 class="text-xl font-semibold text-white">Generate Guest Link</h3>
                 <button id="share-modal-close-button" class="text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
             </div>
+            
             <div id="share-modal-content">
                 <p class="text-gray-300 mb-4">Configure permissions for the guest link. The link will expire in 30 days by default.</p>
                 <form id="share-link-form">
@@ -498,6 +504,7 @@
                     </div>
                 </form>
             </div>
+
             <div id="share-modal-result" class="hidden">
                 <p class="text-gray-300 mb-2">Your shareable link has been generated:</p>
                 <div class="flex items-center space-x-2">
@@ -506,7 +513,13 @@
                 </div>
                 <p id="copy-status-message" class="text-sm text-green-400 mt-2 h-4"></p>
             </div>
-        </div>
+
+            <div class="mt-6 pt-4 border-t border-slate-700/50">
+                <h4 class="text-sm font-semibold text-gray-300 mb-2">Active Guest Links</h4>
+                <div id="guest-links-list" class="space-y-2 max-h-32 overflow-y-auto pr-1 custom-scrollbar">
+                    </div>
+            </div>
+            </div>
     </div>
 
     <script type="module" src="js/admin_project.js"></script>

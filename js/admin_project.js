@@ -62,6 +62,8 @@ const coverUnitsSelect = document.getElementById('cover-units');
 const saveCoverSpecsButton = document.getElementById('save-cover-specs-button');
 const coverSpecsStatusMessage = document.getElementById('cover-specs-status-message');
 
+const rerunPreflightButton = document.getElementById('rerun-preflight-button');
+
 
 
 // --- Function to Populate Cover Form ---
@@ -740,6 +742,80 @@ unapproveButton.addEventListener('click', async () => {
         }
     }
 });
+
+if (rerunPreflightButton) {
+    rerunPreflightButton.addEventListener('click', async () => {
+        if (!currentProjectData || !projectId) return;
+
+        // A. Get the latest version to check
+        // We assume we are checking the latest version available in the array
+        const versions = currentProjectData.versions || [];
+        if (versions.length === 0) {
+            alert("No file versions found to check.");
+            return;
+        }
+
+        // Sort to find the absolute latest version
+        const latestVersionIndex = versions.reduce((iMax, x, i, arr) => x.versionNumber > arr[iMax].versionNumber ? i : iMax, 0);
+        const latestVersion = versions[latestVersionIndex];
+
+        if (!latestVersion.filePath) {
+            alert("The latest version is missing a file path.");
+            return;
+        }
+
+        // B. UI Loading State
+        rerunPreflightButton.disabled = true;
+        rerunPreflightButton.textContent = 'Running...';
+        const statusDiv = document.getElementById('preflight-status-message');
+        if(statusDiv) statusDiv.textContent = "Re-analyzing PDF...";
+
+        try {
+            // C. Call the Cloud Function
+            // Note: Ensure 'analyzePdfToolbox' is deployed and available
+            const analyzePdfToolbox = httpsCallable(functions, 'analyzePdfToolbox');
+            
+            console.log(`Running preflight on: ${latestVersion.filePath}`);
+            
+            const result = await analyzePdfToolbox({ 
+                gcsPath: latestVersion.filePath 
+            });
+
+            const analysis = result.data; // { preflightStatus, preflightResults, dimensions }
+
+            // D. Update Firestore
+            // We must update the specific version in the versions array
+            const updatedVersions = [...versions];
+            updatedVersions[latestVersionIndex] = {
+                ...latestVersion,
+                preflightStatus: analysis.preflightStatus,
+                preflightResults: analysis.preflightResults,
+                // Update dimensions if they were found
+                specs: analysis.dimensions ? { 
+                    ...latestVersion.specs, // preserve existing specs if any
+                    dimensions: analysis.dimensions 
+                } : latestVersion.specs
+            };
+            
+            // Also update the top-level status if needed, or just the versions
+            const projectRef = doc(db, "projects", projectId);
+            await updateDoc(projectRef, { 
+                versions: updatedVersions 
+            });
+
+            alert("Preflight check complete. Results updated.");
+
+        } catch (error) {
+            console.error("Error running preflight:", error);
+            alert(`Preflight failed: ${error.message}`);
+            if(statusDiv) statusDiv.textContent = "Analysis failed.";
+        } finally {
+            // E. Reset UI
+            rerunPreflightButton.disabled = false;
+            rerunPreflightButton.textContent = 'Rerun Check';
+        }
+    });
+}
 
 // Accordion Logic
 document.querySelectorAll('.accordion-header').forEach(header => {
