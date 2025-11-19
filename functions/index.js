@@ -1970,7 +1970,7 @@ exports.getNotifications = onCall({ region: 'us-central1' }, async (request) => 
     }
 });
 
-// --- Helper Function for Preflight Checks (Robust Version) ---
+// --- Helper Function for Preflight Checks (Corrected Tool) ---
 async function runPreflightChecks(filePath, logger) {
     const { spawn } = require('child-process-promise');
     const fs = require('fs');
@@ -1983,7 +1983,7 @@ async function runPreflightChecks(filePath, logger) {
         fontCheck: { status: 'skipped', details: 'Analysis skipped.' }
     };
 
-    // --- 1. Get Dimensions ---
+    // --- 1. Get Dimensions (pdfinfo) ---
     try {
         const pdfInfoResult = await spawn('pdfinfo', [filePath], { capture: ['stdout', 'stderr'] });
         const pdfInfoOutput = pdfInfoResult.stdout.toString();
@@ -2002,65 +2002,66 @@ async function runPreflightChecks(filePath, logger) {
         logger.warn('Dimensions check failed:', error);
     }
 
-    // --- 2. Font Check (Updated with Recovery Logic) ---
+    // --- 2. Font Check (pdffonts) ---
     try {
-        // We wrap the spawn logic in a helper to handle "exit code 1" gracefully
         let fontOutput = '';
         try {
-            const result = await spawn('pdfinfo', ['-fonts', filePath], { capture: ['stdout', 'stderr'] });
+            // CHANGE: Use 'pdffonts' instead of 'pdfinfo -fonts'
+            const result = await spawn('pdffonts', [filePath], { capture: ['stdout', 'stderr'] });
             fontOutput = result.stdout.toString();
         } catch (spawnError) {
-            // If pdfinfo exits with code 1 (warning), it often still provides the font list in stdout.
-            if (spawnError.stdout) {
+            if (spawnError.stdout && spawnError.stdout.toString().trim().length > 0) {
                 fontOutput = spawnError.stdout.toString();
-                logger.warn('pdfinfo exited with warning, but output captured:', spawnError.stderr?.toString());
             } else {
-                throw spawnError; // Real error, rethrow
+                const stderr = spawnError.stderr ? spawnError.stderr.toString() : (spawnError.message || '');
+                throw new Error(stderr || 'pdffonts failed');
             }
         }
 
         const lines = fontOutput.split('\n');
         const unembeddedFonts = [];
         
-        // Find where the font list starts (look for the header line)
-        const headerIndex = lines.findIndex(line => line.includes('emb sub uni'));
-
-        if (headerIndex !== -1) {
-            for (let i = headerIndex + 2; i < lines.length; i++) {
-                const line = lines[i].trim();
-                if (!line) continue;
+        // pdffonts output format columns:
+        // name | type | emb | sub | uni | object | ID
+        // We rely on the fact that 'emb' is the 5th column from the END.
+        
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (!line) continue;
+            if (line.startsWith('name')) continue; // Skip Header
+            if (line.startsWith('----')) continue; // Skip Separator
+            
+            const columns = line.split(/\s+/);
+            
+            // We need enough columns to be valid. 
+            // emb, sub, uni, object, ID = 5 columns minimum at the end.
+            if (columns.length >= 5) {
+                const embStatus = columns[columns.length - 5]; // 5th from last
                 
-                // The table columns are fixed width or space-separated.
-                // "emb" is the 3rd column (index 2) in standard output.
-                const columns = line.split(/\s+/);
-                if (columns.length > 2 && columns[2] === 'no') {
-                    unembeddedFonts.push(columns[0]);
+                if (embStatus === 'no') {
+                    unembeddedFonts.push(columns[0]); // Name is usually the first token
                 }
             }
-            
-            if (unembeddedFonts.length > 0) {
-                preflightResults.fontCheck.status = 'failed';
-                preflightResults.fontCheck.details = `${unembeddedFonts.length} non-embedded font(s): ${unembeddedFonts.slice(0, 3).join(', ')}${unembeddedFonts.length > 3 ? '...' : ''}`;
-                preflightStatus = 'failed';
-            } else {
-                preflightResults.fontCheck.status = 'passed';
-                preflightResults.fontCheck.details = 'All fonts embedded.';
-            }
+        }
+        
+        if (unembeddedFonts.length > 0) {
+            preflightResults.fontCheck.status = 'failed';
+            preflightResults.fontCheck.details = `${unembeddedFonts.length} non-embedded font(s): ${unembeddedFonts.slice(0, 3).join(', ')}`;
+            preflightStatus = 'failed';
         } else {
-            // No font header found? Maybe the file has no fonts or output is weird.
             preflightResults.fontCheck.status = 'passed';
-            preflightResults.fontCheck.details = 'No fonts detected or list empty.';
+            preflightResults.fontCheck.details = 'All fonts embedded.';
         }
 
     } catch (error) {
-        logger.error('Font check fatal error:', error);
+        logger.error('Font check failed:', error);
         preflightResults.fontCheck.status = 'warning';
-        preflightResults.fontCheck.details = 'Unable to verify fonts (file may be corrupted).';
+        const msg = error.message.replace(/\n/g, ' ').substring(0, 100);
+        preflightResults.fontCheck.details = `Tool Warning: ${msg}`;
     }
 
     // --- 3. Color Space Check ---
     try {
-        // Same recovery logic for color check
         let colorOutput = '';
         try {
             const result = await spawn('pdfinfo', [filePath], { capture: ['stdout', 'stderr'] });
@@ -2087,7 +2088,6 @@ async function runPreflightChecks(filePath, logger) {
 
     // --- 4. DPI Check ---
     try {
-        // Recovery logic for pdfimages as well
         let dpiOutput = '';
         try {
             const result = await spawn('pdfimages', ['-list', filePath], { capture: ['stdout', 'stderr'] });
@@ -2118,7 +2118,7 @@ async function runPreflightChecks(filePath, logger) {
 
         if (lowDpiImages.length > 0) {
             preflightResults.dpiCheck.status = 'warning';
-            preflightResults.dpiCheck.details = `${lowDpiImages.length} low-res images (<${MIN_DPI} DPI): ${lowDpiImages.slice(0, 3).join(', ')}${lowDpiImages.length > 3 ? '...' : ''}`;
+            preflightResults.dpiCheck.details = `${lowDpiImages.length} low-res images: ${lowDpiImages.slice(0, 3).join(', ')}`;
             if (preflightStatus !== 'failed') preflightStatus = 'warning';
         } else {
             preflightResults.dpiCheck.status = 'passed';
