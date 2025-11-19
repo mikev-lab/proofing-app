@@ -10,7 +10,7 @@ import Sortable from 'https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/modular/sor
 import * as pdfjsLib from 'https://mozilla.github.io/pdf.js/build/pdf.mjs';
 
 // Share Modal Elements
-const shareButton = document.getElementById('share-button');
+const headerShareButton = document.getElementById('header-share-button'); // This is the new one in the header
 const shareModal = document.getElementById('share-modal');
 const shareModalCloseButton = document.getElementById('share-modal-close-button');
 const shareModalCancelButton = document.getElementById('share-modal-cancel-button');
@@ -25,7 +25,6 @@ const guestLinksList = document.getElementById('guest-links-list');
 
 const loadingSpinner = document.getElementById('loading-spinner');
 const proofContent = document.getElementById('proof-content');
-const projectDetailsAccordion = document.getElementById('project-details-accordion');
 const projectNameHeader = document.getElementById('project-name-header');
 const fileUploadForm = document.getElementById('file-upload-form');
 const fileInput = document.getElementById('file-input');
@@ -438,7 +437,7 @@ onAuthStateChanged(auth, (user) => {
 
                     loadingSpinner.classList.add('hidden');
                     proofContent.classList.remove('hidden');
-                    projectDetailsAccordion.classList.remove('hidden');
+                    document.getElementById('project-details-tabs').classList.remove('hidden');
                 } else {
                      loadingSpinner.innerHTML = '<p class="text-red-400">Error: Project not found.</p>';
                 }
@@ -574,7 +573,10 @@ function closeShareModal() {
     shareModal.classList.add('hidden');
 }
 
-shareButton.addEventListener('click', openShareModal);
+// Listen on the new header button
+if (headerShareButton) {
+    headerShareButton.addEventListener('click', openShareModal);
+}
 shareModalCloseButton.addEventListener('click', closeShareModal);
 shareModalCancelButton.addEventListener('click', closeShareModal);
 
@@ -906,7 +908,39 @@ document.addEventListener('DOMContentLoaded', () => {
     // Set the workerSrc for PDF.js
     pdfjsLib.GlobalWorkerOptions.workerSrc = `https://mozilla.github.io/pdf.js/build/pdf.worker.mjs`;
     initializeGuidedSetup();
+    initializeTabs();
 });
+
+function initializeTabs() {
+    const tabButtons = document.querySelectorAll('.tab-button');
+    const tabPanels = document.querySelectorAll('.tab-panel');
+
+    tabButtons.forEach(button => {
+        button.addEventListener('click', () => {
+            // Deactivate all buttons
+            tabButtons.forEach(btn => {
+                btn.classList.remove('border-indigo-500', 'text-indigo-400');
+                btn.classList.add('border-transparent', 'text-gray-400', 'hover:text-gray-200', 'hover:border-gray-500');
+            });
+
+            // Activate the clicked button
+            button.classList.add('border-indigo-500', 'text-indigo-400');
+            button.classList.remove('border-transparent', 'text-gray-400', 'hover:text-gray-200', 'hover:border-gray-500');
+
+            // Hide all panels
+            tabPanels.forEach(panel => {
+                panel.classList.add('hidden');
+            });
+
+            // Show the corresponding panel
+            const tabName = button.dataset.tab;
+            const targetPanel = document.getElementById(`${tabName}-panel`);
+            if (targetPanel) {
+                targetPanel.classList.remove('hidden');
+            }
+        });
+    });
+}
 
 function displayPageThumbnails(pages) {
     const organizer = document.getElementById('thumbnail-organizer');
