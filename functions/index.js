@@ -1786,7 +1786,8 @@ exports.imposePdf = onCall({
 // Firestore Trigger for automatic imposition
 exports.onProjectApprove = onDocumentUpdated({
     document: 'projects/{projectId}',
-    memory: '4GiB',
+    memory: '8GiB', // Ensuring 8GB is kept for safety
+    cpu: 2,
     timeoutSeconds: 540
 }, async (event) => {
   const beforeData = event.data.before.data();
@@ -1796,8 +1797,10 @@ exports.onProjectApprove = onDocumentUpdated({
     const projectId = event.params.projectId;
     logger.log(`Automatic imposition triggered for project ${projectId}`);
 
+    let tempFilePath = null;
+
     try {
-      // 1. Get the latest version's file from the project
+      // 1. Get the latest version's file
       const latestVersion = afterData.versions.reduce((latest, v) => (v.versionNumber > latest.versionNumber ? v : latest), afterData.versions[0]);
       if (!latestVersion || !latestVersion.fileURL) {
         throw new HttpsError('not-found', 'No file found for the latest version of the project.');
@@ -1807,24 +1810,60 @@ exports.onProjectApprove = onDocumentUpdated({
       const filePath = new URL(latestVersion.fileURL).pathname.split('/o/')[1].replace(/%2F/g, '/');
       const file = bucket.file(decodeURIComponent(filePath));
 
-      // 2. Load the PDF to get its dimensions
-      const [fileBytes] = await file.download();
-      const { PDFDocument } = require('pdf-lib');
-      const inputPdfDoc = await PDFDocument.load(fileBytes);
-      const { width, height } = inputPdfDoc.getPage(0).getSize();
+      // 2. Download to temp file
+      const os = require('os');
+      const path = require('path');
+      const fs = require('fs');
+      tempFilePath = path.join(os.tmpdir(), `project_${projectId}_source_${Date.now()}.pdf`);
+      
+      await file.download({ destination: tempFilePath });
+      logger.log(`File downloaded to temp path: ${tempFilePath}`);
 
-      // 3. Run the "Maximize N-Up" algorithm, passing the db object
+      // 3. Get Dimensions
+      const { spawn } = require('child-process-promise');
+      let width = 0, height = 0;
+
+      try {
+          // Try lightweight pdfinfo first
+          const pdfInfoResult = await spawn('pdfinfo', [tempFilePath], { capture: ['stdout', 'stderr'] });
+          const pdfInfoOutput = pdfInfoResult.stdout.toString();
+          const sizeMatch = pdfInfoOutput.match(/Page size:\s*([\d\.]+) x ([\d\.]+) pts/);
+          
+          if (sizeMatch) {
+              width = parseFloat(sizeMatch[1]);
+              height = parseFloat(sizeMatch[2]);
+          } else {
+              throw new Error("Could not parse dimensions from pdfinfo output.");
+          }
+      } catch (infoError) {
+          logger.error("pdfinfo failed, falling back to pdf-lib.", infoError);
+          
+          // FALLBACK: Load into memory just to check dimensions
+          {
+              const inputPdfBuffer = fs.readFileSync(tempFilePath);
+              const { PDFDocument } = require('pdf-lib');
+              const inputPdfDoc = await PDFDocument.load(inputPdfBuffer);
+              const size = inputPdfDoc.getPage(0).getSize();
+              width = size.width;
+              height = size.height;
+          }
+          // Force cleanup
+          if (global.gc) { try { global.gc(); } catch(e) {} }
+      }
+
+      // 4. Run "Maximize N-Up"
       const settings = await maximizeNUp(width, height, db);
       logger.log(`Optimal layout for project ${projectId}: ${settings.columns}x${settings.rows} on ${settings.sheet}`);
 
-      // 4. Call the main imposition logic
+      // 5. Call imposition logic
       const { filePath: localImposedPath } = await imposePdfLogic({
-        inputFile: file,
+        inputFile: null, 
         settings: settings,
-        jobInfo: afterData
+        jobInfo: afterData,
+        localFilePath: tempFilePath
       });
 
-      // 5. Upload result to storage
+      // 6. Upload result
       const imposedFileName = `imposed_${Date.now()}.pdf`;
       const imposedFilePath = `imposed/${projectId}/${imposedFileName}`;
       const imposedFile = bucket.file(imposedFilePath);
@@ -1834,15 +1873,21 @@ exports.onProjectApprove = onDocumentUpdated({
           contentType: 'application/pdf'
       });
 
-      // Clean up
-      try { require('fs').unlinkSync(localImposedPath); } catch(e) {}
+      try { fs.unlinkSync(localImposedPath); } catch(e) {}
 
-      // 6. Update Firestore with the new imposition record
+      // --- FIX START: Get Signed URL correctly ---
+      const [signedImposedUrl] = await imposedFile.getSignedUrl({ 
+          action: 'read', 
+          expires: '03-09-2491' 
+      });
+      // --- FIX END ---
+
+      // 7. Update Firestore
       const projectRef = db.collection('projects').doc(projectId);
       await projectRef.update({
         impositions: admin.firestore.FieldValue.arrayUnion({
-          createdAt: admin.firestore.Timestamp.now(), // <--- FIX: Use Timestamp.now()
-          fileURL: await imposedFile.getSignedUrl({ action: 'read', expires: '03-09-2491' })[0],
+          createdAt: admin.firestore.Timestamp.now(),
+          fileURL: signedImposedUrl, // Now using the resolved variable
           settings: settings,
           type: 'automatic'
         }),
@@ -1851,7 +1896,7 @@ exports.onProjectApprove = onDocumentUpdated({
 
       logger.log(`Successfully imposed and updated project ${projectId}`);
 
-      // Add Notification for all admins
+      // Notify Admins
       const adminSnapshot = await db.collection('users').where('role', '==', 'admin').get();
       for (const adminDoc of adminSnapshot.docs) {
           await createNotification(adminDoc.id, {
@@ -1863,12 +1908,15 @@ exports.onProjectApprove = onDocumentUpdated({
 
     } catch (error) {
       logger.error(`Error during automatic imposition for project ${projectId}:`, error);
-      // 7. Handle errors
       const projectRef = db.collection('projects').doc(projectId);
       await projectRef.update({
         status: 'Imposition Failed',
         impositionError: error.message
       });
+    } finally {
+        if (tempFilePath && fs.existsSync(tempFilePath)) {
+            try { fs.unlinkSync(tempFilePath); } catch(e) { logger.warn("Failed to cleanup temp file", e); }
+        }
     }
   }
 

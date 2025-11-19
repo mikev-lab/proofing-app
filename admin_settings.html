@@ -154,16 +154,42 @@
                         <div id="imposition-rules-list" class="space-y-2 mb-4">
                             <!-- Rules will be populated here -->
                         </div>
-                        <form id="add-imposition-rule-form" class="flex items-end space-x-4">
-                            <div class="flex-1">
-                                <label for="new-rule-doc-size" class="form-label">Document Size</label>
-                                <select id="new-rule-doc-size" class="form-input"></select>
+                        <form id="add-imposition-rule-form" class="flex flex-col md:flex-row gap-2 items-end">
+                            <div class="w-full md:w-auto flex-1">
+                                <label class="block text-xs text-gray-400 mb-1">Doc Size</label>
+                                <select id="new-rule-doc-size" class="w-full p-2 bg-slate-800 border border-slate-600 rounded-md text-white text-sm"></select>
                             </div>
-                            <div class="flex-1">
-                                <label for="new-rule-press-sheet" class="form-label">Default Press Sheet</label>
-                                <select id="new-rule-press-sheet" class="form-input"></select>
+                            <div class="w-full md:w-auto flex-1">
+                                <label class="block text-xs text-gray-400 mb-1">Press Sheet</label>
+                                <select id="new-rule-press-sheet" class="w-full p-2 bg-slate-800 border border-slate-600 rounded-md text-white text-sm"></select>
                             </div>
-                            <button type="submit" class="bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md">Add Rule</button>
+                            <div class="w-full md:w-24">
+                                <label class="block text-xs text-gray-400 mb-1">Type</label>
+                                <select id="new-rule-type" class="w-full p-2 bg-slate-800 border border-slate-600 rounded-md text-white text-sm">
+                                    <option value="stack">Stack</option>
+                                    <option value="repeat">Repeat</option>
+                                    <option value="booklet">Booklet</option>
+                                </select>
+                            </div>
+                            <div class="w-full md:w-20">
+                                <label class="block text-xs text-gray-400 mb-1">H. Gut</label>
+                                <input type="number" id="new-rule-h-gutter" step="0.001" value="0" class="w-full p-2 bg-slate-800 border border-slate-600 rounded-md text-white text-sm" placeholder="0">
+                            </div>
+                            <div class="w-full md:w-20">
+                                <label class="block text-xs text-gray-400 mb-1">V. Gut</label>
+                                <input type="number" id="new-rule-v-gutter" step="0.001" value="0" class="w-full p-2 bg-slate-800 border border-slate-600 rounded-md text-white text-sm" placeholder="0">
+                            </div>
+                            <div class="w-full md:w-28">
+                                <label class="block text-xs text-gray-400 mb-1">Slip Sheet</label>
+                                <select id="new-rule-slip-sheet" class="w-full p-2 bg-slate-800 border border-slate-600 rounded-md text-white text-sm">
+                                    <option value="none">None</option>
+                                    <option value="yellow">Yellow</option>
+                                    <option value="pink">Pink</option>
+                                    <option value="blue">Blue</option>
+                                    <option value="green">Green</option>
+                                </select>
+                            </div>
+                            <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-500 text-sm w-full md:w-auto whitespace-nowrap">Add Rule</button>
                         </form>
                     </div>
                 </div>

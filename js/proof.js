@@ -32,7 +32,7 @@ const signatureInput = document.getElementById('signature-input');
 const approvalSpecsText = document.getElementById('approval-specs-text');
 // Select all approval checkboxes
 const approvalCheckboxes = document.querySelectorAll('#approval-modal-form input[type="checkbox"]');
-
+const approvedStatuses = ['Approved', 'approved', 'In Production', 'Imposition Complete'];
 
 let currentProjectId = initialProjectId; // Use the initially parsed ID
 let actionToConfirm = null;
@@ -362,7 +362,7 @@ async function updateProjectStatus(status) {
                 }
 
                 // Check Project Status (AFTER resetting HTML)
-                 if (projectData.status === 'Approved' || projectData.status === 'approved' || projectData.status === 'In Production') {
+                 if (approvedStatuses.includes(projectData.status)) {
                      approvalBanner.classList.remove('hidden');
                      actionPanel.innerHTML = `<p class="text-center text-lg font-semibold text-green-400">Proof Approved</p>`;
                      commentTool.style.display = 'none';

@@ -30,6 +30,10 @@ const impositionRulesList = document.getElementById('imposition-rules-list');
 const addImpositionRuleForm = document.getElementById('add-imposition-rule-form');
 const newRuleDocSizeSelect = document.getElementById('new-rule-doc-size');
 const newRulePressSheetSelect = document.getElementById('new-rule-press-sheet');
+const newRuleTypeSelect = document.getElementById('new-rule-type');
+const newRuleSlipSheetSelect = document.getElementById('new-rule-slip-sheet');
+const newRuleHGutterInput = document.getElementById('new-rule-h-gutter');
+const newRuleVGutterInput = document.getElementById('new-rule-v-gutter');
 
 
 async function loadGlobalDefaults() {
@@ -40,7 +44,6 @@ async function loadGlobalDefaults() {
         bleedInchesInput.value = data.bleedInches || 0.125;
         safetyInchesInput.value = data.safetyInches || 0.125;
     } else {
-        // Set default values if the document doesn't exist
         bleedInchesInput.value = 0.125;
         safetyInchesInput.value = 0.125;
     }
@@ -76,8 +79,11 @@ function renderSheetSize(id, data) {
     sheetSizesList.appendChild(div);
 
     const option = document.createElement('option');
-    option.value = data.name;
+    // FIX: Set value to ID, but keep text as Name
+    option.value = id; 
     option.textContent = data.name;
+    // Store name in dataset so we can save it for display purposes later
+    option.dataset.name = data.name; 
     newRulePressSheetSelect.appendChild(option);
 }
 
@@ -128,20 +134,44 @@ async function loadImpositionRules() {
 function renderImpositionRule(id, data) {
     const div = document.createElement('div');
     div.className = 'flex items-center justify-between p-2 bg-slate-700/50 rounded-md';
+    const sheetName = data.pressSheetName || data.pressSheet || data.pressSheetId || 'Unknown';
+    
+    // Format extra settings for display
+    const typeLabel = data.impositionType ? `(${data.impositionType})` : '';
+    const slipLabel = data.slipSheetColor && data.slipSheetColor !== 'none' ? `[${data.slipSheetColor} Slip]` : '';
+    
+    // NEW: Format Gutter Label
+    const hGut = parseFloat(data.horizontalGutter) || 0;
+    const vGut = parseFloat(data.verticalGutter) || 0;
+    const gutterLabel = (hGut > 0 || vGut > 0) ? `| Gutters: H:${hGut}" V:${vGut}"` : '';
+    
     div.innerHTML = `
-        <span>Document: <strong>${data.docSize}</strong> -> Press Sheet: <strong>${data.pressSheet}</strong></span>
-        <button data-id="${id}" class="delete-rule-btn text-red-400 hover:text-red-300">Delete</button>
+        <div class="text-sm">
+            <strong>${data.docSize}</strong> &rarr; <strong>${sheetName}</strong> 
+            <span class="text-gray-400 text-xs ml-2">${typeLabel} ${slipLabel} ${gutterLabel}</span>
+        </div>
+        <button data-id="${id}" class="delete-rule-btn text-red-400 hover:text-red-300 text-sm">Delete</button>
     `;
     impositionRulesList.appendChild(div);
 }
 
 async function addImpositionRule(e) {
     e.preventDefault();
+    
+    const selectedOption = newRulePressSheetSelect.options[newRulePressSheetSelect.selectedIndex];
+    
     const data = {
         docSize: newRuleDocSizeSelect.value,
-        pressSheet: newRulePressSheetSelect.value
+        pressSheetId: newRulePressSheetSelect.value,
+        pressSheetName: selectedOption.dataset.name || selectedOption.text,
+        impositionType: newRuleTypeSelect.value,
+        slipSheetColor: newRuleSlipSheetSelect.value,
+        // NEW: Save Gutter Values
+        horizontalGutter: parseFloat(newRuleHGutterInput.value) || 0,
+        verticalGutter: parseFloat(newRuleVGutterInput.value) || 0
     };
-    if (!data.docSize || !data.pressSheet) {
+    
+    if (!data.docSize || !data.pressSheetId) {
         alert('Please select both a document size and a press sheet.');
         return;
     }

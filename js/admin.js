@@ -1,7 +1,7 @@
 // js/admin.js
 import { auth, db, functions } from './firebase.js';
 import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-import { collection, getDocs, doc, getDoc, Timestamp, query, orderBy, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { collection, getDocs, doc, getDoc, Timestamp, query, where, orderBy, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 import { httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js";
 
 const userEmailSpan = document.getElementById('user-email');
@@ -31,25 +31,58 @@ function formatTimestamp(fbTimestamp) {
     return fbTimestamp.toDate().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+// --- UPDATE START: New Status Logic with Throbber ---
 function getStatusBadge(status) {
     status = status || 'unknown';
-    let classes = "px-3 py-1 rounded-full text-xs font-medium";
+    const lowerStatus = status.toLowerCase();
+    
+    // Base classes (added flex and items-center for icon alignment)
+    let classes = "px-3 py-1 rounded-full text-xs font-medium inline-flex items-center gap-1";
     let text = status.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-    switch (status.toLowerCase()) {
+    let icon = "";
+
+    switch (lowerStatus) {
         case 'pending':
             classes += " bg-yellow-500/20 text-yellow-300";
             text = "Pending";
             break;
-        case 'approved': classes += " bg-green-500/20 text-green-300"; break;
-        case 'changes_requested': classes += " bg-red-500/20 text-red-300"; break;
-        case 'awaiting_upload': classes += " bg-blue-500/20 text-blue-300"; break;
-        default: classes += " bg-gray-500/20 text-gray-300"; text = "Unknown"; break;
+        case 'approved':
+            classes += " bg-green-500/20 text-green-300";
+            text = "Approved";
+            // Throbber Icon
+            icon = `<svg class="animate-spin h-3 w-3 text-green-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>`;
+            break;
+        case 'imposition complete':
+            classes += " bg-green-500/20 text-green-300";
+            text = "Approved & Imposed";
+            // Checkmark Icon
+            icon = `<svg class="h-3 w-3 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>`;
+            break;
+        case 'imposition failed':
+             classes += " bg-red-500/20 text-red-300";
+             text = "Imposition Failed";
+             break;
+        case 'changes_requested': 
+            classes += " bg-red-500/20 text-red-300"; 
+            break;
+        case 'awaiting_upload': 
+            classes += " bg-blue-500/20 text-blue-300"; 
+            break;
+        default: 
+            classes += " bg-gray-500/20 text-gray-300"; 
+            text = "Unknown"; 
+            break;
     }
-    return `<span class="${classes}">${text}</span>`;
+    return `<span class="${classes}">${text}${icon}</span>`;
 }
+// --- UPDATE END ---
 
 function fetchNotifications() {
-    // Placeholder function for fetching notifications
     console.log("Fetching notifications...");
 }
 
@@ -58,7 +91,7 @@ async function fetchAllProjects() {
         loadingSpinner.classList.remove('hidden');
         emptyState.classList.add('hidden');
         projectsTableContainer.classList.add('hidden');
-        projectsList.innerHTML = ''; // Clear previous results
+        projectsList.innerHTML = ''; 
 
         const selectedStatus = statusFilter.value;
         const [sortField, sortDirection] = sortBy.value.split('-');
@@ -72,17 +105,14 @@ async function fetchAllProjects() {
         };
         const dbStatus = statusValueMap[selectedStatus] || (selectedStatus !== "All" ? selectedStatus.toLowerCase() : null);
 
-        // Base query
         let queries = [];
         if (dbStatus) {
             queries.push(where("status", "==", dbStatus));
         }
 
-        // Sorting - cannot sort by company name on the server directly
         if (sortField !== 'companyName') {
             queries.push(orderBy(sortField, sortDirection));
         } else {
-            // Default sort when sorting by company name client-side
             queries.push(orderBy("createdAt", "desc"));
         }
 
@@ -92,7 +122,6 @@ async function fetchAllProjects() {
 
         let projects = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-        // Create a map of company IDs to company names for efficient lookup
         const companyIds = [...new Set(projects.map(p => p.companyId).filter(id => id))];
         const companyPromises = companyIds.map(id => getDoc(doc(db, "companies", id)));
         const companySnapshots = await Promise.all(companyPromises);
@@ -103,18 +132,16 @@ async function fetchAllProjects() {
             return map;
         }, {});
 
-        // Add companyName to each project object for sorting
         projects.forEach(p => {
             if (p.companyId && companyMap[p.companyId]) {
                 p.companyName = companyMap[p.companyId];
-            } else if (p.clientName) { // Backward compatibility
+            } else if (p.clientName) { 
                 p.companyName = p.clientName;
             } else {
                 p.companyName = 'N/A';
             }
         });
 
-        // Client-side sorting
         projects.sort((a, b) => {
             const aIsArchived = a.status === 'archived';
             const bIsArchived = b.status === 'archived';
@@ -135,7 +162,6 @@ async function fetchAllProjects() {
                 if (nameA > nameB) return sortDirection === 'asc' ? 1 : -1;
                 return 0;
             }
-            // Fallback to createdAt for other sorts
             const dateA = a.createdAt?.toMillis() || 0;
             const dateB = b.createdAt?.toMillis() || 0;
             return sortDirection === 'desc' ? dateB - dateA : dateA - dateB;
@@ -166,7 +192,6 @@ function renderProjects(projects, companyMap) {
         const statusBadge = getStatusBadge(project.status);
         const isArchived = project.status === 'archived';
 
-        // --- NEW: Check for processing statuses in versions ---
         let statusIndicator = '';
         if (project.versions && project.versions.length > 0) {
             const isProcessing = project.versions.some(v => v.processingStatus === 'processing');
@@ -185,7 +210,6 @@ function renderProjects(projects, companyMap) {
                     </svg>`;
             }
         }
-        // --- END: Status check ---
 
         const row = document.createElement('tr');
         row.className = `hover:bg-slate-800 transition-colors duration-150 ${isArchived ? 'opacity-50' : ''}`;
@@ -218,13 +242,11 @@ onAuthStateChanged(auth, (user) => {
         userEmailSpan.textContent = user.email;
         userEmailSpan.classList.remove('hidden');
         fetchAllProjects();
-        fetchNotifications(); // Call the placeholder
+        fetchNotifications(); 
     } else {
         window.location.href = 'index.html';
     }
 });
-// Temporarily call fetchAllProjects directly for verification
-// fetchAllProjects();
 
 logoutButton.addEventListener('click', () => {
     signOut(auth).catch((error) => console.error('Sign out error', error));
@@ -319,6 +341,5 @@ copyLinkButton.addEventListener('click', () => {
     setTimeout(() => { copyStatusMessage.textContent = ''; }, 2000);
 });
 
-// Event Listeners for controls
 statusFilter.addEventListener('change', fetchAllProjects);
 sortBy.addEventListener('change', fetchAllProjects);

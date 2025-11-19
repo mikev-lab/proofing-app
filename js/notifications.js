@@ -36,6 +36,26 @@ async function initializeNotifications() {
         }
     }
 
+    function formatNotificationDate(timestamp) {
+        if (!timestamp) return '';
+        if (timestamp.seconds) return new Date(timestamp.seconds * 1000).toLocaleString();
+        if (timestamp._seconds) return new Date(timestamp._seconds * 1000).toLocaleString();
+        const date = new Date(timestamp);
+        if (!isNaN(date.getTime())) return date.toLocaleString();
+        return 'Date unavailable';
+    }
+
+    // --- NEW: Standalone function to mark as read without navigating ---
+    async function markAsRead(notification) {
+        try {
+            const notifRef = doc(db, "notifications", notification.id);
+            await updateDoc(notifRef, { read: true });
+            // Refresh the list to update UI (remove badge/button)
+            fetchAndRenderNotifications();
+        } catch (error) {
+            console.error("Error marking notification as read:", error);
+        }
+    }
 
     function renderNotifications(notifications, unreadCount) {
         notificationList.innerHTML = ''; // Clear existing notifications
@@ -44,17 +64,47 @@ async function initializeNotifications() {
         } else {
             notifications.forEach(notification => {
                 const item = document.createElement('div');
-                item.className = `px-4 py-3 border-b border-slate-700/50 last:border-0 cursor-pointer transition-colors group ${notification.read ? 'hover:bg-slate-700' : 'bg-blue-900/30 hover:bg-blue-800/50'}`;
+                // Added 'group' class for hover effects
+                item.className = `px-4 py-3 border-b border-slate-700/50 last:border-0 cursor-pointer transition-colors group relative ${notification.read ? 'hover:bg-slate-700' : 'bg-blue-900/30 hover:bg-blue-800/50'}`;
+                
+                const dateString = formatNotificationDate(notification.timestamp);
+
+                // --- NEW: Action Button HTML (Only for unread items) ---
+                const actionButton = !notification.read ? `
+                    <button class="mark-read-btn absolute top-3 right-3 p-1 text-gray-400 hover:text-green-400 hover:bg-slate-700/50 rounded-full transition-colors z-10" title="Mark as read">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                    </button>
+                ` : '';
+
+                const badge = !notification.read ? '<span class="text-[10px] text-blue-300 bg-blue-900/50 px-1.5 py-0.5 rounded ml-2">NEW</span>' : '';
+
                 item.innerHTML = `
-                    <div class="flex justify-between items-start">
-                        <p class="text-sm text-white font-semibold">${notification.title}</p>
-                        ${!notification.read ? '<span class="text-[10px] text-blue-300 bg-blue-900/50 px-1.5 py-0.5 rounded">NEW</span>' : ''}
+                    <div class="flex justify-between items-start pr-8"> <div class="w-full">
+                            <div class="flex items-center mb-1">
+                                <p class="text-sm text-white font-semibold">${notification.title}</p>
+                                ${badge}
+                            </div>
+                            <p class="text-xs text-gray-400 mb-1">${notification.message}</p>
+                            <p class="text-[10px] text-gray-500">${dateString}</p>
+                        </div>
                     </div>
-                    <p class="text-xs text-gray-400 mt-1">${notification.message}</p>
-                    <p class="text-[10px] text-gray-500 mt-1">${new Date(notification.timestamp.seconds * 1000).toLocaleString()}</p>
+                    ${actionButton}
                 `;
 
+                // 1. Main Click: Navigate
                 item.addEventListener('click', () => handleNotificationClick(notification));
+
+                // 2. Button Click: Mark Read (Stop Propagation)
+                const btn = item.querySelector('.mark-read-btn');
+                if (btn) {
+                    btn.addEventListener('click', (e) => {
+                        e.stopPropagation(); // <--- Prevents the row click (navigation)
+                        markAsRead(notification);
+                    });
+                }
+
                 notificationList.appendChild(item);
             });
         }
@@ -69,10 +119,7 @@ async function initializeNotifications() {
     async function handleNotificationClick(notification) {
         // Mark as read if it's unread
         if (!notification.read) {
-            const notifRef = doc(db, "notifications", notification.id);
-            await updateDoc(notifRef, { read: true });
-            // Re-fetch to update the UI
-            fetchAndRenderNotifications();
+            await markAsRead(notification);
         }
 
         // Navigate if there's a link
