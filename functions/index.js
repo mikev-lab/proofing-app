@@ -53,6 +53,11 @@ exports.optimizePdf = onObjectFinalized({
     return logger.log(`File is not a PDF (contentType: ${contentType}), skipping.`);
   }
 
+  // Exit if the file is not in the 'proofs/' directory
+  if (!filePath.startsWith('proofs/')) {
+      return logger.log(`File is not in the proofs/ directory, skipping optimization.`);
+  }
+
 
   // Extract projectId from the file path
   const parts = filePath.split('/');
@@ -1322,7 +1327,8 @@ exports.scheduledProjectDeletion = onSchedule("every day 03:00", async (event) =
 });
 
 // --- NEW Imposition Functions ---
-const { imposePdfLogic } = require('./imposition'); // Import the core logic
+const { imposePdfLogic, maximizeNUp } = require('./imposition'); // Import the core logic
+const { getFirestore } = require('firebase-admin/firestore');
 const axios = require('axios');
 const { PDFDocument } = require('pdf-lib');
 const FormData = require('form-data');
@@ -1760,16 +1766,14 @@ exports.imposePdf = onCall({
 
     logger.log(`Successfully created manual imposition for project ${projectId}`);
 
-    // Add Notification
-    await createAdminNotification({
+    // Add Notification for the admin who triggered the action
+    await createNotification(userUid, {
         title: "Imposition Ready",
-        message: `Manual imposition generated for "${projectData.projectName}".`,
-        type: "success",
-        projectId: projectId,
-        link: imposedFileUrl, // Direct download link
-        isExternalLink: true
+        message: `Manual imposition for "${projectData.projectName}" is complete.`,
+        link: imposedFileUrl,
+        isExternalLink: true // Make the notification a direct download link
     });
-    
+
     return { success: true, url: imposedFileUrl };
 
   } catch (error) {
@@ -1780,7 +1784,11 @@ exports.imposePdf = onCall({
 
 
 // Firestore Trigger for automatic imposition
-exports.onProjectApprove = onDocumentUpdated('projects/{projectId}', async (event) => {
+exports.onProjectApprove = onDocumentUpdated({
+    document: 'projects/{projectId}',
+    memory: '4GiB',
+    timeoutSeconds: 540
+}, async (event) => {
   const beforeData = event.data.before.data();
   const afterData = event.data.after.data();
 
@@ -1805,10 +1813,9 @@ exports.onProjectApprove = onDocumentUpdated('projects/{projectId}', async (even
       const inputPdfDoc = await PDFDocument.load(fileBytes);
       const { width, height } = inputPdfDoc.getPage(0).getSize();
 
-      // 3. Run the "Maximize N-Up" algorithm
-      const { maximizeNUp } = require('./imposition');
-      const settings = await maximizeNUp(width, height);
-      logger.log(`Optimal layout for project ${projectId}: ${settings.columns}x${settings.rows} on ${settings.sheet.name}`);
+      // 3. Run the "Maximize N-Up" algorithm, passing the db object
+      const settings = await maximizeNUp(width, height, db);
+      logger.log(`Optimal layout for project ${projectId}: ${settings.columns}x${settings.rows} on ${settings.sheet}`);
 
       // 4. Call the main imposition logic
       const { filePath: localImposedPath } = await imposePdfLogic({
@@ -1844,14 +1851,15 @@ exports.onProjectApprove = onDocumentUpdated('projects/{projectId}', async (even
 
       logger.log(`Successfully imposed and updated project ${projectId}`);
 
-      // Add Notification
-      await createAdminNotification({
-          title: "Auto-Imposition Complete",
-          message: `Automatic imposition generated for "${afterData.projectName}".`,
-          type: "success",
-          projectId: projectId,
-          link: `admin_project.html?id=${projectId}`
-      });
+      // Add Notification for all admins
+      const adminSnapshot = await db.collection('users').where('role', '==', 'admin').get();
+      for (const adminDoc of adminSnapshot.docs) {
+          await createNotification(adminDoc.id, {
+              title: "Auto-Imposition Complete",
+              message: `Automatic imposition for "${afterData.projectName}" is ready.`,
+              link: `admin_project.html?id=${projectId}`
+          });
+      }
 
     } catch (error) {
       logger.error(`Error during automatic imposition for project ${projectId}:`, error);
@@ -1868,16 +1876,17 @@ exports.onProjectApprove = onDocumentUpdated('projects/{projectId}', async (even
 });
 
 // --- Notification Helper ---
-async function createAdminNotification(data) {
+async function createNotification(recipientUid, data) {
     try {
-        await db.collection('admin_notifications').add({
+        await db.collection('notifications').add({
             ...data,
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            recipientUid: recipientUid,
+            timestamp: admin.firestore.FieldValue.serverTimestamp(),
             read: false
         });
-        logger.log(`Notification created: ${data.title}`);
+        logger.log(`Notification created for ${recipientUid}: ${data.title}`);
     } catch (e) {
-        logger.error("Failed to create notification:", e);
+        logger.error(`Failed to create notification for ${recipientUid}:`, e);
     }
 }
 
@@ -1886,27 +1895,43 @@ exports.notifyOnStatusChange = onDocumentUpdated('projects/{projectId}', async (
     const before = event.data.before.data();
     const after = event.data.after.data();
     const projectId = event.params.projectId;
+    const clientUid = after.clientId; // Assuming clientId is stored on the project
+
+    // Find all admins
+    const adminSnapshot = await db.collection('users').where('role', '==', 'admin').get();
+    const adminUids = adminSnapshot.docs.map(doc => doc.id);
 
     // Check for Client Approval
     if (before.status !== 'Approved' && after.status === 'Approved') {
-        await createAdminNotification({
-            title: "Project Approved",
-            message: `Project "${after.projectName}" has been approved by the client.`,
-            type: "success",
-            projectId: projectId,
-            link: `admin_project.html?id=${projectId}`
-        });
+        for (const adminUid of adminUids) {
+            await createNotification(adminUid, {
+                title: "Project Approved",
+                message: `"${after.projectName}" has been approved by the client.`,
+                link: `admin_project.html?id=${projectId}`
+            });
+        }
     }
 
     // Check for "Changes Requested"
     if (before.status !== 'Changes Requested' && after.status === 'Changes Requested') {
-        await createAdminNotification({
-            title: "Changes Requested",
-            message: `Client requested changes for "${after.projectName}".`,
-            type: "warning",
-            projectId: projectId,
-            link: `admin_project.html?id=${projectId}`
-        });
+        for (const adminUid of adminUids) {
+            await createNotification(adminUid, {
+                title: "Changes Requested",
+                message: `Client requested changes for "${after.projectName}".`,
+                link: `admin_project.html?id=${projectId}`
+            });
+        }
+    }
+
+    // Check for Admin Un-approval
+    if ((before.status === 'Approved' || before.status === 'In Production') && after.status === 'Pending') {
+        if (clientUid) {
+            await createNotification(clientUid, {
+                title: "Project Unlocked",
+                message: `An admin has unlocked "${after.projectName}", allowing you to make changes.`,
+                link: `proof.html?id=${projectId}`
+            });
+        }
     }
 });
 
@@ -1914,16 +1939,116 @@ exports.notifyOnStatusChange = onDocumentUpdated('projects/{projectId}', async (
 exports.notifyOnAnnotation = onDocumentCreated('projects/{projectId}/annotations/{annotationId}', async (event) => {
     const projectId = event.params.projectId;
     const annotation = event.data.data();
-    
-    // Fetch project name for context
-    const projectDoc = await db.collection('projects').doc(projectId).get();
-    const projectName = projectDoc.exists ? projectDoc.data().projectName : projectId;
 
-    await createAdminNotification({
-        title: "New Annotation",
-        message: `${annotation.author} commented on "${projectName}": "${annotation.text.substring(0, 50)}..."`,
-        type: "info",
-        projectId: projectId,
-        link: `admin_project.html?id=${projectId}`
+    const projectDoc = await db.collection('projects').doc(projectId).get();
+    if (!projectDoc.exists) return;
+
+    const projectData = projectDoc.data();
+    const clientUid = projectData.clientId;
+    const authorUid = annotation.authorUid;
+
+    const authorIsAdmin = (await db.collection('users').doc(authorUid).get()).data().role === 'admin';
+
+    if (authorIsAdmin) {
+        // Admin commented, notify the client
+        if (clientUid) {
+            await createNotification(clientUid, {
+                title: "New Comment on " + projectData.projectName,
+                message: `${annotation.author} said: "${annotation.text.substring(0, 50)}..."`,
+                link: `proof.html?id=${projectId}`
+            });
+        }
+    } else {
+        // Client commented, notify all admins
+        const adminSnapshot = await db.collection('users').where('role', '==', 'admin').get();
+        const adminUids = adminSnapshot.docs.map(doc => doc.id);
+        for (const adminUid of adminUids) {
+            await createNotification(adminUid, {
+                title: "New Client Comment",
+                message: `${annotation.author} commented on "${projectData.projectName}".`,
+                link: `admin_project.html?id=${projectId}`
+            });
+        }
+    }
+});
+
+// --- NEW History/Audit Helper ---
+/**
+ * Creates a history event document in a project's history subcollection.
+ * @param {string} projectId The ID of the project.
+ * @param {string} action A string describing the event (e.g., 'approved_proof').
+ * @param {string} userId The UID of the user performing the action.
+ * @param {string} ipAddress The IP address of the user.
+ * @param {object} details An object for extra data (e.g., signature).
+ * @returns {Promise<boolean>} True on success, false on failure.
+ */
+async function createHistoryEvent(projectId, action, userId, ipAddress, details = {}) {
+  try {
+    const userDoc = await db.collection('users').doc(userId).get();
+    // Use Guest as a fallback if the user isn't in the users collection (e.g., guest user)
+    const userDisplay = userDoc.exists ? (userDoc.data().name || userDoc.data().email) : 'Guest';
+
+    const historyRef = db.collection('projects').doc(projectId).collection('history');
+    await historyRef.add({
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      action: action,
+      userId: userId,
+      userDisplay: userDisplay,
+      ipAddress: ipAddress,
+      details: details,
     });
+    logger.log(`History event "${action}" recorded for project ${projectId} by user ${userId}`);
+    return true;
+  } catch (error) {
+    logger.error(`Failed to create history event for project ${projectId}:`, error);
+    return false;
+  }
+}
+
+// --- NEW Callable function for client-side to record history ---
+exports.recordHistory = onCall({ region: 'us-central1' }, async (request) => {
+  // Ensure user is authenticated
+  if (!request.auth || !request.auth.uid) {
+    throw new HttpsError('unauthenticated', 'You must be authenticated to record history.');
+  }
+
+  const { projectId, action, details } = request.data;
+  const userId = request.auth.uid;
+  // Get IP from the request headers. 'x-forwarded-for' is common for proxies.
+  const ipAddress = request.rawRequest.ip || request.rawRequest.headers['x-forwarded-for'];
+
+  if (!projectId || !action) {
+    throw new HttpsError('invalid-argument', 'Missing "projectId" or "action" for history record.');
+  }
+
+  // Call the internal helper to create the event
+  const success = await createHistoryEvent(projectId, action, userId, ipAddress, details);
+
+  if (success) {
+    return { success: true, message: 'History recorded.' };
+  } else {
+    // The helper function already logs the detailed error
+    throw new HttpsError('internal', 'Failed to record history event.');
+  }
+});
+
+// --- NEW Callable function to securely fetch notifications ---
+exports.getNotifications = onCall({ region: 'us-central1' }, async (request) => {
+    if (!request.auth || !request.auth.uid) {
+        throw new HttpsError('unauthenticated', 'You must be authenticated to fetch notifications.');
+    }
+    const userId = request.auth.uid;
+    try {
+        const notificationsSnapshot = await db.collection('notifications')
+            .where('recipientUid', '==', userId)
+            .orderBy('timestamp', 'desc')
+            .limit(50)
+            .get();
+
+        const notifications = notificationsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        return { notifications };
+    } catch (error) {
+        logger.error(`Error fetching notifications for user ${userId}:`, error);
+        throw new HttpsError('internal', 'Failed to fetch notifications.');
+    }
 });

@@ -360,13 +360,22 @@ function calculateLayout(docWidth, docHeight, sheetWidth, sheetHeight) {
     }
 }
 
-async function maximizeNUp(docWidth, docHeight) {
-    const sheetSizes = SHEET_SIZES;
+async function maximizeNUp(docWidth, docHeight, db) {
+    // 1. Fetch live sheet sizes from Firestore
+    const sheetSizesSnapshot = await db.collection('settings/sheetSizes/sizes').get();
+    const sheetSizes = sheetSizesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+    if (sheetSizes.length === 0) {
+        throw new Error("No sheet sizes are defined in Firestore settings.");
+    }
+
     let bestLayout = { count: 0, waste: Infinity };
 
     for (const sheet of sheetSizes) {
-        const longSide = sheet.longSideInches * INCH_TO_POINTS;
-        const shortSide = sheet.shortSideInches * INCH_TO_POINTS;
+        // Ensure dimensions are valid numbers
+        const longSide = parseFloat(sheet.longSideInches) * INCH_TO_POINTS;
+        const shortSide = parseFloat(sheet.shortSideInches) * INCH_TO_POINTS;
+        if (isNaN(longSide) || isNaN(shortSide)) continue;
 
         const portraitLayout = calculateLayout(docWidth, docHeight, shortSide, longSide);
         if (portraitLayout.count > bestLayout.count || (portraitLayout.count === bestLayout.count && portraitLayout.waste < bestLayout.waste)) {
@@ -383,15 +392,30 @@ async function maximizeNUp(docWidth, docHeight) {
         throw new Error("Document dimensions are too large to fit on any available sheet size.");
     }
 
-    return {
+    // 2. Fetch the specific imposition rule for the best-fit sheet
+    const ruleQuery = query(db.collection('impositionDefaults'), where('pressSheetId', '==', bestLayout.sheet.id));
+    const ruleSnapshot = await getDocs(ruleQuery);
+
+    let impositionSettings = {
         columns: bestLayout.cols,
         rows: bestLayout.rows,
+        impositionType: 'stack' // Default
+    };
+
+    if (!ruleSnapshot.empty) {
+        const rule = ruleSnapshot.docs[0].data();
+        impositionSettings.columns = rule.cols || bestLayout.cols;
+        impositionSettings.rows = rule.rows || bestLayout.rows;
+        impositionSettings.impositionType = rule.type || 'stack';
+    }
+
+    return {
+        ...impositionSettings,
         sheet: bestLayout.sheet.name,
         sheetOrientation: bestLayout.sheetOrientation,
-        bleedInches: 0.125,
-        horizontalGutterInches: 0,
-        verticalGutterInches: 0,
-        impositionType: 'stack',
+        bleedInches: 0.125, // Assuming default bleed
+        horizontalGutterInches: 0, // Assuming default gutter
+        verticalGutterInches: 0
     };
 }
 
