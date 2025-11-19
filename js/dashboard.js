@@ -54,6 +54,7 @@ function getStatusBadge(status) {
     switch (status.toLowerCase()) {
         case 'pending':
             classes += " bg-yellow-500/20 text-yellow-300";
+            text = "Pending";
             break;
         case 'approved':
         case 'imposition complete':
