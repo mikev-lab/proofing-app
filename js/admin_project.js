@@ -319,6 +319,8 @@ onAuthStateChanged(auth, (user) => {
                     // Populate the manual cover specs form
                     populateCoverForm(currentProjectData.cover);
 
+                    renderImpositions(currentProjectData.impositions);
+
                     // --- Real-time Update Logic ---
                     // Check which version is currently selected in the dropdown
                     const versionSelector = document.getElementById('version-selector');
@@ -349,7 +351,9 @@ onAuthStateChanged(auth, (user) => {
                     }
 
                     // --- Button Visibility & Form Disabling based on Status ---
-                    const isApproved = currentProjectData.status === 'Approved' || currentProjectData.status === 'In Production';
+                    const isApproved = currentProjectData.status === 'Approved' || 
+                   currentProjectData.status === 'In Production' || 
+                   currentProjectData.status === 'Imposition Complete';
 
                     // Toggle approve/unapprove buttons
                     approveButton.classList.toggle('hidden', isApproved);
@@ -452,20 +456,6 @@ document.getElementById('logout-button').addEventListener('click', () => {
     window.location.href = 'index.html';
 });
 
-// Notification Bell Logic
-const notificationBell = document.getElementById('notification-bell');
-const notificationPanel = document.getElementById('notification-panel');
-
-notificationBell.addEventListener('click', () => {
-    notificationPanel.classList.toggle('hidden');
-});
-
-// Close notification panel if clicked outside
-document.addEventListener('click', (event) => {
-    if (!notificationBell.contains(event.target) && !notificationPanel.contains(event.target)) {
-        notificationPanel.classList.add('hidden');
-    }
-});
 
 // --- File Upload Logic ---
 if (fileUploadForm) {
@@ -1026,4 +1016,54 @@ async function uploadAndProcessFile(file, statusId) {
         statusIndicator.className = 'status-indicator text-red-400';
         throw new Error(errorMessage);
     }
+}
+
+function renderImpositions(impositions) {
+    const container = document.getElementById('imposition-list');
+    if (!container) return;
+    
+    container.innerHTML = '';
+    
+    if (!impositions || impositions.length === 0) {
+        container.innerHTML = '<p class="text-sm text-gray-500">No impositions generated yet.</p>';
+        return;
+    }
+
+    // Sort descending by date (Newest first)
+    const sorted = [...impositions].sort((a, b) => {
+        const dateA = a.createdAt ? a.createdAt.seconds : 0;
+        const dateB = b.createdAt ? b.createdAt.seconds : 0;
+        return dateB - dateA;
+    });
+
+    sorted.forEach(imp => {
+        const date = imp.createdAt ? new Date(imp.createdAt.seconds * 1000).toLocaleString() : 'Unknown Date';
+        
+        // Distinct styles for Auto vs Manual
+        const isAuto = imp.type === 'automatic';
+        const typeLabel = isAuto ? 'Auto-Imposed' : 'Manual Imposition';
+        const typeClasses = isAuto 
+            ? 'text-purple-300 bg-purple-900/30 border-purple-700/50' 
+            : 'text-teal-300 bg-teal-900/30 border-teal-700/50';
+        
+        const item = document.createElement('div');
+        item.className = "flex justify-between items-center p-3 bg-slate-700/30 rounded-md border border-slate-700/50 hover:bg-slate-700/60 transition-colors";
+        
+        item.innerHTML = `
+            <div class="flex flex-col">
+                <div class="flex items-center gap-2">
+                    <span class="text-xs font-bold px-1.5 py-0.5 rounded border ${typeClasses}">${typeLabel}</span>
+                    <span class="text-xs text-gray-400">${date}</span>
+                </div>
+                <span class="text-xs text-gray-500 mt-1">
+                    ${imp.settings?.sheet || 'Custom Sheet'} (${imp.settings?.columns}x${imp.settings?.rows})
+                </span>
+            </div>
+            <a href="${imp.fileURL}" target="_blank" class="flex items-center gap-1 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium rounded shadow-sm transition-colors">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                Download
+            </a>
+        `;
+        container.appendChild(item);
+    });
 }

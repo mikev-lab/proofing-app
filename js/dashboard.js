@@ -47,7 +47,9 @@ function formatTimestamp(fbTimestamp) {
 function getStatusBadge(status) {
     status = status || 'unknown';
     let classes = "px-3 py-1 rounded-full text-xs font-medium";
-    let text = status.charAt(0).toUpperCase() + status.slice(1);
+    
+    // Default text formatting (capitalizes words and removes underscores)
+    let text = status.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
 
     switch (status.toLowerCase()) {
         case 'pending':
@@ -55,11 +57,13 @@ function getStatusBadge(status) {
             text = "Pending";
             break;
         case 'approved':
+        case 'imposition complete':
+        case 'in production':
             classes += " bg-green-500/20 text-green-300";
+            text = "Approved"; // <--- YOU NEED THIS LINE to hide the internal status from the client
             break;
         case 'changes_requested':
             classes += " bg-red-500/20 text-red-300";
-            text = "Changes Requested";
             break;
         default:
             classes += " bg-gray-500/20 text-gray-300";
@@ -219,13 +223,3 @@ logoutButton.addEventListener('click', () => {
     window.location.href = 'index.html';
 });
 
-notificationBell.addEventListener('click', () => {
-    notificationPanel.classList.toggle('hidden');
-});
-
-// Hide panel if clicking outside
-document.addEventListener('click', function(event) {
-    if (!notificationBell.contains(event.target) && !notificationPanel.contains(event.target)) {
-        notificationPanel.classList.add('hidden');
-    }
-});

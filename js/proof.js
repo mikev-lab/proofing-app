@@ -32,7 +32,7 @@ const signatureInput = document.getElementById('signature-input');
 const approvalSpecsText = document.getElementById('approval-specs-text');
 // Select all approval checkboxes
 const approvalCheckboxes = document.querySelectorAll('#approval-modal-form input[type="checkbox"]');
-
+const approvedStatuses = ['Approved', 'approved', 'In Production', 'Imposition Complete'];
 
 let currentProjectId = initialProjectId; // Use the initially parsed ID
 let actionToConfirm = null;
@@ -362,7 +362,7 @@ async function updateProjectStatus(status) {
                 }
 
                 // Check Project Status (AFTER resetting HTML)
-                 if (projectData.status === 'Approved' || projectData.status === 'approved' || projectData.status === 'In Production') {
+                 if (approvedStatuses.includes(projectData.status)) {
                      approvalBanner.classList.remove('hidden');
                      actionPanel.innerHTML = `<p class="text-center text-lg font-semibold text-green-400">Proof Approved</p>`;
                      commentTool.style.display = 'none';
@@ -503,50 +503,4 @@ if (logoutButton) {
     });
 } else {
      console.warn('[Init] Logout button not found.');
-}
-
-// --- Firestore Listener for Project History ---
-if (currentProjectId) {
-    const historyQuery = query(collection(db, "projects", currentProjectId, "history"), orderBy("timestamp", "desc"));
-    onSnapshot(historyQuery, (snapshot) => {
-        const historyList = document.getElementById('project-history-list');
-        if (historyList) {
-            historyList.innerHTML = '';
-            if (snapshot.empty) {
-                historyList.innerHTML = '<p class="text-gray-400">No history events found.</p>';
-                return;
-            }
-            snapshot.forEach(doc => {
-                const event = doc.data();
-                const eventTime = event.timestamp ? new Date(event.timestamp.seconds * 1000).toLocaleString() : 'N/A';
-                const signature = event.details && event.details.signature ? `<span class="italic text-gray-400"> - Signature: ${event.details.signature}</span>` : '';
-                const item = document.createElement('div');
-                item.className = 'p-3 bg-slate-700/50 rounded-md text-sm';
-                item.innerHTML = `
-                    <p class="font-semibold text-white">${event.action.replace(/_/g, ' ')}</p>
-                    <p class="text-gray-300">by <span class="font-medium">${event.userDisplay || 'System'}</span>${signature}</p>
-                    <p class="text-xs text-gray-500 mt-1">${eventTime}</p>
-                `;
-                historyList.appendChild(item);
-            });
-        }
-    });
-}
-
-
-// Notification Bell Logic
-const notificationBell = document.getElementById('notification-bell');
-const notificationPanel = document.getElementById('notification-panel');
-
-if(notificationBell && notificationPanel){
-    notificationBell.addEventListener('click', () => {
-        notificationPanel.classList.toggle('hidden');
-    });
-    document.addEventListener('click', (event) => {
-        if (!notificationBell.contains(event.target) && !notificationPanel.contains(event.target)) {
-            notificationPanel.classList.add('hidden');
-        }
-    });
-} else {
-     console.warn('[Init] Notification elements not found.');
 }
