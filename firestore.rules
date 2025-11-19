@@ -100,6 +100,15 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    // --- Rules for 'notifications' Collection (NEW) ---
+    match /notifications/{notificationId} {
+      // A user can read/update a notification if their UID is in the `recipientUid` field.
+      // this allows them to mark it as 'read'
+      allow read, update: if request.auth != null && request.auth.uid == resource.data.recipientUid;
+      // Disallow client-side creation and deletion.
+      allow create, delete: if false;
+    }
+
 // --- Rules for 'projects' Collection ---
     match /projects/{projectId} {
       // ** Admins have full access **
@@ -166,6 +175,14 @@ service cloud.firestore {
       match /pages/{pageId} {
           allow read, write: if isAdmin() ||
             (request.auth != null && isCompanyMember(getProject(projectId).companyId));
+      }
+
+      // --- Rules for 'history' Sub-collection (NEW) ---
+      match /history/{historyId} {
+        // Allow read access to admins and members of the project's company
+        allow read: if isAdmin() || isCompanyMember(getProject(projectId).companyId);
+        // Disallow client-side creation, update, and deletion.
+        allow create, update, delete: if false;
       }
     }
 

@@ -28,17 +28,6 @@ document.getElementById('logout-button').addEventListener('click', () => {
     signOut(auth);
     window.location.href = 'index.html';
 });
-
-notificationBell.addEventListener('click', () => {
-    notificationPanel.classList.toggle('hidden');
-});
-
-// Hide panel if clicking outside
-document.addEventListener('click', function(event) {
-    if (!notificationBell.contains(event.target) && !notificationPanel.contains(event.target)) {
-        notificationPanel.classList.add('hidden');
-    }
-});
 document.getElementById('password-reset-button').addEventListener('click', async () => {
     try {
         await sendPasswordResetEmail(auth, auth.currentUser.email);

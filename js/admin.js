@@ -35,8 +35,11 @@ function getStatusBadge(status) {
     status = status || 'unknown';
     let classes = "px-3 py-1 rounded-full text-xs font-medium";
     let text = status.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-    switch (status) {
-        case 'pending': classes += " bg-yellow-500/20 text-yellow-300"; break;
+    switch (status.toLowerCase()) {
+        case 'pending':
+            classes += " bg-yellow-500/20 text-yellow-300";
+            text = "Pending";
+            break;
         case 'approved': classes += " bg-green-500/20 text-green-300"; break;
         case 'changes_requested': classes += " bg-red-500/20 text-red-300"; break;
         case 'awaiting_upload': classes += " bg-blue-500/20 text-blue-300"; break;
@@ -319,13 +322,3 @@ copyLinkButton.addEventListener('click', () => {
 // Event Listeners for controls
 statusFilter.addEventListener('change', fetchAllProjects);
 sortBy.addEventListener('change', fetchAllProjects);
-notificationBell.addEventListener('click', () => {
-    notificationPanel.classList.toggle('hidden');
-});
-
-// Hide panel if clicking outside
-document.addEventListener('click', function(event) {
-    if (!notificationBell.contains(event.target) && !notificationPanel.contains(event.target)) {
-        notificationPanel.classList.add('hidden');
-    }
-});
