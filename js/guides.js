@@ -96,248 +96,248 @@ export function getTrimDimensions(dimensionSpec) {
 }
 
 /**
- * Draws a box on the canvas based on provided options.
- * @param {CanvasRenderingContext2D} ctx - The canvas rendering context.
- * @param {object} options - Drawing parameters.
- * @param {number} options.x - The top-left x-coordinate of the box.
- * @param {number} options.y - The top-left y-coordinate of the box.
- * @param {number} options.width - The width of the box.
- * @param {number} options.height - The height of the box.
- * @param {string} options.color - The stroke color for the box.
- * @param {number} [options.lineWidth=1] - The width of the line in pixels (will appear constant regardless of zoom).
- * @param {number[]} [options.dashPattern=[]] - An array for dashed lines in pixels (will appear constant regardless of zoom).
+ * Calculates the exact geometries for Trim, Bleed, and Safety boxes.
+ * This logic is shared between drawing and hit-testing to ensure consistency.
  */
-function drawBox(ctx, { x, y, width, height, color, lineWidth = 1, dashPattern = [] }) {
-    if (width <= 0 || height <= 0) return; // Don't draw zero or negative size boxes
-    ctx.save();
-    ctx.strokeStyle = color;
-    // Apply line width and dash pattern independent of current transform scale
-    const currentScale = ctx.getTransform().a; // Assuming uniform scaling (a=d)
-    ctx.lineWidth = lineWidth / currentScale; // Counteract the scale
-    ctx.setLineDash(dashPattern.map(d => d / currentScale)); // Counteract the scale
-    ctx.strokeRect(x, y, width, height);
-    ctx.restore();
-}
-
-/**
- * Draws the trim guide based on calculated coordinates.
- * @param {CanvasRenderingContext2D} ctx - The canvas context.
- * @param {object} params - The drawing parameters object containing final calculated positions.
- */
-function drawTrimGuide(ctx, params) {
-    drawBox(ctx, {
-        x: params.trimX,
-        y: params.trimY,
-        width: params.trimWidth,
-        height: params.trimHeight,
-        color: 'black',
-        lineWidth: 1
-    });
-}
-
-/**
- * Draws the bleed guide based on calculated coordinates, clipping the inside edge for spreads.
- * @param {CanvasRenderingContext2D} ctx - The canvas context.
- * @param {object} params - The drawing parameters object containing final calculated positions.
- * @param {boolean} isSpread - Whether the current view is a spread.
- * @param {boolean} isLeftPage - Whether this is the left page of the spread.
- */
-function drawBleedGuide(ctx, params, isSpread, isLeftPage) {
-    // Extract trim params as well needed for the "hole"
-    const { bleedX, bleedY, bleedWidth, bleedHeight, trimX, trimY, trimWidth, trimHeight } = params;
-    if (bleedWidth <= 0 || bleedHeight <= 0) return; 
-
-    ctx.save();
-    
-    // --- 1. Fill the Danger Zone (Red Area) ---
-    ctx.fillStyle = 'rgba(255, 0, 0, 0.3)'; // Semi-transparent red
-
-    ctx.beginPath();
-    if (!isSpread) {
-        // Single Page: Standard Donut (Outer Bleed - Inner Trim)
-        // Draw Outer Rect (Clockwise)
-        ctx.rect(bleedX, bleedY, bleedWidth, bleedHeight); 
-        // Draw Inner Rect (Counter-Clockwise) to subtract it
-        ctx.rect(trimX + trimWidth, trimY, -trimWidth, trimHeight); 
-    } else {
-        // Spread Page: Handle the spine edge
-        let visBleedX = bleedX;
-        let visBleedW = bleedWidth;
-
-        if (isLeftPage) {
-            // Left Page: Clip right side to spine (trimX + trimWidth)
-            visBleedW = (trimX + trimWidth) - bleedX;
-        } else {
-            // Right Page: Clip left side to spine (trimX)
-            visBleedX = trimX;
-            visBleedW = (bleedX + bleedWidth) - trimX;
-        }
-
-        // Draw Outer Visible Bleed Rect (Clockwise)
-        ctx.rect(visBleedX, bleedY, visBleedW, bleedHeight);
-        
-        // Draw Inner Trim Rect (Counter-Clockwise)
-        ctx.rect(trimX + trimWidth, trimY, -trimWidth, trimHeight);
-    }
-    ctx.fill();
-
-    // --- 2. Draw the Outer Border Line (Red) ---
-    ctx.strokeStyle = 'red';
-    const currentScale = ctx.getTransform().a; 
-    ctx.lineWidth = 1 / currentScale; 
-    
-    ctx.beginPath();
-    if (!isSpread) {
-        ctx.rect(bleedX, bleedY, bleedWidth, bleedHeight);
-    } else {
-        // Spread: Draw 'U' shape for outer boundary (skipping the spine side)
-        if (isLeftPage) {
-            // Left Page: Top, Left, Bottom
-            ctx.moveTo(trimX + trimWidth, bleedY); 
-            ctx.lineTo(bleedX, bleedY);
-            ctx.lineTo(bleedX, bleedY + bleedHeight);
-            ctx.lineTo(trimX + trimWidth, bleedY + bleedHeight);
-        } else {
-             // Right Page: Top, Right, Bottom
-             ctx.moveTo(trimX, bleedY);
-             ctx.lineTo(bleedX + bleedWidth, bleedY);
-             ctx.lineTo(bleedX + bleedWidth, bleedY + bleedHeight);
-             ctx.lineTo(trimX, bleedY + bleedHeight);
-        }
-    }
-    ctx.stroke();
-
-    ctx.restore();
-}
-
-/**
- * Draws the safety guide based on calculated coordinates.
- * @param {CanvasRenderingContext2D} ctx - The canvas context.
- * @param {object} params - The drawing parameters object containing final calculated positions.
- */
-function drawSafetyGuide(ctx, params) {
-    drawBox(ctx, {
-        x: params.safetyX,
-        y: params.safetyY,
-        width: params.safetyWidth,
-        height: params.safetyHeight,
-        color: 'green',
-        lineWidth: 1,
-        dashPattern: [5, 5] // Dashed line
-    });
-}
-
-/**
- * Calculates guide positions and draws them for a single rendered page within a view.
- * Adjusts positions for spread view based on whether it's the left or right page.
- * @param {CanvasRenderingContext2D} ctx - The canvas context.
- * @param {object} specs - The project's print specifications.
- * @param {object} pageRenderInfo - Information about the specific page {x, y, width, height, scale, isSpread, isLeftPage}.
- * @param {object} guideOptions - An object indicating which guides to show { trim, bleed, safety }.
- */
-function drawGuidesForPage(ctx, specs, pageRenderInfo, guideOptions) {
-    if (!specs || !pageRenderInfo) {
-        console.warn("drawGuidesForPage: Missing specs or pageRenderInfo.");
-        return;
-    }
+function calculatePageGuideGeometries(specs, pageRenderInfo) {
+    if (!specs || !pageRenderInfo) return null;
 
     const trimDimensions = getTrimDimensions(specs.dimensions);
-    if (!trimDimensions || trimDimensions.width <= 0 || trimDimensions.height <= 0) {
-        console.warn("drawGuidesForPage: Invalid trim dimensions calculated from specs:", specs.dimensions);
-        return;
-    }
+    if (!trimDimensions || trimDimensions.width <= 0 || trimDimensions.height <= 0) return null;
 
     const bleedPt = Math.max(0, specs.bleedInches ? specs.bleedInches * INCH_TO_POINTS : 0);
     const safetyPt = Math.max(0, specs.safetyInches ? specs.safetyInches * INCH_TO_POINTS : 0);
     const scale = pageRenderInfo.scale;
-    const { isSpread, isLeftPage } = pageRenderInfo;
+    const { isSpread, isLeftPage, x: renderX, y: renderY, width: renderWidth, height: renderHeight } = pageRenderInfo;
 
-    if (!scale || scale <= 0) {
-        console.warn("drawGuidesForPage: Invalid scale provided in pageRenderInfo:", scale);
-        return;
-    }
+    if (!scale || scale <= 0) return null;
 
-    // --- Calculate dimensions scaled to the view ---
+    // Scaled dimensions
     const scaledTrimWidth = trimDimensions.width * scale;
     const scaledTrimHeight = trimDimensions.height * scale;
     const scaledBleed = bleedPt * scale;
     const scaledSafety = safetyPt * scale;
 
-    // --- Calculate the visual center Y of the page's render area ---
-    const centerY = pageRenderInfo.y + pageRenderInfo.height / 2;
+    const centerY = renderY + renderHeight / 2;
 
-    // --- Calculate Trim Box position and dimensions ---
-    // This represents the final cut size and location on the canvas.
+    // 1. Trim Box
     let trimX, trimY, trimWidth, trimHeight;
-
     trimY = centerY - scaledTrimHeight / 2;
     trimHeight = scaledTrimHeight;
-    trimWidth = scaledTrimWidth; // Always use the full trim width for calculations
+    trimWidth = scaledTrimWidth;
 
     if (isSpread) {
         if (isLeftPage) {
-            // Left page: Align right edge with the right edge of its render area
-            trimX = pageRenderInfo.x + pageRenderInfo.width - trimWidth;
-        } else { // Right page
-            // Align left edge with the left edge of its render area
-            trimX = pageRenderInfo.x;
+            trimX = renderX + renderWidth - trimWidth;
+        } else {
+            trimX = renderX;
         }
-    } else { // Single page
-        // Center the trim box within the render area
-        trimX = pageRenderInfo.x + (pageRenderInfo.width - trimWidth) / 2;
+    } else {
+        trimX = renderX + (renderWidth - trimWidth) / 2;
     }
+    const trimBox = { x: trimX, y: trimY, width: trimWidth, height: trimHeight };
 
-    // --- Calculate Bleed Box position and dimensions ---
-    // Extends outwards from the calculated trim box
-    const bleedX = trimX - scaledBleed;
-    const bleedY = trimY - scaledBleed;
-    const bleedWidth = trimWidth + 2 * scaledBleed;
-    const bleedHeight = trimHeight + 2 * scaledBleed;
+    // 2. Bleed Box
+    // Standard calculation first
+    let bleedX = trimX - scaledBleed;
+    let bleedY = trimY - scaledBleed;
+    let bleedWidth = trimWidth + 2 * scaledBleed;
+    let bleedHeight = trimHeight + 2 * scaledBleed;
 
-    // --- Calculate Safety Box position and dimensions ---
-    // Inset from the calculated trim box
+    // Handle Spread Clipping for Bleed (The "U" shape)
+    // We define the *visible* bleed box area.
+    // Hit detection will need to know which side is clipped.
+    let clippedSide = null; // 'right' or 'left' or null
+    if (isSpread) {
+        if (isLeftPage) {
+            // Clip right side to spine (align with trim right)
+            const maxX = trimX + trimWidth;
+            bleedWidth = maxX - bleedX;
+            clippedSide = 'right';
+        } else {
+            // Clip left side to spine (align with trim left)
+            const minX = trimX;
+            const originalRight = bleedX + bleedWidth;
+            bleedX = minX;
+            bleedWidth = originalRight - minX;
+            clippedSide = 'left';
+        }
+    }
+    const bleedBox = { x: bleedX, y: bleedY, width: bleedWidth, height: bleedHeight, clippedSide };
+
+    // 3. Safety Box
     const safetyX = trimX + scaledSafety;
     const safetyY = trimY + scaledSafety;
     const safetyWidth = trimWidth - 2 * scaledSafety;
     const safetyHeight = trimHeight - 2 * scaledSafety;
+    const safetyBox = { x: safetyX, y: safetyY, width: safetyWidth, height: safetyHeight };
 
-    // Parameters for drawing functions
-    const guideParams = {
-        trimX, trimY, trimWidth, trimHeight,
-        bleedX, bleedY, bleedWidth, bleedHeight,
-        safetyX, safetyY, safetyWidth, safetyHeight,
-    };
-
-    // Draw the guides based on options
-    if (guideOptions.trim) {
-        drawTrimGuide(ctx, guideParams);
-    }
-    if (guideOptions.bleed && bleedPt > 0) {
-        // Pass spread context to bleed drawing function, it handles inner line removal
-        drawBleedGuide(ctx, guideParams, isSpread, isLeftPage);
-    }
-    if (guideOptions.safety && safetyPt > 0) {
-        drawSafetyGuide(ctx, guideParams);
-    }
+    return { trimBox, bleedBox, safetyBox };
 }
 
 
+// --- Drawing Functions ---
+
+function drawBox(ctx, { x, y, width, height, color, lineWidth = 1, dashPattern = [] }) {
+    if (width <= 0 || height <= 0) return;
+    ctx.save();
+    ctx.strokeStyle = color;
+    const currentScale = ctx.getTransform().a;
+    ctx.lineWidth = lineWidth / currentScale;
+    ctx.setLineDash(dashPattern.map(d => d / currentScale));
+    ctx.strokeRect(x, y, width, height);
+    ctx.restore();
+}
+
+function drawBleedVisuals(ctx, trimBox, bleedBox) {
+    const { x: bleedX, y: bleedY, width: bleedWidth, height: bleedHeight, clippedSide } = bleedBox;
+    const { x: trimX, y: trimY, width: trimWidth, height: trimHeight } = trimBox;
+
+    ctx.save();
+    
+    // Fill Danger Zone
+    ctx.fillStyle = 'rgba(255, 0, 0, 0.3)';
+    ctx.beginPath();
+    ctx.rect(bleedX, bleedY, bleedWidth, bleedHeight); // Outer rect
+    // Subtract Inner Trim Rect (Counter-Clockwise)
+    ctx.rect(trimX + trimWidth, trimY, -trimWidth, trimHeight);
+    ctx.fill();
+
+    // Draw Border Line (Handling clipped side)
+    ctx.strokeStyle = 'red';
+    const currentScale = ctx.getTransform().a; 
+    ctx.lineWidth = 1 / currentScale; 
+    
+    ctx.beginPath();
+    if (!clippedSide) {
+        ctx.rect(bleedX, bleedY, bleedWidth, bleedHeight);
+    } else {
+        if (clippedSide === 'right') {
+            // Open on right: Top-Right -> Top-Left -> Bottom-Left -> Bottom-Right
+            ctx.moveTo(bleedX + bleedWidth, bleedY); 
+            ctx.lineTo(bleedX, bleedY);
+            ctx.lineTo(bleedX, bleedY + bleedHeight);
+            ctx.lineTo(bleedX + bleedWidth, bleedY + bleedHeight);
+        } else if (clippedSide === 'left') {
+             // Open on left: Top-Left -> Top-Right -> Bottom-Right -> Bottom-Left
+             ctx.moveTo(bleedX, bleedY);
+             ctx.lineTo(bleedX + bleedWidth, bleedY);
+             ctx.lineTo(bleedX + bleedWidth, bleedY + bleedHeight);
+             ctx.lineTo(bleedX, bleedY + bleedHeight);
+        }
+    }
+    ctx.stroke();
+    ctx.restore();
+}
+
 /**
- * Main function to draw all selected guides onto the canvas. Iterates through pages if needed.
- * @param {CanvasRenderingContext2D} ctx - The canvas context.
- * @param {object} specs - The project's print specifications.
- * @param {Array<object>} pageRenderInfos - An array of render info objects for each page in the current view [{x, y, width, height, scale, isSpread, isLeftPage}, ...].
- * @param {object} guideOptions - An object indicating which guides to show { trim, bleed, safety }.
+ * Draws guides for a single page using shared geometry calculation.
+ */
+function drawGuidesForPage(ctx, specs, pageRenderInfo, guideOptions) {
+    const geometries = calculatePageGuideGeometries(specs, pageRenderInfo);
+    if (!geometries) return;
+
+    const { trimBox, bleedBox, safetyBox } = geometries;
+
+    if (guideOptions.trim) {
+        drawBox(ctx, { ...trimBox, color: 'black', lineWidth: 1 });
+    }
+    if (guideOptions.bleed) {
+        drawBleedVisuals(ctx, trimBox, bleedBox);
+    }
+    if (guideOptions.safety) {
+        drawBox(ctx, { ...safetyBox, color: 'green', lineWidth: 1, dashPattern: [5, 5] });
+    }
+}
+
+/**
+ * Main function to draw all selected guides onto the canvas.
  */
 export function drawGuides(ctx, specs, pageRenderInfos, guideOptions) {
     if (!Array.isArray(pageRenderInfos) || pageRenderInfos.length === 0) {
         console.error("drawGuides expects a non-empty array of pageRenderInfos.");
         return;
     }
-
-    // Loop through each page's render info and draw guides for it
-    pageRenderInfos.forEach((pageInfo, index) => {
-        // console.log(`Drawing guides for page index ${index} within view. isSpread: ${pageInfo.isSpread}, isLeftPage: ${pageInfo.isLeftPage}`);
+    pageRenderInfos.forEach((pageInfo) => {
         drawGuidesForPage(ctx, specs, pageInfo, guideOptions);
     });
+}
+
+// --- Hit Detection for Tooltips ---
+
+function distanceToSegment(px, py, x1, y1, x2, y2) {
+    const l2 = (x1 - x2) ** 2 + (y1 - y2) ** 2;
+    if (l2 === 0) return Math.hypot(px - x1, py - y1);
+    let t = ((px - x1) * (x2 - x1) + (py - y1) * (y2 - y1)) / l2;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(px - (x1 + t * (x2 - x1)), py - (y1 + t * (y2 - y1)));
+}
+
+function isPointNearRect(px, py, rect, tolerance = 10) {
+    const { x, y, width, height, clippedSide } = rect;
+    const right = x + width;
+    const bottom = y + height;
+
+    // Check all 4 sides, unless clipped
+    let dists = [];
+
+    if (clippedSide !== 'right') {
+        // Check Right side line
+        dists.push(distanceToSegment(px, py, right, y, right, bottom));
+    }
+    if (clippedSide !== 'left') {
+        // Check Left side line
+        dists.push(distanceToSegment(px, py, x, y, x, bottom));
+    }
+    
+    // Top and Bottom are always checked
+    dists.push(distanceToSegment(px, py, x, y, right, y)); // Top
+    dists.push(distanceToSegment(px, py, x, bottom, right, bottom)); // Bottom
+
+    return Math.min(...dists) <= tolerance;
+}
+
+/**
+ * Checks if a point hits any guide lines.
+ * @param {number} x - X coordinate in canvas space (untransformed).
+ * @param {number} y - Y coordinate in canvas space (untransformed).
+ * @param {object} specs - Project specs.
+ * @param {Array} pageRenderInfos - Array of page info.
+ * @param {object} guideOptions - Active guides.
+ * @returns {object|null} - { title, description } or null.
+ */
+export function getGuideHit(x, y, specs, pageRenderInfos, guideOptions) {
+    if (!Array.isArray(pageRenderInfos)) return null;
+
+    const HIT_TOLERANCE = 5; // Tolerance in base points
+
+    for (const pageInfo of pageRenderInfos) {
+        const geom = calculatePageGuideGeometries(specs, pageInfo);
+        if (!geom) continue;
+
+        // Check Safety (Priority 1)
+        if (guideOptions.safety && isPointNearRect(x, y, geom.safetyBox, HIT_TOLERANCE)) {
+            return {
+                title: "Safety Line (Green)",
+                description: "Keep important text and logos inside this line to prevent them from being trimmed off."
+            };
+        }
+
+        // Check Trim (Priority 2)
+        if (guideOptions.trim && isPointNearRect(x, y, geom.trimBox, HIT_TOLERANCE)) {
+            return {
+                title: "Trim Line (Black)",
+                description: "This is where the page will be cut. Content outside this line will be removed."
+            };
+        }
+
+        // Check Bleed (Priority 3)
+        if (guideOptions.bleed && isPointNearRect(x, y, geom.bleedBox, HIT_TOLERANCE)) {
+            return {
+                title: "Bleed Line (Red)",
+                description: "Background artwork must extend to this line to ensure edge-to-edge printing."
+            };
+        }
+    }
+    return null;
 }

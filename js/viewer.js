@@ -83,10 +83,68 @@ export async function initializeSharedViewer(config) {
 
     // State managed by viewerControls
     let transformState = { zoom: 1.0, pan: { x: 0, y: 0 } };
+    
+    // Initialize Tooltip Element
+    let guideTooltip = document.getElementById('guide-tooltip');
+    if (!guideTooltip) {
+        guideTooltip = document.createElement('div');
+        guideTooltip.id = 'guide-tooltip';
+        guideTooltip.className = 'fixed z-50 hidden max-w-xs bg-slate-900/95 backdrop-blur-sm text-white text-sm p-3 rounded-lg shadow-xl border border-slate-600 pointer-events-none transition-opacity duration-150';
+        document.body.appendChild(guideTooltip);
+    }
+
     let viewRenderInfo = { x: 0, y: 0, width: 0, height: 0, scale: 1.0 }; // Overall info for the current view
     let pageRenderInfos = []; // Array of render info for *each page* within the current view
     let hiddenCanvas = document.createElement('canvas'); // Used for main rendering compositing
     let currentlyLoadedURL = null; // Keep track of the currently loaded URL
+
+    // [NEW] Add mousemove listener for guide tooltips
+    if (pdfCanvas) {
+        pdfCanvas.addEventListener('mousemove', (e) => {
+            // 1. Check if we have guide module and render info
+            if (!guidesModule || !pageRenderInfos.length || !projectSpecs) return;
+
+            // 2. Calculate mouse position in "Viewer World Space"
+            const rect = pdfCanvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left; // CSS Pixels
+            const mouseY = e.clientY - rect.top;  // CSS Pixels
+
+            // Apply inverse transform: (x - pan) / zoom
+            // Note: We do NOT multiply by devicePixelRatio here because pageRenderInfos 
+            // and transformState are already tracked in logical CSS pixels.
+            const worldX = (mouseX - transformState.pan.x) / transformState.zoom;
+            const worldY = (mouseY - transformState.pan.y) / transformState.zoom;
+
+            // 3. Get current guide options
+            const guideOptions = {
+                trim: showTrimGuideCheckbox?.checked ?? true,
+                bleed: showBleedGuideCheckbox?.checked ?? true,
+                safety: showSafetyGuideCheckbox?.checked ?? true
+            };
+
+            // 4. Check for hit
+            const hit = guidesModule.getGuideHit(worldX, worldY, projectSpecs, pageRenderInfos, guideOptions);
+
+            // 5. Show or hide tooltip
+            if (hit) {
+                guideTooltip.innerHTML = `<strong>${hit.title}</strong><br/><span class="text-gray-300 text-xs">${hit.description}</span>`;
+                // Add a small offset so the tooltip doesn't block the cursor
+                guideTooltip.style.left = `${e.clientX + 15}px`;
+                guideTooltip.style.top = `${e.clientY + 15}px`;
+                guideTooltip.classList.remove('hidden');
+                pdfCanvas.style.cursor = 'help'; 
+            } else {
+                guideTooltip.classList.add('hidden');
+                // Restore cursor based on current tool
+                pdfCanvas.style.cursor = currentTool === 'pan' ? (transformState.zoom > 1 ? 'grab' : 'default') : 'default';
+            }
+        });
+
+        // Hide tooltip on mouse leave
+        pdfCanvas.addEventListener('mouseleave', () => {
+            if(guideTooltip) guideTooltip.classList.add('hidden');
+        });
+    }
 
     /**
      * Determines which page numbers to display for a given view.
@@ -171,11 +229,9 @@ export async function initializeSharedViewer(config) {
 
             let aspectRatio;
             if (currentViewMode === 'spread') {
-                // --- CHANGE HERE ---
                 // In spread mode, ALWAYS use the calculated spread aspect ratio
                 // for all thumbnails to maintain consistent height.
                 aspectRatio = standardSpreadAspectRatio;
-                // --- END CHANGE ---
             } else { // 'single' view mode
                 // Calculate aspect ratio based on the single page's natural dimensions
                 const page = await pdfDoc.getPage(pagesIndices[0]);
