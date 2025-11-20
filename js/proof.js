@@ -1,5 +1,5 @@
 import { auth, db, functions, generateGuestLink } from './firebase.js';
-import { onAuthStateChanged, signOut, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+import { onAuthStateChanged, signOut, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 import { httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js";
 import { initializeSharedViewer } from './viewer.js';
 // [UPDATE] Added 'query' and 'orderBy' to the imports
@@ -145,25 +145,22 @@ if (approvalFormModal) {
 async function handleGuestAccess(projectId, guestToken) {
     console.log(`[Guest Flow] Starting for projectId: ${projectId}, token: ${guestToken}`);
     try {
-        // 1. Fetch Guest Link Details
+        // 1. Fetch Guest Link Details (Keep this for UI feedback)
         console.log('[Guest Flow] Attempting to read guest link document...');
         const linkRef = doc(db, "projects", projectId, "guestLinks", guestToken);
         const linkSnap = await getDoc(linkRef);
-        console.log('[Guest Flow] Guest link document read attempt complete.');
 
         if (!linkSnap.exists()) {
-            console.error("[Guest Flow] Guest link document does not exist.");
             throw new Error("This share link is invalid.");
         }
 
         const linkData = linkSnap.data();
-        console.log('[Guest Flow] Guest link data:', linkData);
         const now = Timestamp.now();
         if (linkData.expiresAt.seconds < now.seconds) {
-            console.error("[Guest Flow] Guest link has expired.");
             throw new Error("This share link has expired.");
         }
 
+        // Update view history (This works because of your firestore.rules line 45)
         updateDoc(linkRef, {
             viewHistory: arrayUnion({
                 timestamp: Timestamp.now(),
@@ -171,55 +168,46 @@ async function handleGuestAccess(projectId, guestToken) {
             })
         }).catch(err => console.warn("[Guest Flow] Failed to record view:", err));
 
-        isGuest = true; // Set isGuest flag HERE after validation succeeds
+        // Set local flags
+        isGuest = true; 
         guestPermissions = linkData.permissions;
-        console.log('[Guest Flow] Set guest permissions:', guestPermissions);
 
-        // 2. Ensure Authentication (Anonymous or Existing)
-        let user = auth.currentUser;
-        if (!user) {
-             console.log('[Guest Flow] No active user, attempting anonymous sign-in...');
-             const userCredential = await signInAnonymously(auth);
-             user = userCredential.user;
-             console.log('[Guest Flow] Anonymous sign-in successful, UID:', user.uid);
-        } else {
-             console.log('[Guest Flow] Using existing user session, UID:', user.uid);
+        // 2. Authenticate via Cloud Function (The Fix)
+        // Instead of writing to a restricted collection, we ask the server for a token
+        console.log('[Guest Flow] Calling authenticateGuest Cloud Function...');
+        const authenticateGuest = httpsCallable(functions, 'authenticateGuest');
+        const response = await authenticateGuest({ projectId, guestToken });
+        
+        if (!response.data || !response.data.token) {
+            throw new Error("Failed to obtain access token.");
         }
 
-
-        // 3. Create a 'claim' to link user UID to the token for security rules
-        console.log('[Guest Flow] Attempting to create guest claim document...');
-        const claimRef = doc(db, "guest_claims", user.uid);
-        // Ensure projectId passed here is the one from the function argument
-        await setDoc(claimRef, { projectId: projectId, guestToken: guestToken });
-        console.log('[Guest Flow] Guest claim document created successfully.');
-
+        // 3. Sign in with the Custom Token
+        // This gives the user the 'guestProjectId' and 'guestPermissions' claims required by firestore.rules
+        console.log('[Guest Flow] Signing in with custom token...');
+        const userCredential = await signInWithCustomToken(auth, response.data.token);
+        const user = userCredential.user;
+        console.log('[Guest Flow] Sign-in successful. User UID:', user.uid);
 
         // 4. Apply Guest UI Mode
         console.log('[Guest Flow] Enabling Guest UI...');
-        
-        // Hide Notification Bell
         const notificationBell = document.getElementById('notification-bell');
         if (notificationBell) notificationBell.classList.add('hidden');
 
-        // Find and hide ALL links to the dashboard (including the "Back to Dashboard" button)
         const dashboardLinks = document.querySelectorAll('a[href="dashboard.html"]');
         dashboardLinks.forEach(link => link.classList.add('hidden'));
         
         const accountButton = document.querySelector('a[href="account.html"]');
         if(accountButton) accountButton.classList.add('hidden');
 
-
-        // 5. Proceed with loading the project
-        console.log('[Guest Flow] Calling loadProjectForUser...');
+        // 5. Load Project
         loadProjectForUser(user);
 
     } catch (error) {
         console.error("[Guest Flow] Detailed guest access error:", error);
         loadingSpinner.innerHTML = `<p class="text-red-400">Error: ${error.message}</p>`;
     }
-} // --- End handleGuestAccess ---
-
+}
 
 // --- UI Helper Functions ---
 function showConfirmation(action) {
