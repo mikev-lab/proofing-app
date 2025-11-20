@@ -110,9 +110,38 @@ exports.optimizePdf = onObjectFinalized({
             const versionIndex = versions.findIndex(v => v.filePath === filePath);
 
             if (versionIndex === -1) {
-                // This logic branch is now handled in the 'else' block for creating new versions
-                // but we need to skip this update if it doesn't exist
-                return;
+                // --- NEW: Auto-Create Version for Unmatched File (e.g., Guest Upload) ---
+                const newVersionNumber = versions.length + 1;
+
+                // Use correct fileURL protocol
+                const fileURL = process.env.FUNCTIONS_EMULATOR === 'true'
+                    ? `http://${process.env.FIREBASE_STORAGE_EMULATOR_HOST}/v0/b/${fileBucket}/o/${encodeURIComponent(filePath)}?alt=media`
+                    : `gs://${fileBucket}/${filePath}`;
+
+                const newVersion = {
+                    versionNumber: newVersionNumber,
+                    fileURL: fileURL,
+                    filePath: filePath, // Store raw path to match later
+                    createdAt: admin.firestore.Timestamp.now(),
+                    processingStatus: 'processing',
+                    preflightStatus: preflightStatus,
+                    preflightResults: preflightResults,
+                    // If dimensions were found, store them in specs on the version itself if needed
+                };
+
+                // Add to versions array
+                versions.push(newVersion);
+
+                // Also update top-level project status if it's waiting for upload
+                const updates = { versions: versions };
+                if (projectData.status === 'Awaiting Client Upload') {
+                    updates.status = 'Pending Review';
+                    updates.lastUploadAt = admin.firestore.FieldValue.serverTimestamp();
+                }
+
+                transaction.update(projectRef, updates);
+                logger.log(`Auto-created Version ${newVersionNumber} for file ${filePath} in project ${projectId}.`);
+                return; // Exit, we are done for this transaction
             }
 
             versions[versionIndex].preflightStatus = preflightStatus;
@@ -125,51 +154,6 @@ exports.optimizePdf = onObjectFinalized({
             logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with preflight results.`);
         }
     });
-    return; // Important: Exit for existing version flow
-  } else {
-      // --- NEW: Auto-Create Version for Unmatched File (e.g., Guest Upload) ---
-      const projectData = projectDoc.data();
-      const versions = projectData.versions || [];
-      const newVersionNumber = versions.length + 1;
-
-      // Use correct fileURL protocol
-      const fileURL = process.env.FUNCTIONS_EMULATOR === 'true'
-          ? `http://${process.env.FIREBASE_STORAGE_EMULATOR_HOST}/v0/b/${fileBucket}/o/${encodeURIComponent(filePath)}?alt=media`
-          : `gs://${fileBucket}/${filePath}`;
-
-      const newVersion = {
-          versionNumber: newVersionNumber,
-          fileURL: fileURL,
-          filePath: filePath, // Store raw path to match later
-          createdAt: admin.firestore.Timestamp.now(),
-          processingStatus: 'processing',
-          preflightStatus: preflightStatus,
-          preflightResults: preflightResults,
-          // If dimensions were found, store them in specs on the version itself if needed,
-          // or just rely on the project-level specs update logic below if applicable.
-          // For now, we keep it simple.
-      };
-
-      // Add to versions array
-      versions.push(newVersion);
-
-      // Also update top-level project status if it's waiting for upload
-      const updates = { versions: versions };
-      if (projectData.status === 'Awaiting Client Upload') {
-          updates.status = 'Pending Review';
-          updates.lastUploadAt = admin.firestore.FieldValue.serverTimestamp();
-      }
-
-      transaction.update(projectRef, updates);
-      logger.log(`Auto-created Version ${newVersionNumber} for file ${filePath} in project ${projectId}.`);
-
-      // IMPORTANT: We must NOT return here, we need to continue to STEP 2 (optimization)
-      // The code below STEP 2 uses 'versionIndex' logic which assumes the version exists.
-      // We need to adjust STEP 3 to find the version again or handle the new index.
-      // Actually, since we just pushed to the array, the new index is (versions.length - 1).
-      // But 'versions' here is the local array. We need to ensure Step 3 reads it back or we pass the index.
-  }
-});
 
 
     // --- STEP 2: Optimize the PDF using Ghostscript ---
@@ -233,6 +217,7 @@ exports.optimizePdf = onObjectFinalized({
             const versionIndex = versions.findIndex(v => v.filePath === filePath);
 
             if (versionIndex === -1) {
+                // It should exist now because we added it in Step 1
                 logger.warn(`No version found matching filePath "${filePath}" in project ${projectId} to update with success status.`);
                 return;
             }

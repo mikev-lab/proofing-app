@@ -2,19 +2,19 @@ rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
     function isProjectMember(projectId) {
-      let userCompanyId = get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId;
-      let projectCompanyId = get(/databases/$(database)/documents/projects/$(projectId)).data.companyId;
+      let userCompanyId = firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.companyId;
+      let projectCompanyId = firestore.get(/databases/(default)/documents/projects/$(projectId)).data.companyId;
       return userCompanyId == projectCompanyId;
     }
 
     function isAdmin() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role == 'admin';
     }
 
     // Common condition for project file access
     function canAccessProjectFiles(projectId) {
       return request.auth != null &&
-             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             firestore.exists(/databases/(default)/documents/users/$(request.auth.uid)) &&
              (isAdmin() || isProjectMember(projectId));
     }
 
