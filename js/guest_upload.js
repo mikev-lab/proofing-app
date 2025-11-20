@@ -917,8 +917,6 @@ uploadForm.addEventListener('submit', async (e) => {
     submitButton.textContent = 'Uploading...';
     uploadProgress.classList.remove('hidden');
 
-    const filesToUpload = [];
-
     // 1. Identify Unique Source Files from Pages + Cover
     const uniqueSourceIds = new Set();
     pages.forEach(p => uniqueSourceIds.add(p.sourceFileId));
