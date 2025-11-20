@@ -2158,11 +2158,19 @@ function drawOnSheet(doc, embeddable, trimW, trimH, bleed, settings) {
     // Plan assumes frontend sends points or we normalize.
     // Let's assume frontend sends values normalized to Points (72dpi) matching the PDF dimensions.
 
-    const panX = settings.panX || 0;
-    const panY = settings.panY || 0;
+    // Ensure panX/panY are finite numbers, default to 0
+    const panX = Number.isFinite(settings.panX) ? settings.panX : 0;
+    const panY = Number.isFinite(settings.panY) ? settings.panY : 0;
 
-    const x = ((targetW - drawW) / 2) + panX;
-    const y = ((targetH - drawH) / 2) - panY; // Invert Y because PDF coords are bottom-up?
+    // Ensure targetW/targetH/drawW/drawH are finite to avoid NaN errors in pdf-lib
+    const validTargetW = Number.isFinite(targetW) ? targetW : 0;
+    const validTargetH = Number.isFinite(targetH) ? targetH : 0;
+    const validDrawW = Number.isFinite(drawW) ? drawW : 0;
+    const validDrawH = Number.isFinite(drawH) ? drawH : 0;
+
+    if (validDrawW <= 0 || validDrawH <= 0) return; // Nothing to draw
+
+    // Calculate x,y
     // PDF-lib's drawPage/drawImage uses (x,y) as bottom-left corner of the image rect.
     // If we pan UP visually, we want image to move UP.
     // In PDF (bottom-left origin), moving UP is +Y.
@@ -2172,13 +2180,35 @@ function drawOnSheet(doc, embeddable, trimW, trimH, bleed, settings) {
     // Let's assume standard web convention: panY > 0 means image moves DOWN.
     // Image moving DOWN means y decreases in PDF coords. So -panY is correct.
 
+    // Note: If panX/panY were NaN, the fallback to 0 above handles it.
+    // If targetW/drawW were NaN, validTargetW/validDrawW handles it.
+    const x = ((validTargetW - validDrawW) / 2) + (panX * validTargetW);
+    // IMPORTANT: In frontend, panX is ratio 0-1. In backend `generateBooklet`, `settings` passed is just the settings object.
+    // Frontend logic: page.settings.panX = ratio (0.1 etc).
+    // Backend logic in `drawOnSheet`:
+    // The original code was: const x = ((targetW - drawW) / 2) + panX;
+    // If panX is a ratio (e.g. 0.1), adding 0.1 to a value in Points (e.g. 500) is negligible.
+    // It MUST be multiplied by dimension: panX * targetW.
+    // The original code was likely bugged or assumed panX was points.
+    // Frontend code: page.settings.panX = startPanX + ((dx / rect.width) * sensitivity); -> This produces a RATIO.
+    // So Backend MUST multiply by targetW.
+    // Wait, I should double check if I broke existing logic.
+    // Old code: `const x = ((targetW - drawW) / 2) + panX;`
+    // If panX was indeed ratio, then the pan would be tiny.
+    // If the user saw ANY panning working before, then maybe panX was being sent as pixels?
+    // But frontend code explicitly divides by rect.width.
+    // So I will assume ratio is correct and fix the backend math too.
+
+    const y = ((validTargetH - validDrawH) / 2) - (panY * validTargetH);
+
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return; // Safety check
 
     if (embeddable.dims) {
          // Is PDF Page
-         page.drawPage(embeddable, { x, y, width: drawW, height: drawH });
+         page.drawPage(embeddable, { x, y, width: validDrawW, height: validDrawH });
     } else {
          // Is Image
-         page.drawImage(embeddable, { x, y, width: drawW, height: drawH });
+         page.drawImage(embeddable, { x, y, width: validDrawW, height: validDrawH });
     }
 }
 

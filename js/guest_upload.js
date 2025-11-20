@@ -446,11 +446,44 @@ window.updatePageSetting = (pageId, setting, value) => {
              return;
         }
 
-        // Clear cache for this page as appearance changed
-        // Actually, the source bitmap is the same, only the transform changes.
-        // But renderPageCanvas handles drawing. We don't need to clear imageCache if it stores the *source* file render.
-        // But currently imageCache (in my plan) stores the *final* canvas? No, better to cache the source render.
-        // Let's refine the cache strategy in renderPageCanvas.
+        // If changing scaleMode, update button states visually
+        if (setting === 'scaleMode') {
+            const card = document.querySelector(`[data-id="${pageId}"]`);
+            if (card) {
+                const btns = card.querySelectorAll('.scale-mode-btn'); // Added class to creation logic below
+                // Actually we used inline creation, let's update the query or classes.
+                // The creation logic uses:
+                // btn.onclick = () => updatePageSetting(page.id, 'scaleMode', mode.id);
+
+                // We need to find the buttons. They are in settingsOverlay.
+                // Let's query buttons inside the card that correspond to modes.
+                // We didn't add a specific class to them in createPageCard previously,
+                // just 'p-1.5 rounded border ...'.
+
+                // Let's rely on the `title` attribute or similar since we don't want to break existing DOM.
+                // Or better, let's update createPageCard to add a data-mode attribute.
+                // But I can't change createPageCard here easily without a huge diff.
+
+                // Let's query buttons and check their title/icon? No.
+                // Let's assume the order: fit, fill, stretch.
+                const buttons = card.querySelectorAll('button[title]');
+                buttons.forEach(btn => {
+                    const modeId = btn.title.toLowerCase().includes('fit') ? 'fit' :
+                                   btn.title.toLowerCase().includes('fill') ? 'fill' :
+                                   btn.title.toLowerCase().includes('stretch') ? 'stretch' : null;
+
+                    if (modeId) {
+                        if (modeId === value) {
+                            // Active Style
+                            btn.className = 'p-1.5 rounded border bg-indigo-600 border-indigo-500 text-white';
+                        } else {
+                            // Inactive Style
+                            btn.className = 'p-1.5 rounded border bg-slate-800/80 border-slate-600 text-gray-400 hover:bg-slate-700 hover:text-white';
+                        }
+                    }
+                });
+            }
+        }
 
         const canvas = document.getElementById(`canvas-${pageId}`);
         if (canvas) renderPageCanvas(page, canvas);
@@ -656,8 +689,14 @@ document.addEventListener('pointermove', (e) => {
         // Sensitivity factor
         const sensitivity = 1.0;
 
-        page.settings.panX = startPanX + ((dx / rect.width) * sensitivity);
-        page.settings.panY = startPanY + ((dy / rect.height) * sensitivity);
+        if (rect.width > 0 && rect.height > 0) {
+            const newPanX = startPanX + ((dx / rect.width) * sensitivity);
+            const newPanY = startPanY + ((dy / rect.height) * sensitivity);
+
+            // Ensure valid numbers
+            page.settings.panX = Number.isFinite(newPanX) ? newPanX : 0;
+            page.settings.panY = Number.isFinite(newPanY) ? newPanY : 0;
+        }
 
         // Re-render immediately (throttling via RAF is better but this is simple)
         requestAnimationFrame(() => {
@@ -684,17 +723,17 @@ function createInsertBar(index) {
     bar.innerHTML = `
         <div class="${line}"></div>
         <div class="flex gap-2">
-            <button class="text-xs bg-slate-700 hover:bg-indigo-600 text-white px-2 py-1 rounded flex items-center gap-1" onclick="triggerInsert(${index}, 'left')">
+            <button class="text-xs bg-slate-700 hover:bg-indigo-600 text-white px-2 py-1 rounded flex items-center gap-1" onclick="triggerInsert(${index}, 'left')" title="Insert File">
                 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
-                Page
+                File
             </button>
-             <button class="text-xs bg-slate-700 hover:bg-indigo-600 text-white px-2 py-1 rounded flex items-center gap-1" onclick="triggerInsert(${index}, 'spread')">
+            <button class="text-xs bg-slate-700 hover:bg-indigo-600 text-white px-2 py-1 rounded flex items-center gap-1" onclick="triggerInsert(${index}, 'blank')" title="Insert Blank Page">
+                <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                Blank
+            </button>
+             <button class="text-xs bg-slate-700 hover:bg-indigo-600 text-white px-2 py-1 rounded flex items-center gap-1" onclick="triggerInsert(${index}, 'spread')" title="Insert Spread (File)">
                 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
                 Spread
-            </button>
-             <button class="text-xs bg-slate-700 hover:bg-indigo-600 text-white px-2 py-1 rounded flex items-center gap-1" onclick="triggerInsert(${index}, 'right')">
-                Page
-                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
             </button>
         </div>
         <div class="${line}"></div>
@@ -706,8 +745,42 @@ window.triggerInsert = (index, type) => {
     // Set global state for insertion
     window._insertIndex = index;
     window._insertType = type;
-    insertFileInput.click();
+
+    if (type === 'blank') {
+        // Insert blank page(s) immediately
+        addBlankPages(index, 1);
+    } else {
+        insertFileInput.click();
+    }
 };
+
+function addBlankPages(insertAtIndex, count = 1) {
+    const newPages = [];
+
+    // For now, assume inserting SINGLE blank pages unless we want blank spreads?
+    // Let's just add standard single pages which will flow into spreads naturally.
+    for (let i = 0; i < count; i++) {
+        // Use a special ID for blank pages or just null sourceFileId?
+        // We need a unique ID for the page itself.
+        const pageId = `blank_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+        newPages.push({
+            id: pageId,
+            sourceFileId: null, // Indicates blank
+            pageIndex: 1, // Irrelevant
+            settings: { scaleMode: 'fit', alignment: 'center', panX: 0, panY: 0 },
+            isSpread: false
+        });
+    }
+
+    if (insertAtIndex !== null && insertAtIndex >= 0 && insertAtIndex <= pages.length) {
+        pages.splice(insertAtIndex, 0, ...newPages);
+    } else {
+        pages.push(...newPages);
+    }
+
+    renderBookViewer();
+}
 
 insertFileInput.addEventListener('change', (e) => {
     if (e.target.files.length > 0) {
@@ -809,13 +882,79 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     placeholder.id = `placeholder-${page.id}`;
     canvasContainer.appendChild(placeholder);
 
+    // Add specific drop handling for this card
+    // We use the input ID trick again, but specific to this card if needed?
+    // Actually, we can just reuse the logic: drop -> updates this page's source.
+
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        card.addEventListener(eventName, (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+        }, false);
+    });
+
+    card.addEventListener('drop', async (e) => {
+        const files = e.dataTransfer.files;
+        if (files.length > 0) {
+            const file = files[0];
+            // Replace content of THIS page
+            await updatePageContent(page.id, file);
+        }
+    });
+
     observer.observe(card);
     return card;
 }
 
-async function renderPageCanvas(page, canvas) {
-    const sourceEntry = sourceFiles[page.sourceFileId];
+// Helper to replace page content
+async function updatePageContent(pageId, file) {
+    const page = pages.find(p => p.id === pageId);
+    if (!page) return;
 
+    const sourceId = Date.now() + Math.random().toString(16).slice(2);
+    const isLocal = file.type === 'application/pdf' || file.type.startsWith('image/');
+
+    if (isLocal) {
+        sourceFiles[sourceId] = file;
+        page.sourceFileId = sourceId;
+        page.pageIndex = 1; // Reset to page 1 of new file
+
+        // If it's a PDF, we might want to know if it has more pages, but for a single replacement we usually just take page 1.
+        // Unless we want to expand? For now, simple replacement.
+
+        // Update UI
+        const canvas = document.getElementById(`canvas-${pageId}`);
+        if (canvas) renderPageCanvas(page, canvas);
+
+    } else {
+        // Server side processing needed
+        sourceFiles[sourceId] = { file: file, status: 'uploading', previewUrl: null };
+        page.sourceFileId = sourceId;
+        page.pageIndex = 1;
+
+        const placeholder = document.getElementById(`placeholder-${pageId}`);
+        if (placeholder) {
+            placeholder.style.opacity = '1';
+            placeholder.innerHTML = '<p class="text-xs text-indigo-400 animate-pulse">Processing...</p>';
+        }
+
+        await processServerFile(file, sourceId);
+    }
+
+    // Trigger re-render to update thumbnails or other UI if needed
+    // But renderPageCanvas above might be enough.
+    // Safest to re-render viewer if we want to ensure everything syncs?
+    // renderPageCanvas is faster.
+}
+
+async function renderPageCanvas(page, canvas) {
+    // Handle Blank Page
+    if (page.sourceFileId === null) {
+        drawBlankPage(page, canvas);
+        return;
+    }
+
+    const sourceEntry = sourceFiles[page.sourceFileId];
     if (!sourceEntry || !projectSpecs.dimensions) return;
 
     // Unwrap Source (handle both raw File and server-processed object)
@@ -884,7 +1023,74 @@ async function renderPageCanvas(page, canvas) {
     };
 
     // Ensure guides are drawn on TOP.
+    // Reset transform to simple pixel density for drawing guides (which are calculated in pixels)
+    // This avoids double-scaling where the guide calculation (in pixels) is multiplied again by pixelsPerInch.
+    ctx.save();
+    ctx.setTransform(pixelDensity, 0, 0, pixelDensity, 0, 0);
     drawGuides(ctx, mockSpecs, [renderInfo], { trim: true, bleed: true, safety: true });
+    ctx.restore();
+}
+
+function drawBlankPage(page, canvas) {
+    if (!projectSpecs.dimensions) return;
+
+    const ctx = canvas.getContext('2d');
+    const width = projectSpecs.dimensions.width;
+    const height = projectSpecs.dimensions.height;
+    const bleed = 0.125;
+
+    // Consistent Scaling Logic
+    const visualScale = (250 * viewerScale) / ((width + bleed*2) * 96);
+    const pixelsPerInch = 96 * visualScale;
+    const pixelDensity = 1.5;
+
+    const totalW = width + (bleed*2);
+    const totalH = height + (bleed*2);
+
+    canvas.width = totalW * pixelsPerInch * pixelDensity;
+    canvas.height = totalH * pixelsPerInch * pixelDensity;
+
+    canvas.style.width = `${totalW * pixelsPerInch}px`;
+    canvas.style.height = `${totalH * pixelsPerInch}px`;
+    canvas.style.left = `-${bleed * pixelsPerInch}px`;
+    canvas.style.top = `-${bleed * pixelsPerInch}px`;
+
+    ctx.setTransform(pixelDensity, 0, 0, pixelDensity, 0, 0);
+    ctx.scale(pixelsPerInch, pixelsPerInch);
+
+    // 1. Draw Background (Light Gray to indicate empty)
+    ctx.fillStyle = '#f8fafc'; // Slate-50
+    ctx.fillRect(0, 0, totalW, totalH);
+
+    // 2. Draw Dashed Border or Icon
+    ctx.strokeStyle = '#cbd5e1'; // Slate-300
+    ctx.lineWidth = 2 / pixelsPerInch;
+    ctx.setLineDash([10 / pixelsPerInch, 10 / pixelsPerInch]);
+    ctx.strokeRect(bleed, bleed, width, height); // Trim area
+    ctx.setLineDash([]);
+
+    // 3. Text
+    ctx.fillStyle = '#94a3b8'; // Slate-400
+    ctx.font = 'italic 0.4px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText("Drop File Here", totalW / 2, totalH / 2);
+
+    // Draw Guides
+    const guideScale = pixelsPerInch / 72; // Correct for guides.js
+    const mockSpecs = {
+        dimensions: { width: width, height: height, units: 'in' },
+        bleedInches: bleed,
+        safetyInches: 0.125
+    };
+    const renderInfo = {
+        x: 0, y: 0, width: totalW * pixelsPerInch, height: totalH * pixelsPerInch, scale: guideScale, isSpread: false
+    };
+
+    ctx.save();
+    ctx.setTransform(pixelDensity, 0, 0, pixelDensity, 0, 0);
+    drawGuides(ctx, mockSpecs, [renderInfo], { trim: true, bleed: true, safety: true });
+    ctx.restore();
 }
 
 async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW, targetH, mode, align, pageIndex = 1, pageId = null, viewMode = 'full', panX = 0, panY = 0) {
