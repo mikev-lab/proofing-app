@@ -33,32 +33,18 @@ service cloud.firestore {
           allow read, write: if isAdmin();
         }
     // --- NEW Guest Helper Functions ---
-    // Check for a valid guest token by looking up the claim associated with the user's UID
     function hasValidGuestDataAccess(projectId, permission) {
-      // CHANGE: Removed "request.auth.token.firebase.sign_in_provider == 'anonymous'" check.
-      // This allows both Anonymous AND Logged-in users to pass if they have a valid claim.
-      return request.auth != null &&
-            exists(/databases/$(database)/documents/guest_claims/$(request.auth.uid)) &&
-            get(/databases/$(database)/documents/guest_claims/$(request.auth.uid)).data.projectId == projectId &&
-            exists(/databases/$(database)/documents/projects/$(projectId)/guestLinks/$(get(/databases/$(database)/documents/guest_claims/$(request.auth.uid)).data.guestToken)) &&
-            request.time < get(/databases/$(database)/documents/projects/$(projectId)/guestLinks/$(get(/databases/$(database)/documents/guest_claims/$(request.auth.uid)).data.guestToken)).data.expiresAt &&
-            // CHANGE: Allow access if permission is null (general validity check) OR if specific permission matches
-            (permission == null || get(/databases/$(database)/documents/projects/$(projectId)/guestLinks/$(get(/databases/$(database)/documents/guest_claims/$(request.auth.uid)).data.guestToken)).data.permissions[permission] == true);
+       // Secure Custom Claim Check with Safe Access (.get)
+       // Checks if 'guestProjectId' matches, and if permission is either null (any access) or explicitly true
+       // We use default values '' and {} to prevent "Invalid type" warnings when claims are missing
+       return request.auth != null &&
+              request.auth.token.get('guestProjectId', '') == projectId &&
+              (
+                permission == null ||
+                request.auth.token.get('guestPermissions', {}).get(permission, false) == true
+              );
     }
 
-
-    // --- NEW Rules for 'guest_claims' Collection ---
-    match /guest_claims/{userId} {
-      // CHANGE: Removed "firebase.sign_in_provider == 'anonymous'".
-      // Allows ANY authenticated user (logged in or anon) to create/update their own claim.
-      allow create, update: if request.auth.uid == userId;
-      
-      // Allow the user to read their own claim doc (needed for hasValidGuestDataAccess)
-      allow read: if request.auth.uid == userId;
-      
-      // Prevent deletion by anyone
-      allow delete: if false;
-    }
 
     // --- Rules for 'users' Collection ---
     match /users/{userId} {
@@ -159,6 +145,12 @@ service cloud.firestore {
                       (
                         (hasValidGuestDataAccess(projectId, 'canApprove') || hasValidGuestDataAccess(projectId, 'isOwner')) &&
                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+                      )
+                      // ** OR Guest Upload Logic **
+                      ||
+                      (
+                        hasValidGuestDataAccess(projectId, 'canUpload') &&
+                        request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'lastUploadAt'])
                       );
 
       // --- Rules for 'guestLinks' Sub-collection ---

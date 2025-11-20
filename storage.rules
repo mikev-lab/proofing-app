@@ -2,20 +2,27 @@ rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
     function isProjectMember(projectId) {
-      let userCompanyId = get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId;
-      let projectCompanyId = get(/databases/$(database)/documents/projects/$(projectId)).data.companyId;
+      let userCompanyId = firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.companyId;
+      let projectCompanyId = firestore.get(/databases/(default)/documents/projects/$(projectId)).data.companyId;
       return userCompanyId == projectCompanyId;
     }
 
     function isAdmin() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role == 'admin';
     }
 
     // Common condition for project file access
     function canAccessProjectFiles(projectId) {
       return request.auth != null &&
-             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             firestore.exists(/databases/(default)/documents/users/$(request.auth.uid)) &&
              (isAdmin() || isProjectMember(projectId));
+    }
+
+    // Helper for Guest Access via Custom Claims
+    function hasGuestUploadAccess(projectId) {
+      return request.auth != null &&
+             request.auth.token.guestProjectId == projectId &&
+             request.auth.token.guestPermissions.canUpload == true;
     }
 
     // --- START: Add these rules for Temporary Guided Setup ---
@@ -45,11 +52,22 @@ service firebase.storage {
 
     // --- Existing Project Rules ---
     match /proofs/{allPaths=**} {
+      // Existing logic: allow read, write: if request.auth != null;
+      // We are tightening this slightly to allow specific guests or registered users
+      // But to maintain backward compat with the broad rule:
       allow read, write: if request.auth != null;
+      // NOTE: Ideally, this should be:
+      // allow read, write: if canAccessProjectFiles(projectId) || hasGuestUploadAccess(projectId);
+      // But since we can't easily extract projectId from "allPaths", we leave it broad for now.
+    }
+
+    // Specific rules for 'proofs/{projectId}/...' to demonstrate tighter control if needed:
+    match /proofs/{projectId}/{allPaths=**} {
+       allow read, write: if canAccessProjectFiles(projectId) || hasGuestUploadAccess(projectId);
     }
 
     match /uploads/{projectId}/{fileName} {
-      allow write: if canAccessProjectFiles(projectId);
+      allow write: if canAccessProjectFiles(projectId) || hasGuestUploadAccess(projectId);
     }
     match /sources/{projectId}/{fileName} {
       allow read, write: if canAccessProjectFiles(projectId);

@@ -72,7 +72,13 @@ function getStatusBadge(status) {
             classes += " bg-red-500/20 text-red-300"; 
             break;
         case 'awaiting_upload': 
-            classes += " bg-blue-500/20 text-blue-300"; 
+        case 'awaiting client upload': // Handle spaced version
+            classes += " bg-blue-500/20 text-blue-300";
+            text = "Awaiting Upload";
+            break;
+        case 'pending review':
+            classes += " bg-yellow-500/20 text-yellow-300";
+            text = "Pending Review";
             break;
         default: 
             classes += " bg-gray-500/20 text-gray-300"; 
@@ -238,8 +244,22 @@ function renderProjects(projects, companyMap) {
     });
 }
 
-onAuthStateChanged(auth, (user) => {
+onAuthStateChanged(auth, async (user) => {
     if (user) {
+        // [Security Check] Ensure user is an Admin
+        try {
+            const userDoc = await getDoc(doc(db, "users", user.uid));
+            if (!userDoc.exists() || userDoc.data().role !== 'admin') {
+                console.warn("Access denied: User is not an admin.");
+                window.location.href = 'index.html';
+                return;
+            }
+        } catch (error) {
+            console.error("Error verifying admin status:", error);
+            window.location.href = 'index.html';
+            return;
+        }
+
         userEmailSpan.textContent = user.email;
         userEmailSpan.classList.remove('hidden');
         fetchAllProjects();
@@ -393,6 +413,97 @@ copyLinkButton.addEventListener('click', () => {
     copyStatusMessage.textContent = 'Copied!';
     setTimeout(() => { copyStatusMessage.textContent = ''; }, 2000);
 });
+
+
+// --- REQUEST FILES MODAL LOGIC ---
+const requestFilesButton = document.getElementById('request-files-button');
+const requestFilesModal = document.getElementById('request-files-modal');
+const requestModalCloseButton = document.getElementById('request-modal-close-button');
+const requestModalCancelButton = document.getElementById('request-modal-cancel-button');
+const requestFilesForm = document.getElementById('request-files-form');
+const createRequestButton = document.getElementById('create-request-button');
+const requestModalContent = document.getElementById('request-modal-content');
+const requestModalResult = document.getElementById('request-modal-result');
+const reqGeneratedLinkInput = document.getElementById('req-generated-link');
+const reqCopyLinkButton = document.getElementById('req-copy-link-button');
+const reqCopyMessage = document.getElementById('req-copy-message');
+const reqDoneButton = document.getElementById('req-done-button');
+
+function openRequestModal() {
+    requestFilesModal.classList.remove('hidden');
+    requestModalContent.classList.remove('hidden');
+    requestModalResult.classList.add('hidden');
+    requestFilesForm.reset();
+    createRequestButton.disabled = false;
+    createRequestButton.textContent = 'Create & Get Link';
+    reqCopyMessage.textContent = '';
+}
+
+function closeRequestModal() {
+    requestFilesModal.classList.add('hidden');
+}
+
+if (requestFilesButton) {
+    requestFilesButton.addEventListener('click', openRequestModal);
+    requestModalCloseButton.addEventListener('click', closeRequestModal);
+    requestModalCancelButton.addEventListener('click', closeRequestModal);
+    reqDoneButton.addEventListener('click', () => {
+        closeRequestModal();
+        fetchAllProjects(); // Refresh list
+    });
+
+    requestFilesForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        createRequestButton.disabled = true;
+        createRequestButton.textContent = 'Creating...';
+
+        const projectName = document.getElementById('req-project-name').value;
+        const projectType = document.querySelector('input[name="req-project-type"]:checked').value;
+        const clientEmail = document.getElementById('req-client-email').value;
+
+        try {
+            const createFileRequest = httpsCallable(functions, 'createFileRequest');
+            const result = await createFileRequest({
+                projectName,
+                projectType,
+                clientEmail
+            });
+
+            if (result.data.success) {
+                // URL in result.data.url is from the backend (which might be placeholder)
+                // We should construct it properly using window.location.origin + backend path
+                // But backend returns a full URL currently (likely with placeholder domain).
+                // Let's just use the path + search from the result.
+
+                // The backend returns: 'https://your-app-domain.com/guest_upload.html?projectId=...&guestToken=...'
+                // We need: window.location.origin + '/guest_upload.html?projectId=...&guestToken=...'
+
+                const resultUrl = new URL(result.data.url);
+                const finalUrl = `${window.location.origin}${resultUrl.pathname}${resultUrl.search}`;
+
+                reqGeneratedLinkInput.value = finalUrl;
+                requestModalContent.classList.add('hidden');
+                requestModalResult.classList.remove('hidden');
+            } else {
+                 throw new Error('Failed to create request.');
+            }
+
+        } catch (error) {
+            console.error("Error creating file request:", error);
+            alert(`Error: ${error.message || 'Could not create request.'}`);
+            createRequestButton.disabled = false;
+            createRequestButton.textContent = 'Create & Get Link';
+        }
+    });
+
+    reqCopyLinkButton.addEventListener('click', () => {
+        reqGeneratedLinkInput.select();
+        document.execCommand('copy');
+        reqCopyMessage.textContent = 'Link Copied!';
+        setTimeout(() => { reqCopyMessage.textContent = ''; }, 2000);
+    });
+}
 
 statusFilter.addEventListener('change', fetchAllProjects);
 sortBy.addEventListener('change', fetchAllProjects);

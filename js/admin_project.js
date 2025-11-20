@@ -45,7 +45,7 @@ const customHeightInput = document.getElementById('custom-height');
 const customUnitsSelect = document.getElementById('custom-units');
 const bleedInchesInput = document.getElementById('bleedInches');
 const safetyInchesInput = document.getElementById('safetyInches');
-const pageCountInput = document.getElementById('page-count');
+const pageCountInput = document.getElementById('specs-page-count');
 const bindingSelect = document.getElementById('binding');
 const readingDirectionSelect = document.getElementById('readingDirection');
 const paperTypeSelect = document.getElementById('paper-type');
@@ -328,8 +328,25 @@ specsForm.addEventListener('submit', async (e) => {
 
 
 // --- Firestore Listener ---
-onAuthStateChanged(auth, (user) => {
+onAuthStateChanged(auth, async (user) => {
     if (user) {
+        // [Security Check] Ensure user is an Admin
+        try {
+            const userDoc = await getDoc(doc(db, "users", user.uid));
+            if (!userDoc.exists() || userDoc.data().role !== 'admin') {
+                console.warn("Access denied: User is not an admin.");
+                window.location.href = 'index.html'; // Redirect non-admins
+                return;
+            }
+        } catch (error) {
+            console.error("Error verifying admin status:", error);
+            // If we can't verify, we shouldn't proceed.
+            // However, if the error is permission-denied (because guest can't read users),
+            // that confirms they aren't an admin!
+            window.location.href = 'index.html';
+            return;
+        }
+
         document.getElementById('user-email').textContent = user.email;
         if (projectId) {
             const projectRef = doc(db, "projects", projectId);
