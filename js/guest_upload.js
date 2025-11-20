@@ -40,13 +40,13 @@ const specsModal = document.getElementById('specs-modal');
 const specsForm = document.getElementById('specs-form');
 const specWidth = document.getElementById('spec-width');
 const specHeight = document.getElementById('spec-height');
-const specBinding = document.getElementById('spec-binding');
+const specBinding = document.getElementById('spec-binding'); // Hidden input now
 const specPaper = document.getElementById('spec-paper');
 const specPageCount = document.getElementById('spec-page-count');
-const bindingSection = document.getElementById('binding-section');
 const paperSection = document.getElementById('paper-section');
 const pageCountSection = document.getElementById('page-count-section');
 const saveSpecsBtn = document.getElementById('save-specs-btn');
+const projectTypeRadios = document.getElementsByName('projectType');
 
 // Cover Builder Elements
 const tabInterior = document.getElementById('tab-interior');
@@ -55,6 +55,7 @@ const contentInterior = document.getElementById('content-interior');
 const contentCover = document.getElementById('content-cover');
 const coverCanvas = document.getElementById('cover-preview-canvas');
 const spineWidthDisplay = document.getElementById('spine-width-display');
+const fileSpineInput = document.getElementById('file-spine');
 
 // Interior Builder Elements
 const interiorFileList = document.getElementById('interior-file-list');
@@ -100,15 +101,6 @@ function showError(msg) {
 
 // --- Helper: Populate Selects ---
 function populateSelects() {
-    // Populate Binding
-    specBinding.innerHTML = '<option value="" disabled selected>Select Binding</option>';
-    BINDING_TYPES.forEach(b => {
-        const opt = document.createElement('option');
-        opt.value = b.value;
-        opt.textContent = b.label;
-        specBinding.appendChild(opt);
-    });
-
     // Populate Paper
     specPaper.innerHTML = '<option value="" disabled selected>Select Paper Type</option>';
     HARDCODED_PAPER_TYPES.forEach(p => {
@@ -119,16 +111,34 @@ function populateSelects() {
     });
 }
 
-// --- Helper: Handle Binding Change ---
-specBinding.addEventListener('change', () => {
-    if (specBinding.value === 'perfectBound') {
-        paperSection.classList.remove('hidden');
-        specPaper.required = true;
-    } else {
-        paperSection.classList.add('hidden');
-        specPaper.required = false;
-    }
+// --- Handle Project Type Selection ---
+Array.from(projectTypeRadios).forEach(radio => {
+    radio.addEventListener('change', (e) => {
+        const val = e.target.value;
+
+        // Reset/Update Binding Field (Hidden)
+        specBinding.value = val === 'loose' ? '' : val;
+
+        // Visibility Logic
+        if (val === 'loose') {
+            pageCountSection.classList.add('hidden');
+            paperSection.classList.add('hidden');
+            specPageCount.required = false;
+            specPaper.required = false;
+        } else if (val === 'saddleStitch') {
+            pageCountSection.classList.remove('hidden');
+            paperSection.classList.add('hidden');
+            specPageCount.required = true;
+            specPaper.required = false;
+        } else if (val === 'perfectBound') {
+            pageCountSection.classList.remove('hidden');
+            paperSection.classList.remove('hidden');
+            specPageCount.required = true;
+            specPaper.required = true;
+        }
+    });
 });
+
 
 // --- Helper: Update File Name Display (Legacy/Cover) ---
 function updateFileName(inputId, displayId) {
@@ -208,8 +218,8 @@ function validateForm() {
         // Let's require at least one interior file OR full cover
         if (interiorFiles.length > 0) isValid = true;
     } else {
-        // Single needs the main file
-        if (selectedFiles['file-single']) isValid = true;
+        // Single needs the main file - ACTUALLY, if it's 'loose sheets' builder mode (which uses interiorFiles now), check that list
+        if (interiorFiles.length > 0) isValid = true;
     }
 
     if (isValid) {
@@ -620,8 +630,10 @@ async function renderCoverPreview() {
     ctx.beginPath();
     // Back Trim
     ctx.rect(xTrimBackLeft, yBleedTop, trimWidth, trimHeight);
-    // Spine Trim
-    ctx.rect(xSpineLeft, yBleedTop, spineWidth, trimHeight);
+    // Spine Trim (Only if width > 0)
+    if (spineWidth > 0) {
+        ctx.rect(xSpineLeft, yBleedTop, spineWidth, trimHeight);
+    }
     // Front Trim
     ctx.rect(xSpineRight, yBleedTop, trimWidth, trimHeight);
     ctx.stroke();
@@ -701,6 +713,13 @@ specsForm.addEventListener('submit', async (e) => {
     saveSpecsBtn.textContent = 'Saving...';
 
     try {
+        // Get selected Project Type
+        const selectedType = document.querySelector('input[name="projectType"]:checked');
+        if (!selectedType) {
+            throw new Error('Please select a project type.');
+        }
+        const typeValue = selectedType.value; // 'loose', 'saddleStitch', 'perfectBound'
+
         const width = parseFloat(specWidth.value);
         const height = parseFloat(specHeight.value);
 
@@ -709,6 +728,7 @@ specsForm.addEventListener('submit', async (e) => {
         }
 
         const specsUpdate = {
+            'projectType': typeValue === 'loose' ? 'single' : 'booklet',
             'specs.dimensions': {
                 width: width,
                 height: height,
@@ -716,11 +736,14 @@ specsForm.addEventListener('submit', async (e) => {
             }
         };
 
-        if (projectType === 'booklet') {
-            specsUpdate['specs.binding'] = specBinding.value;
+        // Set Binding Logic
+        if (typeValue === 'loose') {
+            specsUpdate['specs.binding'] = 'loose';
+        } else {
+            specsUpdate['specs.binding'] = typeValue; // 'saddleStitch' or 'perfectBound'
             specsUpdate['specs.pageCount'] = parseInt(specPageCount.value) || 0;
 
-            if (specBinding.value === 'perfectBound') {
+            if (typeValue === 'perfectBound') {
                 specsUpdate['specs.paperType'] = specPaper.value;
             }
         }
@@ -731,19 +754,18 @@ specsForm.addEventListener('submit', async (e) => {
         // Reload page or Update State locally to avoid reload
         projectSpecs = {
             dimensions: { width, height, units: 'in' },
-            binding: specBinding.value,
-            pageCount: parseInt(specPageCount.value) || 0,
-            paperType: specPaper.value
+            binding: specsUpdate['specs.binding'],
+            pageCount: specsUpdate['specs.pageCount'],
+            paperType: specsUpdate['specs.paperType']
         };
+        projectType = specsUpdate['projectType'];
 
-        // Hide modal and show upload UI
+        // Hide modal and show upload UI (Logic handled in init mostly, but we trigger refresh)
         specsModal.classList.add('hidden');
         uploadContainer.classList.remove('hidden');
 
-        // Initial Render of Cover Canvas if booklet
-        if (projectType === 'booklet') {
-             renderCoverPreview();
-        }
+        // Refresh UI logic
+        refreshBuilderUI();
 
     } catch (err) {
         console.error("Error saving specs:", err);
@@ -753,6 +775,29 @@ specsForm.addEventListener('submit', async (e) => {
         saveSpecsBtn.textContent = 'Save & Continue';
     }
 });
+
+function refreshBuilderUI() {
+    // Show/Hide Tabs based on project type
+    if (projectType === 'single') {
+        // For Loose Sheets, hide Cover Builder
+        tabCover.classList.add('hidden');
+        // Ensure Interior is active
+        tabInterior.click();
+    } else {
+        // Booklet
+        tabCover.classList.remove('hidden');
+        // Configure Cover Builder
+        if (projectSpecs.binding === 'saddleStitch') {
+            // Hide Spine Upload & Display
+            if(fileSpineInput) fileSpineInput.closest('.drop-zone').parentElement.classList.add('hidden');
+            // Or disable it? Hidden is better.
+        } else {
+            if(fileSpineInput) fileSpineInput.closest('.drop-zone').parentElement.classList.remove('hidden');
+        }
+        // Re-render preview
+        renderCoverPreview();
+    }
+}
 
 
 // --- Main Initialization ---
@@ -807,77 +852,51 @@ async function init() {
             specsMissing = true;
         }
 
-        // Check Booklet Specifics
-        if (projectType === 'booklet') {
-            if (!specs.binding) specsMissing = true;
-            if (!specs.pageCount) specsMissing = true;
-            if (specs.binding === 'perfectBound' && !specs.paperType) specsMissing = true;
-        }
+        // Check Binding if it's missing (Old projects might not have it)
+        if (!specs.binding) specsMissing = true;
+
+        // We want to FORCE the new flow if any required data is missing
+        // But if they already set it, we skip.
 
         if (specsMissing) {
             // Show Modal
             specsModal.classList.remove('hidden');
-
-            // Configure Modal for Project Type
-            if (projectType === 'booklet') {
-                bindingSection.classList.remove('hidden');
-                pageCountSection.classList.remove('hidden');
-                specBinding.required = true;
-                specPageCount.required = true;
-            } else {
-                bindingSection.classList.add('hidden');
-                paperSection.classList.add('hidden');
-                pageCountSection.classList.add('hidden');
-                specBinding.required = false;
-                specPageCount.required = false;
-            }
+            // Reset form state if needed
 
             // Pre-fill if some data exists
             if (specs.dimensions) {
                 specWidth.value = specs.dimensions.width || '';
                 specHeight.value = specs.dimensions.height || '';
             }
-            if (specs.binding) specBinding.value = specs.binding;
-            if (specs.pageCount) specPageCount.value = specs.pageCount;
-            if (specs.paperType) specPaper.value = specs.paperType;
-
-            // Trigger binding change handler to show/hide paper section
-            specBinding.dispatchEvent(new Event('change'));
 
         } else {
             // Specs exist, show upload UI directly
             uploadContainer.classList.remove('hidden');
-            // Trigger render if booklet
-             if (projectType === 'booklet') {
-                renderCoverPreview();
-            }
+            refreshBuilderUI();
         }
 
 
         // 5. Setup UI based on type (even if modal is shown, we prep the background UI)
-        if (projectType === 'booklet') {
-            bookletUploadSection.classList.remove('hidden');
-            setupDropZone('file-interior'); // Old dropzone for backup logic? Or remove?
+        // Always show booklet section now as it contains the new unified builder
+        bookletUploadSection.classList.remove('hidden');
+        singleUploadSection.classList.add('hidden'); // Deprecated single section
 
-            // Init Sortable for the new list
-            new Sortable(interiorFileList, {
-                animation: 150,
-                ghostClass: 'opacity-50',
-                onEnd: (evt) => {
-                    const item = interiorFiles[evt.oldIndex];
-                    interiorFiles.splice(evt.oldIndex, 1);
-                    interiorFiles.splice(evt.newIndex, 0, item);
-                }
-            });
+        setupDropZone('file-interior'); // Legacy ref cleanup if needed
 
-            updateFileName('file-cover-front', 'file-name-cover-front');
-            updateFileName('file-spine', 'file-name-spine');
-            updateFileName('file-cover-back', 'file-name-cover-back');
-        } else {
-            singleUploadSection.classList.remove('hidden');
-            setupDropZone('file-single');
-            updateFileName('file-single', 'file-name-single');
-        }
+        // Init Sortable for the new list
+        new Sortable(interiorFileList, {
+            animation: 150,
+            ghostClass: 'opacity-50',
+            onEnd: (evt) => {
+                const item = interiorFiles[evt.oldIndex];
+                interiorFiles.splice(evt.oldIndex, 1);
+                interiorFiles.splice(evt.newIndex, 0, item);
+            }
+        });
+
+        updateFileName('file-cover-front', 'file-name-cover-front');
+        updateFileName('file-spine', 'file-name-spine');
+        updateFileName('file-cover-back', 'file-name-cover-back');
 
         validateForm();
 
@@ -902,23 +921,17 @@ uploadForm.addEventListener('submit', async (e) => {
 
     const filesToUpload = [];
 
-    if (projectType === 'single') {
-        if (selectedFiles['file-single']) {
-            filesToUpload.push({ file: selectedFiles['file-single'], type: 'main' });
-        }
-    } else {
-        // Booklet Logic - Collect from builder list and cover inputs
-
-        // Interior
-        interiorFiles.forEach((item, i) => {
-            filesToUpload.push({
-                file: item.file,
-                type: `interior_${i}`, // Maintain order in filename
-                settings: item.settings
-            });
+    // Interior
+    interiorFiles.forEach((item, i) => {
+        filesToUpload.push({
+            file: item.file,
+            type: `interior_${i}`, // Maintain order in filename
+            settings: item.settings
         });
+    });
 
-        // Cover
+    // Cover (Only if Booklet)
+    if (projectType === 'booklet') {
         if (selectedFiles['file-cover-front']) filesToUpload.push({ file: selectedFiles['file-cover-front'], type: 'cover_front' });
         if (selectedFiles['file-spine']) filesToUpload.push({ file: selectedFiles['file-spine'], type: 'cover_spine' });
         if (selectedFiles['file-cover-back']) filesToUpload.push({ file: selectedFiles['file-cover-back'], type: 'cover_back' });
@@ -971,21 +984,7 @@ uploadForm.addEventListener('submit', async (e) => {
         // Call Backend to Finalize
         progressText.textContent = 'Finalizing...';
 
-        // We need to update the submitGuestUpload function to accept this metadata!
-        // For now, I will pass it in the existing call or a new one.
-        // The current `submitGuestUpload` just toggles status.
-        // I need to call `generateFinalPdf` or similar if we want to BUILD the book.
-
-        // ACTUALLY, the plan says "Refactor `generateFinalPdf` for Composition".
-        // So I should call that here?
-        // The user's request implies the Guest Upload *builds* the book.
-        // So yes, we should trigger the build.
-
-        // Let's call a new endpoint or updated one: `processGuestBooklet`?
-        // Or just pass the data to `submitGuestUpload` and let it handle it?
-        // `submitGuestUpload` is for notifications.
-
-        // Let's call `generateBooklet` (which I will implement in backend).
+        // Trigger Build
         const generateBooklet = httpsCallable(functions, 'generateBooklet');
         await generateBooklet({ projectId: projectId, files: uploadMetadata });
 

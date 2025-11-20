@@ -1880,7 +1880,12 @@ exports.generateBooklet = onCall({
             // ... (Implementation of lookup if needed, or trust frontend passed spine width? No, calculate securely)
             // For MVP, let's use a fixed calculation based on page count from project
             const pageCount = specs.pageCount || interiorFiles.length; // Fallback to file count?
-            const spineWidth = (pageCount / 2) * caliper;
+            let spineWidth = (pageCount / 2) * caliper;
+
+            // Force spine to 0 if not perfect bound
+            if (specs.binding === 'saddleStitch' || specs.binding === 'loose') {
+                spineWidth = 0;
+            }
 
             const totalWidth = (trimWidth * 2) + spineWidth + (bleed * 2);
             const totalHeight = trimHeight + (bleed * 2);

@@ -221,6 +221,37 @@
 
                 <form id="specs-form" class="space-y-5">
 
+                    <!-- Project Type Selection -->
+                    <div>
+                        <label class="block text-sm font-medium text-gray-300 mb-3">Project Type</label>
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            <!-- Loose Sheets -->
+                            <label class="cursor-pointer relative">
+                                <input type="radio" name="projectType" value="loose" class="peer sr-only">
+                                <div class="p-3 rounded-lg border border-slate-600 bg-slate-800 hover:bg-slate-700 peer-checked:border-indigo-500 peer-checked:ring-1 peer-checked:ring-indigo-500 transition-all text-center h-full flex flex-col items-center justify-center">
+                                    <span class="block text-sm font-semibold text-white">Loose Sheets</span>
+                                    <span class="text-[10px] text-gray-400">Flyers, Posters, Cards</span>
+                                </div>
+                            </label>
+                            <!-- Saddle Stitch -->
+                            <label class="cursor-pointer relative">
+                                <input type="radio" name="projectType" value="saddleStitch" class="peer sr-only">
+                                <div class="p-3 rounded-lg border border-slate-600 bg-slate-800 hover:bg-slate-700 peer-checked:border-indigo-500 peer-checked:ring-1 peer-checked:ring-indigo-500 transition-all text-center h-full flex flex-col items-center justify-center">
+                                    <span class="block text-sm font-semibold text-white">Saddle Stitch</span>
+                                    <span class="text-[10px] text-gray-400">Stapled Spine Book</span>
+                                </div>
+                            </label>
+                            <!-- Perfect Bound -->
+                            <label class="cursor-pointer relative">
+                                <input type="radio" name="projectType" value="perfectBound" class="peer sr-only">
+                                <div class="p-3 rounded-lg border border-slate-600 bg-slate-800 hover:bg-slate-700 peer-checked:border-indigo-500 peer-checked:ring-1 peer-checked:ring-indigo-500 transition-all text-center h-full flex flex-col items-center justify-center">
+                                    <span class="block text-sm font-semibold text-white">Perfect Bound</span>
+                                    <span class="text-[10px] text-gray-400">Glued Spine Book</span>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+
                     <!-- Dimensions -->
                     <div>
                         <label class="block text-sm font-medium text-gray-300 mb-2">Finished Size</label>
@@ -242,13 +273,8 @@
                         </div>
                     </div>
 
-                    <!-- Binding (For Multi-page) -->
-                    <div id="binding-section" class="hidden">
-                        <label class="block text-sm font-medium text-gray-300 mb-2">Binding Style</label>
-                        <select id="spec-binding" class="w-full bg-slate-900 border border-slate-600 rounded-md py-2 px-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                            <!-- Populated by JS -->
-                        </select>
-                    </div>
+                    <!-- Hidden Binding Input (Replaced by Type Selection but kept for ID ref stability if needed, though mostly unused now) -->
+                    <input type="hidden" id="spec-binding">
 
                     <!-- Paper Type (For Perfect Bound Spine Calc) -->
                     <div id="paper-section" class="hidden">
