@@ -9,14 +9,6 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = "https://mozilla.github.io/pdf.js/build
 
 /**
  * Initializes the shared PDF viewer functionality.
- * @param {object} config - The configuration object.
- * @param {object} config.db - The Firestore database instance.
- * @param {object} config.auth - The Firebase Auth instance.
- * @param {string} config.projectId - The ID of the project to load.
- * @param {object} config.projectData - The initial project data from Firestore.
- * @param {boolean} [config.isAdmin=false] - Flag to determine if this is the admin view.
- * @param {boolean} [config.isGuest=false] - Flag to determine if the user is a guest.
- * @param {object} [config.guestPermissions={}] - The permissions object for the guest.
  */
 export async function initializeSharedViewer(config) {
     const { db, auth, projectId, projectData, isAdmin = false, isGuest = false, guestPermissions = {} } = config;
@@ -109,9 +101,8 @@ export async function initializeSharedViewer(config) {
             const mouseX = e.clientX - rect.left; // CSS Pixels
             const mouseY = e.clientY - rect.top;  // CSS Pixels
 
-            // Apply inverse transform: (x - pan) / zoom
-            // Note: We do NOT multiply by devicePixelRatio here because pageRenderInfos 
-            // and transformState are already tracked in logical CSS pixels.
+            // [FIXED] Apply inverse transform directly to CSS pixels.
+            // Do NOT multiply by devicePixelRatio here.
             const worldX = (mouseX - transformState.pan.x) / transformState.zoom;
             const worldY = (mouseY - transformState.pan.y) / transformState.zoom;
 

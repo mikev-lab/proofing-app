@@ -17,15 +17,14 @@
             -moz-osx-font-smoothing: grayscale;
         }
         #pdf-viewer {
-            position: relative; /* Needed for absolute positioning of nav controls */
+            position: relative;
             width: 100%;
             height: 100%;
-            overflow: hidden; /* Prevent canvas overflow */
-            cursor: default; /* Base cursor */
+            overflow: hidden;
+            cursor: default;
         }
         #pdf-canvas {
-            /* Canvas itself takes full space, drawing is clipped */
-             display: block; /* Remove extra space below canvas */
+             display: block;
         }
         #navigation-controls {
             position: absolute;
@@ -34,13 +33,12 @@
             transform: translateX(-50%);
             display: flex;
             align-items: center;
-            background-color: rgba(15, 23, 42, 0.8); /* bg-slate-900/80 */
+            background-color: rgba(15, 23, 42, 0.8);
             padding: 0.5rem 1rem;
-            border-radius: 0.5rem; /* rounded-lg */
+            border-radius: 0.5rem;
             backdrop-filter: blur(4px);
-            z-index: 10; /* Ensure controls are on top */
+            z-index: 10;
         }
-        /* Style for grab/grabbing cursor */
         #pdf-viewer.grabbable { cursor: grab; }
         #pdf-viewer.grabbing { cursor: grabbing; }
     </style>
@@ -58,14 +56,15 @@
                 </div>
 
                 <div class="flex items-center space-x-4">
-                    
                     <button id="header-share-button" class="hidden bg-purple-600 hover:bg-purple-500 text-white font-semibold p-2 rounded-md text-sm transition-all duration-150 ease-in-out" title="Share Link">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                             <path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
                         </svg>
                     </button>
+
                     <a href="dashboard.html" class="text-sm font-semibold text-white hover:text-gray-200">Dashboard</a>
                     <a href="account.html" class="text-sm font-semibold text-white hover:text-gray-200">My Account</a>
+                    
                     <div class="relative">
                         <button id="notification-bell" class="relative text-gray-400 hover:text-white">
                             <svg class="h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
@@ -114,33 +113,26 @@
                 <div class="grid grid-cols-1 lg:grid-cols-5 gap-8">
                     <div class="lg:col-span-1 bg-slate-900/50 rounded-lg shadow-2xl p-4 min-h-[600px] max-h-[80vh] overflow-y-auto">
                         <h3 class="text-xl font-semibold text-white mb-4 sticky top-0 bg-slate-900/50 backdrop-blur-sm z-10 py-2">Pages</h3>
-                        <div id="thumbnail-list" class="space-y-4">
-                            </div>
+                        <div id="thumbnail-list" class="space-y-4"></div>
                     </div>
+                    
                     <div class="lg:col-span-3 bg-slate-900/50 rounded-lg shadow-2xl min-h-[600px] flex flex-col p-4 max-h-[80vh]">
                         <div id="viewer-tabs" class="hidden mb-4 border-b border-slate-700">
                             <nav class="-mb-px flex space-x-6" aria-label="Tabs">
-                                <button id="internals-tab" type="button" class="whitespace-nowrap py-3 px-1 border-b-2 font-semibold text-sm border-indigo-500 text-indigo-400">
-                                    Internals
-                                </button>
-                                <button id="cover-tab" type="button" class="whitespace-nowrap py-3 px-1 border-b-2 font-semibold text-sm border-transparent text-gray-400 hover:text-gray-200 hover:border-gray-500">
-                                    Cover
-                                </button>
+                                <button id="internals-tab" type="button" class="whitespace-nowrap py-3 px-1 border-b-2 font-semibold text-sm border-indigo-500 text-indigo-400">Internals</button>
+                                <button id="cover-tab" type="button" class="whitespace-nowrap py-3 px-1 border-b-2 font-semibold text-sm border-transparent text-gray-400 hover:text-gray-200 hover:border-gray-500">Cover</button>
                             </nav>
                         </div>
                         <div id="pdf-viewer" class="flex-1 bg-black/20 rounded-md flex justify-center items-center relative">
                             <canvas id="pdf-canvas"></canvas>
                             <div id="rendering-throbber" class="hidden absolute inset-0 bg-slate-900/50 backdrop-blur-sm flex flex-col items-center justify-center z-20">
-                                <div class="h-10 w-10 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900" role="status">
-                                    <span class="sr-only">Loading...</span>
-                                </div>
+                                <div class="h-10 w-10 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900" role="status"></div>
                                 <p class="mt-3 text-gray-300 text-sm">Rendering PDF...</p>
                             </div>
                             <div id="navigation-controls" class="hidden">
-                                 <button id="prev-page" class="text-white px-2 py-1 rounded-md hover:bg-slate-700 disabled:opacity-50" title="Previous Page">&lt;</button>
+                                <button id="prev-page" class="text-white px-2 py-1 rounded-md hover:bg-slate-700 disabled:opacity-50">&lt;</button>
                                 <span class="text-white px-2 whitespace-nowrap" id="page-num"></span> / <span class="text-white px-2" id="page-count"></span>
-                                <button id="next-page" class="text-white px-2 py-1 rounded-md hover:bg-slate-700 disabled:opacity-50" title="Next Page">&gt;</button>
-
+                                <button id="next-page" class="text-white px-2 py-1 rounded-md hover:bg-slate-700 disabled:opacity-50">&gt;</button>
                                 <div id="tool-selector" class="ml-4 flex items-center border-l border-slate-600 pl-4 space-x-1">
                                     <button id="tool-pan" title="Pan Tool" class="text-white p-2 rounded-md hover:bg-slate-700 bg-slate-600">
                                         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 11.5a2.5 2.5 0 0 1 5 0Z"/><path d="M4 5.5a2.5 2.5 0 0 1 5 0Z"/><path d="M12 5.5a2.5 2.5 0 0 1 5 0Z"/><path d="M15 11.5a2.5 2.5 0 0 1 5 0Z"/><path d="M5 17.5a2.5 2.5 0 0 1 5 0Z"/><path d="m17 22 5-5"/><path d="m2 7 5 5"/></svg>
@@ -149,13 +141,12 @@
                                         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 21 1.9-5.7a8.5 8.5 0 1 1 3.8 3.8z"/></svg>
                                     </button>
                                 </div>
-
                                 <div class="ml-4 flex items-center border-l border-slate-600 pl-4">
-                                    <button id="zoom-out-button" title="Zoom Out" class="text-white px-2 py-1 rounded-md text-lg hover:bg-slate-700 disabled:opacity-50">-</button>
-                                    <button id="zoom-reset-button" title="Reset Zoom & Pan" class="text-white px-2 py-1 rounded-md text-sm hover:bg-slate-700 disabled:opacity-50">
+                                    <button id="zoom-out-button" class="text-white px-2 py-1 rounded-md text-lg hover:bg-slate-700 disabled:opacity-50">-</button>
+                                    <button id="zoom-reset-button" class="text-white px-2 py-1 rounded-md text-sm hover:bg-slate-700 disabled:opacity-50">
                                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 2v6h6"/><path d="M21 12A9 9 0 0 0 6 5.3L3 8"/><path d="M21 22v-6h-6"/><path d="M3 12a9 9 0 0 0 15 6.7l3-2.7"/></svg>
                                     </button>
-                                    <button id="zoom-in-button" title="Zoom In" class="text-white px-2 py-1 rounded-md text-lg hover:bg-slate-700 disabled:opacity-50">+</button>
+                                    <button id="zoom-in-button" class="text-white px-2 py-1 rounded-md text-lg hover:bg-slate-700 disabled:opacity-50">+</button>
                                     <span id="zoom-level-display" class="text-xs text-gray-300 w-12 text-center">100%</span>
                                 </div>
                             </div>
@@ -184,7 +175,8 @@
                                      </button>
                                 </div>
                             </form>
-                        </div> <div class="bg-slate-800/60 backdrop-blur-sm shadow-xl rounded-xl p-6 border border-slate-700/50">
+                        </div>
+                        <div class="bg-slate-800/60 backdrop-blur-sm shadow-xl rounded-xl p-6 border border-slate-700/50">
                             <h3 class="text-sm font-semibold text-gray-300 mb-2 flex items-center">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-2 text-yellow-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -256,86 +248,88 @@
            </form>
        </div>
     </div>
-    <div id="annotation-tooltip" class="fixed hidden z-50 max-w-xs bg-slate-900/95 backdrop-blur-sm text-white text-sm p-3 rounded-lg shadow-xl border border-slate-600 pointer-events-none transition-opacity duration-150">
+
+    <div id="guide-tooltip" class="fixed hidden z-50 max-w-xs bg-slate-900/95 backdrop-blur-sm text-white text-sm p-3 rounded-lg shadow-xl border border-slate-600 pointer-events-none transition-opacity duration-150">
     </div>
+
     <div id="approval-modal" class="fixed inset-0 bg-gray-900/90 backdrop-blur-sm flex items-center justify-center hidden z-[60]">
-    <div class="bg-slate-800 rounded-xl shadow-2xl p-8 w-full max-w-lg mx-4 border border-slate-700/50 relative">
-        
-        <h3 class="text-2xl font-bold text-white mb-2">Final Approval</h3>
-        
-        <form id="approval-modal-form" class="space-y-4">
+        <div class="bg-slate-800 rounded-xl shadow-2xl p-8 w-full max-w-lg mx-4 border border-slate-700/50 relative">
             
-            <p class="text-gray-300 text-sm mb-2">By approving this, you acknowledge that:</p>
-
-            <div class="pl-4 space-y-3 border-l-2 border-slate-700 ml-1">
+            <h3 class="text-2xl font-bold text-white mb-2">Final Approval</h3>
+            
+            <form id="approval-modal-form" class="space-y-4">
                 
-                <div class="flex items-start">
-                    <input type="checkbox" id="check-ready" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
-                    <label for="check-ready" class="ml-3 text-sm text-gray-300 leading-tight">
-                        Your project is <strong>print-ready</strong>.
-                    </label>
+                <p class="text-gray-300 text-sm mb-2">By approving this, you acknowledge that:</p>
+
+                <div class="pl-4 space-y-3 border-l-2 border-slate-700 ml-1">
+                    
+                    <div class="flex items-start">
+                        <input type="checkbox" id="check-ready" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
+                        <label for="check-ready" class="ml-3 text-sm text-gray-300 leading-tight">
+                            Your project is <strong>print-ready</strong>.
+                        </label>
+                    </div>
+
+                    <div class="flex items-start">
+                        <input type="checkbox" id="check-spelling" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
+                        <label for="check-spelling" class="ml-3 text-sm text-gray-300 leading-tight">
+                            You've checked for <strong>spelling errors</strong>.
+                        </label>
+                    </div>
+
+                    <div class="flex items-start">
+                        <input type="checkbox" id="check-layout" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
+                        <label for="check-layout" class="ml-3 text-sm text-gray-300 leading-tight">
+                            You've checked for <strong>layout issues</strong>.
+                        </label>
+                    </div>
+
+                    <div class="flex items-start">
+                        <input type="checkbox" id="check-artwork" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
+                        <label for="check-artwork" class="ml-3 text-sm text-gray-300 leading-tight">
+                            You've checked for <strong>artwork issues</strong>.
+                        </label>
+                    </div>
+
+                    <div class="flex items-start">
+                        <input type="checkbox" id="check-colors" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
+                        <label for="check-colors" class="ml-3 text-sm text-gray-300 leading-tight">
+                            You are satisfied with the estimated colors, or have ordered a physical proof to see what the printed colors will look like.
+                        </label>
+                    </div>
+
+                    <div class="flex items-start">
+                        <input type="checkbox" id="check-responsibility" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
+                        <label for="check-responsibility" class="ml-3 text-sm text-red-200/90 leading-tight">
+                            If the proof containing errors is approved, you're responsible for all costs, including corrections and reprints.
+                        </label>
+                    </div>
+
+                    <div class="flex items-start bg-indigo-900/20 p-2 -ml-2 rounded-lg border border-indigo-500/30">
+                        <input type="checkbox" id="check-specs" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
+                        <label for="check-specs" class="ml-3 text-sm text-gray-200 leading-tight" id="approval-specs-text">
+                            You are approving this to be printed on <span class="font-bold text-white">{STOCK}</span> in <span class="font-bold text-white">{COLOR}</span>.
+                        </label>
+                    </div>
+
                 </div>
 
-                <div class="flex items-start">
-                    <input type="checkbox" id="check-spelling" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
-                    <label for="check-spelling" class="ml-3 text-sm text-gray-300 leading-tight">
-                        You've checked for <strong>spelling errors</strong>.
-                    </label>
+                <div class="pt-4 mt-4 border-t border-slate-700">
+                    <label for="signature-input" class="block text-sm font-medium text-gray-400 mb-2">Electronic Signature (Type Full Name)</label>
+                    <input type="text" id="signature-input" class="w-full rounded-lg bg-slate-900/50 border border-slate-600 text-white px-4 py-2 focus:ring-2 focus:ring-indigo-500 focus:border-transparent placeholder-gray-600" placeholder="e.g. John Doe">
                 </div>
 
-                <div class="flex items-start">
-                    <input type="checkbox" id="check-layout" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
-                    <label for="check-layout" class="ml-3 text-sm text-gray-300 leading-tight">
-                        You've checked for <strong>layout issues</strong>.
-                    </label>
+                <div class="flex justify-end space-x-3 mt-8 pt-2">
+                    <button type="button" id="modal-approval-cancel" class="px-5 py-2 rounded-lg bg-slate-700 text-white hover:bg-slate-600 transition-colors">
+                        Cancel
+                    </button>
+                    <button type="submit" id="modal-approval-confirm" disabled class="px-5 py-2 rounded-lg bg-green-600 text-white font-semibold shadow-lg hover:bg-green-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all">
+                        Approve Project
+                    </button>
                 </div>
-
-                <div class="flex items-start">
-                    <input type="checkbox" id="check-artwork" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
-                    <label for="check-artwork" class="ml-3 text-sm text-gray-300 leading-tight">
-                        You've checked for <strong>artwork issues</strong>.
-                    </label>
-                </div>
-
-                <div class="flex items-start">
-                    <input type="checkbox" id="check-colors" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
-                    <label for="check-colors" class="ml-3 text-sm text-gray-300 leading-tight">
-                        You are satisfied with the estimated colors, or have ordered a physical proof to see what the printed colors will look like.
-                    </label>
-                </div>
-
-                <div class="flex items-start">
-                    <input type="checkbox" id="check-responsibility" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
-                    <label for="check-responsibility" class="ml-3 text-sm text-red-200/90 leading-tight">
-                        If the proof containing errors is approved, you're responsible for all costs, including corrections and reprints.
-                    </label>
-                </div>
-
-                <div class="flex items-start bg-indigo-900/20 p-2 -ml-2 rounded-lg border border-indigo-500/30">
-                    <input type="checkbox" id="check-specs" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
-                    <label for="check-specs" class="ml-3 text-sm text-gray-200 leading-tight" id="approval-specs-text">
-                        You are approving this to be printed on <span class="font-bold text-white">{STOCK}</span> in <span class="font-bold text-white">{COLOR}</span>.
-                    </label>
-                </div>
-
-            </div>
-
-            <div class="pt-4 mt-4 border-t border-slate-700">
-                <label for="signature-input" class="block text-sm font-medium text-gray-400 mb-2">Electronic Signature (Type Full Name)</label>
-                <input type="text" id="signature-input" class="w-full rounded-lg bg-slate-900/50 border border-slate-600 text-white px-4 py-2 focus:ring-2 focus:ring-indigo-500 focus:border-transparent placeholder-gray-600" placeholder="e.g. John Doe">
-            </div>
-
-            <div class="flex justify-end space-x-3 mt-8 pt-2">
-                <button type="button" id="modal-approval-cancel" class="px-5 py-2 rounded-lg bg-slate-700 text-white hover:bg-slate-600 transition-colors">
-                    Cancel
-                </button>
-                <button type="submit" id="modal-approval-confirm" disabled class="px-5 py-2 rounded-lg bg-green-600 text-white font-semibold shadow-lg hover:bg-green-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all">
-                    Approve Project
-                </button>
-            </div>
-        </form>
+            </form>
+        </div>
     </div>
-</div>
 
     <div id="share-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center hidden z-[70]">
         <div class="bg-slate-800 rounded-lg shadow-xl p-6 w-full max-w-lg mx-4 border border-slate-700/50">
@@ -378,7 +372,6 @@
             </div>
         </div>
     </div>
-    <div id="guide-tooltip" class="fixed hidden z-50 max-w-xs bg-slate-900/95 backdrop-blur-sm text-white text-sm p-3 rounded-lg shadow-xl border border-slate-600 pointer-events-none transition-opacity duration-150">
-    </div>
-    </body>
+
+</body>
 </html>
