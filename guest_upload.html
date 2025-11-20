@@ -68,64 +68,112 @@
                         </div>
                     </div>
 
-                    <div id="booklet-upload-section" class="hidden space-y-4">
+                    <div id="booklet-upload-section" class="hidden">
 
-                        <div>
-                            <label class="block text-sm font-medium text-gray-300 mb-1">Interior Pages (Multi-page PDF)</label>
-                            <div class="drop-zone rounded-lg p-4 text-center cursor-pointer bg-slate-900/50 hover:bg-slate-900/80 relative group">
-                                <input type="file" id="file-interior" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" accept=".pdf">
-                                <div class="flex items-center justify-center space-x-2">
-                                    <svg class="h-6 w-6 text-gray-400 group-hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                                    </svg>
-                                    <span class="text-sm text-gray-300 group-hover:text-white">Select Interior File</span>
+                        <!-- Tabs -->
+                        <div class="flex border-b border-slate-700 mb-6">
+                            <button type="button" id="tab-interior" class="px-4 py-2 text-sm font-medium text-indigo-400 border-b-2 border-indigo-500 focus:outline-none">Interior Pages</button>
+                            <button type="button" id="tab-cover" class="px-4 py-2 text-sm font-medium text-gray-400 hover:text-gray-200 focus:outline-none">Cover Builder</button>
+                        </div>
+
+                        <!-- Interior Tab Content -->
+                        <div id="content-interior">
+                            <div class="flex justify-between items-center mb-4">
+                                <label class="block text-sm font-medium text-gray-300">Interior Files</label>
+                                <button type="button" id="add-interior-file-btn" class="text-xs bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded transition-colors flex items-center gap-1">
+                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                                    Add File
+                                </button>
+                                <input type="file" id="hidden-interior-input" class="hidden" accept=".pdf,.jpg,.png,.psd" multiple>
+                            </div>
+
+                            <!-- File List Container -->
+                            <div id="interior-file-list" class="space-y-3 mb-4">
+                                <!-- Empty State -->
+                                <div id="interior-empty-state" class="text-center py-8 border-2 border-dashed border-gray-700 rounded-lg bg-slate-900/30">
+                                    <p class="text-gray-500 text-sm">No files added yet.</p>
+                                    <p class="text-gray-600 text-xs mt-1">Click "Add File" to start building your book.</p>
                                 </div>
-                                <p id="file-name-interior" class="mt-1 text-indigo-400 text-xs font-medium truncate"></p>
+                            </div>
+
+                             <!-- Add File Drop Zone (Always visible at bottom) -->
+                            <div class="drop-zone rounded-lg p-4 text-center cursor-pointer bg-slate-900/50 hover:bg-slate-900/80 relative group border-2 border-dashed border-gray-600 transition-all hover:border-indigo-500">
+                                <input type="file" id="file-interior-drop" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" accept=".pdf,.jpg,.png,.psd" multiple>
+                                <div class="flex items-center justify-center space-x-2">
+                                    <svg class="h-5 w-5 text-gray-400 group-hover:text-indigo-400 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                                    </svg>
+                                    <span class="text-sm text-gray-300 group-hover:text-white font-medium">Drop more files here</span>
+                                </div>
                             </div>
                         </div>
 
-                        <div>
-                            <label class="block text-sm font-medium text-gray-300 mb-1">Front Cover (Optional)</label>
-                            <div class="drop-zone rounded-lg p-4 text-center cursor-pointer bg-slate-900/50 hover:bg-slate-900/80 relative group">
-                                <input type="file" id="file-cover-front" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" accept=".pdf,.jpg,.png">
-                                <div class="flex items-center justify-center space-x-2">
-                                    <svg class="h-6 w-6 text-gray-400 group-hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                                    </svg>
-                                    <span class="text-sm text-gray-300 group-hover:text-white">Select Front Cover</span>
-                                </div>
-                                <p id="file-name-cover-front" class="mt-1 text-indigo-400 text-xs font-medium truncate"></p>
-                            </div>
-                        </div>
+                        <!-- Cover Builder Tab Content -->
+                        <div id="content-cover" class="hidden grid grid-cols-1 lg:grid-cols-3 gap-6">
 
-                        <div>
-                            <label class="block text-sm font-medium text-gray-300 mb-1">Spine (Optional)</label>
-                             <div class="drop-zone rounded-lg p-4 text-center cursor-pointer bg-slate-900/50 hover:bg-slate-900/80 relative group">
-                                <input type="file" id="file-spine" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" accept=".pdf,.jpg,.png">
-                                <div class="flex items-center justify-center space-x-2">
-                                    <svg class="h-6 w-6 text-gray-400 group-hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
-                                    </svg>
-                                    <span class="text-sm text-gray-300 group-hover:text-white">Select Spine</span>
-                                </div>
-                                <p id="file-name-spine" class="mt-1 text-indigo-400 text-xs font-medium truncate"></p>
-                            </div>
-                        </div>
+                            <!-- Left: Upload Controls -->
+                            <div class="lg:col-span-1 space-y-4">
 
-                         <div>
-                            <label class="block text-sm font-medium text-gray-300 mb-1">Back Cover (Optional)</label>
-                             <div class="drop-zone rounded-lg p-4 text-center cursor-pointer bg-slate-900/50 hover:bg-slate-900/80 relative group">
-                                <input type="file" id="file-cover-back" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" accept=".pdf,.jpg,.png">
-                                <div class="flex items-center justify-center space-x-2">
-                                    <svg class="h-6 w-6 text-gray-400 group-hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                                    </svg>
-                                    <span class="text-sm text-gray-300 group-hover:text-white">Select Back Cover</span>
+                                <!-- Front Cover -->
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-400 mb-1 uppercase tracking-wider">Front Cover</label>
+                                    <div class="drop-zone rounded-md p-3 text-center cursor-pointer bg-slate-900/50 hover:bg-slate-900/80 relative group border border-slate-600">
+                                        <input type="file" id="file-cover-front" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" accept=".pdf,.jpg,.png,.psd">
+                                        <div class="flex items-center justify-center space-x-2">
+                                            <svg class="h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                                            <span class="text-sm text-gray-300">Upload Front</span>
+                                        </div>
+                                        <p id="file-name-cover-front" class="mt-1 text-indigo-400 text-xs truncate"></p>
+                                    </div>
                                 </div>
-                                <p id="file-name-cover-back" class="mt-1 text-indigo-400 text-xs font-medium truncate"></p>
-                            </div>
-                        </div>
 
+                                <!-- Spine -->
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-400 mb-1 uppercase tracking-wider">Spine</label>
+                                    <div class="drop-zone rounded-md p-3 text-center cursor-pointer bg-slate-900/50 hover:bg-slate-900/80 relative group border border-slate-600">
+                                        <input type="file" id="file-spine" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" accept=".pdf,.jpg,.png,.psd">
+                                        <div class="flex items-center justify-center space-x-2">
+                                            <svg class="h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" /></svg>
+                                            <span class="text-sm text-gray-300">Upload Spine</span>
+                                        </div>
+                                        <p id="file-name-spine" class="mt-1 text-indigo-400 text-xs truncate"></p>
+                                    </div>
+                                    <p class="text-[10px] text-gray-500 mt-1">Calc. Width: <span id="spine-width-display" class="text-gray-300">0.00</span>"</p>
+                                </div>
+
+                                <!-- Back Cover -->
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-400 mb-1 uppercase tracking-wider">Back Cover</label>
+                                    <div class="drop-zone rounded-md p-3 text-center cursor-pointer bg-slate-900/50 hover:bg-slate-900/80 relative group border border-slate-600">
+                                        <input type="file" id="file-cover-back" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" accept=".pdf,.jpg,.png,.psd">
+                                        <div class="flex items-center justify-center space-x-2">
+                                            <svg class="h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                                            <span class="text-sm text-gray-300">Upload Back</span>
+                                        </div>
+                                        <p id="file-name-cover-back" class="mt-1 text-indigo-400 text-xs truncate"></p>
+                                    </div>
+                                </div>
+
+                            </div>
+
+                            <!-- Right: Canvas Preview -->
+                            <div class="lg:col-span-2">
+                                <label class="block text-xs font-medium text-gray-400 mb-1 uppercase tracking-wider">Cover Preview</label>
+                                <div class="relative bg-slate-900 rounded-lg border border-slate-700 p-4 flex items-center justify-center min-h-[300px] overflow-hidden">
+                                    <canvas id="cover-preview-canvas" class="max-w-full max-h-[400px] shadow-2xl bg-white"></canvas>
+                                    <!-- Overlay for loading/instructions -->
+                                    <div id="cover-preview-placeholder" class="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                        <p class="text-gray-500 text-sm">Preview will update automatically</p>
+                                    </div>
+                                </div>
+                                <div class="flex justify-center gap-4 mt-2 text-[10px] text-gray-500">
+                                    <div class="flex items-center gap-1"><div class="w-2 h-2 bg-red-500 rounded-full"></div> Bleed</div>
+                                    <div class="flex items-center gap-1"><div class="w-2 h-2 bg-blue-500 rounded-full"></div> Trim</div>
+                                    <div class="flex items-center gap-1"><div class="w-2 h-2 bg-green-500 rounded-full"></div> Safe</div>
+                                </div>
+                            </div>
+
+                        </div>
                     </div>
 
                     <div class="pt-4">
@@ -163,6 +211,114 @@
 
         </div>
     </main>
+
+    <!-- Specs Modal -->
+    <div id="specs-modal" class="fixed inset-0 z-50 hidden bg-gray-900 bg-opacity-90 overflow-y-auto h-full w-full backdrop-blur-sm">
+        <div class="relative top-20 mx-auto p-8 border w-full max-w-lg shadow-lg rounded-xl bg-slate-800 border-slate-700">
+            <div class="mt-3">
+                <h3 class="text-2xl leading-6 font-bold text-white mb-6 text-center">Project Specifications</h3>
+                <p class="text-gray-400 text-sm mb-6 text-center">Please confirm the details of your project to ensure the correct setup.</p>
+
+                <form id="specs-form" class="space-y-5">
+
+                    <!-- Dimensions -->
+                    <div>
+                        <label class="block text-sm font-medium text-gray-300 mb-2">Finished Size</label>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-xs text-gray-500 mb-1">Width</label>
+                                <div class="relative">
+                                    <input type="number" id="spec-width" step="0.01" required class="w-full bg-slate-900 border border-slate-600 rounded-md py-2 px-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                    <span class="absolute right-3 top-2 text-gray-500 text-sm">in</span>
+                                </div>
+                            </div>
+                            <div>
+                                <label class="block text-xs text-gray-500 mb-1">Height</label>
+                                <div class="relative">
+                                    <input type="number" id="spec-height" step="0.01" required class="w-full bg-slate-900 border border-slate-600 rounded-md py-2 px-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                    <span class="absolute right-3 top-2 text-gray-500 text-sm">in</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Binding (For Multi-page) -->
+                    <div id="binding-section" class="hidden">
+                        <label class="block text-sm font-medium text-gray-300 mb-2">Binding Style</label>
+                        <select id="spec-binding" class="w-full bg-slate-900 border border-slate-600 rounded-md py-2 px-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                            <!-- Populated by JS -->
+                        </select>
+                    </div>
+
+                    <!-- Paper Type (For Perfect Bound Spine Calc) -->
+                    <div id="paper-section" class="hidden">
+                        <label class="block text-sm font-medium text-gray-300 mb-2">Interior Paper Type</label>
+                        <p class="text-xs text-gray-500 mb-2">Required to calculate spine width.</p>
+                        <select id="spec-paper" class="w-full bg-slate-900 border border-slate-600 rounded-md py-2 px-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                             <!-- Populated by JS -->
+                        </select>
+                    </div>
+
+                    <!-- Page Count -->
+                    <div id="page-count-section" class="hidden">
+                        <label class="block text-sm font-medium text-gray-300 mb-2">Estimated Page Count</label>
+                         <input type="number" id="spec-page-count" class="w-full bg-slate-900 border border-slate-600 rounded-md py-2 px-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="e.g. 100">
+                    </div>
+
+                    <div class="pt-4">
+                        <button type="submit" id="save-specs-btn" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 px-4 rounded-lg shadow transition-colors">
+                            Save & Continue
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Page Settings Modal -->
+    <div id="page-settings-modal" class="fixed inset-0 z-50 hidden bg-gray-900 bg-opacity-90 overflow-y-auto h-full w-full backdrop-blur-sm">
+        <div class="relative top-20 mx-auto p-6 border w-full max-w-2xl shadow-lg rounded-xl bg-slate-800 border-slate-700">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-xl font-bold text-white">File Settings</h3>
+                <button type="button" id="close-settings-modal" class="text-gray-400 hover:text-white">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <!-- Controls -->
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-300 mb-2">Scaling Mode</label>
+                        <div class="flex gap-2">
+                            <button type="button" class="scale-mode-btn flex-1 bg-slate-700 hover:bg-slate-600 text-white py-2 px-2 rounded text-xs border border-transparent" data-mode="fit">Fit to Page</button>
+                            <button type="button" class="scale-mode-btn flex-1 bg-slate-700 hover:bg-slate-600 text-white py-2 px-2 rounded text-xs border border-transparent" data-mode="fill">Fill Page</button>
+                            <button type="button" class="scale-mode-btn flex-1 bg-slate-700 hover:bg-slate-600 text-white py-2 px-2 rounded text-xs border border-transparent" data-mode="stretch">Stretch</button>
+                        </div>
+                    </div>
+                     <div>
+                        <label class="block text-sm font-medium text-gray-300 mb-2">Alignment</label>
+                        <select id="setting-alignment" class="w-full bg-slate-900 border border-slate-600 rounded-md py-2 px-3 text-white text-sm">
+                            <option value="center">Center</option>
+                            <option value="top-left">Top Left</option>
+                        </select>
+                    </div>
+                    <div class="pt-4">
+                        <button type="button" id="apply-settings-btn" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2 px-4 rounded shadow">Apply to File</button>
+                    </div>
+                </div>
+
+                <!-- Preview -->
+                <div>
+                     <label class="block text-xs font-medium text-gray-400 mb-1 uppercase tracking-wider">Preview</label>
+                     <div class="relative bg-slate-900 rounded-lg border border-slate-700 p-4 flex items-center justify-center h-[300px] overflow-hidden">
+                        <canvas id="settings-preview-canvas" class="max-w-full max-h-full shadow-lg bg-white"></canvas>
+                     </div>
+                     <p class="text-[10px] text-gray-500 mt-1 text-center">Shows 1st page of file on project sheet.</p>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <script type="module" src="js/guest_upload.js"></script>
 </body>

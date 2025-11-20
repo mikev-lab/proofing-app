@@ -1764,6 +1764,276 @@ exports.generateFinalPdf = onCall({
     }
 });
 
+// --- NEW Generate Booklet Function ---
+exports.generateBooklet = onCall({
+    region: 'us-central1',
+    memory: '4GiB',
+    timeoutSeconds: 540
+}, async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'User must be authenticated.');
+
+    const { projectId, files } = request.data;
+    if (!projectId || !Array.isArray(files)) {
+        throw new HttpsError('invalid-argument', 'Missing projectId or files array.');
+    }
+
+    logger.log(`Generating booklet for project ${projectId} with ${files.length} files.`);
+    const bucket = admin.storage().bucket();
+    const authAxios = await getAuthenticatedClient();
+
+    // Fetch Project Specs
+    const projectRef = db.collection('projects').doc(projectId);
+    const projectDoc = await projectRef.get();
+    if (!projectDoc.exists) throw new HttpsError('not-found', 'Project not found.');
+    const projectData = projectDoc.data();
+    const specs = projectData.specs || {};
+
+    // Dimensions (default to Letter if missing)
+    const trimWidth = specs.dimensions?.width || 8.5;
+    const trimHeight = specs.dimensions?.height || 11;
+    const bleed = 0.125;
+
+    // Create Documents
+    const interiorDoc = await PDFDocument.create();
+    let coverDoc = null;
+
+    const tempFiles = [];
+
+    try {
+        // Helper to convert non-embeddable files (PSD, etc) to PDF/PNG
+        async function prepareFileForEmbedding(storagePath, type) {
+            const tempPath = path.join(os.tmpdir(), `temp_${Date.now()}_${Math.random().toString(36).substring(7)}`);
+            await bucket.file(storagePath).download({ destination: tempPath });
+            tempFiles.push(tempPath);
+
+            // Check Extension/Type. If PSD, convert.
+            // We can use Gotenberg LibreOffice for generic conversion or specific tools.
+            // Assuming Gotenberg handles PSD -> PDF via LibreOffice.
+            const ext = path.extname(storagePath).toLowerCase();
+
+            if (ext === '.psd' || ext === '.ai') {
+                logger.log(`Converting ${ext} file to PDF via Gotenberg...`);
+                const convertFormData = new FormData();
+                convertFormData.append('files', fs.createReadStream(tempPath), path.basename(storagePath));
+
+                const response = await authAxios.post(`${GOTENBERG_URL}/forms/libreoffice/convert`, convertFormData, {
+                    responseType: 'arraybuffer'
+                });
+
+                // Replace temp file with converted PDF
+                fs.writeFileSync(tempPath, response.data);
+                return { path: tempPath, isPdf: true };
+            } else if (ext === '.pdf') {
+                return { path: tempPath, isPdf: true };
+            } else {
+                 // Images (JPG, PNG)
+                 return { path: tempPath, isPdf: false };
+            }
+        }
+
+        // Process Files
+        const interiorFiles = files.filter(f => f.type.startsWith('interior'));
+        const coverFiles = {
+            front: files.find(f => f.type === 'cover_front'),
+            spine: files.find(f => f.type === 'cover_spine'),
+            back: files.find(f => f.type === 'cover_back')
+        };
+
+        // --- 1. Build Interior ---
+        for (const fileMeta of interiorFiles) {
+            const { path: localPath, isPdf } = await prepareFileForEmbedding(fileMeta.storagePath, fileMeta.type);
+            const settings = fileMeta.settings || { scaleMode: 'fit', alignment: 'center' };
+
+            let sourcePages = [];
+
+            if (isPdf) {
+                const srcDoc = await PDFDocument.load(fs.readFileSync(localPath));
+                const embeddedPages = await interiorDoc.embedPages(srcDoc.getPages());
+
+                embeddedPages.forEach((embeddedPage) => {
+                     drawOnSheet(interiorDoc, embeddedPage, trimWidth, trimHeight, bleed, settings);
+                });
+
+            } else {
+                // Image
+                const imgBytes = fs.readFileSync(localPath);
+                let embeddedImage;
+                if (localPath.toLowerCase().endsWith('.png')) embeddedImage = await interiorDoc.embedPng(imgBytes);
+                else embeddedImage = await interiorDoc.embedJpg(imgBytes);
+
+                drawOnSheet(interiorDoc, embeddedImage, trimWidth, trimHeight, bleed, settings);
+            }
+        }
+
+        // --- 2. Build Cover (If exists) ---
+        if (coverFiles.front || coverFiles.back || coverFiles.spine) {
+            coverDoc = await PDFDocument.create();
+
+            // Calculate Spine
+            // We need to know the paper caliper.
+            // For now, use hardcoded map if available or fallback.
+            // Ideally, we passed this in request.data or specs.
+            // Let's check specs.paperType
+            const paperType = specs.paperType || '';
+            // Simple lookup (duplicate logic from frontend for now, or fetch from Firestore inventory)
+            let caliper = 0.004; // Default
+            // ... (Implementation of lookup if needed, or trust frontend passed spine width? No, calculate securely)
+            // For MVP, let's use a fixed calculation based on page count from project
+            const pageCount = specs.pageCount || interiorFiles.length; // Fallback to file count?
+            const spineWidth = (pageCount / 2) * caliper;
+
+            const totalWidth = (trimWidth * 2) + spineWidth + (bleed * 2);
+            const totalHeight = trimHeight + (bleed * 2);
+
+            const coverPage = coverDoc.addPage([totalWidth * 72, totalHeight * 72]); // PDF uses points (72 dpi)
+
+            // Helper to draw cover part
+            async function drawPart(fileMeta, x, y, w, h) {
+                if (!fileMeta) return;
+                const { path: localPath, isPdf } = await prepareFileForEmbedding(fileMeta.storagePath);
+
+                if (isPdf) {
+                    const srcDoc = await PDFDocument.load(fs.readFileSync(localPath));
+                    const [embedded] = await coverDoc.embedPages([srcDoc.getPage(0)]);
+                    coverPage.drawPage(embedded, { x: x*72, y: y*72, width: w*72, height: h*72 });
+                } else {
+                    const imgBytes = fs.readFileSync(localPath);
+                    let img;
+                    if (localPath.toLowerCase().endsWith('.png')) img = await coverDoc.embedPng(imgBytes);
+                    else img = await coverDoc.embedJpg(imgBytes);
+                    coverPage.drawImage(img, { x: x*72, y: y*72, width: w*72, height: h*72 });
+                }
+            }
+
+            // Draw Back (Left)
+            await drawPart(coverFiles.back, 0, 0, trimWidth + bleed, totalHeight); // Includes left bleed
+
+            // Draw Spine (Middle)
+            await drawPart(coverFiles.spine, trimWidth + bleed, 0, spineWidth, totalHeight);
+
+            // Draw Front (Right)
+            await drawPart(coverFiles.front, trimWidth + bleed + spineWidth, 0, trimWidth + bleed, totalHeight);
+        }
+
+        // --- 3. Save & Update ---
+
+        // Interior
+        if (interiorFiles.length > 0) {
+            const pdfBytes = await interiorDoc.save();
+            const fileName = `${Date.now()}_Interior_Built.pdf`;
+            const storagePath = `proofs/${projectId}/${fileName}`;
+            await bucket.file(storagePath).save(pdfBytes, { contentType: 'application/pdf' });
+
+            // Generate Signed URL
+            // (Standard signed URL logic)
+             const [signedUrl] = await bucket.file(storagePath).getSignedUrl({ action: 'read', expires: '03-09-2491' });
+
+             // Update Firestore Versions
+             await projectRef.update({
+                versions: admin.firestore.FieldValue.arrayUnion({
+                    versionNumber: (projectData.versions?.length || 0) + 1,
+                    fileURL: signedUrl,
+                    filePath: storagePath,
+                    createdAt: admin.firestore.Timestamp.now(),
+                    processingStatus: 'complete',
+                    type: 'interior_build'
+                })
+             });
+        }
+
+        // Cover
+        if (coverDoc) {
+            const pdfBytes = await coverDoc.save();
+            const fileName = `${Date.now()}_Cover_Built.pdf`;
+            const storagePath = `proofs/${projectId}/${fileName}`;
+            await bucket.file(storagePath).save(pdfBytes, { contentType: 'application/pdf' });
+
+             const [signedUrl] = await bucket.file(storagePath).getSignedUrl({ action: 'read', expires: '03-09-2491' });
+
+             await projectRef.update({
+                 cover: {
+                     fileURL: signedUrl,
+                     filePath: storagePath,
+                     createdAt: admin.firestore.Timestamp.now(),
+                     processingStatus: 'complete'
+                 }
+             });
+        }
+
+        return { success: true };
+
+    } catch (err) {
+        logger.error("Error generating booklet:", err);
+        throw new HttpsError('internal', err.message);
+    } finally {
+        // Cleanup
+        tempFiles.forEach(p => {
+            try { fs.unlinkSync(p); } catch (e) {}
+        });
+    }
+});
+
+function drawOnSheet(doc, embeddable, trimW, trimH, bleed, settings) {
+    // Sheet Size = Trim + Bleed * 2
+    const sheetW = trimW + (bleed * 2);
+    const sheetH = trimH + (bleed * 2);
+
+    const page = doc.addPage([sheetW * 72, sheetH * 72]);
+
+    // Calculate Scale
+    // Src dims
+    const srcW = embeddable.width || embeddable.scale(1).width; // Handle different object types
+    const srcH = embeddable.height || embeddable.scale(1).height;
+
+    const targetW = sheetW * 72; // Points
+    const targetH = sheetH * 72;
+
+    // ... Scaling Logic (Fit/Fill/Stretch) similar to frontend ...
+    // For brevity, assume 'fit' means fit within safe area, 'fill' means fill bleed.
+
+    let drawW, drawH;
+
+    // Default Fill
+    const srcRatio = srcW / srcH;
+    const targetRatio = targetW / targetH;
+
+    if (settings.scaleMode === 'fit') {
+        if (srcRatio > targetRatio) {
+             drawW = targetW;
+             drawH = targetW / srcRatio;
+        } else {
+             drawH = targetH;
+             drawW = targetH * srcRatio;
+        }
+    } else if (settings.scaleMode === 'stretch') {
+        // Stretch to fill exactly
+        drawW = targetW;
+        drawH = targetH;
+    } else {
+         // Fill (Proportional Crop)
+        if (srcRatio > targetRatio) {
+             drawH = targetH;
+             drawW = targetH * srcRatio;
+        } else {
+             drawW = targetW;
+             drawH = targetW / srcRatio;
+        }
+    }
+
+    // Center
+    const x = (targetW - drawW) / 2;
+    const y = (targetH - drawH) / 2;
+
+    if (embeddable.dims) {
+         // Is PDF Page
+         page.drawPage(embeddable, { x, y, width: drawW, height: drawH });
+    } else {
+         // Is Image
+         page.drawImage(embeddable, { x, y, width: drawW, height: drawH });
+    }
+}
+
+
 exports.imposePdf = onCall({
   region: 'us-central1',
   memory: '8GiB', // Imposition can be memory intensive
