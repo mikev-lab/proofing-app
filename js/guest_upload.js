@@ -64,6 +64,10 @@ const hiddenInteriorInput = document.getElementById('hidden-interior-input');
 const fileInteriorDrop = document.getElementById('file-interior-drop');
 const viewerZoom = document.getElementById('viewer-zoom');
 const jumpToPageInput = document.getElementById('jump-to-page');
+const setAllFitBtn = document.getElementById('set-all-fit');
+const setAllFillBtn = document.getElementById('set-all-fill');
+const setAllStretchBtn = document.getElementById('set-all-stretch');
+const uploadSpreadInput = document.getElementById('upload-spread-input');
 
 // Page Settings Modal Elements
 const pageSettingsModal = document.getElementById('page-settings-modal');
