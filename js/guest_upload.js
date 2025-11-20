@@ -799,9 +799,6 @@ if (fileInteriorDrop) {
     setupDropZone('file-interior-drop'); // Enable drag/drop styles
 }
 
-if (uploadSpreadInput) {
-    uploadSpreadInput.addEventListener('change', (e) => addInteriorFiles(e.target.files, true)); // true = isSpread
-}
 
 // Defined at top level so it's accessible
 function setAllScaleMode(mode) {
