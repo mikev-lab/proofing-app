@@ -352,6 +352,13 @@ function renderBookViewer() {
         grid.className = "grid grid-cols-2 gap-x-0 gap-y-8 justify-items-center items-end pb-12";
         grid.id = "book-grid";
 
+        // Dimensions for layout
+        const width = projectSpecs.dimensions.width;
+        const height = projectSpecs.dimensions.height;
+        const bleed = 0.125;
+        const visualScale = (250 * viewerScale) / ((width + bleed*2) * 96);
+        const pixelsPerInch = 96 * visualScale;
+
         const observer = new IntersectionObserver((entries, obs) => {
             entries.forEach(entry => {
                 if (entry.isIntersecting) {
@@ -402,18 +409,21 @@ function renderBookViewer() {
 
             card.className = classes;
 
-            // Size the card based on aspect ratio + zoom
-            // For now fixed CSS width, canvas fits inside
-            const cardWidth = 200 * viewerScale; // Zoom factor
-            // card.style.width = `${cardWidth}px`; // Let canvas dictate size? No, uniform width looks better.
-
-            // Canvas Container
+            // Canvas Container - Trim Size (Masking Bleed)
             const canvasContainer = document.createElement('div');
-            canvasContainer.className = "p-2 relative overflow-hidden";
+            canvasContainer.className = "relative overflow-hidden bg-white shadow-sm mx-auto";
+            // Explicitly size to TRIM dimensions to hide bleed
+            canvasContainer.style.width = `${width * pixelsPerInch}px`;
+            canvasContainer.style.height = `${height * pixelsPerInch}px`;
+
             const canvas = document.createElement('canvas');
             canvas.id = `canvas-${page.id}`;
-            canvas.className = "bg-white shadow-sm mx-auto";
-            // Height auto?
+            // Canvas will be sized larger (bleed) and centered negatively
+            // Initial style to center it
+            canvas.style.position = "absolute";
+            canvas.style.left = `-${bleed * pixelsPerInch}px`;
+            canvas.style.top = `-${bleed * pixelsPerInch}px`;
+
             canvasContainer.appendChild(canvas);
 
             // Overlay Controls
@@ -501,8 +511,15 @@ async function renderPageCanvas(page, canvas) {
 
     canvas.width = totalW * pixelsPerInch * pixelDensity;
     canvas.height = totalH * pixelsPerInch * pixelDensity;
+
+    // Style width/height is set by renderBookViewer container logic mostly,
+    // but we need to ensure the canvas element itself has the right size to be positioned.
     canvas.style.width = `${totalW * pixelsPerInch}px`;
     canvas.style.height = `${totalH * pixelsPerInch}px`;
+
+    // Update position to ensure centering (in case scale changed)
+    canvas.style.left = `-${bleed * pixelsPerInch}px`;
+    canvas.style.top = `-${bleed * pixelsPerInch}px`;
 
     ctx.setTransform(pixelDensity, 0, 0, pixelDensity, 0, 0);
     ctx.scale(pixelsPerInch, pixelsPerInch);
@@ -576,11 +593,15 @@ async function drawFileWithTransform(ctx, file, targetX, targetY, targetW, targe
     }
 
     if (!imgBitmap && file.type.startsWith('image/')) {
-        imgBitmap = await createImageBitmap(file);
-        srcW = imgBitmap.width;
-        srcH = imgBitmap.height;
-    } else {
-         // Placeholder
+        try {
+            imgBitmap = await createImageBitmap(file);
+            srcW = imgBitmap.width;
+            srcH = imgBitmap.height;
+        } catch(e) { console.warn("Failed to create bitmap from image", e); }
+    }
+
+    if (!imgBitmap) {
+         // Placeholder (Grey Box) if loading failed or still processing
         ctx.fillStyle = '#ccc';
         ctx.fillRect(targetX, targetY, targetW, targetH);
         return;
