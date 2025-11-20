@@ -34,12 +34,15 @@ service cloud.firestore {
         }
     // --- NEW Guest Helper Functions ---
     function hasValidGuestDataAccess(projectId, permission) {
-       // Secure Custom Claim Check
+       // Secure Custom Claim Check with Safe Access (.get)
+       // Checks if 'guestProjectId' matches, and if permission is either null (any access) or explicitly true
        return request.auth != null &&
-              request.auth.token.guestProjectId == projectId &&
-              (permission == null || request.auth.token.guestPermissions[permission] == true);
+              request.auth.token.get('guestProjectId', null) == projectId &&
+              (
+                permission == null ||
+                request.auth.token.get('guestPermissions', {}).get(permission, false) == true
+              );
     }
-
 
 
     // --- Rules for 'users' Collection ---
