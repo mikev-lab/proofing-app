@@ -328,8 +328,25 @@ specsForm.addEventListener('submit', async (e) => {
 
 
 // --- Firestore Listener ---
-onAuthStateChanged(auth, (user) => {
+onAuthStateChanged(auth, async (user) => {
     if (user) {
+        // [Security Check] Ensure user is an Admin
+        try {
+            const userDoc = await getDoc(doc(db, "users", user.uid));
+            if (!userDoc.exists() || userDoc.data().role !== 'admin') {
+                console.warn("Access denied: User is not an admin.");
+                window.location.href = 'index.html'; // Redirect non-admins
+                return;
+            }
+        } catch (error) {
+            console.error("Error verifying admin status:", error);
+            // If we can't verify, we shouldn't proceed.
+            // However, if the error is permission-denied (because guest can't read users),
+            // that confirms they aren't an admin!
+            window.location.href = 'index.html';
+            return;
+        }
+
         document.getElementById('user-email').textContent = user.email;
         if (projectId) {
             const projectRef = doc(db, "projects", projectId);

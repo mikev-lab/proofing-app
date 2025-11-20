@@ -238,8 +238,22 @@ function renderProjects(projects, companyMap) {
     });
 }
 
-onAuthStateChanged(auth, (user) => {
+onAuthStateChanged(auth, async (user) => {
     if (user) {
+        // [Security Check] Ensure user is an Admin
+        try {
+            const userDoc = await getDoc(doc(db, "users", user.uid));
+            if (!userDoc.exists() || userDoc.data().role !== 'admin') {
+                console.warn("Access denied: User is not an admin.");
+                window.location.href = 'index.html';
+                return;
+            }
+        } catch (error) {
+            console.error("Error verifying admin status:", error);
+            window.location.href = 'index.html';
+            return;
+        }
+
         userEmailSpan.textContent = user.email;
         userEmailSpan.classList.remove('hidden');
         fetchAllProjects();
