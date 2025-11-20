@@ -658,6 +658,14 @@ if (fileInteriorDrop) {
     setupDropZone('file-interior-drop'); // Enable drag/drop styles
 }
 
+if (uploadSpreadInput) {
+    uploadSpreadInput.addEventListener('change', (e) => addInteriorFiles(e.target.files, true)); // true = isSpread
+}
+
+if (setAllFitBtn) setAllFitBtn.onclick = () => setAllScaleMode('fit');
+if (setAllFillBtn) setAllFillBtn.onclick = () => setAllScaleMode('fill');
+if (setAllStretchBtn) setAllStretchBtn.onclick = () => setAllScaleMode('stretch');
+
 if (viewerZoom) {
     viewerZoom.addEventListener('input', (e) => {
         viewerScale = parseFloat(e.target.value);
