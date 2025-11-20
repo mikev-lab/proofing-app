@@ -67,7 +67,13 @@ const jumpToPageInput = document.getElementById('jump-to-page');
 const setAllFitBtn = document.getElementById('set-all-fit');
 const setAllFillBtn = document.getElementById('set-all-fill');
 const setAllStretchBtn = document.getElementById('set-all-stretch');
-const uploadSpreadInput = document.getElementById('upload-spread-input');
+
+const insertFileInput = document.createElement('input');
+insertFileInput.type = 'file';
+insertFileInput.accept = '.pdf,.jpg,.png,.psd';
+insertFileInput.multiple = true;
+insertFileInput.style.display = 'none';
+document.body.appendChild(insertFileInput);
 
 // Page Settings Modal Elements
 const pageSettingsModal = document.getElementById('page-settings-modal');
@@ -277,7 +283,9 @@ if (tabInterior && tabCover) {
 
 // --- Data Model Logic ---
 
-async function addInteriorFiles(files) {
+async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = null) {
+    const newPages = [];
+
     for (const file of Array.from(files)) {
         const sourceId = Date.now() + Math.random().toString(16).slice(2);
         sourceFiles[sourceId] = file;
@@ -285,24 +293,56 @@ async function addInteriorFiles(files) {
         let numPages = 1;
         if (file.type === 'application/pdf') {
              try {
-                const arrayBuffer = await file.arrayBuffer();
-                const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
+                // Use Blob URL to avoid loading entire file into memory
+                const fileUrl = URL.createObjectURL(file);
+                const pdf = await pdfjsLib.getDocument(fileUrl).promise;
                 numPages = pdf.numPages;
+                URL.revokeObjectURL(fileUrl); // Cleanup
              } catch (e) {
                  console.warn("Could not parse PDF", e);
              }
         }
 
-        for (let i = 0; i < numPages; i++) {
-            pages.push({
-                id: `${sourceId}_p${i}`,
-                sourceFileId: sourceId,
-                pageIndex: i + 1, // 1-based for display/pdfjs
-                settings: { scaleMode: 'fit', alignment: 'center' },
-                isSpread: false
-            });
+        if (isSpreadUpload) {
+            // For spread upload, we treat each source "page" (or image) as 2 virtual pages (Left/Right)
+            for (let i = 0; i < numPages; i++) {
+                // Left Half (Page A)
+                newPages.push({
+                    id: `${sourceId}_p${i}_L`,
+                    sourceFileId: sourceId,
+                    pageIndex: i + 1,
+                    settings: { scaleMode: 'fill', alignment: 'center', view: 'left' }, // 'view' property splits the source
+                    isSpread: false // This refers to layout behavior, but here we mean "source is spread"
+                });
+                // Right Half (Page B)
+                newPages.push({
+                    id: `${sourceId}_p${i}_R`,
+                    sourceFileId: sourceId,
+                    pageIndex: i + 1,
+                    settings: { scaleMode: 'fill', alignment: 'center', view: 'right' },
+                    isSpread: false
+                });
+            }
+        } else {
+            // Standard Single Pages
+            for (let i = 0; i < numPages; i++) {
+                newPages.push({
+                    id: `${sourceId}_p${i}`,
+                    sourceFileId: sourceId,
+                    pageIndex: i + 1,
+                    settings: { scaleMode: 'fit', alignment: 'center' },
+                    isSpread: false
+                });
+            }
         }
     }
+
+    if (insertAtIndex !== null && insertAtIndex >= 0 && insertAtIndex <= pages.length) {
+        pages.splice(insertAtIndex, 0, ...newPages);
+    } else {
+        pages.push(...newPages);
+    }
+
     renderBookViewer();
 }
 
@@ -343,156 +383,233 @@ function renderBookViewer() {
     container.innerHTML = ''; // Clear
 
     if (pages.length === 0) {
-        // Empty State
-         container.innerHTML = `
-            <div class="flex flex-col items-center justify-center h-64 border-2 border-dashed border-slate-700 rounded-xl bg-slate-800/30">
-                <p class="text-gray-400 mb-2">Your book is empty.</p>
-                <p class="text-gray-500 text-sm">Drag files here to add pages.</p>
-            </div>
-         `;
-    } else {
-        const grid = document.createElement('div');
-        // Spread Layout: CSS Grid with 2 columns
-        grid.className = "grid grid-cols-2 gap-x-0 gap-y-8 justify-items-center items-end pb-12";
-        grid.id = "book-grid";
+         // Show Initial Insert Bar
+         container.appendChild(createInsertBar(0));
 
-        // Dimensions for layout
-        const width = projectSpecs.dimensions.width;
-        const height = projectSpecs.dimensions.height;
-        const bleed = 0.125;
-        const visualScale = (250 * viewerScale) / ((width + bleed*2) * 96);
-        const pixelsPerInch = 96 * visualScale;
-
-        const observer = new IntersectionObserver((entries, obs) => {
-            entries.forEach(entry => {
-                if (entry.isIntersecting) {
-                    const card = entry.target;
-                    const pageId = card.dataset.id;
-                    const canvas = document.getElementById(`canvas-${pageId}`);
-                    const page = pages.find(p => p.id === pageId);
-
-                    if (canvas && page) {
-                        renderPageCanvas(page, canvas).then(() => {
-                            const placeholder = document.getElementById(`placeholder-${pageId}`);
-                            if(placeholder) placeholder.style.opacity = '0';
-                            setTimeout(() => placeholder?.remove(), 300);
-                        });
-                        obs.unobserve(card);
-                    }
-                }
-            });
-        }, { root: container.parentElement, rootMargin: '200px' });
-
-        pages.forEach((page, index) => {
-            const card = document.createElement('div');
-            card.dataset.id = page.id;
-
-            // Determine Position (Left vs Right)
-            // Index 0 -> Page 1 -> Right Side (Start of Book)
-            // Index 1 -> Page 2 -> Left Side
-            // Index 2 -> Page 3 -> Right Side
-
-            const isRightPage = (index % 2 === 0); // 0, 2, 4... are Right Pages
-            const isFirstPage = (index === 0);
-
-            // Base Classes
-            let classes = "relative group bg-slate-800 shadow-lg border border-slate-700 transition-all hover:border-indigo-500 overflow-hidden";
-
-            // Spread Styling logic
-            if (isFirstPage) {
-                card.style.gridColumnStart = "2"; // Push to Right Column
-                classes += " rounded-r-lg rounded-l-sm border-l-2 border-l-slate-900"; // Spine visual
-            } else if (isRightPage) {
-                card.style.justifySelf = "start"; // Right Column aligns start (leftwards to spine)
-                classes += " rounded-r-lg rounded-l-none border-l-0"; // Connect to spine
-            } else {
-                // Left Page (Odd indices 1, 3...)
-                card.style.justifySelf = "end"; // Left Column aligns end (rightwards to spine)
-                classes += " rounded-l-lg rounded-r-none border-r-0"; // Connect to spine
-            }
-
-            card.className = classes;
-
-            // Canvas Container - Trim Size (Masking Bleed)
-            const canvasContainer = document.createElement('div');
-            canvasContainer.className = "relative overflow-hidden bg-white shadow-sm mx-auto";
-            // Explicitly size to TRIM dimensions to hide bleed
-            canvasContainer.style.width = `${width * pixelsPerInch}px`;
-            canvasContainer.style.height = `${height * pixelsPerInch}px`;
-
-            const canvas = document.createElement('canvas');
-            canvas.id = `canvas-${page.id}`;
-            // Canvas will be sized larger (bleed) and centered negatively
-            // Initial style to center it
-            canvas.style.position = "absolute";
-            canvas.style.left = `-${bleed * pixelsPerInch}px`;
-            canvas.style.top = `-${bleed * pixelsPerInch}px`;
-
-            canvasContainer.appendChild(canvas);
-
-            // Overlay Controls
-            const controls = document.createElement('div');
-            controls.className = "absolute top-2 right-2 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-900/80 p-1 rounded backdrop-blur-sm";
-            controls.innerHTML = `
-                <button onclick="deletePage('${page.id}')" class="text-red-400 hover:text-white p-1" title="Delete Page">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                </button>
-            `;
-
-            // Footer Controls (Settings)
-            const footer = document.createElement('div');
-            footer.className = "px-3 py-2 bg-slate-900/50 border-t border-slate-700 flex justify-between items-center rounded-b-lg";
-
-            // Select for Fit/Fill
-            const select = document.createElement('select');
-            select.className = "bg-slate-800 text-[10px] text-white border border-slate-600 rounded px-1 py-0.5 focus:outline-none focus:border-indigo-500";
-            select.innerHTML = `
-                <option value="fit" ${page.settings.scaleMode === 'fit' ? 'selected' : ''}>Fit</option>
-                <option value="fill" ${page.settings.scaleMode === 'fill' ? 'selected' : ''}>Fill</option>
-                <option value="stretch" ${page.settings.scaleMode === 'stretch' ? 'selected' : ''}>Stretch</option>
-            `;
-            select.onchange = (e) => updatePageSetting(page.id, 'scaleMode', e.target.value);
-
-            // Page Number
-            const pageNum = document.createElement('span');
-            pageNum.className = "text-xs text-gray-400 font-mono";
-            pageNum.textContent = `P${index + 1}`;
-
-            footer.appendChild(pageNum);
-            footer.appendChild(select);
-
-            card.appendChild(controls);
-            card.appendChild(canvasContainer);
-            card.appendChild(footer);
-            grid.appendChild(card);
-
-            // Add Placeholder for Lazy Loading
-            const placeholder = document.createElement('div');
-            placeholder.className = "absolute inset-0 flex items-center justify-center text-gray-600 bg-slate-200 z-10 transition-opacity duration-300";
-            placeholder.innerHTML = '<div class="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>';
-            placeholder.id = `placeholder-${page.id}`;
-            canvasContainer.appendChild(placeholder);
-
-            // Observe for Lazy Loading
-            observer.observe(card);
-        });
-
-        container.appendChild(grid);
-
-        // Init Sortable
-        new Sortable(grid, {
-            animation: 150,
-            ghostClass: 'opacity-50',
-            onEnd: (evt) => {
-                const item = pages[evt.oldIndex];
-                pages.splice(evt.oldIndex, 1);
-                pages.splice(evt.newIndex, 0, item);
-                // Re-render to update page numbers?
-                renderBookViewer();
-            }
-        });
+         const empty = document.createElement('div');
+         empty.className = "flex flex-col items-center justify-center h-32 text-gray-500";
+         empty.innerHTML = "<p>Drag files or use the arrows to add pages.</p>";
+         container.appendChild(empty);
+         return;
     }
+
+    // Dimensions for layout
+    const width = projectSpecs.dimensions.width;
+    const height = projectSpecs.dimensions.height;
+    const bleed = 0.125;
+    const visualScale = (250 * viewerScale) / ((width + bleed*2) * 96);
+    const pixelsPerInch = 96 * visualScale;
+
+    const observer = new IntersectionObserver((entries, obs) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                const card = entry.target;
+                const pageId = card.dataset.id;
+                const canvas = document.getElementById(`canvas-${pageId}`);
+                const page = pages.find(p => p.id === pageId);
+
+                if (canvas && page) {
+                    renderPageCanvas(page, canvas).then(() => {
+                        const placeholder = document.getElementById(`placeholder-${pageId}`);
+                        if(placeholder) placeholder.style.opacity = '0';
+                        setTimeout(() => placeholder?.remove(), 300);
+                    });
+                    obs.unobserve(card);
+                }
+            }
+        });
+    }, { root: container.parentElement, rootMargin: '200px' });
+
+    // Render Spreads Loop
+    // Pages: [0, 1, 2, 3]
+    // Spread 0: [null, 0]
+    // Spread 1: [1, 2]
+    // Spread 2: [3, null]
+
+    // We start with Index 0.
+    // Page 1 is ALWAYS on the Right (Index 0).
+
+    // Insert Bar at Top (Index 0)
+    container.appendChild(createInsertBar(0));
+
+    // First Spread (Page 1)
+    const firstSpread = document.createElement('div');
+    firstSpread.className = "flex justify-center items-end gap-0 mb-4"; // Spread Container
+
+    // Empty Left slot for Page 1
+    const spacer = document.createElement('div');
+    spacer.style.width = `${width * pixelsPerInch}px`; // Match page width
+    firstSpread.appendChild(spacer);
+
+    // Page 1 (Right)
+    if (pages[0]) {
+        firstSpread.appendChild(createPageCard(pages[0], 0, true, false, width, height, bleed, pixelsPerInch, observer));
+    }
+    container.appendChild(firstSpread);
+
+    // Rest of pages
+    let i = 1;
+    while (i < pages.length) {
+        // Insert Bar before this spread
+        container.appendChild(createInsertBar(i));
+
+        const spreadDiv = document.createElement('div');
+        spreadDiv.className = "flex justify-center items-end gap-0 mb-4";
+
+        // Left Page
+        if (pages[i]) {
+            spreadDiv.appendChild(createPageCard(pages[i], i, false, false, width, height, bleed, pixelsPerInch, observer));
+        }
+
+        // Right Page
+        if (i + 1 < pages.length) {
+            spreadDiv.appendChild(createPageCard(pages[i+1], i+1, true, false, width, height, bleed, pixelsPerInch, observer));
+        } else {
+            // Spacer if single page at end
+             const endSpacer = document.createElement('div');
+             endSpacer.style.width = `${width * pixelsPerInch}px`;
+             spreadDiv.appendChild(endSpacer);
+        }
+
+        container.appendChild(spreadDiv);
+        i += 2;
+    }
+
+    // Final Insert Bar
+    container.appendChild(createInsertBar(pages.length));
+
     validateForm();
+}
+
+function createInsertBar(index) {
+    const bar = document.createElement('div');
+    bar.className = "w-full flex items-center justify-center gap-4 py-2 group opacity-40 hover:opacity-100 transition-opacity";
+
+    const line = "h-px bg-indigo-500 w-24";
+
+    bar.innerHTML = `
+        <div class="${line}"></div>
+        <div class="flex gap-2">
+            <button class="text-xs bg-slate-700 hover:bg-indigo-600 text-white px-2 py-1 rounded flex items-center gap-1" onclick="triggerInsert(${index}, 'left')">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+                Page
+            </button>
+             <button class="text-xs bg-slate-700 hover:bg-indigo-600 text-white px-2 py-1 rounded flex items-center gap-1" onclick="triggerInsert(${index}, 'spread')">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                Spread
+            </button>
+             <button class="text-xs bg-slate-700 hover:bg-indigo-600 text-white px-2 py-1 rounded flex items-center gap-1" onclick="triggerInsert(${index}, 'right')">
+                Page
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+            </button>
+        </div>
+        <div class="${line}"></div>
+    `;
+    return bar;
+}
+
+window.triggerInsert = (index, type) => {
+    // Set global state for insertion
+    window._insertIndex = index;
+    window._insertType = type;
+    insertFileInput.click();
+};
+
+insertFileInput.addEventListener('change', (e) => {
+    if (e.target.files.length > 0) {
+        const isSpread = window._insertType === 'spread';
+        addInteriorFiles(e.target.files, isSpread, window._insertIndex);
+        e.target.value = ''; // Reset
+    }
+});
+
+function createPageCard(page, index, isRightPage, isFirstPage, width, height, bleed, pixelsPerInch, observer) {
+    const card = document.createElement('div');
+    card.dataset.id = page.id;
+
+    let classes = "relative group bg-slate-800 shadow-lg border border-slate-700 transition-all hover:border-indigo-500 overflow-hidden";
+
+    if (isFirstPage) {
+        classes += " rounded-r-lg rounded-l-sm border-l-2 border-l-slate-900";
+    } else if (isRightPage) {
+        classes += " rounded-r-lg rounded-l-none border-l-0";
+    } else {
+        classes += " rounded-l-lg rounded-r-none border-r-0";
+    }
+    card.className = classes;
+
+    // Layout Logic: Show Reader Spreads with Bleed visible on outside edges
+    const bleedPx = bleed * pixelsPerInch;
+
+    let containerW, containerH;
+    let canvasLeft, canvasTop;
+
+    // Spread Logic
+    if (isRightPage) {
+         // Right Page: Clip LEFT bleed (Spine)
+         containerW = (width + bleed) * pixelsPerInch;
+         canvasLeft = -bleedPx;
+    } else {
+         // Left Page: Clip RIGHT bleed (Spine)
+         containerW = (width + bleed) * pixelsPerInch;
+         canvasLeft = 0;
+    }
+    // Vertical Bleed always visible
+    containerH = (height + (bleed*2)) * pixelsPerInch;
+    canvasTop = 0;
+
+    const canvasContainer = document.createElement('div');
+    canvasContainer.className = "relative overflow-hidden bg-white shadow-sm mx-auto";
+    canvasContainer.style.width = `${containerW}px`;
+    canvasContainer.style.height = `${containerH}px`;
+
+    const canvas = document.createElement('canvas');
+    canvas.id = `canvas-${page.id}`;
+    canvas.style.position = "absolute";
+    canvas.style.left = `${canvasLeft}px`;
+    canvas.style.top = `${canvasTop}px`;
+
+    canvasContainer.appendChild(canvas);
+
+    // Overlay Controls
+    const controls = document.createElement('div');
+    controls.className = "absolute top-2 right-2 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-900/80 p-1 rounded backdrop-blur-sm z-20";
+    controls.innerHTML = `
+        <button onclick="deletePage('${page.id}')" class="text-red-400 hover:text-white p-1" title="Delete Page">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+        </button>
+    `;
+
+    // Overlay Settings (Transparent Buttons)
+    const settingsOverlay = document.createElement('div');
+    settingsOverlay.className = "absolute bottom-0 inset-x-0 p-2 opacity-0 group-hover:opacity-100 transition-opacity bg-gradient-to-t from-slate-900/90 to-transparent flex justify-center gap-2 z-20";
+
+    ['Fit', 'Fill', 'Stretch'].forEach(mode => {
+        const btn = document.createElement('button');
+        btn.className = `text-[10px] px-2 py-1 rounded border ${page.settings.scaleMode === mode.toLowerCase() ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800/80 border-slate-600 text-gray-300 hover:bg-slate-700'}`;
+        btn.textContent = mode;
+        btn.onclick = () => updatePageSetting(page.id, 'scaleMode', mode.toLowerCase());
+        settingsOverlay.appendChild(btn);
+    });
+
+    const pageNum = document.createElement('span');
+    pageNum.className = "absolute bottom-1 left-2 text-[10px] text-white/50 font-mono z-20";
+    pageNum.textContent = `P${index + 1}`;
+
+    card.appendChild(controls);
+    card.appendChild(canvasContainer);
+    card.appendChild(settingsOverlay);
+    card.appendChild(pageNum);
+
+    // Add Placeholder
+    const placeholder = document.createElement('div');
+    placeholder.className = "absolute inset-0 flex items-center justify-center text-gray-600 bg-slate-200 z-10 transition-opacity duration-300";
+    placeholder.innerHTML = '<div class="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>';
+    placeholder.id = `placeholder-${page.id}`;
+    canvasContainer.appendChild(placeholder);
+
+    observer.observe(card);
+    return card;
 }
 
 async function renderPageCanvas(page, canvas) {
@@ -533,20 +650,37 @@ async function renderPageCanvas(page, canvas) {
     ctx.fillRect(0, 0, totalW, totalH);
 
     // Draw Content
-    await drawFileWithTransform(ctx, file, 0, 0, totalW, totalH, page.settings.scaleMode, page.settings.alignment, page.pageIndex, page.id);
+    await drawFileWithTransform(ctx, file, 0, 0, totalW, totalH, page.settings.scaleMode, page.settings.alignment, page.pageIndex, page.id, page.settings.view);
 
-    // Guides
-    ctx.lineWidth = 1.0 / pixelsPerInch;
-    // Trim (Blue) - Draw this first so content can (optionally) be clipped visually if we wanted, but for preview we show bleed.
-    ctx.strokeStyle = 'rgba(59, 130, 246, 0.5)';
-    ctx.strokeRect(bleed, bleed, width, height);
+    // Guides (Using shared logic)
+    const mockSpecs = {
+        dimensions: { width: width, height: height, units: 'in' },
+        bleedInches: bleed,
+        safetyInches: 0.125
+    };
 
-    // Bleed (Red)
-    ctx.strokeStyle = 'rgba(239, 68, 68, 0.5)';
-    ctx.strokeRect(0, 0, totalW, totalH);
+    // Scale for Guides: guides.js expects points.
+    // Canvas context is already transformed by pixelDensity.
+    // We are drawing in pixels (pixelsPerInch).
+    // 1 point = 1/72 inch.
+    // We want 1 inch = pixelsPerInch.
+    // So scale = pixelsPerInch / 72.
+    const guideScale = pixelsPerInch / 72;
+
+    const renderInfo = {
+        x: 0,
+        y: 0,
+        width: totalW * pixelsPerInch, // Full canvas width in logical pixels
+        height: totalH * pixelsPerInch,
+        scale: guideScale,
+        isSpread: false // We draw guides per page canvas individually
+    };
+
+    // Ensure guides are drawn on TOP.
+    drawGuides(ctx, mockSpecs, [renderInfo], { trim: true, bleed: true, safety: true });
 }
 
-async function drawFileWithTransform(ctx, file, targetX, targetY, targetW, targetH, mode, align, pageIndex = 1, pageId = null) {
+async function drawFileWithTransform(ctx, file, targetX, targetY, targetW, targetH, mode, align, pageIndex = 1, pageId = null, viewMode = 'full') {
     let imgBitmap;
     let srcW, srcH;
 
@@ -563,8 +697,9 @@ async function drawFileWithTransform(ctx, file, targetX, targetY, targetW, targe
         // Render New
         if (file.type === 'application/pdf') {
             try {
-                const arrayBuffer = await file.arrayBuffer();
-                const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
+                // Use Blob URL for rendering to save memory
+                const fileUrl = URL.createObjectURL(file);
+                const pdf = await pdfjsLib.getDocument(fileUrl).promise;
                 const page = await pdf.getPage(pageIndex);
 
                 // Lower scale slightly for thumbnail performance
@@ -584,6 +719,8 @@ async function drawFileWithTransform(ctx, file, targetX, targetY, targetW, targe
 
                 srcW = viewport.width;
                 srcH = viewport.height;
+
+                URL.revokeObjectURL(fileUrl); // Cleanup
             } catch (e) {
                 console.error("PDF Render Error", e);
                 return;
@@ -664,6 +801,16 @@ if (fileInteriorDrop) {
 
 if (uploadSpreadInput) {
     uploadSpreadInput.addEventListener('change', (e) => addInteriorFiles(e.target.files, true)); // true = isSpread
+}
+
+// Defined at top level so it's accessible
+function setAllScaleMode(mode) {
+    if (confirm(`Set all pages to ${mode}?`)) {
+        pages.forEach(p => {
+            p.settings.scaleMode = mode;
+        });
+        renderBookViewer();
+    }
 }
 
 if (setAllFitBtn) setAllFitBtn.onclick = () => setAllScaleMode('fit');
