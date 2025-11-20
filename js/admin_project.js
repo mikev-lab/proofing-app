@@ -64,7 +64,10 @@ const coverSpecsStatusMessage = document.getElementById('cover-specs-status-mess
 
 const rerunPreflightButton = document.getElementById('rerun-preflight-button');
 
-
+const permissionOwnerCheckbox = document.getElementById('permission-owner');
+const permissionApproveCheckbox = document.getElementById('permission-approve');
+const permissionAnnotateCheckbox = document.getElementById('permission-annotate');
+const permissionSeeCommentsCheckbox = document.getElementById('permission-see-comments');
 
 // --- Function to Populate Cover Form ---
 function populateCoverForm(coverData) {
@@ -78,6 +81,36 @@ function populateCoverForm(coverData) {
         coverHeightInput.value = '';
         coverUnitsSelect.value = 'in';
     }
+}
+
+// [NEW] Listener for "Owner" checkbox to enforce defaults
+if (permissionOwnerCheckbox) {
+    permissionOwnerCheckbox.addEventListener('change', () => {
+        if (permissionOwnerCheckbox.checked) {
+            // If Owner is checked, force check the others and disable them
+            permissionApproveCheckbox.checked = true;
+            permissionApproveCheckbox.disabled = true;
+            permissionApproveCheckbox.classList.add('opacity-50', 'cursor-not-allowed');
+
+            permissionAnnotateCheckbox.checked = true;
+            permissionAnnotateCheckbox.disabled = true;
+            permissionAnnotateCheckbox.classList.add('opacity-50', 'cursor-not-allowed');
+
+            permissionSeeCommentsCheckbox.checked = true;
+            permissionSeeCommentsCheckbox.disabled = true;
+            permissionSeeCommentsCheckbox.classList.add('opacity-50', 'cursor-not-allowed');
+        } else {
+            // If Owner is unchecked, re-enable the others
+            permissionApproveCheckbox.disabled = false;
+            permissionApproveCheckbox.classList.remove('opacity-50', 'cursor-not-allowed');
+
+            permissionAnnotateCheckbox.disabled = false;
+            permissionAnnotateCheckbox.classList.remove('opacity-50', 'cursor-not-allowed');
+
+            permissionSeeCommentsCheckbox.disabled = false;
+            permissionSeeCommentsCheckbox.classList.remove('opacity-50', 'cursor-not-allowed');
+        }
+    });
 }
 
 // --- Save Cover Specs Handler ---
@@ -566,7 +599,19 @@ function openShareModal() {
     shareModal.classList.remove('hidden');
     shareModalContent.classList.remove('hidden');
     shareModalResult.classList.add('hidden');
-    shareLinkForm.reset(); // Reset form fields
+    shareLinkForm.reset(); 
+    
+    // Reset "Owner" specific visual states when opening
+    if (permissionOwnerCheckbox) {
+         permissionApproveCheckbox.disabled = false;
+         permissionApproveCheckbox.classList.remove('opacity-50', 'cursor-not-allowed');
+         permissionAnnotateCheckbox.disabled = false;
+         permissionAnnotateCheckbox.classList.remove('opacity-50', 'cursor-not-allowed');
+         permissionSeeCommentsCheckbox.disabled = false;
+         permissionSeeCommentsCheckbox.classList.remove('opacity-50', 'cursor-not-allowed');
+         permissionSeeCommentsCheckbox.checked = true; 
+    }
+
     generateLinkButton.disabled = false;
     copyStatusMessage.textContent = '';
 }
@@ -588,9 +633,10 @@ shareLinkForm.addEventListener('submit', async (e) => {
     generateLinkButton.textContent = 'Generating...';
 
     const permissions = {
-        canApprove: document.getElementById('permission-approve').checked,
-        canAnnotate: document.getElementById('permission-annotate').checked,
-        canSeeComments: document.getElementById('permission-see-comments').checked
+        canApprove: permissionApproveCheckbox.checked,
+        canAnnotate: permissionAnnotateCheckbox.checked,
+        canSeeComments: permissionSeeCommentsCheckbox.checked,
+        isOwner: permissionOwnerCheckbox ? permissionOwnerCheckbox.checked : false
     };
 
     try {

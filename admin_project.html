@@ -497,7 +497,11 @@
                             <input type="checkbox" id="permission-see-comments" name="canSeeComments" checked class="h-5 w-5 rounded border-gray-400 text-indigo-500 bg-slate-700 focus:ring-indigo-600">
                             <span class="text-gray-200">Allow guest to see existing comments</span>
                         </label>
-                    </div>
+                        <label class="flex items-center space-x-3 cursor-pointer">
+                            <input type="checkbox" id="permission-owner" name="isOwner" class="h-5 w-5 rounded border-gray-400 text-indigo-500 bg-slate-700 focus:ring-indigo-600">
+                            <span class="text-gray-200">Owner (Can generate share links)</span>
+                        </label>
+                </div>
                     <div class="mt-6 flex justify-end space-x-4">
                         <button type="button" id="share-modal-cancel-button" class="px-4 py-2 rounded-md bg-gray-600 hover:bg-gray-500 text-white font-semibold text-sm">Cancel</button>
                         <button type="submit" id="generate-link-button" class="px-6 py-2 rounded-md bg-purple-600 hover:bg-purple-500 text-white font-semibold text-sm disabled:bg-purple-800 disabled:cursor-not-allowed">Generate Link</button>

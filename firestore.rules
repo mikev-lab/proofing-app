@@ -38,11 +38,12 @@ service cloud.firestore {
       // CHANGE: Removed "request.auth.token.firebase.sign_in_provider == 'anonymous'" check.
       // This allows both Anonymous AND Logged-in users to pass if they have a valid claim.
       return request.auth != null &&
-            exists(/databases/$(database)/documents/guest_claims/$(request.auth.uid)) && // Check claim exists first
-            get(/databases/$(database)/documents/guest_claims/$(request.auth.uid)).data.projectId == projectId && // Check claim is for the right project
-            exists(/databases/$(database)/documents/projects/$(projectId)/guestLinks/$(get(/databases/$(database)/documents/guest_claims/$(request.auth.uid)).data.guestToken)) && // Check link exists using token from claim
+            exists(/databases/$(database)/documents/guest_claims/$(request.auth.uid)) &&
+            get(/databases/$(database)/documents/guest_claims/$(request.auth.uid)).data.projectId == projectId &&
+            exists(/databases/$(database)/documents/projects/$(projectId)/guestLinks/$(get(/databases/$(database)/documents/guest_claims/$(request.auth.uid)).data.guestToken)) &&
             request.time < get(/databases/$(database)/documents/projects/$(projectId)/guestLinks/$(get(/databases/$(database)/documents/guest_claims/$(request.auth.uid)).data.guestToken)).data.expiresAt &&
-            get(/databases/$(database)/documents/projects/$(projectId)/guestLinks/$(get(/databases/$(database)/documents/guest_claims/$(request.auth.uid)).data.guestToken)).data.permissions[permission] == true;
+            // CHANGE: Allow access if permission is null (general validity check) OR if specific permission matches
+            (permission == null || get(/databases/$(database)/documents/projects/$(projectId)/guestLinks/$(get(/databases/$(database)/documents/guest_claims/$(request.auth.uid)).data.guestToken)).data.permissions[permission] == true);
     }
 
 
@@ -119,17 +120,17 @@ service cloud.firestore {
       // ** Client & Guest Access for GET (reading a single document) **
       allow get: if (
                       // 1. REGULAR CLIENT ACCESS (Skip if Anonymous)
-                      request.auth != null &&
+                      (request.auth != null &&
                       request.auth.token.firebase.sign_in_provider != 'anonymous' && 
                       exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
                       (
-                        getUserData(request.auth.uid).companyId == resource.data.companyId 
-                        ||
+                        getUserData(request.auth.uid).companyId == resource.data.companyId ||
                         request.auth.uid == resource.data.clientId // Backward Compatibility
-                      )
-                    )
-                    // 2. OR GUEST READ ACCESS
-                    || hasValidGuestDataAccess(projectId, 'canSeeComments');
+                      ))
+                      // 2. OR GUEST READ ACCESS
+                      // CHANGE: Pass 'null' to check for ANY valid guest link
+                      || hasValidGuestDataAccess(projectId, null)
+                    );
 
       // ** Client & Guest Access for LIST (querying documents) **
       allow list: if request.auth != null;
@@ -156,7 +157,7 @@ service cloud.firestore {
                       // ** OR Guest Approval Logic **
                       ||
                       (
-                        hasValidGuestDataAccess(projectId, 'canApprove') &&
+                        (hasValidGuestDataAccess(projectId, 'canApprove') || hasValidGuestDataAccess(projectId, 'isOwner')) &&
                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
                       );
 
@@ -165,10 +166,12 @@ service cloud.firestore {
           // Admins have full control
           allow read, write: if isAdmin();
           
-          // CHANGE: Simplified to "if true". 
-          // Since we query by ID, if you have the Link ID, you can read it.
-          // This is required so logged-in users can fetch the link to verify it.
+          // Allow guests/users to read the link to validate it
           allow get: if true;
+
+          // [NEW] Allow guests to update ONLY the viewHistory field
+          // This lets them increment the view counter without being able to change permissions or expiry
+          allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewHistory']);
       }
 
       // --- Rules for 'pages' Sub-collection ---
@@ -180,7 +183,11 @@ service cloud.firestore {
       // --- Rules for 'history' Sub-collection (NEW) ---
       match /history/{historyId} {
         // Allow read access to admins and members of the project's company
-        allow read: if isAdmin() || isCompanyMember(getProject(projectId).companyId);
+        // CHANGE: Added guest access (null permission) so history loads for guests
+        allow read: if isAdmin() || 
+                       isCompanyMember(getProject(projectId).companyId) ||
+                       hasValidGuestDataAccess(projectId, null);
+                       
         // Disallow client-side creation, update, and deletion.
         allow create, update, delete: if false;
       }
@@ -203,10 +210,12 @@ service cloud.firestore {
       allow update, delete: if request.auth != null && request.auth.uid == resource.data.authorUid;
 
       // Guest read access
-      allow read: if hasValidGuestDataAccess(projectId, 'canSeeComments');
+      // CHANGE: Added OR isOwner
+      allow read: if hasValidGuestDataAccess(projectId, 'canSeeComments') || hasValidGuestDataAccess(projectId, 'isOwner');
 
       // Guest create access
-      allow create: if hasValidGuestDataAccess(projectId, 'canAnnotate');
+      // CHANGE: Added OR isOwner
+      allow create: if hasValidGuestDataAccess(projectId, 'canAnnotate') || hasValidGuestDataAccess(projectId, 'isOwner');
     }
 
     // --- Rules for 'vendors' Collection ---

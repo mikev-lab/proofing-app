@@ -4,10 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MCE Printing - Admin Dashboard</title>
-    <!-- Load Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
 
-    <!-- Load Inter font -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -23,7 +21,6 @@
 <body class="min-h-screen bg-gradient-to-br from-[#0f172a] to-[#334155] text-gray-100">
 
     <div class="flex h-full">
-        <!-- Sidebar -->
         <div class="flex flex-col w-64 bg-slate-900/70 backdrop-blur-sm border-r border-slate-700/50">
             <div class="flex items-center justify-center h-16 border-b border-slate-700/50">
                 <h1 class="text-2xl font-bold text-white">MCE Admin</h1>
@@ -38,9 +35,7 @@
             </div>
         </div>
 
-        <!-- Main content -->
         <div class="flex flex-col flex-1">
-            <!-- Header -->
             <header class="flex justify-between items-center h-16 px-6 bg-slate-800/60 backdrop-blur-sm border-b border-slate-700/50">
                 <div>
                     <h2 class="text-xl font-semibold text-white">All Projects</h2>
@@ -76,7 +71,6 @@
                     </a>
                 </div>
 
-                <!-- Loading Spinner -->
                 <div id="loading-spinner" class="text-center py-12">
                     <div class="h-12 w-12 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900 mx-auto" role="status">
                         <span class="sr-only">Loading...</span>
@@ -84,7 +78,6 @@
                     <p class="mt-4 text-gray-300">Fetching projects...</p>
                 </div>
 
-                <!-- Empty State -->
                 <div id="empty-state" class="hidden text-center bg-slate-800/60 rounded-lg p-12">
                     <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
                         <path vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
@@ -93,7 +86,6 @@
                     <p class="mt-1 text-sm text-gray-400">Get started by creating a new project.</p>
                 </div>
 
-                <!-- Filter and Sort Controls -->
                 <div class="flex justify-between items-center mb-6">
                     <div class="flex space-x-4">
                         <div>
@@ -118,7 +110,6 @@
                     </div>
                 </div>
 
-                <!-- Projects Table -->
                 <div id="projects-table-container" class="hidden overflow-x-auto bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50">
                     <table class="min-w-full divide-y divide-slate-700">
                         <thead class="bg-slate-900/50">
@@ -131,15 +122,13 @@
                             </tr>
                         </thead>
                         <tbody id="projects-list" class="divide-y divide-slate-800">
-                            <!-- Project rows will be inserted here -->
-                        </tbody>
+                            </tbody>
                     </table>
                 </div>
             </main>
         </div>
     </div>
-     <!-- Share Modal -->
-    <div id="share-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center hidden z-50">
+     <div id="share-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center hidden z-50">
         <div class="bg-slate-800 rounded-lg shadow-xl p-6 w-full max-w-lg mx-4 border border-slate-700/50">
             <div class="flex justify-between items-center mb-4">
                 <h3 class="text-xl font-semibold text-white">Generate Guest Link</h3>
@@ -161,6 +150,10 @@
                             <input type="checkbox" id="permission-see-comments" name="canSeeComments" checked class="h-5 w-5 rounded border-gray-400 text-indigo-500 bg-slate-700 focus:ring-indigo-600">
                             <span class="text-gray-200">Allow guest to see existing comments</span>
                         </label>
+                        <label class="flex items-center space-x-3 cursor-pointer">
+                            <input type="checkbox" id="permission-owner" name="isOwner" class="h-5 w-5 rounded border-gray-400 text-indigo-500 bg-slate-700 focus:ring-indigo-600">
+                            <span class="text-gray-200">Owner (Can generate share links)</span>
+                        </label>
                     </div>
                     <div class="mt-6 flex justify-end space-x-4">
                         <button type="button" id="share-modal-cancel-button" class="px-4 py-2 rounded-md bg-gray-600 hover:bg-gray-500 text-white font-semibold text-sm">Cancel</button>
@@ -179,7 +172,6 @@
         </div>
     </div>
     <script type="module" src="js/notifications.js"></script>
-    <!-- Firebase SDKs -->
     <script type="module" src="js/admin.js"></script>
 </body>
 </html>

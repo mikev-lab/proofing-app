@@ -1,8 +1,9 @@
-import { auth, db, functions } from './firebase.js';
+import { auth, db, functions, generateGuestLink } from './firebase.js';
 import { onAuthStateChanged, signOut, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 import { httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js";
 import { initializeSharedViewer } from './viewer.js';
-import { doc, onSnapshot, updateDoc, collection, getDocs, Timestamp, addDoc, getDoc, arrayUnion, serverTimestamp, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+// [UPDATE] Added 'query' and 'orderBy' to the imports
+import { doc, onSnapshot, updateDoc, collection, getDocs, Timestamp, addDoc, getDoc, arrayUnion, serverTimestamp, setDoc, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 import * as pdfjsLib from "https://mozilla.github.io/pdf.js/build/pdf.mjs";
 
 // Set worker source for PDF.js
@@ -34,9 +35,23 @@ const approvalSpecsText = document.getElementById('approval-specs-text');
 const approvalCheckboxes = document.querySelectorAll('#approval-modal-form input[type="checkbox"]');
 const approvedStatuses = ['Approved', 'approved', 'In Production', 'Imposition Complete'];
 
+const headerShareButton = document.getElementById('header-share-button');
+const shareModal = document.getElementById('share-modal');
+const shareModalCloseBtn = document.getElementById('share-modal-close-button');
+const shareModalCancelBtn = document.getElementById('share-modal-cancel-button');
+const shareLinkForm = document.getElementById('share-link-form');
+const generateLinkBtn = document.getElementById('generate-link-button');
+const shareModalContent = document.getElementById('share-modal-content');
+const shareModalResult = document.getElementById('share-modal-result');
+const generatedLinkUrlInput = document.getElementById('generated-link-url');
+const copyLinkBtn = document.getElementById('copy-link-button');
+const copyStatusMsg = document.getElementById('copy-status-message');
+
 let currentProjectId = initialProjectId; // Use the initially parsed ID
 let actionToConfirm = null;
 let unsubscribeProjectListener = null;
+// [NEW] Listener variable for history
+let unsubscribeHistoryListener = null;
 let isGuest = false;
 let guestPermissions = {};
 
@@ -149,6 +164,13 @@ async function handleGuestAccess(projectId, guestToken) {
             throw new Error("This share link has expired.");
         }
 
+        updateDoc(linkRef, {
+            viewHistory: arrayUnion({
+                timestamp: Timestamp.now(),
+                userAgent: navigator.userAgent || 'Unknown'
+            })
+        }).catch(err => console.warn("[Guest Flow] Failed to record view:", err));
+
         isGuest = true; // Set isGuest flag HERE after validation succeeds
         guestPermissions = linkData.permissions;
         console.log('[Guest Flow] Set guest permissions:', guestPermissions);
@@ -173,12 +195,13 @@ async function handleGuestAccess(projectId, guestToken) {
         console.log('[Guest Flow] Guest claim document created successfully.');
 
 
-        // 4. Apply Guest UI Mode (Hide Nav & Dashboard Links)
-        // We do this for ALL users (anonymous or logged in) to ensure the "Guest Experience"
-        console.log('[Guest Flow] Enabling Guest UI (Hiding Nav & Dashboard links)...');
+        // 4. Apply Guest UI Mode
+        console.log('[Guest Flow] Enabling Guest UI...');
         
-        document.querySelector('nav')?.classList.add('hidden');
-        
+        // Hide Notification Bell
+        const notificationBell = document.getElementById('notification-bell');
+        if (notificationBell) notificationBell.classList.add('hidden');
+
         // Find and hide ALL links to the dashboard (including the "Back to Dashboard" button)
         const dashboardLinks = document.querySelectorAll('a[href="dashboard.html"]');
         dashboardLinks.forEach(link => link.classList.add('hidden'));
@@ -289,6 +312,55 @@ async function updateProjectStatus(status) {
     console.log(`[Load Project] Setting up Firestore listener for project: ${currentProjectId}`);
     const projectRef = doc(db, "projects", currentProjectId);
 
+    // --- [NEW] Setup History Listener ---
+    // Remove previous history listener if exists
+    if (unsubscribeHistoryListener) {
+        unsubscribeHistoryListener();
+        unsubscribeHistoryListener = null;
+    }
+
+    // Create the history query
+    const historyQuery = query(collection(db, "projects", currentProjectId, "history"), orderBy("timestamp", "desc"));
+
+    // Attach the listener
+    unsubscribeHistoryListener = onSnapshot(historyQuery, (snapshot) => {
+        const historyList = document.getElementById('project-history-list');
+        if (historyList) {
+            historyList.innerHTML = '';
+            if (snapshot.empty) {
+                historyList.innerHTML = '<p class="text-gray-400">No history events found.</p>';
+                return;
+            }
+            snapshot.forEach(doc => {
+                const event = doc.data();
+                const eventTime = event.timestamp ? new Date(event.timestamp.seconds * 1000).toLocaleString() : 'N/A';
+                const signature = event.details && event.details.signature ? `<span class="italic text-gray-400"> - E-Signature: ${event.details.signature}</span>` : '';
+                
+                // Formatting action text
+                let actionText = event.action ? event.action.replace(/_/g, ' ') : 'Unknown Action';
+                actionText = actionText.charAt(0).toUpperCase() + actionText.slice(1);
+
+                const item = document.createElement('div');
+                item.className = 'p-3 bg-slate-700/50 rounded-md text-sm border border-slate-600/30';
+                item.innerHTML = `
+                    <div class="flex justify-between items-start">
+                        <p class="font-semibold text-white">${actionText}</p>
+                        <span class="text-[10px] text-gray-500">${eventTime}</span>
+                    </div>
+                    <p class="text-gray-300 text-xs mt-1">by <span class="font-medium text-indigo-300">${event.userDisplay || 'System'}</span>${signature}</p>
+                `;
+                historyList.appendChild(item);
+            });
+        }
+    }, (error) => {
+        console.error("[Load Project] Error fetching history:", error);
+        const historyList = document.getElementById('project-history-list');
+        // Only show error if it's not a permission issue that we expect for some guests (though we fixed that)
+        if(historyList) historyList.innerHTML = '<p class="text-red-400 text-xs">Unable to load history.</p>';
+    });
+    // ------------------------------------
+
+
     if (unsubscribeProjectListener) {
         console.log('[Load Project] Unsubscribing previous listener.');
         unsubscribeProjectListener();
@@ -355,7 +427,11 @@ async function updateProjectStatus(status) {
                 if (isGuest) {
                     actionPanel.style.display = guestPermissions.canApprove ? 'block' : 'none';
                     commentTool.style.display = guestPermissions.canAnnotate ? 'block' : 'none';
-                    console.log(`[Load Project] Guest UI set: canApprove=${guestPermissions.canApprove}, canAnnotate=${guestPermissions.canAnnotate}`);
+                    console.log(`[Load Project] Guest UI set: canApprove=${guestPermissions.canApprove}, canAnnotate=${guestPermissions.canAnnotate}, isOwner=${guestPermissions.isOwner}`);
+
+                    if (guestPermissions.isOwner && headerShareButton) {
+                        headerShareButton.classList.remove('hidden');
+                    }
                 } else {
                     actionPanel.style.display = 'block';
                     commentTool.style.display = 'block';
@@ -439,6 +515,12 @@ onAuthStateChanged(auth, (user) => {
          unsubscribeProjectListener();
          unsubscribeProjectListener = null;
      }
+
+     // [NEW] Also unsubscribe history listener
+     if (unsubscribeHistoryListener && !isProcessingGuestLink && (!initialGuestToken || !initialProjectId)) {
+         unsubscribeHistoryListener();
+         unsubscribeHistoryListener = null;
+     }
      
      // Reset guest status at the start unless we are actively processing a guest link
      if (!isProcessingGuestLink && !initialGuestToken) {
@@ -495,6 +577,70 @@ onAuthStateChanged(auth, (user) => {
     }
 }); // --- End onAuthStateChanged ---
 
+// --- Share Modal Logic (Owner Only) ---
+if (headerShareButton) {
+    headerShareButton.addEventListener('click', () => {
+        if (shareModal) {
+            shareModal.classList.remove('hidden');
+            shareModalContent.classList.remove('hidden');
+            shareModalResult.classList.add('hidden');
+            shareLinkForm.reset();
+        }
+    });
+}
+
+function closeShareModal() {
+    if (shareModal) shareModal.classList.add('hidden');
+}
+
+if (shareModalCloseBtn) shareModalCloseBtn.addEventListener('click', closeShareModal);
+if (shareModalCancelBtn) shareModalCancelBtn.addEventListener('click', closeShareModal);
+
+if (shareLinkForm) {
+    shareLinkForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        generateLinkBtn.disabled = true;
+        generateLinkBtn.textContent = 'Generating...';
+
+        const permissions = {
+            canApprove: document.getElementById('permission-approve').checked,
+            canAnnotate: document.getElementById('permission-annotate').checked,
+            canSeeComments: document.getElementById('permission-see-comments').checked
+            // Note: We typically don't allow guests to create other "Owners"
+        };
+
+        try {
+            const result = await generateGuestLink({ 
+                projectId: currentProjectId, 
+                permissions 
+            });
+
+            if (result.data.success) {
+                const fullUrl = new URL(result.data.url);
+                generatedLinkUrlInput.value = `${window.location.origin}/proof.html${fullUrl.search}`;
+                shareModalContent.classList.add('hidden');
+                shareModalResult.classList.remove('hidden');
+            } else {
+                throw new Error('Cloud function returned an error.');
+            }
+        } catch (error) {
+            console.error("Error generating link:", error);
+            alert(`Error: ${error.message || 'Could not generate link.'}`);
+        } finally {
+            generateLinkBtn.textContent = 'Generate Link';
+            generateLinkBtn.disabled = false;
+        }
+    });
+}
+
+if (copyLinkBtn) {
+    copyLinkBtn.addEventListener('click', () => {
+        generatedLinkUrlInput.select();
+        document.execCommand('copy');
+        copyStatusMsg.textContent = 'Copied!';
+        setTimeout(() => { copyStatusMsg.textContent = ''; }, 2000);
+    });
+}
 
 if (logoutButton) {
     logoutButton.addEventListener('click', () => {
