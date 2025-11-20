@@ -8,6 +8,7 @@ import Sortable from 'https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/modular/sor
 
 import { firebaseConfig } from "./firebase.js";
 import { HARDCODED_PAPER_TYPES, BINDING_TYPES } from "./guest_constants.js";
+import { drawGuides } from "./guides.js";
 
 // Set worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://mozilla.github.io/pdf.js/build/pdf.worker.mjs';
@@ -26,7 +27,6 @@ const errorMessage = document.getElementById('error-message');
 const uploadContainer = document.getElementById('upload-container');
 const successState = document.getElementById('success-state');
 const projectNameEl = document.getElementById('project-name');
-const singleUploadSection = document.getElementById('single-upload-section');
 const bookletUploadSection = document.getElementById('booklet-upload-section');
 const uploadForm = document.getElementById('upload-form');
 const submitButton = document.getElementById('submit-button');
@@ -143,6 +143,8 @@ Array.from(projectTypeRadios).forEach(radio => {
             paperSection.classList.add('hidden');
             specPageCount.required = false;
             specPaper.required = false;
+        // Set cover fields as not required
+        specCoverPaper.required = false;
         } else if (val === 'saddleStitch') {
             pageCountSection.classList.remove('hidden');
             paperSection.classList.add('hidden');
@@ -288,52 +290,44 @@ async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = n
 
     for (const file of Array.from(files)) {
         const sourceId = Date.now() + Math.random().toString(16).slice(2);
-        sourceFiles[sourceId] = file;
 
-        let numPages = 1;
-        if (file.type === 'application/pdf') {
-             try {
-                // Use Blob URL to avoid loading entire file into memory
-                const fileUrl = URL.createObjectURL(file);
-                const pdf = await pdfjsLib.getDocument(fileUrl).promise;
-                numPages = pdf.numPages;
-                URL.revokeObjectURL(fileUrl); // Cleanup
-             } catch (e) {
-                 console.warn("Could not parse PDF", e);
-             }
-        }
+        // Check if file is supported locally (PDF, JPG, PNG) or requires server (PSD, AI)
+        const isLocal = file.type === 'application/pdf' || file.type.startsWith('image/');
 
-        if (isSpreadUpload) {
-            // For spread upload, we treat each source "page" (or image) as 2 virtual pages (Left/Right)
-            for (let i = 0; i < numPages; i++) {
-                // Left Half (Page A)
-                newPages.push({
-                    id: `${sourceId}_p${i}_L`,
-                    sourceFileId: sourceId,
-                    pageIndex: i + 1,
-                    settings: { scaleMode: 'fill', alignment: 'center', view: 'left' }, // 'view' property splits the source
-                    isSpread: false // This refers to layout behavior, but here we mean "source is spread"
-                });
-                // Right Half (Page B)
-                newPages.push({
-                    id: `${sourceId}_p${i}_R`,
-                    sourceFileId: sourceId,
-                    pageIndex: i + 1,
-                    settings: { scaleMode: 'fill', alignment: 'center', view: 'right' },
-                    isSpread: false
-                });
+        if (isLocal) {
+            sourceFiles[sourceId] = file;
+
+            let numPages = 1;
+            if (file.type === 'application/pdf') {
+                 try {
+                    // Use Blob URL to avoid loading entire file into memory
+                    const fileUrl = URL.createObjectURL(file);
+                    const pdf = await pdfjsLib.getDocument(fileUrl).promise;
+                    numPages = pdf.numPages;
+                    URL.revokeObjectURL(fileUrl); // Cleanup
+                 } catch (e) {
+                     console.warn("Could not parse PDF", e);
+                 }
             }
+
+            addPagesToModel(newPages, sourceId, numPages, isSpreadUpload);
+
         } else {
-            // Standard Single Pages
-            for (let i = 0; i < numPages; i++) {
-                newPages.push({
-                    id: `${sourceId}_p${i}`,
-                    sourceFileId: sourceId,
-                    pageIndex: i + 1,
-                    settings: { scaleMode: 'fit', alignment: 'center' },
-                    isSpread: false
-                });
-            }
+            // SERVER SIDE PROCESSING (PSD, AI)
+            // 1. Create Placeholder Pages immediately so UI updates
+            // We assume 1 page for now (Gotenberg splitting for PSD is complex to sync here immediately without waiting)
+            // Actually, we can show a "Processing" state on the card itself.
+
+            sourceFiles[sourceId] = { file: file, status: 'uploading', previewUrl: null }; // Placeholder
+
+            // We add 1 placeholder page for now. If the server returns more (e.g. multi-page PDF from AI),
+            // we would need to dynamically insert them. For now, let's assume single file = 1 page
+            // or we update later. To keep it simple, we'll treat complex files as 1 object for now unless we wait.
+
+            addPagesToModel(newPages, sourceId, 1, isSpreadUpload);
+
+            // 2. Start Background Process
+            processServerFile(file, sourceId);
         }
     }
 
@@ -344,6 +338,101 @@ async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = n
     }
 
     renderBookViewer();
+}
+
+function addPagesToModel(targetArray, sourceId, numPages, isSpreadUpload) {
+    if (isSpreadUpload) {
+        for (let i = 0; i < numPages; i++) {
+            targetArray.push({
+                id: `${sourceId}_p${i}_L`,
+                sourceFileId: sourceId,
+                pageIndex: i + 1,
+                settings: { scaleMode: 'fill', alignment: 'center', view: 'left', panX: 0, panY: 0 },
+                isSpread: false
+            });
+            targetArray.push({
+                id: `${sourceId}_p${i}_R`,
+                sourceFileId: sourceId,
+                pageIndex: i + 1,
+                settings: { scaleMode: 'fill', alignment: 'center', view: 'right', panX: 0, panY: 0 },
+                isSpread: false
+            });
+        }
+    } else {
+        for (let i = 0; i < numPages; i++) {
+            targetArray.push({
+                id: `${sourceId}_p${i}`,
+                sourceFileId: sourceId,
+                pageIndex: i + 1,
+                settings: { scaleMode: 'fit', alignment: 'center', panX: 0, panY: 0 },
+                isSpread: false
+            });
+        }
+    }
+}
+
+async function processServerFile(file, sourceId) {
+    try {
+        // 1. Upload to Temp Storage
+        const tempId = Date.now().toString();
+        const storageRef = ref(storage, `temp_uploads/${tempId}/${file.name}`);
+
+        // Find all cards for this source to update status
+        const updateStatus = (msg) => {
+            const relatedPages = pages.filter(p => p.sourceFileId === sourceId);
+            relatedPages.forEach(p => {
+                const placeholder = document.getElementById(`placeholder-${p.id}`);
+                if (placeholder) placeholder.innerHTML = `<p class="text-xs text-indigo-400 animate-pulse">${msg}</p>`;
+            });
+        };
+
+        updateStatus("Uploading...");
+        await uploadBytesResumable(storageRef, file);
+
+        updateStatus("Processing...");
+
+        // 2. Call Generate Previews
+        const generatePreviews = httpsCallable(functions, 'generatePreviews');
+        const result = await generatePreviews({
+            filePath: `temp_uploads/${tempId}/${file.name}`,
+            originalName: file.name
+        });
+
+        // 3. Update Source File Data with Result
+        if (result.data && result.data.pages && result.data.pages.length > 0) {
+            // We only support 1 page preview for complex files in this simplified flow for now,
+            // or strictly speaking, we map the first page of the result to our existing page entry.
+            // Ideally we'd expand if it turned out to be multi-page.
+
+            const firstPage = result.data.pages[0];
+
+            // Get Signed URL for the preview path (tempPreviewPath)
+            // The function returns `tempPreviewPath` which is a storage path.
+            const previewRef = ref(storage, firstPage.tempPreviewPath);
+            const previewUrl = await getDownloadURL(previewRef);
+
+            // Update the source registry
+            sourceFiles[sourceId] = {
+                file: file,
+                status: 'ready',
+                previewUrl: previewUrl,
+                isServer: true
+            };
+
+            // Clear Image Cache if any (unlikely)
+            imageCache.delete(sourceId + '_1_' + file.lastModified);
+
+            // Trigger Re-render
+            renderBookViewer();
+        } else {
+            throw new Error("No preview generated");
+        }
+
+    } catch (err) {
+        console.error("Server file processing failed", err);
+        sourceFiles[sourceId] = { file: file, status: 'error', error: err.message };
+        renderBookViewer(); // Will show error state
+    }
 }
 
 window.updatePageSetting = (pageId, setting, value) => {
@@ -434,11 +523,15 @@ function renderBookViewer() {
 
     // First Spread (Page 1)
     const firstSpread = document.createElement('div');
-    firstSpread.className = "flex justify-center items-end gap-0 mb-4"; // Spread Container
+    firstSpread.className = "spread-row flex justify-center items-end gap-0 mb-4 min-h-[100px] p-2 border border-transparent hover:border-dashed hover:border-gray-600 rounded";
+    // Added min-height and hover effect to make it a drop target even if empty (though it shouldn't be empty usually)
 
     // Empty Left slot for Page 1
+    // IMPORTANT: SortableJS might treat this spacer as a draggable item if we aren't careful.
+    // We used draggable: '.page-card' in the config, so this spacer is safe.
     const spacer = document.createElement('div');
     spacer.style.width = `${width * pixelsPerInch}px`; // Match page width
+    spacer.className = "pointer-events-none"; // Prevent interaction
     firstSpread.appendChild(spacer);
 
     // Page 1 (Right)
@@ -454,7 +547,7 @@ function renderBookViewer() {
         container.appendChild(createInsertBar(i));
 
         const spreadDiv = document.createElement('div');
-        spreadDiv.className = "flex justify-center items-end gap-0 mb-4";
+        spreadDiv.className = "spread-row flex justify-center items-end gap-0 mb-4 min-h-[100px] p-2 border border-transparent hover:border-dashed hover:border-gray-600 rounded";
 
         // Left Page
         if (pages[i]) {
@@ -468,6 +561,7 @@ function renderBookViewer() {
             // Spacer if single page at end
              const endSpacer = document.createElement('div');
              endSpacer.style.width = `${width * pixelsPerInch}px`;
+             endSpacer.className = "pointer-events-none";
              spreadDiv.appendChild(endSpacer);
         }
 
@@ -479,7 +573,107 @@ function renderBookViewer() {
     container.appendChild(createInsertBar(pages.length));
 
     validateForm();
+
+    // Re-initialize Sortable for the new DOM
+    // We want shared lists between all spread rows.
+    const spreadDivs = container.querySelectorAll('.spread-row');
+    spreadDivs.forEach(spreadDiv => {
+        new Sortable(spreadDiv, {
+            group: 'shared-spreads', // Allow dragging between spreads
+            animation: 150,
+            draggable: '.page-card', // The actual card
+            handle: '.page-card', // Drag by card
+            ghostClass: 'opacity-50',
+            onEnd: (evt) => {
+                // When drop ends, we need to sync the `pages` array order to the new DOM order.
+                // 1. Collect all data-ids from the DOM in order.
+                const allCards = document.querySelectorAll('.page-card');
+                const newOrderIds = Array.from(allCards).map(c => c.dataset.id);
+
+                // 2. Reorder `pages` array
+                const newPages = [];
+                newOrderIds.forEach(id => {
+                    const p = pages.find(x => x.id === id);
+                    if (p) newPages.push(p);
+                });
+
+                pages = newPages;
+
+                // 3. Re-render fully to fix layout (e.g. Left vs Right page styling)
+                // We must delay slightly to let the drag event finish or Sortable might glitch
+                setTimeout(() => renderBookViewer(), 50);
+            }
+        });
+    });
 }
+
+// Global Pointer Event Handlers for Panning
+let activePageId = null;
+let isDragging = false;
+let startX = 0;
+let startY = 0;
+let startPanX = 0;
+let startPanY = 0;
+
+document.addEventListener('pointerdown', (e) => {
+    const card = e.target.closest('[data-id]');
+    if (!card) return;
+
+    const pageId = card.dataset.id;
+    const page = pages.find(p => p.id === pageId);
+
+    // Only allow panning if scaleMode is 'fill'
+    if (page && page.settings.scaleMode === 'fill') {
+        activePageId = pageId;
+        isDragging = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        startPanX = page.settings.panX || 0;
+        startPanY = page.settings.panY || 0;
+
+        card.classList.add('cursor-grabbing');
+        e.preventDefault(); // Prevent text selection
+    }
+});
+
+document.addEventListener('pointermove', (e) => {
+    if (!isDragging || !activePageId) return;
+
+    const page = pages.find(p => p.id === activePageId);
+    if (!page) return;
+
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+
+    // Convert pixels to percentage of canvas size?
+    // We need the visual size of the canvas to normalize.
+    const canvas = document.getElementById(`canvas-${activePageId}`);
+    if (canvas) {
+        const rect = canvas.getBoundingClientRect();
+        // Normalize delta to [0-1] range relative to the rendered box
+        // Note: rect includes the bleed area.
+
+        // Sensitivity factor
+        const sensitivity = 1.0;
+
+        page.settings.panX = startPanX + ((dx / rect.width) * sensitivity);
+        page.settings.panY = startPanY + ((dy / rect.height) * sensitivity);
+
+        // Re-render immediately (throttling via RAF is better but this is simple)
+        requestAnimationFrame(() => {
+            renderPageCanvas(page, canvas);
+        });
+    }
+});
+
+document.addEventListener('pointerup', () => {
+    if (activePageId) {
+        const card = document.querySelector(`[data-id="${activePageId}"]`);
+        if (card) card.classList.remove('cursor-grabbing');
+    }
+    isDragging = false;
+    activePageId = null;
+});
 
 function createInsertBar(index) {
     const bar = document.createElement('div');
@@ -527,7 +721,7 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     const card = document.createElement('div');
     card.dataset.id = page.id;
 
-    let classes = "relative group bg-slate-800 shadow-lg border border-slate-700 transition-all hover:border-indigo-500 overflow-hidden";
+    let classes = "page-card relative group bg-slate-800 shadow-lg border border-slate-700 transition-all hover:border-indigo-500 overflow-hidden cursor-grab active:cursor-grabbing";
 
     if (isFirstPage) {
         classes += " rounded-r-lg rounded-l-sm border-l-2 border-l-slate-900";
@@ -584,11 +778,18 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     const settingsOverlay = document.createElement('div');
     settingsOverlay.className = "absolute bottom-0 inset-x-0 p-2 opacity-0 group-hover:opacity-100 transition-opacity bg-gradient-to-t from-slate-900/90 to-transparent flex justify-center gap-2 z-20";
 
-    ['Fit', 'Fill', 'Stretch'].forEach(mode => {
+    const modes = [
+        { id: 'fit', icon: '<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"/></svg>', title: 'Fit to Page' },
+        { id: 'fill', icon: '<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4h16v16H4z"/></svg>', title: 'Fill Page' },
+        { id: 'stretch', icon: '<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8h16M4 16h16"/></svg>', title: 'Stretch to Fit' }
+    ];
+
+    modes.forEach(mode => {
         const btn = document.createElement('button');
-        btn.className = `text-[10px] px-2 py-1 rounded border ${page.settings.scaleMode === mode.toLowerCase() ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800/80 border-slate-600 text-gray-300 hover:bg-slate-700'}`;
-        btn.textContent = mode;
-        btn.onclick = () => updatePageSetting(page.id, 'scaleMode', mode.toLowerCase());
+        btn.className = `p-1.5 rounded border ${page.settings.scaleMode === mode.id ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800/80 border-slate-600 text-gray-400 hover:bg-slate-700 hover:text-white'}`;
+        btn.innerHTML = mode.icon;
+        btn.title = mode.title;
+        btn.onclick = () => updatePageSetting(page.id, 'scaleMode', mode.id);
         settingsOverlay.appendChild(btn);
     });
 
@@ -613,8 +814,13 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
 }
 
 async function renderPageCanvas(page, canvas) {
-    const file = sourceFiles[page.sourceFileId];
-    if (!file || !projectSpecs.dimensions) return;
+    const sourceEntry = sourceFiles[page.sourceFileId];
+
+    if (!sourceEntry || !projectSpecs.dimensions) return;
+
+    // Unwrap Source (handle both raw File and server-processed object)
+    const isServer = sourceEntry.isServer;
+    const file = isServer ? sourceEntry.file : sourceEntry;
 
     const ctx = canvas.getContext('2d', { alpha: false }); // Optimize alpha
     const width = projectSpecs.dimensions.width;
@@ -650,9 +856,10 @@ async function renderPageCanvas(page, canvas) {
     ctx.fillRect(0, 0, totalW, totalH);
 
     // Draw Content
-    await drawFileWithTransform(ctx, file, 0, 0, totalW, totalH, page.settings.scaleMode, page.settings.alignment, page.pageIndex, page.id, page.settings.view);
+    // Pass additional Pan Settings
+    await drawFileWithTransform(ctx, sourceEntry, 0, 0, totalW, totalH, page.settings.scaleMode, page.settings.alignment, page.pageIndex, page.id, page.settings.view, page.settings.panX, page.settings.panY);
 
-    // Guides (Using shared logic)
+    // Guides
     const mockSpecs = {
         dimensions: { width: width, height: height, units: 'in' },
         bleedInches: bleed,
@@ -680,14 +887,30 @@ async function renderPageCanvas(page, canvas) {
     drawGuides(ctx, mockSpecs, [renderInfo], { trim: true, bleed: true, safety: true });
 }
 
-async function drawFileWithTransform(ctx, file, targetX, targetY, targetW, targetH, mode, align, pageIndex = 1, pageId = null, viewMode = 'full') {
+async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW, targetH, mode, align, pageIndex = 1, pageId = null, viewMode = 'full', panX = 0, panY = 0) {
     let imgBitmap;
     let srcW, srcH;
 
-    // Check Cache (Memory Caching)
-    // Key format: fileId + pageIndex (since transform is applied at draw time, we cache the source render)
-    // Actually we want to cache the *rendered bitmap* of the source file, not the final canvas.
-    const cacheKey = file.name + '_' + pageIndex + '_' + file.lastModified;
+    const isServer = sourceEntry.isServer;
+    const file = isServer ? sourceEntry.file : sourceEntry;
+
+    // 1. Check Error/Status
+    if (isServer && sourceEntry.status === 'error') {
+        ctx.fillStyle = '#fee2e2';
+        ctx.fillRect(targetX, targetY, targetW, targetH);
+        ctx.fillStyle = '#ef4444';
+        ctx.font = '0.2px sans-serif';
+        ctx.fillText("Processing Failed", targetX + 0.5, targetY + targetH/2);
+        return;
+    }
+
+    if (isServer && sourceEntry.status !== 'ready') {
+         // Keep placeholder (spinner handled by DOM overlay)
+         return;
+    }
+
+    // 2. Check Cache
+    const cacheKey = (isServer ? sourceEntry.previewUrl : file.name) + '_' + pageIndex + '_' + (file.lastModified || 'server');
 
     if (imageCache.has(cacheKey)) {
         imgBitmap = imageCache.get(cacheKey);
@@ -695,14 +918,24 @@ async function drawFileWithTransform(ctx, file, targetX, targetY, targetW, targe
         srcH = imgBitmap.height;
     } else {
         // Render New
-        if (file.type === 'application/pdf') {
+        if (isServer) {
+            // Load from Preview URL
             try {
-                // Use Blob URL for rendering to save memory
-                const fileUrl = URL.createObjectURL(file);
-                const pdf = await pdfjsLib.getDocument(fileUrl).promise;
-                const page = await pdf.getPage(pageIndex);
+                // For now, assume previewUrl is a PDF (as returned by generatePreviews)
+                // But generatePreviews returns a path to a PDF.
+                // We need to load that PDF using PDF.js just like a local file, but from URL.
 
-                // Lower scale slightly for thumbnail performance
+                const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
+                const pdf = await loadingTask.promise;
+                // Preview PDFs are usually 1 page per file if split, OR multi-page.
+                // Our generatePreviews splits them. So pageIndex 1 is likely correct if it's a single page PDF.
+                // But if we kept them merged, we'd use pageIndex.
+                // Let's assume we use pageIndex relative to the *preview file*.
+                // If `generatePreviews` returns individual pages, we'd map them.
+                // In `processServerFile`, we only mapped the first page result.
+                // So let's try page 1.
+                const page = await pdf.getPage(1);
+
                 const viewport = page.getViewport({ scale: 1.0 });
                 const tempCanvas = document.createElement('canvas');
                 tempCanvas.width = viewport.width;
@@ -714,36 +947,52 @@ async function drawFileWithTransform(ctx, file, targetX, targetY, targetW, targe
                 }).promise;
 
                 imgBitmap = await createImageBitmap(tempCanvas);
-                // Cache it!
                 imageCache.set(cacheKey, imgBitmap);
-
                 srcW = viewport.width;
                 srcH = viewport.height;
 
-                URL.revokeObjectURL(fileUrl); // Cleanup
+            } catch(e) {
+                console.error("Server Preview Render Error", e);
+            }
+
+        } else if (file.type === 'application/pdf') {
+            try {
+                const fileUrl = URL.createObjectURL(file);
+                const pdf = await pdfjsLib.getDocument(fileUrl).promise;
+                const page = await pdf.getPage(pageIndex);
+
+                const viewport = page.getViewport({ scale: 1.0 });
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = viewport.width;
+                tempCanvas.height = viewport.height;
+
+                await page.render({
+                    canvasContext: tempCanvas.getContext('2d'),
+                    viewport: viewport
+                }).promise;
+
+                imgBitmap = await createImageBitmap(tempCanvas);
+                imageCache.set(cacheKey, imgBitmap);
+                srcW = viewport.width;
+                srcH = viewport.height;
+
+                URL.revokeObjectURL(fileUrl);
             } catch (e) {
                 console.error("PDF Render Error", e);
-                return;
             }
         } else if (file.type.startsWith('image/')) {
-            imgBitmap = await createImageBitmap(file);
-            imageCache.set(cacheKey, imgBitmap);
-            srcW = imgBitmap.width;
-            srcH = imgBitmap.height;
+            try {
+                imgBitmap = await createImageBitmap(file);
+                imageCache.set(cacheKey, imgBitmap);
+                srcW = imgBitmap.width;
+                srcH = imgBitmap.height;
+            } catch(e) {}
         }
     }
 
-    if (!imgBitmap && file.type.startsWith('image/')) {
-        try {
-            imgBitmap = await createImageBitmap(file);
-            srcW = imgBitmap.width;
-            srcH = imgBitmap.height;
-        } catch(e) { console.warn("Failed to create bitmap from image", e); }
-    }
-
     if (!imgBitmap) {
-         // Placeholder (Grey Box) if loading failed or still processing
-        ctx.fillStyle = '#ccc';
+        // Grey Box
+        ctx.fillStyle = '#f1f5f9';
         ctx.fillRect(targetX, targetY, targetW, targetH);
         return;
     }
@@ -774,9 +1023,21 @@ async function drawFileWithTransform(ctx, file, targetX, targetY, targetW, targe
         }
     }
 
-    // Center Alignment
-    drawX = targetX + (targetW - drawW) / 2;
-    drawY = targetY + (targetH - drawH) / 2;
+    // Center + Pan
+    // PanX/PanY are expected to be in "Inches" or "Normalized"?
+    // If we implement drag in pixels on the viewer, we need to convert those pixels to canvas scale here.
+    // Let's assume panX/panY are stored in *inches* relative to the paper size, to be resolution independent.
+    // In render logic: panPixels = panInches * pixelsPerInch (from renderPageCanvas scope, passed in? No)
+    // We need pixelsPerInch here or pass normalized coords.
+
+    // Actually, the simplest way for the interactive drag to work is if we store pan in *percentage* of the SHEET dimensions.
+    // Let's say panX = 0.1 means shift right by 10% of sheet width.
+    // Then drawX += targetW * 0.1.
+
+    // Let's assume panX, panY are ratios of Target Dimension (0.0 - 1.0).
+
+    drawX = targetX + (targetW - drawW) / 2 + (panX * targetW);
+    drawY = targetY + (targetH - drawH) / 2 + (panY * targetH);
 
     // Clip
     ctx.save();
@@ -1201,10 +1462,9 @@ async function init() {
         }
 
 
-        // 5. Setup UI based on type (even if modal is shown, we prep the background UI)
+        // 5. Setup UI based on type
         // Always show booklet section now as it contains the new unified builder
         bookletUploadSection.classList.remove('hidden');
-        singleUploadSection.classList.add('hidden'); // Deprecated single section
 
         // Note: Sortable is initialized in renderBookViewer now, not here.
 

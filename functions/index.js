@@ -2152,9 +2152,26 @@ function drawOnSheet(doc, embeddable, trimW, trimH, bleed, settings) {
         }
     }
 
-    // Center
-    const x = (targetW - drawW) / 2;
-    const y = (targetH - drawH) / 2;
+    // Center + Pan
+    // settings.panX/panY are assumed to be in Points (72dpi) relative to the target box center
+    // If frontend sends relative (0-1) or pixels, we might need conversion.
+    // Plan assumes frontend sends points or we normalize.
+    // Let's assume frontend sends values normalized to Points (72dpi) matching the PDF dimensions.
+
+    const panX = settings.panX || 0;
+    const panY = settings.panY || 0;
+
+    const x = ((targetW - drawW) / 2) + panX;
+    const y = ((targetH - drawH) / 2) - panY; // Invert Y because PDF coords are bottom-up?
+    // PDF-lib's drawPage/drawImage uses (x,y) as bottom-left corner of the image rect.
+    // If we pan UP visually, we want image to move UP.
+    // In PDF (bottom-left origin), moving UP is +Y.
+    // So if panY is + (up), we add it.
+    // BUT, typically web panY is + (down).
+    // If frontend sends web-standard delta (down is positive), then we subtract.
+    // Let's assume standard web convention: panY > 0 means image moves DOWN.
+    // Image moving DOWN means y decreases in PDF coords. So -panY is correct.
+
 
     if (embeddable.dims) {
          // Is PDF Page
