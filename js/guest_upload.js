@@ -62,6 +62,7 @@ const addInteriorFileBtn = document.getElementById('add-interior-file-btn');
 const hiddenInteriorInput = document.getElementById('hidden-interior-input');
 const fileInteriorDrop = document.getElementById('file-interior-drop');
 const viewerZoom = document.getElementById('viewer-zoom');
+const jumpToPageInput = document.getElementById('jump-to-page');
 
 // Page Settings Modal Elements
 const pageSettingsModal = document.getElementById('page-settings-modal');
@@ -328,14 +329,59 @@ function renderBookViewer() {
          `;
     } else {
         const grid = document.createElement('div');
-        // Dynamic Grid Class based on zoom? Or simply flex-wrap
-        grid.className = "flex flex-wrap gap-6 justify-center";
+        // Spread Layout: CSS Grid with 2 columns
+        grid.className = "grid grid-cols-2 gap-x-0 gap-y-8 justify-items-center items-end pb-12";
         grid.id = "book-grid";
+
+        const observer = new IntersectionObserver((entries, obs) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    const card = entry.target;
+                    const pageId = card.dataset.id;
+                    const canvas = document.getElementById(`canvas-${pageId}`);
+                    const page = pages.find(p => p.id === pageId);
+
+                    if (canvas && page) {
+                        renderPageCanvas(page, canvas).then(() => {
+                            const placeholder = document.getElementById(`placeholder-${pageId}`);
+                            if(placeholder) placeholder.style.opacity = '0';
+                            setTimeout(() => placeholder?.remove(), 300);
+                        });
+                        obs.unobserve(card);
+                    }
+                }
+            });
+        }, { root: container.parentElement, rootMargin: '200px' });
 
         pages.forEach((page, index) => {
             const card = document.createElement('div');
-            card.className = "relative group bg-slate-800 rounded-lg shadow-lg border border-slate-700 transition-all hover:border-indigo-500";
             card.dataset.id = page.id;
+
+            // Determine Position (Left vs Right)
+            // Index 0 -> Page 1 -> Right Side (Start of Book)
+            // Index 1 -> Page 2 -> Left Side
+            // Index 2 -> Page 3 -> Right Side
+
+            const isRightPage = (index % 2 === 0); // 0, 2, 4... are Right Pages
+            const isFirstPage = (index === 0);
+
+            // Base Classes
+            let classes = "relative group bg-slate-800 shadow-lg border border-slate-700 transition-all hover:border-indigo-500 overflow-hidden";
+
+            // Spread Styling logic
+            if (isFirstPage) {
+                card.style.gridColumnStart = "2"; // Push to Right Column
+                classes += " rounded-r-lg rounded-l-sm border-l-2 border-l-slate-900"; // Spine visual
+            } else if (isRightPage) {
+                card.style.justifySelf = "start"; // Right Column aligns start (leftwards to spine)
+                classes += " rounded-r-lg rounded-l-none border-l-0"; // Connect to spine
+            } else {
+                // Left Page (Odd indices 1, 3...)
+                card.style.justifySelf = "end"; // Left Column aligns end (rightwards to spine)
+                classes += " rounded-l-lg rounded-r-none border-r-0"; // Connect to spine
+            }
+
+            card.className = classes;
 
             // Size the card based on aspect ratio + zoom
             // For now fixed CSS width, canvas fits inside
@@ -387,8 +433,15 @@ function renderBookViewer() {
             card.appendChild(footer);
             grid.appendChild(card);
 
-            // Trigger Render
-            renderPageCanvas(page, canvas);
+            // Add Placeholder for Lazy Loading
+            const placeholder = document.createElement('div');
+            placeholder.className = "absolute inset-0 flex items-center justify-center text-gray-600 bg-slate-200 z-10 transition-opacity duration-300";
+            placeholder.innerHTML = '<div class="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>';
+            placeholder.id = `placeholder-${page.id}`;
+            canvasContainer.appendChild(placeholder);
+
+            // Observe for Lazy Loading
+            observer.observe(card);
         });
 
         container.appendChild(grid);
@@ -547,6 +600,27 @@ if (viewerZoom) {
     viewerZoom.addEventListener('input', (e) => {
         viewerScale = parseFloat(e.target.value);
         renderBookViewer();
+    });
+}
+
+if (jumpToPageInput) {
+    jumpToPageInput.addEventListener('change', (e) => {
+        const pageNum = parseInt(e.target.value);
+        if (isNaN(pageNum) || pageNum < 1) return;
+
+        const pageIndex = pageNum - 1;
+        if (pageIndex >= 0 && pageIndex < pages.length) {
+            const pageId = pages[pageIndex].id;
+            const card = document.querySelector(`[data-id="${pageId}"]`);
+            if (card) {
+                card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                // Highlight momentarily
+                card.classList.add('ring-2', 'ring-indigo-500');
+                setTimeout(() => card.classList.remove('ring-2', 'ring-indigo-500'), 1500);
+            }
+        } else {
+            alert("Page number out of range.");
+        }
     });
 }
 

@@ -1855,11 +1855,16 @@ exports.generateBooklet = onCall({
 
             if (isPdf) {
                 const srcDoc = await PDFDocument.load(fs.readFileSync(localPath));
-                const embeddedPages = await interiorDoc.embedPages(srcDoc.getPages());
 
-                embeddedPages.forEach((embeddedPage) => {
-                     drawOnSheet(interiorDoc, embeddedPage, trimWidth, trimHeight, bleed, settings);
-                });
+                // Extract specific page index if provided, otherwise default to 0
+                const pageIndex = fileMeta.sourcePageIndex !== undefined ? fileMeta.sourcePageIndex : 0;
+
+                if (pageIndex < srcDoc.getPageCount()) {
+                    const [embeddedPage] = await interiorDoc.embedPages([srcDoc.getPage(pageIndex)]);
+                    drawOnSheet(interiorDoc, embeddedPage, trimWidth, trimHeight, bleed, settings);
+                } else {
+                    logger.warn(`Requested page index ${pageIndex} out of bounds for file ${fileMeta.storagePath}`);
+                }
 
             } else {
                 // Image
