@@ -280,6 +280,22 @@ exports.optimizePdf = onObjectFinalized({
   return null;
 });
 
+// --- Shared Constants (Mirrored from Frontend) ---
+const HARDCODED_PAPER_TYPES = [
+    { name: "60lb Text", caliper: 0.0032 },
+    { name: "70lb Text", caliper: 0.0038 },
+    { name: "80lb Text", caliper: 0.0045 },
+    { name: "100lb Text", caliper: 0.0055 },
+    { name: "80lb Gloss Text", caliper: 0.0035 },
+    { name: "100lb Gloss Text", caliper: 0.0045 },
+    { name: "80lb Matte Text", caliper: 0.0042 },
+    { name: "100lb Matte Text", caliper: 0.0052 },
+    // Cover Stocks
+    { name: "100lb Gloss Cover", caliper: 0.0095 },
+    { name: "12pt C1S", caliper: 0.0120 },
+    { name: "14pt C1S", caliper: 0.0140 }
+];
+
 // --- Production Constants ---
 const COLOR_CLICK_COST = 0.039;
 const BW_CLICK_COST = 0.009;
@@ -1882,16 +1898,15 @@ exports.generateBooklet = onCall({
             coverDoc = await PDFDocument.create();
 
             // Calculate Spine
-            // We need to know the paper caliper.
-            // For now, use hardcoded map if available or fallback.
-            // Ideally, we passed this in request.data or specs.
-            // Let's check specs.paperType
             const paperType = specs.paperType || '';
-            // Simple lookup (duplicate logic from frontend for now, or fetch from Firestore inventory)
-            let caliper = 0.004; // Default
-            // ... (Implementation of lookup if needed, or trust frontend passed spine width? No, calculate securely)
+            const paperObj = HARDCODED_PAPER_TYPES.find(p => p.name === paperType);
+            const caliper = paperObj ? paperObj.caliper : 0.004; // Default fallback
+
             // For MVP, let's use a fixed calculation based on page count from project
-            const pageCount = specs.pageCount || interiorFiles.length; // Fallback to file count?
+            // Note: interiorFiles.length might be accurate if fully populated, but specs.pageCount is what user entered.
+            // Let's use specs.pageCount if available and seemingly valid, else fallback.
+            const pageCount = (specs.pageCount && specs.pageCount > 0) ? specs.pageCount : interiorFiles.length;
+
             let spineWidth = (pageCount / 2) * caliper;
 
             // Force spine to 0 if not perfect bound
@@ -1904,22 +1919,122 @@ exports.generateBooklet = onCall({
 
             const coverPage = coverDoc.addPage([totalWidth * 72, totalHeight * 72]); // PDF uses points (72 dpi)
 
-            // Helper to draw cover part
+            // Helper to draw cover part with Aspect Fill
             async function drawPart(fileMeta, x, y, w, h) {
                 if (!fileMeta) return;
                 const { path: localPath, isPdf } = await prepareFileForEmbedding(fileMeta.storagePath);
 
+                let embeddable;
+                let srcW, srcH;
+
                 if (isPdf) {
                     const srcDoc = await PDFDocument.load(fs.readFileSync(localPath));
                     const [embedded] = await coverDoc.embedPages([srcDoc.getPage(0)]);
-                    coverPage.drawPage(embedded, { x: x*72, y: y*72, width: w*72, height: h*72 });
+                    embeddable = embedded;
+                    // PDFPageProxy width/height
+                    srcW = embedded.width;
+                    srcH = embedded.height;
                 } else {
                     const imgBytes = fs.readFileSync(localPath);
-                    let img;
-                    if (localPath.toLowerCase().endsWith('.png')) img = await coverDoc.embedPng(imgBytes);
-                    else img = await coverDoc.embedJpg(imgBytes);
-                    coverPage.drawImage(img, { x: x*72, y: y*72, width: w*72, height: h*72 });
+                    if (localPath.toLowerCase().endsWith('.png')) embeddable = await coverDoc.embedPng(imgBytes);
+                    else embeddable = await coverDoc.embedJpg(imgBytes);
+                    srcW = embeddable.width;
+                    srcH = embeddable.height;
                 }
+
+                // Calculate Aspect Fill (Center Crop)
+                // Note: PDF-lib coords are Bottom-Left origin, but drawImage x,y are from Bottom-Left?
+                // Wait, drawPage/drawImage x,y is bottom-left corner of the image on the page.
+                // But our inputs x, y are usually Top-Left in typical graphics.
+                // Let's assume x, y passed here are from Top-Left of the sheet relative to our mental model,
+                // but PDF-lib uses Bottom-Left.
+                // Actually, the `drawPart` calls below pass x,y assuming 0,0 is top-left of the layout?
+                // In PDF-lib, (0,0) is bottom-left.
+                // So if we want to draw at "Top Left" of the page, y should be (PageHeight - h).
+
+                // Let's check how `coverPage` was created:
+                // const coverPage = coverDoc.addPage([totalWidth * 72, totalHeight * 72]);
+                // `drawPart` calls:
+                // drawPart(coverFiles.back, 0, 0, ...) -> This draws at 0,0 (Bottom-Left)
+                // If the intention is a flat spread, 0,0 Bottom-Left is fine for the "Back Cover" if the back cover is on the LEFT.
+                // Wait.
+                // LTR Book: Back (Left), Spine (Middle), Front (Right).
+                // If we draw Back at x=0, y=0, width=Trim+Bleed, height=FullHeight.
+                // This covers the left portion. This is correct for PDF coord system if y=0 is bottom.
+
+                const targetW = w * 72;
+                const targetH = h * 72;
+                const targetX = x * 72;
+                const targetY = y * 72; // Assuming y is 0 for all parts as they span full height?
+                // Yes, calls are: drawPart(..., 0, 0, ...). So y is 0.
+
+                const srcRatio = srcW / srcH;
+                const targetRatio = targetW / targetH;
+
+                let drawW, drawH, drawX, drawY;
+
+                // Fill Logic
+                if (srcRatio > targetRatio) {
+                    // Image is wider: Crop width (match height)
+                    drawH = targetH;
+                    drawW = targetH * srcRatio;
+                    drawY = targetY;
+                    drawX = targetX - (drawW - targetW) / 2;
+                } else {
+                    // Image is taller: Crop height (match width)
+                    drawW = targetW;
+                    drawH = targetW / srcRatio;
+                    drawX = targetX;
+                    drawY = targetY - (drawH - targetH) / 2;
+                }
+
+                // --- IMPLEMENTING CLIPPING ---
+                // We must clip to the target box (x, y, w, h) to prevent bleed-over.
+                // Using pdf-lib operators: q (save), re (rect), W (clip), n (end path), Q (restore)
+
+                const { pushGraphicsState, popGraphicsState, clip, endPath, appendBezierCurve, moveTo, lineTo } = require('pdf-lib');
+
+                // 1. Save State
+                coverPage.pushOperators(pushGraphicsState());
+
+                // 2. Define Clipping Rectangle
+                // PDF coords are bottom-left origin.
+                // We want to clip to (targetX, targetY) with (targetW, targetH).
+                // Since our targetY is 0 (bottom), this is straightforward.
+
+                // Use low-level drawing for the path
+                coverPage.drawRectangle({
+                    x: targetX,
+                    y: targetY,
+                    width: targetW,
+                    height: targetH,
+                    borderWidth: 0,
+                    color: undefined,
+                    borderColor: undefined
+                });
+
+                // Note: drawRectangle draws. It doesn't set a clipping path.
+                // We need to construct the path and clip.
+
+                coverPage.pushOperators(
+                     moveTo(targetX, targetY),
+                     lineTo(targetX + targetW, targetY),
+                     lineTo(targetX + targetW, targetY + targetH),
+                     lineTo(targetX, targetY + targetH),
+                     lineTo(targetX, targetY), // Close
+                     clip(),
+                     endPath()
+                );
+
+                // 3. Draw the Image (It will be clipped)
+                if (isPdf) {
+                    coverPage.drawPage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
+                } else {
+                    coverPage.drawImage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
+                }
+
+                // 4. Restore State (Remove clipping)
+                coverPage.pushOperators(popGraphicsState());
             }
 
             // Draw Back (Left)

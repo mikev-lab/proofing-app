@@ -286,13 +286,21 @@
                     <!-- Hidden Binding Input (Replaced by Type Selection but kept for ID ref stability if needed, though mostly unused now) -->
                     <input type="hidden" id="spec-binding">
 
-                    <!-- Paper Type (For Perfect Bound Spine Calc) -->
-                    <div id="paper-section" class="hidden">
-                        <label class="block text-sm font-medium text-gray-300 mb-2">Interior Paper Type</label>
-                        <p class="text-xs text-gray-500 mb-2">Required to calculate spine width.</p>
-                        <select id="spec-paper" class="w-full bg-slate-900 border border-slate-600 rounded-md py-2 px-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                             <!-- Populated by JS -->
-                        </select>
+                    <!-- Paper Types (For Perfect Bound) -->
+                    <div id="paper-section" class="hidden space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Interior Paper Type</label>
+                            <p class="text-xs text-gray-500 mb-2">Required to calculate spine width.</p>
+                            <select id="spec-paper" class="w-full bg-slate-900 border border-slate-600 rounded-md py-2 px-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                 <!-- Populated by JS -->
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Cover Paper Type</label>
+                            <select id="spec-cover-paper" class="w-full bg-slate-900 border border-slate-600 rounded-md py-2 px-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                 <!-- Populated by JS -->
+                            </select>
+                        </div>
                     </div>
 
                     <!-- Page Count -->

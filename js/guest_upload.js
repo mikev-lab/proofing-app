@@ -42,6 +42,7 @@ const specWidth = document.getElementById('spec-width');
 const specHeight = document.getElementById('spec-height');
 const specBinding = document.getElementById('spec-binding'); // Hidden input now
 const specPaper = document.getElementById('spec-paper');
+const specCoverPaper = document.getElementById('spec-cover-paper');
 const specPageCount = document.getElementById('spec-page-count');
 const paperSection = document.getElementById('paper-section');
 const pageCountSection = document.getElementById('page-count-section');
@@ -82,7 +83,7 @@ let projectSpecs = {}; // Store loaded/saved specs here
 
 // New Data Model for Virtual Book
 let sourceFiles = {}; // Map: id -> File object
-let pages = []; // Array: { id, sourceFileId, pageIndex, settings: { scaleMode, alignment } }
+let pages = []; // Array: { id, sourceFileId, pageIndex, settings: { scaleMode, alignment }, isSpread: boolean }
 let viewerScale = 0.5; // Zoom level for viewer
 
 // --- Helper: Parse URL Params ---
@@ -105,12 +106,15 @@ function showError(msg) {
 // --- Helper: Populate Selects ---
 function populateSelects() {
     // Populate Paper
-    specPaper.innerHTML = '<option value="" disabled selected>Select Paper Type</option>';
+    specPaper.innerHTML = '<option value="" disabled selected>Select Interior Paper</option>';
+    specCoverPaper.innerHTML = '<option value="" disabled selected>Select Cover Paper</option>';
+
     HARDCODED_PAPER_TYPES.forEach(p => {
         const opt = document.createElement('option');
         opt.value = p.name;
         opt.textContent = p.name;
-        specPaper.appendChild(opt);
+        specPaper.appendChild(opt.cloneNode(true));
+        specCoverPaper.appendChild(opt);
     });
 }
 
@@ -138,6 +142,7 @@ Array.from(projectTypeRadios).forEach(radio => {
             paperSection.classList.remove('hidden');
             specPageCount.required = true;
             specPaper.required = true;
+            specCoverPaper.required = true;
         }
     });
 });
@@ -288,7 +293,8 @@ async function addInteriorFiles(files) {
                 id: `${sourceId}_p${i}`,
                 sourceFileId: sourceId,
                 pageIndex: i + 1, // 1-based for display/pdfjs
-                settings: { scaleMode: 'fit', alignment: 'center' }
+                settings: { scaleMode: 'fit', alignment: 'center' },
+                isSpread: false
             });
         }
     }
@@ -299,8 +305,19 @@ window.updatePageSetting = (pageId, setting, value) => {
     const page = pages.find(p => p.id === pageId);
     if (page) {
         page.settings[setting] = value;
-        // Re-render just this canvas if possible, or whole viewer
-        // Ideally optimization: get canvas by ID and redraw
+
+        // If changing spread mode, we need to re-render the whole viewer to adjust grid
+        if (setting === 'isSpread') {
+             renderBookViewer();
+             return;
+        }
+
+        // Clear cache for this page as appearance changed
+        // Actually, the source bitmap is the same, only the transform changes.
+        // But renderPageCanvas handles drawing. We don't need to clear imageCache if it stores the *source* file render.
+        // But currently imageCache (in my plan) stores the *final* canvas? No, better to cache the source render.
+        // Let's refine the cache strategy in renderPageCanvas.
+
         const canvas = document.getElementById(`canvas-${pageId}`);
         if (canvas) renderPageCanvas(page, canvas);
     }
@@ -308,6 +325,7 @@ window.updatePageSetting = (pageId, setting, value) => {
 
 window.deletePage = (pageId) => {
     pages = pages.filter(p => p.id !== pageId);
+    imageCache.delete(pageId); // Cleanup
     renderBookViewer();
 };
 
@@ -466,27 +484,26 @@ async function renderPageCanvas(page, canvas) {
     const file = sourceFiles[page.sourceFileId];
     if (!file || !projectSpecs.dimensions) return;
 
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { alpha: false }); // Optimize alpha
     const width = projectSpecs.dimensions.width;
     const height = projectSpecs.dimensions.height;
     const bleed = 0.125;
 
-    // Visual Scale for Thumbnails (vs actual print size)
-    // We want cards to be ~200px wide.
-    // 1 inch = 96px screen. 8.5in = 816px.
-    // Scale = 200 / 816 ~= 0.25
-    const visualScale = (250 * viewerScale) / ((width + bleed*2) * 96); // Target ~250px width card
+    // Visual Scale for Thumbnails
+    // Use lower resolution for thumbnails (1.5x density max for retina, down to 1.0 if fast scrolling needed)
+    const visualScale = (250 * viewerScale) / ((width + bleed*2) * 96);
     const pixelsPerInch = 96 * visualScale;
+    const pixelDensity = 1.5; // Lowered from 2 to improve performance
 
     const totalW = width + (bleed*2);
     const totalH = height + (bleed*2);
 
-    canvas.width = totalW * pixelsPerInch * 2; // 2x Retina
-    canvas.height = totalH * pixelsPerInch * 2;
+    canvas.width = totalW * pixelsPerInch * pixelDensity;
+    canvas.height = totalH * pixelsPerInch * pixelDensity;
     canvas.style.width = `${totalW * pixelsPerInch}px`;
     canvas.style.height = `${totalH * pixelsPerInch}px`;
 
-    ctx.setTransform(2, 0, 0, 2, 0, 0);
+    ctx.setTransform(pixelDensity, 0, 0, pixelDensity, 0, 0);
     ctx.scale(pixelsPerInch, pixelsPerInch);
 
     // Draw Sheet Background
@@ -494,47 +511,70 @@ async function renderPageCanvas(page, canvas) {
     ctx.fillRect(0, 0, totalW, totalH);
 
     // Draw Content
-    await drawFileWithTransform(ctx, file, 0, 0, totalW, totalH, page.settings.scaleMode, page.settings.alignment, page.pageIndex);
+    await drawFileWithTransform(ctx, file, 0, 0, totalW, totalH, page.settings.scaleMode, page.settings.alignment, page.pageIndex, page.id);
 
     // Guides
-    ctx.lineWidth = 1.5 / pixelsPerInch;
+    ctx.lineWidth = 1.0 / pixelsPerInch;
+    // Trim (Blue) - Draw this first so content can (optionally) be clipped visually if we wanted, but for preview we show bleed.
+    ctx.strokeStyle = 'rgba(59, 130, 246, 0.5)';
+    ctx.strokeRect(bleed, bleed, width, height);
+
     // Bleed (Red)
     ctx.strokeStyle = 'rgba(239, 68, 68, 0.5)';
     ctx.strokeRect(0, 0, totalW, totalH);
-    // Trim (Blue)
-    ctx.strokeStyle = 'rgba(59, 130, 246, 0.8)';
-    ctx.strokeRect(bleed, bleed, width, height);
 }
 
-async function drawFileWithTransform(ctx, file, targetX, targetY, targetW, targetH, mode, align, pageIndex = 1) {
+async function drawFileWithTransform(ctx, file, targetX, targetY, targetW, targetH, mode, align, pageIndex = 1, pageId = null) {
     let imgBitmap;
     let srcW, srcH;
 
-    if (file.type === 'application/pdf') {
-        try {
-            const arrayBuffer = await file.arrayBuffer();
-            const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
-            const page = await pdf.getPage(pageIndex);
+    // Check Cache (Memory Caching)
+    // Key format: fileId + pageIndex (since transform is applied at draw time, we cache the source render)
+    // Actually we want to cache the *rendered bitmap* of the source file, not the final canvas.
+    const cacheKey = file.name + '_' + pageIndex + '_' + file.lastModified;
 
-            // Use a reasonable viewport for thumbnail rendering
-            const viewport = page.getViewport({ scale: 1.5 });
-            const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = viewport.width;
-            tempCanvas.height = viewport.height;
+    if (imageCache.has(cacheKey)) {
+        imgBitmap = imageCache.get(cacheKey);
+        srcW = imgBitmap.width;
+        srcH = imgBitmap.height;
+    } else {
+        // Render New
+        if (file.type === 'application/pdf') {
+            try {
+                const arrayBuffer = await file.arrayBuffer();
+                const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
+                const page = await pdf.getPage(pageIndex);
 
-            await page.render({
-                canvasContext: tempCanvas.getContext('2d'),
-                viewport: viewport
-            }).promise;
+                // Lower scale slightly for thumbnail performance
+                const viewport = page.getViewport({ scale: 1.0 });
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = viewport.width;
+                tempCanvas.height = viewport.height;
 
-            imgBitmap = await createImageBitmap(tempCanvas);
-            srcW = viewport.width;
-            srcH = viewport.height;
-        } catch (e) {
-            console.error("PDF Render Error", e);
-            return;
+                await page.render({
+                    canvasContext: tempCanvas.getContext('2d'),
+                    viewport: viewport
+                }).promise;
+
+                imgBitmap = await createImageBitmap(tempCanvas);
+                // Cache it!
+                imageCache.set(cacheKey, imgBitmap);
+
+                srcW = viewport.width;
+                srcH = viewport.height;
+            } catch (e) {
+                console.error("PDF Render Error", e);
+                return;
+            }
+        } else if (file.type.startsWith('image/')) {
+            imgBitmap = await createImageBitmap(file);
+            imageCache.set(cacheKey, imgBitmap);
+            srcW = imgBitmap.width;
+            srcH = imgBitmap.height;
         }
-    } else if (file.type.startsWith('image/')) {
+    }
+
+    if (!imgBitmap && file.type.startsWith('image/')) {
         imgBitmap = await createImageBitmap(file);
         srcW = imgBitmap.width;
         srcH = imgBitmap.height;
@@ -775,12 +815,34 @@ async function drawImageOnCanvas(ctx, file, x, y, targetW, targetH) {
             return;
         }
 
-        // Draw Image (Stretch to fit for now - sophisticated "fit/fill" is next step)
-        // Actually, usually Cover is "Fill with Bleed".
-        // But for this visualizer, let's just fit it into the TRIM box.
-        // The user uploads "Front Cover". We assume it's the full size.
+        // Draw Image using "Aspect Fill" logic
+        const srcW = imgBitmap.width;
+        const srcH = imgBitmap.height;
+        const srcRatio = srcW / srcH;
+        const targetRatio = targetW / targetH;
 
-        ctx.drawImage(imgBitmap, x, y, targetW, targetH);
+        let drawW, drawH, drawX, drawY;
+
+        if (srcRatio > targetRatio) {
+            // Image is wider than target: Crop width
+            drawH = targetH;
+            drawW = targetH * srcRatio;
+            drawY = y;
+            drawX = x - (drawW - targetW) / 2; // Center horizontally
+        } else {
+            // Image is taller than target: Crop height
+            drawW = targetW;
+            drawH = targetW / srcRatio;
+            drawX = x;
+            drawY = y - (drawH - targetH) / 2; // Center vertically
+        }
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x, y, targetW, targetH);
+        ctx.clip();
+        ctx.drawImage(imgBitmap, drawX, drawY, drawW, drawH);
+        ctx.restore();
 
 
     } catch (e) {
@@ -828,6 +890,7 @@ specsForm.addEventListener('submit', async (e) => {
 
             if (typeValue === 'perfectBound') {
                 specsUpdate['specs.paperType'] = specPaper.value;
+                specsUpdate['specs.coverPaperType'] = specCoverPaper.value;
             }
         }
 
@@ -839,7 +902,8 @@ specsForm.addEventListener('submit', async (e) => {
             dimensions: { width, height, units: 'in' },
             binding: specsUpdate['specs.binding'],
             pageCount: specsUpdate['specs.pageCount'],
-            paperType: specsUpdate['specs.paperType']
+            paperType: specsUpdate['specs.paperType'],
+            coverPaperType: specsUpdate['specs.coverPaperType']
         };
         projectType = specsUpdate['projectType'];
 
