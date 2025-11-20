@@ -2183,8 +2183,7 @@ exports.getNotifications = onCall({ region: 'us-central1' }, async (request) => 
 // --- Helper Function for Preflight Checks (Corrected Tool) ---
 async function runPreflightChecks(filePath, logger) {
     const { spawn } = require('child-process-promise');
-    const fs = require('fs');
-
+    
     let preflightStatus = 'passed';
     let dimensions = null;
     let preflightResults = {
@@ -2197,6 +2196,9 @@ async function runPreflightChecks(filePath, logger) {
     try {
         const pdfInfoResult = await spawn('pdfinfo', [filePath], { capture: ['stdout', 'stderr'] });
         const pdfInfoOutput = pdfInfoResult.stdout.toString();
+        
+        // Fail loudly if no output
+        if (!pdfInfoOutput) throw new Error('No output from pdfinfo');
 
         const sizeMatch = pdfInfoOutput.match(/Page size:\s*([\d\.]+) x ([\d\.]+) pts/);
         if (sizeMatch && sizeMatch.length === 3) {
@@ -2210,47 +2212,27 @@ async function runPreflightChecks(filePath, logger) {
         }
     } catch (error) {
         logger.warn('Dimensions check failed:', error);
+        // Don't mark the whole job as failed just for dimensions, but log it.
     }
 
     // --- 2. Font Check (pdffonts) ---
     try {
-        let fontOutput = '';
-        try {
-            // CHANGE: Use 'pdffonts' instead of 'pdfinfo -fonts'
-            const result = await spawn('pdffonts', [filePath], { capture: ['stdout', 'stderr'] });
-            fontOutput = result.stdout.toString();
-        } catch (spawnError) {
-            if (spawnError.stdout && spawnError.stdout.toString().trim().length > 0) {
-                fontOutput = spawnError.stdout.toString();
-            } else {
-                const stderr = spawnError.stderr ? spawnError.stderr.toString() : (spawnError.message || '');
-                throw new Error(stderr || 'pdffonts failed');
-            }
-        }
+        const result = await spawn('pdffonts', [filePath], { capture: ['stdout', 'stderr'] });
+        const fontOutput = result.stdout ? result.stdout.toString() : '';
+
+        if (!fontOutput) throw new Error('No output from pdffonts (tool may be missing)');
 
         const lines = fontOutput.split('\n');
         const unembeddedFonts = [];
         
-        // pdffonts output format columns:
-        // name | type | emb | sub | uni | object | ID
-        // We rely on the fact that 'emb' is the 5th column from the END.
-        
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i].trim();
-            if (!line) continue;
-            if (line.startsWith('name')) continue; // Skip Header
-            if (line.startsWith('----')) continue; // Skip Separator
+            if (!line || line.startsWith('name') || line.startsWith('----')) continue;
             
             const columns = line.split(/\s+/);
-            
-            // We need enough columns to be valid. 
-            // emb, sub, uni, object, ID = 5 columns minimum at the end.
             if (columns.length >= 5) {
-                const embStatus = columns[columns.length - 5]; // 5th from last
-                
-                if (embStatus === 'no') {
-                    unembeddedFonts.push(columns[0]); // Name is usually the first token
-                }
+                const embStatus = columns[columns.length - 5];
+                if (embStatus === 'no') unembeddedFonts.push(columns[0]);
             }
         }
         
@@ -2264,21 +2246,18 @@ async function runPreflightChecks(filePath, logger) {
         }
 
     } catch (error) {
+        // CATCHES ENOENT NOW
         logger.error('Font check failed:', error);
         preflightResults.fontCheck.status = 'warning';
-        const msg = error.message.replace(/\n/g, ' ').substring(0, 100);
-        preflightResults.fontCheck.details = `Tool Warning: ${msg}`;
+        preflightResults.fontCheck.details = `Check failed: ${error.message}`;
     }
 
     // --- 3. Color Space Check ---
     try {
-        let colorOutput = '';
-        try {
-            const result = await spawn('pdfinfo', [filePath], { capture: ['stdout', 'stderr'] });
-            colorOutput = result.stdout.toString();
-        } catch (spawnError) {
-            if (spawnError.stdout) colorOutput = spawnError.stdout.toString();
-        }
+        const result = await spawn('pdfinfo', [filePath], { capture: ['stdout', 'stderr'] });
+        const colorOutput = result.stdout ? result.stdout.toString() : '';
+
+        if (!colorOutput) throw new Error('No output from pdfinfo (tool may be missing)');
 
         const issues = [];
         if (colorOutput.includes('DeviceRGB') || colorOutput.includes('ICCBased')) issues.push('RGB');
@@ -2293,18 +2272,17 @@ async function runPreflightChecks(filePath, logger) {
             preflightResults.colorSpaceCheck.details = 'No RGB/Spot colors detected.';
         }
     } catch (e) {
-        preflightResults.colorSpaceCheck.details = 'Color check failed.';
+        // CATCHES ENOENT NOW
+        preflightResults.colorSpaceCheck.status = 'warning';
+        preflightResults.colorSpaceCheck.details = `Check failed: ${e.message}`;
     }
 
     // --- 4. DPI Check ---
     try {
-        let dpiOutput = '';
-        try {
-            const result = await spawn('pdfimages', ['-list', filePath], { capture: ['stdout', 'stderr'] });
-            dpiOutput = result.stdout.toString();
-        } catch (spawnError) {
-            if (spawnError.stdout) dpiOutput = spawnError.stdout.toString();
-        }
+        const result = await spawn('pdfimages', ['-list', filePath], { capture: ['stdout', 'stderr'] });
+        const dpiOutput = result.stdout ? result.stdout.toString() : '';
+
+        if (!dpiOutput) throw new Error('No output from pdfimages (tool may be missing)');
 
         const lines = dpiOutput.split('\n');
         const lowDpiImages = [];
@@ -2336,16 +2314,13 @@ async function runPreflightChecks(filePath, logger) {
         }
 
     } catch (error) {
+        // CATCHES ENOENT NOW
         logger.error('DPI check failed:', error);
-        preflightResults.dpiCheck.status = 'skipped';
-        preflightResults.dpiCheck.details = 'Failed to run image analysis.';
+        preflightResults.dpiCheck.status = 'warning';
+        preflightResults.dpiCheck.details = `Check failed: ${error.message}`;
     }
 
-    return {
-        preflightStatus,
-        preflightResults,
-        dimensions
-    };
+    return { preflightStatus, preflightResults, dimensions };
 }
 
 // --- Worker Function (Runs in Cloud Run Container) ---

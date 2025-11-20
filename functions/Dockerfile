@@ -32,4 +32,4 @@ COPY . .
 # Define the command to run your function (using Functions Framework)
 # We set the entry point to 'generatePreviews' here, but the deployment commands (Step 3) 
 # will specify the correct target for each function (optimizePdf, generateFinalPdf, etc.).
-CMD ["functions-framework", "--target=generatePreviews"]
+CMD ["npx", "functions-framework"]
