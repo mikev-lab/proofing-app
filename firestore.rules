@@ -149,8 +149,8 @@ service cloud.firestore {
                       // ** OR Guest Upload Logic **
                       ||
                       (
-                        hasValidGuestDataAccess(projectId, 'canUpload') &&
-                        request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'lastUploadAt'])
+                        (hasValidGuestDataAccess(projectId, 'canUpload') || hasValidGuestDataAccess(projectId, 'isOwner')) &&
+                        request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'lastUploadAt', 'specs'])
                       );
 
       // --- Rules for 'guestLinks' Sub-collection ---

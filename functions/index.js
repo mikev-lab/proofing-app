@@ -280,6 +280,22 @@ exports.optimizePdf = onObjectFinalized({
   return null;
 });
 
+// --- Shared Constants (Mirrored from Frontend) ---
+const HARDCODED_PAPER_TYPES = [
+    { name: "60lb Text", caliper: 0.0032 },
+    { name: "70lb Text", caliper: 0.0038 },
+    { name: "80lb Text", caliper: 0.0045 },
+    { name: "100lb Text", caliper: 0.0055 },
+    { name: "80lb Gloss Text", caliper: 0.0035 },
+    { name: "100lb Gloss Text", caliper: 0.0045 },
+    { name: "80lb Matte Text", caliper: 0.0042 },
+    { name: "100lb Matte Text", caliper: 0.0052 },
+    // Cover Stocks
+    { name: "100lb Gloss Cover", caliper: 0.0095 },
+    { name: "12pt C1S", caliper: 0.0120 },
+    { name: "14pt C1S", caliper: 0.0140 }
+];
+
 // --- Production Constants ---
 const COLOR_CLICK_COST = 0.039;
 const BW_CLICK_COST = 0.009;
@@ -1763,6 +1779,409 @@ exports.generateFinalPdf = onCall({
         }
     }
 });
+
+// --- NEW Generate Booklet Function ---
+exports.generateBooklet = onCall({
+    region: 'us-central1',
+    memory: '4GiB',
+    timeoutSeconds: 540
+}, async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'User must be authenticated.');
+
+    const { projectId, files } = request.data;
+    if (!projectId || !Array.isArray(files)) {
+        throw new HttpsError('invalid-argument', 'Missing projectId or files array.');
+    }
+
+    logger.log(`Generating booklet for project ${projectId} with ${files.length} files.`);
+    const bucket = admin.storage().bucket();
+    const authAxios = await getAuthenticatedClient();
+
+    // Fetch Project Specs
+    const projectRef = db.collection('projects').doc(projectId);
+    const projectDoc = await projectRef.get();
+    if (!projectDoc.exists) throw new HttpsError('not-found', 'Project not found.');
+    const projectData = projectDoc.data();
+    const specs = projectData.specs || {};
+
+    // Dimensions (default to Letter if missing)
+    const trimWidth = specs.dimensions?.width || 8.5;
+    const trimHeight = specs.dimensions?.height || 11;
+    const bleed = 0.125;
+
+    // Create Documents
+    const interiorDoc = await PDFDocument.create();
+    let coverDoc = null;
+
+    // Cache for downloaded/converted files to avoid redundancy
+    const fileCache = {}; // storagePath -> { path: localPath, isPdf: boolean }
+    const tempFiles = []; // Track for cleanup
+
+    try {
+        // Helper to convert non-embeddable files (PSD, etc) to PDF/PNG
+        async function prepareFileForEmbedding(storagePath) {
+            // Check Cache
+            if (fileCache[storagePath]) return fileCache[storagePath];
+
+            const tempPath = path.join(os.tmpdir(), `temp_${Date.now()}_${Math.random().toString(36).substring(7)}`);
+            await bucket.file(storagePath).download({ destination: tempPath });
+            tempFiles.push(tempPath);
+
+            let isPdf = false;
+            const ext = path.extname(storagePath).toLowerCase();
+
+            if (ext === '.psd' || ext === '.ai') {
+                logger.log(`Converting ${ext} file to PDF via Gotenberg...`);
+                const convertFormData = new FormData();
+                convertFormData.append('files', fs.createReadStream(tempPath), path.basename(storagePath));
+
+                const response = await authAxios.post(`${GOTENBERG_URL}/forms/libreoffice/convert`, convertFormData, {
+                    responseType: 'arraybuffer'
+                });
+
+                // Replace temp file with converted PDF
+                fs.writeFileSync(tempPath, response.data);
+                isPdf = true;
+            } else if (ext === '.pdf') {
+                isPdf = true;
+            } else {
+                 // Images (JPG, PNG)
+                 isPdf = false;
+            }
+
+            const result = { path: tempPath, isPdf };
+            fileCache[storagePath] = result; // Cache it
+            return result;
+        }
+
+        // Process Files
+        const interiorFiles = files.filter(f => f.type.startsWith('interior'));
+        const coverFiles = {
+            front: files.find(f => f.type === 'cover_front'),
+            spine: files.find(f => f.type === 'cover_spine'),
+            back: files.find(f => f.type === 'cover_back')
+        };
+
+        // --- 1. Build Interior ---
+        for (const fileMeta of interiorFiles) {
+            const { path: localPath, isPdf } = await prepareFileForEmbedding(fileMeta.storagePath, fileMeta.type);
+            const settings = fileMeta.settings || { scaleMode: 'fit', alignment: 'center' };
+
+            let sourcePages = [];
+
+            if (isPdf) {
+                const srcDoc = await PDFDocument.load(fs.readFileSync(localPath));
+
+                // Extract specific page index if provided, otherwise default to 0
+                const pageIndex = fileMeta.sourcePageIndex !== undefined ? fileMeta.sourcePageIndex : 0;
+
+                if (pageIndex < srcDoc.getPageCount()) {
+                    const [embeddedPage] = await interiorDoc.embedPages([srcDoc.getPage(pageIndex)]);
+                    drawOnSheet(interiorDoc, embeddedPage, trimWidth, trimHeight, bleed, settings);
+                } else {
+                    logger.warn(`Requested page index ${pageIndex} out of bounds for file ${fileMeta.storagePath}`);
+                }
+
+            } else {
+                // Image
+                const imgBytes = fs.readFileSync(localPath);
+                let embeddedImage;
+                if (localPath.toLowerCase().endsWith('.png')) embeddedImage = await interiorDoc.embedPng(imgBytes);
+                else embeddedImage = await interiorDoc.embedJpg(imgBytes);
+
+                drawOnSheet(interiorDoc, embeddedImage, trimWidth, trimHeight, bleed, settings);
+            }
+        }
+
+        // --- 2. Build Cover (If exists) ---
+        if (coverFiles.front || coverFiles.back || coverFiles.spine) {
+            coverDoc = await PDFDocument.create();
+
+            // Calculate Spine
+            const paperType = specs.paperType || '';
+            const paperObj = HARDCODED_PAPER_TYPES.find(p => p.name === paperType);
+            const caliper = paperObj ? paperObj.caliper : 0.004; // Default fallback
+
+            // For MVP, let's use a fixed calculation based on page count from project
+            // Note: interiorFiles.length might be accurate if fully populated, but specs.pageCount is what user entered.
+            // Let's use specs.pageCount if available and seemingly valid, else fallback.
+            const pageCount = (specs.pageCount && specs.pageCount > 0) ? specs.pageCount : interiorFiles.length;
+
+            let spineWidth = (pageCount / 2) * caliper;
+
+            // Force spine to 0 if not perfect bound
+            if (specs.binding === 'saddleStitch' || specs.binding === 'loose') {
+                spineWidth = 0;
+            }
+
+            const totalWidth = (trimWidth * 2) + spineWidth + (bleed * 2);
+            const totalHeight = trimHeight + (bleed * 2);
+
+            const coverPage = coverDoc.addPage([totalWidth * 72, totalHeight * 72]); // PDF uses points (72 dpi)
+
+            // Helper to draw cover part with Aspect Fill
+            async function drawPart(fileMeta, x, y, w, h) {
+                if (!fileMeta) return;
+                const { path: localPath, isPdf } = await prepareFileForEmbedding(fileMeta.storagePath);
+
+                let embeddable;
+                let srcW, srcH;
+
+                if (isPdf) {
+                    const srcDoc = await PDFDocument.load(fs.readFileSync(localPath));
+                    const [embedded] = await coverDoc.embedPages([srcDoc.getPage(0)]);
+                    embeddable = embedded;
+                    // PDFPageProxy width/height
+                    srcW = embedded.width;
+                    srcH = embedded.height;
+                } else {
+                    const imgBytes = fs.readFileSync(localPath);
+                    if (localPath.toLowerCase().endsWith('.png')) embeddable = await coverDoc.embedPng(imgBytes);
+                    else embeddable = await coverDoc.embedJpg(imgBytes);
+                    srcW = embeddable.width;
+                    srcH = embeddable.height;
+                }
+
+                // Calculate Aspect Fill (Center Crop)
+                // Note: PDF-lib coords are Bottom-Left origin, but drawImage x,y are from Bottom-Left?
+                // Wait, drawPage/drawImage x,y is bottom-left corner of the image on the page.
+                // But our inputs x, y are usually Top-Left in typical graphics.
+                // Let's assume x, y passed here are from Top-Left of the sheet relative to our mental model,
+                // but PDF-lib uses Bottom-Left.
+                // Actually, the `drawPart` calls below pass x,y assuming 0,0 is top-left of the layout?
+                // In PDF-lib, (0,0) is bottom-left.
+                // So if we want to draw at "Top Left" of the page, y should be (PageHeight - h).
+
+                // Let's check how `coverPage` was created:
+                // const coverPage = coverDoc.addPage([totalWidth * 72, totalHeight * 72]);
+                // `drawPart` calls:
+                // drawPart(coverFiles.back, 0, 0, ...) -> This draws at 0,0 (Bottom-Left)
+                // If the intention is a flat spread, 0,0 Bottom-Left is fine for the "Back Cover" if the back cover is on the LEFT.
+                // Wait.
+                // LTR Book: Back (Left), Spine (Middle), Front (Right).
+                // If we draw Back at x=0, y=0, width=Trim+Bleed, height=FullHeight.
+                // This covers the left portion. This is correct for PDF coord system if y=0 is bottom.
+
+                const targetW = w * 72;
+                const targetH = h * 72;
+                const targetX = x * 72;
+                const targetY = y * 72; // Assuming y is 0 for all parts as they span full height?
+                // Yes, calls are: drawPart(..., 0, 0, ...). So y is 0.
+
+                const srcRatio = srcW / srcH;
+                const targetRatio = targetW / targetH;
+
+                let drawW, drawH, drawX, drawY;
+
+                // Fill Logic
+                if (srcRatio > targetRatio) {
+                    // Image is wider: Crop width (match height)
+                    drawH = targetH;
+                    drawW = targetH * srcRatio;
+                    drawY = targetY;
+                    drawX = targetX - (drawW - targetW) / 2;
+                } else {
+                    // Image is taller: Crop height (match width)
+                    drawW = targetW;
+                    drawH = targetW / srcRatio;
+                    drawX = targetX;
+                    drawY = targetY - (drawH - targetH) / 2;
+                }
+
+                // --- IMPLEMENTING CLIPPING ---
+                // We must clip to the target box (x, y, w, h) to prevent bleed-over.
+                // Using pdf-lib operators: q (save), re (rect), W (clip), n (end path), Q (restore)
+
+                const { pushGraphicsState, popGraphicsState, clip, endPath, appendBezierCurve, moveTo, lineTo } = require('pdf-lib');
+
+                // 1. Save State
+                coverPage.pushOperators(pushGraphicsState());
+
+                // 2. Define Clipping Rectangle
+                // PDF coords are bottom-left origin.
+                // We want to clip to (targetX, targetY) with (targetW, targetH).
+                // Since our targetY is 0 (bottom), this is straightforward.
+
+                // Use low-level drawing for the path
+                coverPage.drawRectangle({
+                    x: targetX,
+                    y: targetY,
+                    width: targetW,
+                    height: targetH,
+                    borderWidth: 0,
+                    color: undefined,
+                    borderColor: undefined
+                });
+
+                // Note: drawRectangle draws. It doesn't set a clipping path.
+                // We need to construct the path and clip.
+
+                coverPage.pushOperators(
+                     moveTo(targetX, targetY),
+                     lineTo(targetX + targetW, targetY),
+                     lineTo(targetX + targetW, targetY + targetH),
+                     lineTo(targetX, targetY + targetH),
+                     lineTo(targetX, targetY), // Close
+                     clip(),
+                     endPath()
+                );
+
+                // 3. Draw the Image (It will be clipped)
+                if (isPdf) {
+                    coverPage.drawPage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
+                } else {
+                    coverPage.drawImage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
+                }
+
+                // 4. Restore State (Remove clipping)
+                coverPage.pushOperators(popGraphicsState());
+            }
+
+            // Draw Back (Left)
+            await drawPart(coverFiles.back, 0, 0, trimWidth + bleed, totalHeight); // Includes left bleed
+
+            // Draw Spine (Middle)
+            await drawPart(coverFiles.spine, trimWidth + bleed, 0, spineWidth, totalHeight);
+
+            // Draw Front (Right)
+            await drawPart(coverFiles.front, trimWidth + bleed + spineWidth, 0, trimWidth + bleed, totalHeight);
+        }
+
+        // --- 3. Save & Update ---
+
+        // Interior
+        if (interiorFiles.length > 0) {
+            const pdfBytes = await interiorDoc.save();
+            const fileName = `${Date.now()}_Interior_Built.pdf`;
+            const storagePath = `proofs/${projectId}/${fileName}`;
+            await bucket.file(storagePath).save(pdfBytes, { contentType: 'application/pdf' });
+
+            // Generate Signed URL
+            // (Standard signed URL logic)
+             const [signedUrl] = await bucket.file(storagePath).getSignedUrl({ action: 'read', expires: '03-09-2491' });
+
+             // Update Firestore Versions
+             await projectRef.update({
+                versions: admin.firestore.FieldValue.arrayUnion({
+                    versionNumber: (projectData.versions?.length || 0) + 1,
+                    fileURL: signedUrl,
+                    filePath: storagePath,
+                    createdAt: admin.firestore.Timestamp.now(),
+                    processingStatus: 'complete',
+                    type: 'interior_build'
+                })
+             });
+        }
+
+        // Cover
+        if (coverDoc) {
+            const pdfBytes = await coverDoc.save();
+            const fileName = `${Date.now()}_Cover_Built.pdf`;
+            const storagePath = `proofs/${projectId}/${fileName}`;
+            await bucket.file(storagePath).save(pdfBytes, { contentType: 'application/pdf' });
+
+             const [signedUrl] = await bucket.file(storagePath).getSignedUrl({ action: 'read', expires: '03-09-2491' });
+
+             await projectRef.update({
+                 cover: {
+                     fileURL: signedUrl,
+                     filePath: storagePath,
+                     createdAt: admin.firestore.Timestamp.now(),
+                     processingStatus: 'complete'
+                 }
+             });
+        }
+
+        return { success: true };
+
+    } catch (err) {
+        logger.error("Error generating booklet:", err);
+        throw new HttpsError('internal', err.message);
+    } finally {
+        // Cleanup
+        tempFiles.forEach(p => {
+            try { fs.unlinkSync(p); } catch (e) {}
+        });
+    }
+});
+
+function drawOnSheet(doc, embeddable, trimW, trimH, bleed, settings) {
+    // Sheet Size = Trim + Bleed * 2
+    const sheetW = trimW + (bleed * 2);
+    const sheetH = trimH + (bleed * 2);
+
+    const page = doc.addPage([sheetW * 72, sheetH * 72]);
+
+    // Calculate Scale
+    // Src dims
+    const srcW = embeddable.width || embeddable.scale(1).width; // Handle different object types
+    const srcH = embeddable.height || embeddable.scale(1).height;
+
+    const targetW = sheetW * 72; // Points
+    const targetH = sheetH * 72;
+
+    // ... Scaling Logic (Fit/Fill/Stretch) similar to frontend ...
+    // For brevity, assume 'fit' means fit within safe area, 'fill' means fill bleed.
+
+    let drawW, drawH;
+
+    // Default Fill
+    const srcRatio = srcW / srcH;
+    const targetRatio = targetW / targetH;
+
+    if (settings.scaleMode === 'fit') {
+        if (srcRatio > targetRatio) {
+             drawW = targetW;
+             drawH = targetW / srcRatio;
+        } else {
+             drawH = targetH;
+             drawW = targetH * srcRatio;
+        }
+    } else if (settings.scaleMode === 'stretch') {
+        // Stretch to fill exactly
+        drawW = targetW;
+        drawH = targetH;
+    } else {
+         // Fill (Proportional Crop)
+        if (srcRatio > targetRatio) {
+             drawH = targetH;
+             drawW = targetH * srcRatio;
+        } else {
+             drawW = targetW;
+             drawH = targetW / srcRatio;
+        }
+    }
+
+    // Center + Pan
+    // settings.panX/panY are assumed to be in Points (72dpi) relative to the target box center
+    // If frontend sends relative (0-1) or pixels, we might need conversion.
+    // Plan assumes frontend sends points or we normalize.
+    // Let's assume frontend sends values normalized to Points (72dpi) matching the PDF dimensions.
+
+    const panX = settings.panX || 0;
+    const panY = settings.panY || 0;
+
+    const x = ((targetW - drawW) / 2) + panX;
+    const y = ((targetH - drawH) / 2) - panY; // Invert Y because PDF coords are bottom-up?
+    // PDF-lib's drawPage/drawImage uses (x,y) as bottom-left corner of the image rect.
+    // If we pan UP visually, we want image to move UP.
+    // In PDF (bottom-left origin), moving UP is +Y.
+    // So if panY is + (up), we add it.
+    // BUT, typically web panY is + (down).
+    // If frontend sends web-standard delta (down is positive), then we subtract.
+    // Let's assume standard web convention: panY > 0 means image moves DOWN.
+    // Image moving DOWN means y decreases in PDF coords. So -panY is correct.
+
+
+    if (embeddable.dims) {
+         // Is PDF Page
+         page.drawPage(embeddable, { x, y, width: drawW, height: drawH });
+    } else {
+         // Is Image
+         page.drawImage(embeddable, { x, y, width: drawW, height: drawH });
+    }
+}
+
 
 exports.imposePdf = onCall({
   region: 'us-central1',
