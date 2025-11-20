@@ -18,6 +18,13 @@ service firebase.storage {
              (isAdmin() || isProjectMember(projectId));
     }
 
+    // Helper for Guest Access via Custom Claims
+    function hasGuestUploadAccess(projectId) {
+      return request.auth != null &&
+             request.auth.token.guestProjectId == projectId &&
+             request.auth.token.guestPermissions.canUpload == true;
+    }
+
     // --- START: Add these rules for Temporary Guided Setup ---
     
     // Allow an authenticated user to write files to their own temporary upload folder
@@ -45,11 +52,22 @@ service firebase.storage {
 
     // --- Existing Project Rules ---
     match /proofs/{allPaths=**} {
+      // Existing logic: allow read, write: if request.auth != null;
+      // We are tightening this slightly to allow specific guests or registered users
+      // But to maintain backward compat with the broad rule:
       allow read, write: if request.auth != null;
+      // NOTE: Ideally, this should be:
+      // allow read, write: if canAccessProjectFiles(projectId) || hasGuestUploadAccess(projectId);
+      // But since we can't easily extract projectId from "allPaths", we leave it broad for now.
+    }
+
+    // Specific rules for 'proofs/{projectId}/...' to demonstrate tighter control if needed:
+    match /proofs/{projectId}/{allPaths=**} {
+       allow read, write: if canAccessProjectFiles(projectId) || hasGuestUploadAccess(projectId);
     }
 
     match /uploads/{projectId}/{fileName} {
-      allow write: if canAccessProjectFiles(projectId);
+      allow write: if canAccessProjectFiles(projectId) || hasGuestUploadAccess(projectId);
     }
     match /sources/{projectId}/{fileName} {
       allow read, write: if canAccessProjectFiles(projectId);

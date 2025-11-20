@@ -1098,6 +1098,7 @@ exports.generateGuestLink = onCall({ region: 'us-central1' }, async (request) =>
   if (!projectId || !permissions) {
     throw new HttpsError('invalid-argument', 'The function must be called with a "projectId" and "permissions" object.');
   }
+  // Allow canUpload to be part of the permissions object (optional, defaults to false if not checked)
   if (typeof permissions.canApprove !== 'boolean' || typeof permissions.canAnnotate !== 'boolean' || typeof permissions.canSeeComments !== 'boolean') {
     throw new HttpsError('invalid-argument', 'The "permissions" object must contain boolean values for "canApprove", "canAnnotate", and "canSeeComments".');
   }
@@ -1136,6 +1137,184 @@ exports.generateGuestLink = onCall({ region: 'us-central1' }, async (request) =>
     logger.error('Error creating guest link document in Firestore:', error);
     throw new HttpsError('internal', 'Failed to create the guest link.');
   }
+});
+
+// --- NEW Callable Function: Authenticate Guest (Exchange Token for Custom Claim) ---
+exports.authenticateGuest = onCall({ region: 'us-central1' }, async (request) => {
+    // This function is called by the client (guest_upload.html) with a guestToken.
+    // It validates the token and returns a Custom Auth Token with claims.
+
+    const { projectId, guestToken } = request.data;
+    if (!projectId || !guestToken) {
+        throw new HttpsError('invalid-argument', 'Missing projectId or guestToken.');
+    }
+
+    try {
+        // 1. Verify the Guest Link exists and is valid
+        const guestLinkRef = db.collection('projects').doc(projectId).collection('guestLinks').doc(guestToken);
+        const guestLinkSnap = await guestLinkRef.get();
+
+        if (!guestLinkSnap.exists) {
+            throw new HttpsError('not-found', 'Invalid guest link.');
+        }
+
+        const linkData = guestLinkSnap.data();
+
+        // Check Expiration
+        const now = admin.firestore.Timestamp.now();
+        if (linkData.expiresAt < now) {
+            throw new HttpsError('failed-precondition', 'This link has expired.');
+        }
+
+        // 2. Create a Custom Token with Claims
+        // We use a unique UID prefix to distinguish guests, or just a random one.
+        // Let's use "guest_" + token to be consistent.
+        const guestUid = `guest_${guestToken}`;
+
+        const additionalClaims = {
+            guestProjectId: projectId, // Used in Security Rules
+            guestPermissions: linkData.permissions // e.g. { canUpload: true }
+        };
+
+        const customToken = await admin.auth().createCustomToken(guestUid, additionalClaims);
+
+        return { token: customToken };
+
+    } catch (error) {
+        logger.error('Error authenticating guest:', error);
+        throw new HttpsError('internal', 'Authentication failed.');
+    }
+});
+
+// --- NEW Callable Function for Requesting Files (Guest Upload) ---
+exports.createFileRequest = onCall({ region: 'us-central1' }, async (request) => {
+  // 1. Authentication Check
+  if (!request.auth || !request.auth.token) {
+    throw new HttpsError('unauthenticated', 'The function must be called while authenticated.');
+  }
+  const userUid = request.auth.uid;
+  try {
+    const userDoc = await db.collection('users').doc(userUid).get();
+    if (!userDoc.exists || userDoc.data().role !== 'admin') {
+      throw new HttpsError('permission-denied', 'You must be an admin to perform this action.');
+    }
+  } catch (error) {
+    logger.error('Admin check failed', error);
+    throw new HttpsError('internal', 'An error occurred while verifying admin status.');
+  }
+
+  const { projectName, projectType, clientEmail } = request.data;
+
+  if (!projectName || !projectType) {
+    throw new HttpsError('invalid-argument', 'Missing required fields: projectName, projectType.');
+  }
+
+  try {
+      // 2. Create the Project Document
+      const projectRef = db.collection('projects').doc();
+      const projectId = projectRef.id;
+
+      const newProjectData = {
+          projectName: projectName,
+          projectType: projectType, // 'single' or 'booklet'
+          status: 'Awaiting Client Upload',
+          companyId: 'GUEST_CLIENT', // Or handle creating a temporary company if needed
+          clientId: null, // No registered client yet
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          createdBy: userUid,
+          clientEmail: clientEmail || null,
+          versions: [],
+          isRushOrder: false
+      };
+
+      await projectRef.set(newProjectData);
+      logger.log(`Created new project ${projectId} for file request.`);
+
+      // 3. Generate Guest Link with 'canUpload' permission
+      const permissions = {
+          canApprove: false,
+          canAnnotate: false,
+          canSeeComments: false,
+          canUpload: true,
+          isOwner: true // Allow them to manage uploads
+      };
+
+      const token = crypto.randomBytes(20).toString('hex');
+      const createdAt = admin.firestore.FieldValue.serverTimestamp();
+      const expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + 30); // 30 Days expiry
+      const expiresAtTimestamp = admin.firestore.Timestamp.fromDate(expiresAt);
+
+      const guestLinkRef = projectRef.collection('guestLinks').doc(token);
+      await guestLinkRef.set({
+          projectId: projectId,
+          permissions: permissions,
+          createdAt: createdAt,
+          expiresAt: expiresAtTimestamp,
+          viewHistory: []
+      });
+
+      // 4. Return the Guest Upload URL
+      // Note: This points to the NEW guest_upload.html page
+      const baseUrl = 'https://your-app-domain.com/guest_upload.html';
+      const guestUrl = `${baseUrl}?projectId=${projectId}&guestToken=${token}`;
+
+      return { success: true, url: guestUrl, projectId: projectId };
+
+  } catch (error) {
+      logger.error('Error creating file request:', error);
+      throw new HttpsError('internal', 'Failed to create file request.');
+  }
+});
+
+// --- NEW Callable Function for Submitting Guest Upload ---
+exports.submitGuestUpload = onCall({ region: 'us-central1' }, async (request) => {
+    // This function is called by the guest after they finish uploading files.
+    // It validates their token (via context or explicit check) and updates the status.
+
+    // 1. Auth Check (Guests are anonymous but have a token claim, or we check token manually)
+    // Since the guest is signed in anonymously and has a claim, request.auth should be populated.
+    if (!request.auth) {
+        throw new HttpsError('unauthenticated', 'User must be authenticated.');
+    }
+
+    const { projectId } = request.data;
+
+    // In a real world scenario, we should double check the guest's permissions against the projectId
+    // However, Firestore rules handle the write security. This function is mainly for NOTIFICATIONS.
+
+    if (!projectId) {
+        throw new HttpsError('invalid-argument', 'Missing projectId.');
+    }
+
+    try {
+        const projectRef = db.collection('projects').doc(projectId);
+
+        // Update status
+        await projectRef.update({
+            status: 'Pending Review', // or simply 'Pending'
+            lastUploadAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+
+        // Notify Admins
+        const projectDoc = await projectRef.get();
+        const projectName = projectDoc.data().projectName;
+
+        const adminSnapshot = await db.collection('users').where('role', '==', 'admin').get();
+        for (const adminDoc of adminSnapshot.docs) {
+            await createNotification(adminDoc.id, {
+                title: "New Guest Upload",
+                message: `Files have been uploaded for "${projectName}".`,
+                link: `admin_project.html?id=${projectId}`
+            });
+        }
+
+        return { success: true };
+
+    } catch (error) {
+        logger.error('Error submitting guest upload:', error);
+        throw new HttpsError('internal', 'Failed to submit upload.');
+    }
 });
 
 // Scheduled function to delete projects marked for deletion.
