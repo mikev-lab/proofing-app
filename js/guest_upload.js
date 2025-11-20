@@ -85,6 +85,7 @@ let projectSpecs = {}; // Store loaded/saved specs here
 let sourceFiles = {}; // Map: id -> File object
 let pages = []; // Array: { id, sourceFileId, pageIndex, settings: { scaleMode, alignment }, isSpread: boolean }
 let viewerScale = 0.5; // Zoom level for viewer
+const imageCache = new Map(); // Cache for rendered ImageBitmaps: key=pageId -> { bitmap, scale }
 
 // --- Helper: Parse URL Params ---
 function getUrlParams() {
