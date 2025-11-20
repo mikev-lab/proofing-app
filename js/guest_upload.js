@@ -58,11 +58,10 @@ const spineWidthDisplay = document.getElementById('spine-width-display');
 const fileSpineInput = document.getElementById('file-spine');
 
 // Interior Builder Elements
-const interiorFileList = document.getElementById('interior-file-list');
-const interiorEmptyState = document.getElementById('interior-empty-state');
 const addInteriorFileBtn = document.getElementById('add-interior-file-btn');
 const hiddenInteriorInput = document.getElementById('hidden-interior-input');
 const fileInteriorDrop = document.getElementById('file-interior-drop');
+const viewerZoom = document.getElementById('viewer-zoom');
 
 // Page Settings Modal Elements
 const pageSettingsModal = document.getElementById('page-settings-modal');
@@ -78,9 +77,12 @@ let projectId = null;
 let guestToken = null;
 let projectType = 'single'; // Default
 let selectedFiles = {}; // Keep for Legacy/Single logic
-let interiorFiles = []; // Array of { id, file, name, pageCount, settings: { scaleMode, alignment } }
 let projectSpecs = {}; // Store loaded/saved specs here
-let currentEditingFileId = null; // ID of file being edited in settings modal
+
+// New Data Model for Virtual Book
+let sourceFiles = {}; // Map: id -> File object
+let pages = []; // Array: { id, sourceFileId, pageIndex, settings: { scaleMode, alignment } }
+let viewerScale = 0.5; // Zoom level for viewer
 
 // --- Helper: Parse URL Params ---
 function getUrlParams() {
@@ -213,13 +215,17 @@ function setupDropZone(inputId) {
 
 function validateForm() {
     let isValid = false;
+    // Check if we have pages in the virtual book
+    if (pages.length > 0) {
+        isValid = true;
+    }
+
+    // Also consider cover files if booklet
     if (projectType === 'booklet') {
-        // Booklet needs at least interior files OR just cover files?
-        // Let's require at least one interior file OR full cover
-        if (interiorFiles.length > 0) isValid = true;
-    } else {
-        // Single needs the main file - ACTUALLY, if it's 'loose sheets' builder mode (which uses interiorFiles now), check that list
-        if (interiorFiles.length > 0) isValid = true;
+         if (selectedFiles['file-cover-front'] && selectedFiles['file-cover-back']) {
+             // Maybe allow just cover? For now let's say valid if pages exist OR full cover exists.
+             isValid = true;
+         }
     }
 
     if (isValid) {
@@ -258,166 +264,174 @@ if (tabInterior && tabCover) {
 }
 
 
-// --- Interior Builder Logic ---
+// --- Data Model Logic ---
 
-function addInteriorFiles(files) {
-    Array.from(files).forEach(async (file) => {
-        const id = Date.now() + Math.random().toString(16).slice(2);
-        let pageCount = 1;
+async function addInteriorFiles(files) {
+    for (const file of Array.from(files)) {
+        const sourceId = Date.now() + Math.random().toString(16).slice(2);
+        sourceFiles[sourceId] = file;
 
+        let numPages = 1;
         if (file.type === 'application/pdf') {
              try {
                 const arrayBuffer = await file.arrayBuffer();
                 const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
-                pageCount = pdf.numPages;
+                numPages = pdf.numPages;
              } catch (e) {
-                 console.warn("Could not count pages", e);
+                 console.warn("Could not parse PDF", e);
              }
         }
 
-        const item = {
-            id,
-            file,
-            name: file.name,
-            pageCount,
-            settings: {
-                scaleMode: 'fit', // fit, fill, stretch
-                alignment: 'center'
-            }
-        };
-
-        interiorFiles.push(item);
-        renderInteriorList();
-    });
+        for (let i = 0; i < numPages; i++) {
+            pages.push({
+                id: `${sourceId}_p${i}`,
+                sourceFileId: sourceId,
+                pageIndex: i + 1, // 1-based for display/pdfjs
+                settings: { scaleMode: 'fit', alignment: 'center' }
+            });
+        }
+    }
+    renderBookViewer();
 }
 
-function renderInteriorList() {
-    interiorFileList.innerHTML = '';
-
-    if (interiorFiles.length === 0) {
-        interiorFileList.appendChild(interiorEmptyState);
-        validateForm();
-        return;
+window.updatePageSetting = (pageId, setting, value) => {
+    const page = pages.find(p => p.id === pageId);
+    if (page) {
+        page.settings[setting] = value;
+        // Re-render just this canvas if possible, or whole viewer
+        // Ideally optimization: get canvas by ID and redraw
+        const canvas = document.getElementById(`canvas-${pageId}`);
+        if (canvas) renderPageCanvas(page, canvas);
     }
+};
 
-    interiorFiles.forEach((item, index) => {
-        const el = document.createElement('div');
-        el.className = "bg-slate-800 border border-slate-700 rounded p-3 flex justify-between items-center";
-        el.innerHTML = `
-            <div class="flex items-center gap-3 overflow-hidden">
-                <div class="bg-slate-700 w-10 h-10 flex items-center justify-center rounded text-gray-400 flex-shrink-0">
-                    ${item.file.type.includes('pdf') ? '<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>' : '<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>'}
-                </div>
-                <div class="min-w-0">
-                    <p class="text-sm text-white font-medium truncate">${item.name}</p>
-                    <p class="text-xs text-gray-400">${item.pageCount} Page${item.pageCount !== 1 ? 's' : ''} • ${item.settings.scaleMode.toUpperCase()}</p>
-                </div>
+window.deletePage = (pageId) => {
+    pages = pages.filter(p => p.id !== pageId);
+    renderBookViewer();
+};
+
+// --- Book Viewer Rendering ---
+
+function renderBookViewer() {
+    const container = document.getElementById('book-viewer-container');
+    if (!container) return;
+
+    container.innerHTML = ''; // Clear
+
+    if (pages.length === 0) {
+        // Empty State
+         container.innerHTML = `
+            <div class="flex flex-col items-center justify-center h-64 border-2 border-dashed border-slate-700 rounded-xl bg-slate-800/30">
+                <p class="text-gray-400 mb-2">Your book is empty.</p>
+                <p class="text-gray-500 text-sm">Drag files here to add pages.</p>
             </div>
-            <div class="flex items-center gap-2">
-                <button type="button" class="text-xs bg-slate-700 hover:bg-slate-600 text-white px-2 py-1 rounded" onclick="openSettings('${item.id}')">Settings</button>
-                <button type="button" class="text-gray-500 hover:text-red-400" onclick="removeInteriorFile('${item.id}')">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+         `;
+    } else {
+        const grid = document.createElement('div');
+        // Dynamic Grid Class based on zoom? Or simply flex-wrap
+        grid.className = "flex flex-wrap gap-6 justify-center";
+        grid.id = "book-grid";
+
+        pages.forEach((page, index) => {
+            const card = document.createElement('div');
+            card.className = "relative group bg-slate-800 rounded-lg shadow-lg border border-slate-700 transition-all hover:border-indigo-500";
+            card.dataset.id = page.id;
+
+            // Size the card based on aspect ratio + zoom
+            // For now fixed CSS width, canvas fits inside
+            const cardWidth = 200 * viewerScale; // Zoom factor
+            // card.style.width = `${cardWidth}px`; // Let canvas dictate size? No, uniform width looks better.
+
+            // Canvas Container
+            const canvasContainer = document.createElement('div');
+            canvasContainer.className = "p-2 relative overflow-hidden";
+            const canvas = document.createElement('canvas');
+            canvas.id = `canvas-${page.id}`;
+            canvas.className = "bg-white shadow-sm mx-auto";
+            // Height auto?
+            canvasContainer.appendChild(canvas);
+
+            // Overlay Controls
+            const controls = document.createElement('div');
+            controls.className = "absolute top-2 right-2 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-900/80 p-1 rounded backdrop-blur-sm";
+            controls.innerHTML = `
+                <button onclick="deletePage('${page.id}')" class="text-red-400 hover:text-white p-1" title="Delete Page">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                 </button>
-            </div>
-        `;
-        interiorFileList.appendChild(el);
-    });
+            `;
 
-    // Init Sortable
-    new Sortable(interiorFileList, {
-        animation: 150,
-        ghostClass: 'opacity-50',
-        onEnd: (evt) => {
-            // Reorder array based on DOM
-            const itemEl = interiorFiles[evt.oldIndex];
-            interiorFiles.splice(evt.oldIndex, 1);
-            interiorFiles.splice(evt.newIndex, 0, itemEl);
-        }
-    });
+            // Footer Controls (Settings)
+            const footer = document.createElement('div');
+            footer.className = "px-3 py-2 bg-slate-900/50 border-t border-slate-700 flex justify-between items-center rounded-b-lg";
 
+            // Select for Fit/Fill
+            const select = document.createElement('select');
+            select.className = "bg-slate-800 text-[10px] text-white border border-slate-600 rounded px-1 py-0.5 focus:outline-none focus:border-indigo-500";
+            select.innerHTML = `
+                <option value="fit" ${page.settings.scaleMode === 'fit' ? 'selected' : ''}>Fit</option>
+                <option value="fill" ${page.settings.scaleMode === 'fill' ? 'selected' : ''}>Fill</option>
+                <option value="stretch" ${page.settings.scaleMode === 'stretch' ? 'selected' : ''}>Stretch</option>
+            `;
+            select.onchange = (e) => updatePageSetting(page.id, 'scaleMode', e.target.value);
+
+            // Page Number
+            const pageNum = document.createElement('span');
+            pageNum.className = "text-xs text-gray-400 font-mono";
+            pageNum.textContent = `P${index + 1}`;
+
+            footer.appendChild(pageNum);
+            footer.appendChild(select);
+
+            card.appendChild(controls);
+            card.appendChild(canvasContainer);
+            card.appendChild(footer);
+            grid.appendChild(card);
+
+            // Trigger Render
+            renderPageCanvas(page, canvas);
+        });
+
+        container.appendChild(grid);
+
+        // Init Sortable
+        new Sortable(grid, {
+            animation: 150,
+            ghostClass: 'opacity-50',
+            onEnd: (evt) => {
+                const item = pages[evt.oldIndex];
+                pages.splice(evt.oldIndex, 1);
+                pages.splice(evt.newIndex, 0, item);
+                // Re-render to update page numbers?
+                renderBookViewer();
+            }
+        });
+    }
     validateForm();
 }
 
-window.removeInteriorFile = (id) => {
-    interiorFiles = interiorFiles.filter(f => f.id !== id);
-    renderInteriorList();
-};
+async function renderPageCanvas(page, canvas) {
+    const file = sourceFiles[page.sourceFileId];
+    if (!file || !projectSpecs.dimensions) return;
 
-window.openSettings = (id) => {
-    currentEditingFileId = id;
-    const item = interiorFiles.find(f => f.id === id);
-    if (!item) return;
-
-    // Set UI state
-    settingAlignment.value = item.settings.alignment;
-    scaleModeBtns.forEach(btn => {
-        if (btn.dataset.mode === item.settings.scaleMode) {
-            btn.classList.add('bg-indigo-600', 'border-indigo-500');
-            btn.classList.remove('bg-slate-700', 'border-transparent');
-        } else {
-            btn.classList.remove('bg-indigo-600', 'border-indigo-500');
-            btn.classList.add('bg-slate-700', 'border-transparent');
-        }
-    });
-
-    pageSettingsModal.classList.remove('hidden');
-    renderSettingsPreview();
-};
-
-// --- Settings Modal Logic ---
-closeSettingsModal.addEventListener('click', () => pageSettingsModal.classList.add('hidden'));
-
-scaleModeBtns.forEach(btn => {
-    btn.addEventListener('click', () => {
-        // Update Visuals
-        scaleModeBtns.forEach(b => {
-            b.classList.remove('bg-indigo-600', 'border-indigo-500');
-            b.classList.add('bg-slate-700', 'border-transparent');
-        });
-        btn.classList.add('bg-indigo-600', 'border-indigo-500');
-        btn.classList.remove('bg-slate-700', 'border-transparent');
-
-        // Trigger Preview Update
-        renderSettingsPreview();
-    });
-});
-
-settingAlignment.addEventListener('change', renderSettingsPreview);
-
-applySettingsBtn.addEventListener('click', () => {
-    if (!currentEditingFileId) return;
-    const item = interiorFiles.find(f => f.id === currentEditingFileId);
-    if (item) {
-        const activeBtn = document.querySelector('.scale-mode-btn.bg-indigo-600');
-        item.settings.scaleMode = activeBtn ? activeBtn.dataset.mode : 'fit';
-        item.settings.alignment = settingAlignment.value;
-        renderInteriorList();
-    }
-    pageSettingsModal.classList.add('hidden');
-});
-
-
-async function renderSettingsPreview() {
-    if (!currentEditingFileId || !settingsPreviewCanvas) return;
-    const item = interiorFiles.find(f => f.id === currentEditingFileId);
-    if (!item) return;
-
-    const activeBtn = document.querySelector('.scale-mode-btn.bg-indigo-600');
-    const mode = activeBtn ? activeBtn.dataset.mode : 'fit';
-    const align = settingAlignment.value;
-
-    const ctx = settingsPreviewCanvas.getContext('2d');
+    const ctx = canvas.getContext('2d');
     const width = projectSpecs.dimensions.width;
     const height = projectSpecs.dimensions.height;
     const bleed = 0.125;
 
-    // Set Canvas Size
-    const pixelsPerInch = 40;
+    // Visual Scale for Thumbnails (vs actual print size)
+    // We want cards to be ~200px wide.
+    // 1 inch = 96px screen. 8.5in = 816px.
+    // Scale = 200 / 816 ~= 0.25
+    const visualScale = (250 * viewerScale) / ((width + bleed*2) * 96); // Target ~250px width card
+    const pixelsPerInch = 96 * visualScale;
+
     const totalW = width + (bleed*2);
     const totalH = height + (bleed*2);
 
-    settingsPreviewCanvas.width = totalW * pixelsPerInch * 2; // 2x Retina
-    settingsPreviewCanvas.height = totalH * pixelsPerInch * 2;
+    canvas.width = totalW * pixelsPerInch * 2; // 2x Retina
+    canvas.height = totalH * pixelsPerInch * 2;
+    canvas.style.width = `${totalW * pixelsPerInch}px`;
+    canvas.style.height = `${totalH * pixelsPerInch}px`;
 
     ctx.setTransform(2, 0, 0, 2, 0, 0);
     ctx.scale(pixelsPerInch, pixelsPerInch);
@@ -426,72 +440,67 @@ async function renderSettingsPreview() {
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, totalW, totalH);
 
-    // Draw Image with Settings
-    // Calculate Target Rect (Trim Box)
-    // Actually, "Fill" usually means Fill to Bleed. "Fit" usually means Fit to Safe/Trim.
-
-    // Let's define the drawing area as the full bleed size for Fill, or Trim for Fit?
-    // Standard practice:
-    // Fill: Fills the Bleed Box (TotalW, TotalH)
-    // Fit: Fits inside the Trim Box? Or Bleed Box? Usually Bleed Box to be safe.
-
-    const drawAreaX = 0;
-    const drawAreaY = 0;
-    const drawAreaW = totalW;
-    const drawAreaH = totalH;
-
-    await drawFileWithTransform(ctx, item.file, drawAreaX, drawAreaY, drawAreaW, drawAreaH, mode, align);
+    // Draw Content
+    await drawFileWithTransform(ctx, file, 0, 0, totalW, totalH, page.settings.scaleMode, page.settings.alignment, page.pageIndex);
 
     // Guides
-    ctx.lineWidth = 1 / pixelsPerInch;
-    // Bleed
+    ctx.lineWidth = 1.5 / pixelsPerInch;
+    // Bleed (Red)
     ctx.strokeStyle = 'rgba(239, 68, 68, 0.5)';
     ctx.strokeRect(0, 0, totalW, totalH);
-    // Trim
+    // Trim (Blue)
     ctx.strokeStyle = 'rgba(59, 130, 246, 0.8)';
     ctx.strokeRect(bleed, bleed, width, height);
 }
 
-async function drawFileWithTransform(ctx, file, targetX, targetY, targetW, targetH, mode, align) {
+async function drawFileWithTransform(ctx, file, targetX, targetY, targetW, targetH, mode, align, pageIndex = 1) {
     let imgBitmap;
     let srcW, srcH;
 
     if (file.type === 'application/pdf') {
-        const arrayBuffer = await file.arrayBuffer();
-        const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
-        const page = await pdf.getPage(1);
-        const vp = page.getViewport({ scale: 2 }); // High res
-        const tc = document.createElement('canvas');
-        tc.width = vp.width;
-        tc.height = vp.height;
-        await page.render({ canvasContext: tc.getContext('2d'), viewport: vp }).promise;
-        imgBitmap = await createImageBitmap(tc);
-        srcW = vp.width;
-        srcH = vp.height;
+        try {
+            const arrayBuffer = await file.arrayBuffer();
+            const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
+            const page = await pdf.getPage(pageIndex);
+
+            // Use a reasonable viewport for thumbnail rendering
+            const viewport = page.getViewport({ scale: 1.5 });
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = viewport.width;
+            tempCanvas.height = viewport.height;
+
+            await page.render({
+                canvasContext: tempCanvas.getContext('2d'),
+                viewport: viewport
+            }).promise;
+
+            imgBitmap = await createImageBitmap(tempCanvas);
+            srcW = viewport.width;
+            srcH = viewport.height;
+        } catch (e) {
+            console.error("PDF Render Error", e);
+            return;
+        }
     } else if (file.type.startsWith('image/')) {
         imgBitmap = await createImageBitmap(file);
         srcW = imgBitmap.width;
         srcH = imgBitmap.height;
     } else {
-        // PSD or other
+         // Placeholder
         ctx.fillStyle = '#ccc';
         ctx.fillRect(targetX, targetY, targetW, targetH);
         return;
     }
 
-    // Calculate Aspect Ratios
+    // Standard Transform Logic
     const srcRatio = srcW / srcH;
     const targetRatio = targetW / targetH;
-
     let drawW, drawH, drawX, drawY;
 
     if (mode === 'stretch') {
         drawW = targetW;
         drawH = targetH;
-        drawX = targetX;
-        drawY = targetY;
     } else if (mode === 'fit') {
-        // Fit entirely inside
         if (srcRatio > targetRatio) {
             drawW = targetW;
             drawH = targetW / srcRatio;
@@ -500,7 +509,6 @@ async function drawFileWithTransform(ctx, file, targetX, targetY, targetW, targe
             drawW = targetH * srcRatio;
         }
     } else if (mode === 'fill') {
-        // Cover entire area
         if (srcRatio > targetRatio) {
             drawH = targetH;
             drawW = targetH * srcRatio;
@@ -510,17 +518,11 @@ async function drawFileWithTransform(ctx, file, targetX, targetY, targetW, targe
         }
     }
 
-    // Alignment (Center default)
-    // Logic handles centering based on computed draw dimensions vs target
+    // Center Alignment
     drawX = targetX + (targetW - drawW) / 2;
     drawY = targetY + (targetH - drawH) / 2;
 
-    if (align === 'top-left') {
-        drawX = targetX;
-        drawY = targetY;
-    }
-
-    // Clip to target area
+    // Clip
     ctx.save();
     ctx.beginPath();
     ctx.rect(targetX, targetY, targetW, targetH);
@@ -539,6 +541,13 @@ if (addInteriorFileBtn) {
 if (fileInteriorDrop) {
     fileInteriorDrop.addEventListener('change', (e) => addInteriorFiles(e.target.files));
     setupDropZone('file-interior-drop'); // Enable drag/drop styles
+}
+
+if (viewerZoom) {
+    viewerZoom.addEventListener('input', (e) => {
+        viewerScale = parseFloat(e.target.value);
+        renderBookViewer();
+    });
 }
 
 
@@ -881,18 +890,7 @@ async function init() {
         bookletUploadSection.classList.remove('hidden');
         singleUploadSection.classList.add('hidden'); // Deprecated single section
 
-        setupDropZone('file-interior'); // Legacy ref cleanup if needed
-
-        // Init Sortable for the new list
-        new Sortable(interiorFileList, {
-            animation: 150,
-            ghostClass: 'opacity-50',
-            onEnd: (evt) => {
-                const item = interiorFiles[evt.oldIndex];
-                interiorFiles.splice(evt.oldIndex, 1);
-                interiorFiles.splice(evt.newIndex, 0, item);
-            }
-        });
+        // Note: Sortable is initialized in renderBookViewer now, not here.
 
         updateFileName('file-cover-front', 'file-name-cover-front');
         updateFileName('file-spine', 'file-name-spine');
@@ -921,65 +919,79 @@ uploadForm.addEventListener('submit', async (e) => {
 
     const filesToUpload = [];
 
-    // Interior
-    interiorFiles.forEach((item, i) => {
-        filesToUpload.push({
-            file: item.file,
-            type: `interior_${i}`, // Maintain order in filename
-            settings: item.settings
-        });
+    // 1. Identify Unique Source Files from Pages + Cover
+    const uniqueSourceIds = new Set();
+    pages.forEach(p => uniqueSourceIds.add(p.sourceFileId));
+
+    const filesToUploadMap = {}; // id -> { file, storagePath }
+
+    // Add Interior Files
+    uniqueSourceIds.forEach(id => {
+        if (sourceFiles[id]) {
+            filesToUploadMap[id] = { file: sourceFiles[id], type: 'interior_source' };
+        }
     });
 
-    // Cover (Only if Booklet)
+    // Add Cover Files (Only if Booklet)
     if (projectType === 'booklet') {
-        if (selectedFiles['file-cover-front']) filesToUpload.push({ file: selectedFiles['file-cover-front'], type: 'cover_front' });
-        if (selectedFiles['file-spine']) filesToUpload.push({ file: selectedFiles['file-spine'], type: 'cover_spine' });
-        if (selectedFiles['file-cover-back']) filesToUpload.push({ file: selectedFiles['file-cover-back'], type: 'cover_back' });
+        if (selectedFiles['file-cover-front']) filesToUploadMap['cover_front'] = { file: selectedFiles['file-cover-front'], type: 'cover_front' };
+        if (selectedFiles['file-spine']) filesToUploadMap['cover_spine'] = { file: selectedFiles['file-spine'], type: 'cover_spine' };
+        if (selectedFiles['file-cover-back']) filesToUploadMap['cover_back'] = { file: selectedFiles['file-cover-back'], type: 'cover_back' };
     }
 
-    if (filesToUpload.length === 0) return;
+    const filesToUpload = Object.values(filesToUploadMap);
+    if (filesToUpload.length === 0 && pages.length === 0) return;
 
+    // 2. Upload Files
     let completed = 0;
     const total = filesToUpload.length;
 
-    // Store metadata for the backend (filename -> settings)
-    const uploadMetadata = [];
+    // Map for mapping local ID to remote path
+    const uploadedPaths = {}; // localId -> storagePath
 
     try {
-        for (const item of filesToUpload) {
+        for (const localId in filesToUploadMap) {
+            const item = filesToUploadMap[localId];
             const file = item.file;
             const timestamp = Date.now();
             const ext = file.name.split('.').pop();
 
-            const storagePath = `proofs/${projectId}/${timestamp}_${item.type}.${ext}`;
+            // Use a 'sources/' subfolder to keep raw uploads separate from processed proofs
+            const storagePath = `proofs/${projectId}/sources/${timestamp}_${item.type}_${file.name}`;
             const storageRef = ref(storage, storagePath);
 
             progressText.textContent = `Uploading ${file.name}...`;
 
-            const uploadTask = uploadBytesResumable(storageRef, file);
+            await uploadBytesResumable(storageRef, file);
 
-            await new Promise((resolve, reject) => {
-                uploadTask.on('state_changed',
-                    (snapshot) => {
-                        const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-                    },
-                    (error) => reject(error),
-                    () => resolve()
-                );
-            });
-
-            // Add to metadata list
-            uploadMetadata.push({
-                storagePath: storagePath,
-                type: item.type,
-                settings: item.settings || {} // Pass settings (scaleMode etc.)
-            });
+            uploadedPaths[localId] = storagePath;
 
             completed++;
             const percent = (completed / total) * 100;
             progressBar.style.width = `${percent}%`;
             progressPercent.textContent = `${Math.round(percent)}%`;
         }
+
+        // 3. Construct Metadata (Page List)
+        const bookletMetadata = [];
+
+        // Add Pages (Interior)
+        pages.forEach(p => {
+            bookletMetadata.push({
+                storagePath: uploadedPaths[p.sourceFileId],
+                sourcePageIndex: p.pageIndex - 1, // Convert to 0-based for backend
+                settings: p.settings,
+                type: 'interior_page'
+            });
+        });
+
+        // Add Cover Parts (if uploaded)
+        if (uploadedPaths['cover_front']) bookletMetadata.push({ storagePath: uploadedPaths['cover_front'], type: 'cover_front' });
+        if (uploadedPaths['cover_spine']) bookletMetadata.push({ storagePath: uploadedPaths['cover_spine'], type: 'cover_spine' });
+        if (uploadedPaths['cover_back']) bookletMetadata.push({ storagePath: uploadedPaths['cover_back'], type: 'cover_back' });
+
+        // Use variable name expected by next block
+        const uploadMetadata = bookletMetadata;
 
         // Call Backend to Finalize
         progressText.textContent = 'Finalizing...';

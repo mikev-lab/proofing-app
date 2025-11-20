@@ -1797,18 +1797,21 @@ exports.generateBooklet = onCall({
     const interiorDoc = await PDFDocument.create();
     let coverDoc = null;
 
-    const tempFiles = [];
+    // Cache for downloaded/converted files to avoid redundancy
+    const fileCache = {}; // storagePath -> { path: localPath, isPdf: boolean }
+    const tempFiles = []; // Track for cleanup
 
     try {
         // Helper to convert non-embeddable files (PSD, etc) to PDF/PNG
-        async function prepareFileForEmbedding(storagePath, type) {
+        async function prepareFileForEmbedding(storagePath) {
+            // Check Cache
+            if (fileCache[storagePath]) return fileCache[storagePath];
+
             const tempPath = path.join(os.tmpdir(), `temp_${Date.now()}_${Math.random().toString(36).substring(7)}`);
             await bucket.file(storagePath).download({ destination: tempPath });
             tempFiles.push(tempPath);
 
-            // Check Extension/Type. If PSD, convert.
-            // We can use Gotenberg LibreOffice for generic conversion or specific tools.
-            // Assuming Gotenberg handles PSD -> PDF via LibreOffice.
+            let isPdf = false;
             const ext = path.extname(storagePath).toLowerCase();
 
             if (ext === '.psd' || ext === '.ai') {
@@ -1822,13 +1825,17 @@ exports.generateBooklet = onCall({
 
                 // Replace temp file with converted PDF
                 fs.writeFileSync(tempPath, response.data);
-                return { path: tempPath, isPdf: true };
+                isPdf = true;
             } else if (ext === '.pdf') {
-                return { path: tempPath, isPdf: true };
+                isPdf = true;
             } else {
                  // Images (JPG, PNG)
-                 return { path: tempPath, isPdf: false };
+                 isPdf = false;
             }
+
+            const result = { path: tempPath, isPdf };
+            fileCache[storagePath] = result; // Cache it
+            return result;
         }
 
         // Process Files

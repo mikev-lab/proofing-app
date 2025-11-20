@@ -87,23 +87,27 @@
                                 <input type="file" id="hidden-interior-input" class="hidden" accept=".pdf,.jpg,.png,.psd" multiple>
                             </div>
 
-                            <!-- File List Container -->
-                            <div id="interior-file-list" class="space-y-3 mb-4">
-                                <!-- Empty State -->
-                                <div id="interior-empty-state" class="text-center py-8 border-2 border-dashed border-gray-700 rounded-lg bg-slate-900/30">
-                                    <p class="text-gray-500 text-sm">No files added yet.</p>
-                                    <p class="text-gray-600 text-xs mt-1">Click "Add File" to start building your book.</p>
+                            <!-- Book Viewer Toolbar -->
+                            <div class="flex justify-between items-center mb-2 bg-slate-800/50 p-2 rounded-t-lg border border-slate-700 border-b-0">
+                                <div class="flex items-center gap-4">
+                                    <!-- Zoom -->
+                                    <div class="flex items-center gap-2">
+                                        <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7"></path></svg>
+                                        <input type="range" id="viewer-zoom" min="0.2" max="1.5" step="0.1" value="0.5" class="w-24 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                                    </div>
                                 </div>
+                                <span class="text-xs text-gray-500">Drag pages to reorder</span>
                             </div>
 
-                             <!-- Add File Drop Zone (Always visible at bottom) -->
-                            <div class="drop-zone rounded-lg p-4 text-center cursor-pointer bg-slate-900/50 hover:bg-slate-900/80 relative group border-2 border-dashed border-gray-600 transition-all hover:border-indigo-500">
+                            <!-- Virtual Book Viewer Container -->
+                            <div id="book-viewer-wrapper" class="relative bg-slate-900/30 border-2 border-dashed border-gray-700 rounded-b-lg p-4 min-h-[400px] overflow-y-auto max-h-[600px] drop-zone">
                                 <input type="file" id="file-interior-drop" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" accept=".pdf,.jpg,.png,.psd" multiple>
-                                <div class="flex items-center justify-center space-x-2">
-                                    <svg class="h-5 w-5 text-gray-400 group-hover:text-indigo-400 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-                                    </svg>
-                                    <span class="text-sm text-gray-300 group-hover:text-white font-medium">Drop more files here</span>
+
+                                <div id="book-viewer-container" class="relative z-20 pointer-events-auto">
+                                    <!-- Pages will be rendered here -->
+                                    <div class="flex flex-col items-center justify-center h-64 text-gray-500">
+                                        <p>Drag & Drop files here to build your book.</p>
+                                    </div>
                                 </div>
                             </div>
                         </div>
