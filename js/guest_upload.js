@@ -855,6 +855,14 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
 
     canvasContainer.appendChild(canvas);
 
+    // Drag Handle
+    const dragHandle = document.createElement('div');
+    dragHandle.className = "drag-handle absolute top-2 left-2 p-1.5 bg-slate-900/80 text-white rounded cursor-move opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-sm z-30 hover:bg-indigo-600 shadow-sm";
+    dragHandle.title = "Drag to Reorder";
+    // Grid/Grip Icon
+    dragHandle.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>';
+    card.appendChild(dragHandle);
+
     // Overlay Controls
     const controls = document.createElement('div');
     controls.className = "absolute top-2 right-2 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-900/80 p-1 rounded backdrop-blur-sm z-20";
