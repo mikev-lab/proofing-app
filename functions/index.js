@@ -60,8 +60,9 @@ exports.optimizePdf = onObjectFinalized({
 
   // Exit if the file is in the 'sources/' or 'temp_sources/' subdirectory
   // We only want to process the FINAL built PDFs that are in the root of proofs/{projectId}/
-  if (filePath.includes('/sources/') || filePath.includes('/temp_sources/')) {
-      return logger.log(`File is a source file, skipping optimization/version creation.`);
+  // Also explicitly ignore 'guest_uploads' just in case the path check above misses it or rules change.
+  if (filePath.includes('/sources/') || filePath.includes('/temp_sources/') || filePath.includes('guest_uploads/')) {
+      return logger.log(`File is a source/temp file, skipping optimization/version creation.`);
   }
 
 
