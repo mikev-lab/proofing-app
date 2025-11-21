@@ -347,14 +347,18 @@ function addPagesToModel(targetArray, sourceId, numPages, isSpreadUpload) {
                 id: `${sourceId}_p${i}_L`,
                 sourceFileId: sourceId,
                 pageIndex: i + 1,
-                settings: { scaleMode: 'fill', alignment: 'center', view: 'left', panX: 0, panY: 0 },
+                // Initial PanX: 0.5 to align Left Half of image (center of image to center of Left Page)
+                // If image is 2x wide, center is at x=1. Left Page center is x=0.5. Shift +0.5?
+                // Wait, logic derived in thought: panX=0.5 shifts image RIGHT.
+                settings: { scaleMode: 'fill', alignment: 'center', view: 'left', panX: 0.5, panY: 0 },
                 isSpread: false
             });
             targetArray.push({
                 id: `${sourceId}_p${i}_R`,
                 sourceFileId: sourceId,
                 pageIndex: i + 1,
-                settings: { scaleMode: 'fill', alignment: 'center', view: 'right', panX: 0, panY: 0 },
+                // Initial PanX: -0.5 to align Right Half of image
+                settings: { scaleMode: 'fill', alignment: 'center', view: 'right', panX: -0.5, panY: 0 },
                 isSpread: false
             });
         }
@@ -713,21 +717,44 @@ document.addEventListener('pointermove', (e) => {
     if (canvas) {
         const rect = canvas.getBoundingClientRect();
         // Normalize delta to [0-1] range relative to the rendered box
-        // Note: rect includes the bleed area.
-
-        // Sensitivity factor
         const sensitivity = 1.0;
 
         if (rect.width > 0 && rect.height > 0) {
-            const newPanX = startPanX + ((dx / rect.width) * sensitivity);
-            const newPanY = startPanY + ((dy / rect.height) * sensitivity);
+            const deltaX = (dx / rect.width) * sensitivity;
+            const deltaY = (dy / rect.height) * sensitivity;
 
-            // Ensure valid numbers
+            const newPanX = startPanX + deltaX;
+            const newPanY = startPanY + deltaY;
+
+            // Update Active Page
             page.settings.panX = Number.isFinite(newPanX) ? newPanX : 0;
             page.settings.panY = Number.isFinite(newPanY) ? newPanY : 0;
+
+            // Check for Partner Page (Spread Logic)
+            // If ID ends in _L, partner is _R (and same prefix).
+            if (activePageId.endsWith('_L') || activePageId.endsWith('_R')) {
+                const isLeft = activePageId.endsWith('_L');
+                const partnerId = isLeft
+                    ? activePageId.slice(0, -2) + '_R'
+                    : activePageId.slice(0, -2) + '_L';
+
+                const partnerPage = pages.find(p => p.id === partnerId);
+                // Only sync if they share sourceFileId (true for Spread Uploads)
+                if (partnerPage && partnerPage.sourceFileId === page.sourceFileId) {
+                    partnerPage.settings.panX = (partnerPage.settings.panX || 0) + deltaX;
+                    partnerPage.settings.panY = (partnerPage.settings.panY || 0) + deltaY;
+
+                    const partnerCanvas = document.getElementById(`canvas-${partnerId}`);
+                    if (partnerCanvas) {
+                        requestAnimationFrame(() => {
+                            renderPageCanvas(partnerPage, partnerCanvas);
+                        });
+                    }
+                }
+            }
         }
 
-        // Re-render immediately (throttling via RAF is better but this is simple)
+        // Re-render active page
         requestAnimationFrame(() => {
             renderPageCanvas(page, canvas);
         });

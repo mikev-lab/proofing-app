@@ -2184,6 +2184,11 @@ function drawOnSheet(doc, embeddable, trimW, trimH, bleed, settings) {
 
     if (!Number.isFinite(x) || !Number.isFinite(y)) return; // Safety check
 
+    if (!embeddable) {
+        // Safety check to prevent crashing if embeddable is undefined or null
+        return;
+    }
+
     if (embeddable.isBlank) {
         // Skip drawing for blank page
         return;
