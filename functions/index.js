@@ -1317,7 +1317,7 @@ exports.createFileRequest = onCall({ region: 'us-central1' }, async (request) =>
 // --- NEW Callable Function for Submitting Guest Upload ---
 exports.submitGuestUpload = onCall({ region: 'us-central1' }, async (request) => {
     // This function is called by the guest after they finish uploading files.
-    // It validates their token (via context or explicit check) and updates the status.
+    // It validates the token (via context or explicit check) and updates the status.
 
     // 1. Auth Check (Guests are anonymous but have a token claim, or we check token manually)
     // Since the guest is signed in anonymously and has a claim, request.auth should be populated.
@@ -1783,7 +1783,7 @@ exports.generateFinalPdf = onCall({
 // --- NEW Generate Booklet Function ---
 exports.generateBooklet = onCall({
     region: 'us-central1',
-    memory: '8GiB',
+    memory: '16GiB',
     timeoutSeconds: 540
 }, async (request) => {
     if (!request.auth) throw new HttpsError('unauthenticated', 'User must be authenticated.');
@@ -1793,7 +1793,13 @@ exports.generateBooklet = onCall({
         throw new HttpsError('invalid-argument', 'Missing projectId or files array.');
     }
 
+    // --- DEBUG LOGGING START ---
     logger.log(`Generating booklet for project ${projectId} with ${files.length} files.`);
+    if (files.length > 0) {
+        logger.log(`DEBUG: First file object: ${JSON.stringify(files[0])}`);
+    }
+    // --- DEBUG LOGGING END ---
+
     const bucket = admin.storage().bucket();
     const authAxios = await getAuthenticatedClient();
 
@@ -1857,6 +1863,10 @@ exports.generateBooklet = onCall({
 
         // Process Files
         const interiorFiles = files.filter(f => f.type.startsWith('interior'));
+        // --- DEBUG LOGGING START ---
+        logger.log(`DEBUG: Found ${interiorFiles.length} interior files.`);
+        // --- DEBUG LOGGING END ---
+
         const coverFiles = {
             front: files.find(f => f.type === 'cover_front'),
             spine: files.find(f => f.type === 'cover_spine'),

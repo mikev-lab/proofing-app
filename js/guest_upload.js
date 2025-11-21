@@ -2012,6 +2012,10 @@ uploadForm.addEventListener('submit', async (e) => {
         // Use variable name expected by next block
         const uploadMetadata = bookletMetadata;
 
+        // DEBUG LOGGING
+        console.log("Sending Metadata to generateBooklet:", JSON.stringify(uploadMetadata));
+        // END DEBUG LOGGING
+
         // Call Backend to Finalize
         progressText.textContent = 'Finalizing...';
 
