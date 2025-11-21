@@ -583,14 +583,27 @@ function renderBookViewer() {
         spreadDiv.className = "spread-row flex justify-center items-end gap-0 mb-4 min-h-[100px] p-2 border border-transparent hover:border-dashed hover:border-gray-600 rounded";
 
         // Left Page
+        let leftCard = null;
         if (pages[i]) {
-            spreadDiv.appendChild(createPageCard(pages[i], i, false, false, width, height, bleed, pixelsPerInch, observer));
+            leftCard = createPageCard(pages[i], i, false, false, width, height, bleed, pixelsPerInch, observer);
+            spreadDiv.appendChild(leftCard);
         }
 
         // Right Page
+        let rightCard = null;
         if (i + 1 < pages.length) {
-            spreadDiv.appendChild(createPageCard(pages[i+1], i+1, true, false, width, height, bleed, pixelsPerInch, observer));
-        } else {
+            rightCard = createPageCard(pages[i+1], i+1, true, false, width, height, bleed, pixelsPerInch, observer);
+            spreadDiv.appendChild(rightCard);
+        }
+
+        // Fix overlapping borders:
+        // If both pages exist, the Left card's right border and Right card's left border are removed by classes,
+        // but if any negative margin exists or flex shrinking happens, they overlap.
+        // Ensure they don't shrink.
+        if (leftCard) leftCard.style.flexShrink = '0';
+        if (rightCard) rightCard.style.flexShrink = '0';
+
+        if (!rightCard) {
             // Spacer if single page at end
              const endSpacer = document.createElement('div');
              endSpacer.style.width = `${width * pixelsPerInch}px`;
@@ -812,17 +825,19 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     let canvasLeft, canvasTop;
 
     // Spread Logic
+    // Use Math.ceil for containerW/containerH to prevent clipping of sub-pixel bleed areas
     if (isRightPage) {
          // Right Page: Clip LEFT bleed (Spine)
-         containerW = (width + bleed) * pixelsPerInch;
+         // Container must be large enough to hold the pixels.
+         containerW = Math.ceil((width + bleed) * pixelsPerInch);
          canvasLeft = -bleedPx;
     } else {
          // Left Page: Clip RIGHT bleed (Spine)
-         containerW = (width + bleed) * pixelsPerInch;
+         containerW = Math.ceil((width + bleed) * pixelsPerInch);
          canvasLeft = 0;
     }
     // Vertical Bleed always visible
-    containerH = (height + (bleed*2)) * pixelsPerInch;
+    containerH = Math.ceil((height + (bleed*2)) * pixelsPerInch);
     canvasTop = 0;
 
     const canvasContainer = document.createElement('div');
