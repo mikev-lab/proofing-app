@@ -58,6 +58,12 @@ exports.optimizePdf = onObjectFinalized({
       return logger.log(`File is not in the proofs/ directory, skipping optimization.`);
   }
 
+  // Exit if the file is in the 'sources/' or 'temp_sources/' subdirectory
+  // We only want to process the FINAL built PDFs that are in the root of proofs/{projectId}/
+  if (filePath.includes('/sources/') || filePath.includes('/temp_sources/')) {
+      return logger.log(`File is a source file, skipping optimization/version creation.`);
+  }
+
 
   // Extract projectId from the file path
   const parts = filePath.split('/');
@@ -2191,24 +2197,14 @@ function drawOnSheet(doc, embeddable, trimW, trimH, bleed, settings, isPdf) {
 
     // Note: If panX/panY were NaN, the fallback to 0 above handles it.
     // If targetW/drawW were NaN, validTargetW/validDrawW handles it.
-    const x = ((validTargetW - validDrawW) / 2) + (panX * validTargetW);
-    // IMPORTANT: In frontend, panX is ratio 0-1. In backend `generateBooklet`, `settings` passed is just the settings object.
-    // Frontend logic: page.settings.panX = ratio (0.1 etc).
-    // Backend logic in `drawOnSheet`:
-    // The original code was: const x = ((targetW - drawW) / 2) + panX;
-    // If panX is a ratio (e.g. 0.1), adding 0.1 to a value in Points (e.g. 500) is negligible.
-    // It MUST be multiplied by dimension: panX * targetW.
-    // The original code was likely bugged or assumed panX was points.
-    // Frontend code: page.settings.panX = startPanX + ((dx / rect.width) * sensitivity); -> This produces a RATIO.
-    // So Backend MUST multiply by targetW.
-    // Wait, I should double check if I broke existing logic.
-    // Old code: `const x = ((targetW - drawW) / 2) + panX;`
-    // If panX was indeed ratio, then the pan would be tiny.
-    // If the user saw ANY panning working before, then maybe panX was being sent as pixels?
-    // But frontend code explicitly divides by rect.width.
-    // So I will assume ratio is correct and fix the backend math too.
 
-    const y = ((validTargetH - validDrawH) / 2) - (panY * validTargetH);
+    // Calculate offsets based on ratio of target dimensions (0-1 scale)
+    // Frontend sends panX/panY as ratios relative to the canvas/sheet size.
+    const offsetX = panX * validTargetW;
+    const offsetY = panY * validTargetH;
+
+    const x = ((validTargetW - validDrawW) / 2) + offsetX;
+    const y = ((validTargetH - validDrawH) / 2) - offsetY;
 
     if (!Number.isFinite(x) || !Number.isFinite(y)) return; // Safety check
 
