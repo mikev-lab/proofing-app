@@ -2087,6 +2087,9 @@ function drawOnSheet(doc, embeddable, trimW, trimH, bleed, settings) {
 
     const page = doc.addPage([sheetW * 72, sheetH * 72]);
 
+    const targetW = sheetW * 72; // Points
+    const targetH = sheetH * 72;
+
     // Calculate Scale
     // Src dims
     let srcW = 0, srcH = 0;
@@ -2097,9 +2100,6 @@ function drawOnSheet(doc, embeddable, trimW, trimH, bleed, settings) {
         srcW = embeddable.width || embeddable.scale(1).width; // Handle different object types
         srcH = embeddable.height || embeddable.scale(1).height;
     }
-
-    const targetW = sheetW * 72; // Points
-    const targetH = sheetH * 72;
 
     // ... Scaling Logic (Fit/Fill/Stretch) similar to frontend ...
     // For brevity, assume 'fit' means fit within safe area, 'fill' means fill bleed.

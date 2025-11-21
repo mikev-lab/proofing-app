@@ -825,19 +825,18 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     let canvasLeft, canvasTop;
 
     // Spread Logic
-    // Use Math.ceil for containerW/containerH to prevent clipping of sub-pixel bleed areas
+    // Use exact floats for containerW/containerH to prevent rounding gaps/clipping
     if (isRightPage) {
          // Right Page: Clip LEFT bleed (Spine)
-         // Container must be large enough to hold the pixels.
-         containerW = Math.ceil((width + bleed) * pixelsPerInch);
+         containerW = (width + bleed) * pixelsPerInch;
          canvasLeft = -bleedPx;
     } else {
          // Left Page: Clip RIGHT bleed (Spine)
-         containerW = Math.ceil((width + bleed) * pixelsPerInch);
+         containerW = (width + bleed) * pixelsPerInch;
          canvasLeft = 0;
     }
     // Vertical Bleed always visible
-    containerH = Math.ceil((height + (bleed*2)) * pixelsPerInch);
+    containerH = (height + (bleed*2)) * pixelsPerInch;
     canvasTop = 0;
 
     const canvasContainer = document.createElement('div');
@@ -964,9 +963,15 @@ async function updatePageContent(pageId, file) {
 }
 
 async function renderPageCanvas(page, canvas) {
+    // Determine View based on index (Even = Right, Odd = Left)
+    // This ensures correct spread logic regardless of initial settings
+    const pageIndex = pages.indexOf(page);
+    const isRightPage = pageIndex === 0 || pageIndex % 2 === 0;
+    const view = isRightPage ? 'right' : 'left';
+
     // Handle Blank Page
     if (page.sourceFileId === null) {
-        drawBlankPage(page, canvas);
+        drawBlankPage(page, canvas, view);
         return;
     }
 
@@ -996,6 +1001,7 @@ async function renderPageCanvas(page, canvas) {
 
     // Style width/height is set by renderBookViewer container logic mostly,
     // but we need to ensure the canvas element itself has the right size to be positioned.
+    // Use exact floats for CSS to let browser handle sub-pixels
     canvas.style.width = `${totalW * pixelsPerInch}px`;
     canvas.style.height = `${totalH * pixelsPerInch}px`;
 
@@ -1006,10 +1012,16 @@ async function renderPageCanvas(page, canvas) {
     // Horizontal: Depend on View Mode
     // Right Page (Page 1, 3...): Left edge is Spine (Inner). Hide it by shifting left.
     // Left Page (Page 2, 4...): Right edge is Spine (Inner). Keep at 0. Container clips right.
-    // Single Page: Show everything (0).
-    if (page.settings.view === 'right') {
+    if (view === 'right') {
+        // Right Page: Canvas 0 is Left Bleed (Spine).
+        // We want to HIDE the Left/Spine bleed.
+        // So we shift LEFT by bleed width.
         canvas.style.left = `-${bleed * pixelsPerInch}px`;
     } else {
+        // Left Page: Canvas 0 is Left Bleed (Outer Edge).
+        // We want to SHOW the Left/Outer bleed.
+        // So we keep it at 0.
+        // The Container width (width+bleed) will CLIP the Right/Spine bleed.
         canvas.style.left = '0px';
     }
 
@@ -1022,7 +1034,7 @@ async function renderPageCanvas(page, canvas) {
 
     // Draw Content
     // Pass additional Pan Settings
-    await drawFileWithTransform(ctx, sourceEntry, 0, 0, totalW, totalH, page.settings.scaleMode, page.settings.alignment, page.pageIndex, page.id, page.settings.view, page.settings.panX, page.settings.panY);
+    await drawFileWithTransform(ctx, sourceEntry, 0, 0, totalW, totalH, page.settings.scaleMode, page.settings.alignment, page.pageIndex, page.id, view, page.settings.panX, page.settings.panY);
 
     // Guides
     const mockSpecs = {
@@ -1045,8 +1057,8 @@ async function renderPageCanvas(page, canvas) {
         width: totalW * pixelsPerInch, // Full canvas width in logical pixels
         height: totalH * pixelsPerInch,
         scale: guideScale,
-        isSpread: page.settings.view === 'left' || page.settings.view === 'right',
-        isLeftPage: page.settings.view === 'left'
+        isSpread: true, // Always treat as spread in this view
+        isLeftPage: view === 'left'
     };
 
     // Ensure guides are drawn on TOP.
