@@ -69,6 +69,10 @@ service firebase.storage {
     match /uploads/{projectId}/{fileName} {
       allow write: if canAccessProjectFiles(projectId) || hasGuestUploadAccess(projectId);
     }
+    // New rule for segregated guest uploads (prevents optimization trigger loop)
+    match /guest_uploads/{projectId}/{allPaths=**} {
+       allow read, write: if canAccessProjectFiles(projectId) || hasGuestUploadAccess(projectId);
+    }
     match /sources/{projectId}/{fileName} {
       allow read, write: if canAccessProjectFiles(projectId);
     }
