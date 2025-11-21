@@ -810,11 +810,11 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     let classes = "page-card relative group bg-slate-800 shadow-lg border border-slate-700 transition-all hover:border-indigo-500 overflow-hidden cursor-grab active:cursor-grabbing";
 
     if (isFirstPage) {
-        classes += " rounded-r-lg rounded-l-sm border-l-2 border-l-slate-900";
+        classes += " border-l-2 border-l-slate-900";
     } else if (isRightPage) {
-        classes += " rounded-r-lg rounded-l-none border-l-0";
+        classes += " border-l-0";
     } else {
-        classes += " rounded-l-lg rounded-r-none border-r-0";
+        classes += " border-r-0";
     }
     card.className = classes;
 
@@ -857,7 +857,7 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     const controls = document.createElement('div');
     controls.className = "absolute top-2 right-2 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-900/80 p-1 rounded backdrop-blur-sm z-20";
     controls.innerHTML = `
-        <button onclick="deletePage('${page.id}')" class="text-red-400 hover:text-white p-1" title="Delete Page">
+        <button type="button" onclick="deletePage('${page.id}')" class="text-red-400 hover:text-white p-1" title="Delete Page">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
         </button>
     `;
@@ -874,6 +874,7 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
 
     modes.forEach(mode => {
         const btn = document.createElement('button');
+        btn.type = 'button'; // Prevent form submission
         btn.className = `p-1.5 rounded border ${page.settings.scaleMode === mode.id ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800/80 border-slate-600 text-gray-400 hover:bg-slate-700 hover:text-white'}`;
         btn.innerHTML = mode.icon;
         btn.title = mode.title;
@@ -999,8 +1000,18 @@ async function renderPageCanvas(page, canvas) {
     canvas.style.height = `${totalH * pixelsPerInch}px`;
 
     // Update position to ensure centering (in case scale changed)
-    canvas.style.left = `-${bleed * pixelsPerInch}px`;
-    canvas.style.top = `-${bleed * pixelsPerInch}px`;
+    // Vertical: Container includes bleed, Canvas includes bleed. Align Top.
+    canvas.style.top = '0px';
+
+    // Horizontal: Depend on View Mode
+    // Right Page (Page 1, 3...): Left edge is Spine (Inner). Hide it by shifting left.
+    // Left Page (Page 2, 4...): Right edge is Spine (Inner). Keep at 0. Container clips right.
+    // Single Page: Show everything (0).
+    if (page.settings.view === 'right') {
+        canvas.style.left = `-${bleed * pixelsPerInch}px`;
+    } else {
+        canvas.style.left = '0px';
+    }
 
     ctx.setTransform(pixelDensity, 0, 0, pixelDensity, 0, 0);
     ctx.scale(pixelsPerInch, pixelsPerInch);
@@ -1068,8 +1079,14 @@ function drawBlankPage(page, canvas) {
 
     canvas.style.width = `${totalW * pixelsPerInch}px`;
     canvas.style.height = `${totalH * pixelsPerInch}px`;
-    canvas.style.left = `-${bleed * pixelsPerInch}px`;
-    canvas.style.top = `-${bleed * pixelsPerInch}px`;
+
+    // Position logic (match renderPageCanvas)
+    canvas.style.top = '0px';
+    if (page.settings.view === 'right') {
+        canvas.style.left = `-${bleed * pixelsPerInch}px`;
+    } else {
+        canvas.style.left = '0px';
+    }
 
     ctx.setTransform(pixelDensity, 0, 0, pixelDensity, 0, 0);
     ctx.scale(pixelsPerInch, pixelsPerInch);
