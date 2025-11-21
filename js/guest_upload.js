@@ -347,14 +347,18 @@ function addPagesToModel(targetArray, sourceId, numPages, isSpreadUpload) {
                 id: `${sourceId}_p${i}_L`,
                 sourceFileId: sourceId,
                 pageIndex: i + 1,
-                settings: { scaleMode: 'fill', alignment: 'center', view: 'left', panX: 0, panY: 0 },
+                // Initial PanX: 0.5 to align Left Half of image (center of image to center of Left Page)
+                // If image is 2x wide, center is at x=1. Left Page center is x=0.5. Shift +0.5?
+                // Wait, logic derived in thought: panX=0.5 shifts image RIGHT.
+                settings: { scaleMode: 'fill', alignment: 'center', view: 'left', panX: 0.5, panY: 0 },
                 isSpread: false
             });
             targetArray.push({
                 id: `${sourceId}_p${i}_R`,
                 sourceFileId: sourceId,
                 pageIndex: i + 1,
-                settings: { scaleMode: 'fill', alignment: 'center', view: 'right', panX: 0, panY: 0 },
+                // Initial PanX: -0.5 to align Right Half of image
+                settings: { scaleMode: 'fill', alignment: 'center', view: 'right', panX: -0.5, panY: 0 },
                 isSpread: false
             });
         }
@@ -446,11 +450,44 @@ window.updatePageSetting = (pageId, setting, value) => {
              return;
         }
 
-        // Clear cache for this page as appearance changed
-        // Actually, the source bitmap is the same, only the transform changes.
-        // But renderPageCanvas handles drawing. We don't need to clear imageCache if it stores the *source* file render.
-        // But currently imageCache (in my plan) stores the *final* canvas? No, better to cache the source render.
-        // Let's refine the cache strategy in renderPageCanvas.
+        // If changing scaleMode, update button states visually
+        if (setting === 'scaleMode') {
+            const card = document.querySelector(`[data-id="${pageId}"]`);
+            if (card) {
+                const btns = card.querySelectorAll('.scale-mode-btn'); // Added class to creation logic below
+                // Actually we used inline creation, let's update the query or classes.
+                // The creation logic uses:
+                // btn.onclick = () => updatePageSetting(page.id, 'scaleMode', mode.id);
+
+                // We need to find the buttons. They are in settingsOverlay.
+                // Let's query buttons inside the card that correspond to modes.
+                // We didn't add a specific class to them in createPageCard previously,
+                // just 'p-1.5 rounded border ...'.
+
+                // Let's rely on the `title` attribute or similar since we don't want to break existing DOM.
+                // Or better, let's update createPageCard to add a data-mode attribute.
+                // But I can't change createPageCard here easily without a huge diff.
+
+                // Let's query buttons and check their title/icon? No.
+                // Let's assume the order: fit, fill, stretch.
+                const buttons = card.querySelectorAll('button[title]');
+                buttons.forEach(btn => {
+                    const modeId = btn.title.toLowerCase().includes('fit') ? 'fit' :
+                                   btn.title.toLowerCase().includes('fill') ? 'fill' :
+                                   btn.title.toLowerCase().includes('stretch') ? 'stretch' : null;
+
+                    if (modeId) {
+                        if (modeId === value) {
+                            // Active Style
+                            btn.className = 'p-1.5 rounded border bg-indigo-600 border-indigo-500 text-white';
+                        } else {
+                            // Inactive Style
+                            btn.className = 'p-1.5 rounded border bg-slate-800/80 border-slate-600 text-gray-400 hover:bg-slate-700 hover:text-white';
+                        }
+                    }
+                });
+            }
+        }
 
         const canvas = document.getElementById(`canvas-${pageId}`);
         if (canvas) renderPageCanvas(page, canvas);
@@ -493,17 +530,52 @@ function renderBookViewer() {
         entries.forEach(entry => {
             if (entry.isIntersecting) {
                 const card = entry.target;
-                const pageId = card.dataset.id;
-                const canvas = document.getElementById(`canvas-${pageId}`);
-                const page = pages.find(p => p.id === pageId);
+                const cardId = card.dataset.id;
 
-                if (canvas && page) {
-                    renderPageCanvas(page, canvas).then(() => {
-                        const placeholder = document.getElementById(`placeholder-${pageId}`);
-                        if(placeholder) placeholder.style.opacity = '0';
-                        setTimeout(() => placeholder?.remove(), 300);
-                    });
+                if (cardId.startsWith('spread:')) {
+                    // Handle Spread Card
+                    // ID Format: spread:ID1:ID2
+                    const parts = cardId.split(':');
+                    const id1 = parts[1];
+                    const id2 = parts[2];
+                    const page1 = pages.find(p => p.id === id1);
+                    const page2 = pages.find(p => p.id === id2);
+                    const canvas1 = document.getElementById(`canvas-${id1}`);
+                    const canvas2 = document.getElementById(`canvas-${id2}`);
+
+                    if (page1 && canvas1) {
+                        renderPageCanvas(page1, canvas1).then(() => {
+                            const ph = document.getElementById(`placeholder-${id1}`);
+                            if (ph) {
+                                ph.style.opacity = '0';
+                                setTimeout(() => ph.remove(), 300);
+                            }
+                        });
+                    }
+                    if (page2 && canvas2) {
+                        renderPageCanvas(page2, canvas2).then(() => {
+                            const ph = document.getElementById(`placeholder-${id2}`);
+                            if (ph) {
+                                ph.style.opacity = '0';
+                                setTimeout(() => ph.remove(), 300);
+                            }
+                        });
+                    }
                     obs.unobserve(card);
+
+                } else {
+                    // Handle Single Card
+                    const canvas = document.getElementById(`canvas-${cardId}`);
+                    const page = pages.find(p => p.id === cardId);
+
+                    if (canvas && page) {
+                        renderPageCanvas(page, canvas).then(() => {
+                            const placeholder = document.getElementById(`placeholder-${cardId}`);
+                            if (placeholder) placeholder.style.opacity = '0';
+                            setTimeout(() => placeholder?.remove(), 300);
+                        });
+                        obs.unobserve(card);
+                    }
                 }
             }
         });
@@ -549,24 +621,57 @@ function renderBookViewer() {
         const spreadDiv = document.createElement('div');
         spreadDiv.className = "spread-row flex justify-center items-end gap-0 mb-4 min-h-[100px] p-2 border border-transparent hover:border-dashed hover:border-gray-600 rounded";
 
-        // Left Page
-        if (pages[i]) {
-            spreadDiv.appendChild(createPageCard(pages[i], i, false, false, width, height, bleed, pixelsPerInch, observer));
+        // Check if current position is a Linked Spread
+        const isLeft = pages[i];
+        const isRight = pages[i+1];
+
+        let isLinkedSpread = false;
+        if (isLeft && isRight && isLeft.sourceFileId && isLeft.sourceFileId === isRight.sourceFileId) {
+            if (isLeft.id.endsWith('_L') && isRight.id.endsWith('_R')) {
+                isLinkedSpread = true;
+            }
         }
 
-        // Right Page
-        if (i + 1 < pages.length) {
-            spreadDiv.appendChild(createPageCard(pages[i+1], i+1, true, false, width, height, bleed, pixelsPerInch, observer));
+        if (isLinkedSpread) {
+            // Create merged card for dragging
+            const spreadCard = createSpreadCard(isLeft, isRight, i, width, height, bleed, pixelsPerInch, observer);
+            spreadDiv.appendChild(spreadCard);
+
+            // Increment by 2 since we consumed both
+            i += 2;
         } else {
-            // Spacer if single page at end
-             const endSpacer = document.createElement('div');
-             endSpacer.style.width = `${width * pixelsPerInch}px`;
-             endSpacer.className = "pointer-events-none";
-             spreadDiv.appendChild(endSpacer);
+            // Standard Separate Cards logic
+            // Left Page
+            let leftCard = null;
+            if (pages[i]) {
+                leftCard = createPageCard(pages[i], i, false, false, width, height, bleed, pixelsPerInch, observer);
+                spreadDiv.appendChild(leftCard);
+            }
+
+            // Right Page
+            let rightCard = null;
+            if (i + 1 < pages.length) {
+                // Check if next page is start of a spread (shouldn't happen if array is valid, but safety)
+                // If next page is start of a linked spread, we should probably not put it here?
+                // But the loop handles it.
+                rightCard = createPageCard(pages[i+1], i+1, true, false, width, height, bleed, pixelsPerInch, observer);
+                spreadDiv.appendChild(rightCard);
+            }
+
+            if (leftCard) leftCard.style.flexShrink = '0';
+            if (rightCard) rightCard.style.flexShrink = '0';
+
+            if (!rightCard) {
+                 const endSpacer = document.createElement('div');
+                 endSpacer.style.width = `${width * pixelsPerInch}px`;
+                 endSpacer.className = "pointer-events-none";
+                 spreadDiv.appendChild(endSpacer);
+            }
+
+            i += 2;
         }
 
         container.appendChild(spreadDiv);
-        i += 2;
     }
 
     // Final Insert Bar
@@ -579,29 +684,54 @@ function renderBookViewer() {
     const spreadDivs = container.querySelectorAll('.spread-row');
     spreadDivs.forEach(spreadDiv => {
         new Sortable(spreadDiv, {
-            group: 'shared-spreads', // Allow dragging between spreads
+            group: {
+                name: 'shared-spreads',
+                pull: true,
+                put: true
+            },
             animation: 150,
             draggable: '.page-card', // The actual card
-            handle: '.page-card', // Drag by card
+            handle: '.drag-handle', // Drag by dedicated handle
+            forceFallback: true, // Fixes issues with native DnD and "snap back"
+            fallbackOnBody: true, // Appends clone to body to avoid overflow clipping
+            swapThreshold: 0.65, // Sensitivity
             ghostClass: 'opacity-50',
             onEnd: (evt) => {
-                // When drop ends, we need to sync the `pages` array order to the new DOM order.
-                // 1. Collect all data-ids from the DOM in order.
-                const allCards = document.querySelectorAll('.page-card');
-                const newOrderIds = Array.from(allCards).map(c => c.dataset.id);
+                try {
+                    // When drop ends, we need to sync the `pages` array order to the new DOM order.
+                    // 1. Collect all data-ids from the DOM in order.
+                    const allCards = document.querySelectorAll('.page-card');
+                    const newOrderIds = Array.from(allCards).map(c => c.dataset.id);
 
-                // 2. Reorder `pages` array
-                const newPages = [];
-                newOrderIds.forEach(id => {
-                    const p = pages.find(x => x.id === id);
-                    if (p) newPages.push(p);
-                });
+                    // 2. Reorder `pages` array
+                    const newPages = [];
+                    newOrderIds.forEach(id => {
+                    // Check if ID is a composite spread ID
+                    if (id.startsWith('spread:')) {
+                        // Format: spread:ID1:ID2
+                        const parts = id.split(':');
+                        if (parts.length === 3) {
+                            const p1 = pages.find(x => x.id === parts[1]);
+                            const p2 = pages.find(x => x.id === parts[2]);
+                            if (p1) newPages.push(p1);
+                            if (p2) newPages.push(p2);
+                        }
+                    } else {
+                        const p = pages.find(x => x.id === id);
+                        if (p) newPages.push(p);
+                    }
+                    });
 
-                pages = newPages;
+                    pages = newPages;
 
-                // 3. Re-render fully to fix layout (e.g. Left vs Right page styling)
-                // We must delay slightly to let the drag event finish or Sortable might glitch
-                setTimeout(() => renderBookViewer(), 50);
+                    // 3. Re-render fully to fix layout (e.g. Left vs Right page styling)
+                    // We must delay slightly to let the drag event finish or Sortable might glitch
+                    setTimeout(() => {
+                        requestAnimationFrame(() => renderBookViewer());
+                    }, 50);
+                } catch (err) {
+                    console.error("Error during drag reorder:", err);
+                }
             }
         });
     });
@@ -609,30 +739,54 @@ function renderBookViewer() {
 
 // Global Pointer Event Handlers for Panning
 let activePageId = null;
+let partnerPageId = null;
 let isDragging = false;
 let startX = 0;
 let startY = 0;
 let startPanX = 0;
 let startPanY = 0;
+let partnerStartPanX = 0;
+let partnerStartPanY = 0;
 
 document.addEventListener('pointerdown', (e) => {
     const card = e.target.closest('[data-id]');
     if (!card) return;
 
-    const pageId = card.dataset.id;
-    const page = pages.find(p => p.id === pageId);
+    // Only allow panning if target is canvas (Image)
+    if (e.target.tagName.toLowerCase() !== 'canvas') return;
+
+    // Resolve the actual page ID from the Canvas element ID
+    // because card.dataset.id might be a composite spread ID (e.g. spread:p1:p2)
+    const clickedPageId = e.target.id.replace('canvas-', '');
+    const page = pages.find(p => p.id === clickedPageId);
 
     // Only allow panning if scaleMode is 'fill'
     if (page && page.settings.scaleMode === 'fill') {
-        activePageId = pageId;
+        activePageId = clickedPageId;
         isDragging = true;
         startX = e.clientX;
         startY = e.clientY;
         startPanX = page.settings.panX || 0;
         startPanY = page.settings.panY || 0;
 
+        // Identify Partner Page immediately
+        partnerPageId = null;
+        if (activePageId.endsWith('_L') || activePageId.endsWith('_R')) {
+            const isLeft = activePageId.endsWith('_L');
+            const pId = isLeft
+                ? activePageId.slice(0, -2) + '_R'
+                : activePageId.slice(0, -2) + '_L';
+
+            const partnerPage = pages.find(p => p.id === pId);
+            if (partnerPage && partnerPage.sourceFileId === page.sourceFileId) {
+                partnerPageId = pId;
+                partnerStartPanX = partnerPage.settings.panX || 0;
+                partnerStartPanY = partnerPage.settings.panY || 0;
+            }
+        }
+
         card.classList.add('cursor-grabbing');
-        e.preventDefault(); // Prevent text selection
+        e.preventDefault(); // Prevent text selection and default drag
     }
 });
 
@@ -651,15 +805,40 @@ document.addEventListener('pointermove', (e) => {
     if (canvas) {
         const rect = canvas.getBoundingClientRect();
         // Normalize delta to [0-1] range relative to the rendered box
-        // Note: rect includes the bleed area.
-
-        // Sensitivity factor
         const sensitivity = 1.0;
 
-        page.settings.panX = startPanX + ((dx / rect.width) * sensitivity);
-        page.settings.panY = startPanY + ((dy / rect.height) * sensitivity);
+        if (rect.width > 0 && rect.height > 0) {
+            const deltaX = (dx / rect.width) * sensitivity;
+            const deltaY = (dy / rect.height) * sensitivity;
 
-        // Re-render immediately (throttling via RAF is better but this is simple)
+            const newPanX = startPanX + deltaX;
+            const newPanY = startPanY + deltaY;
+
+            // Update Active Page
+            page.settings.panX = Number.isFinite(newPanX) ? newPanX : 0;
+            page.settings.panY = Number.isFinite(newPanY) ? newPanY : 0;
+
+            // Update Partner Page (Synced)
+            if (partnerPageId) {
+                const partnerPage = pages.find(p => p.id === partnerPageId);
+                if (partnerPage) {
+                    const pNewPanX = partnerStartPanX + deltaX;
+                    const pNewPanY = partnerStartPanY + deltaY;
+
+                    partnerPage.settings.panX = Number.isFinite(pNewPanX) ? pNewPanX : 0;
+                    partnerPage.settings.panY = Number.isFinite(pNewPanY) ? pNewPanY : 0;
+
+                    const partnerCanvas = document.getElementById(`canvas-${partnerPageId}`);
+                    if (partnerCanvas) {
+                        requestAnimationFrame(() => {
+                            renderPageCanvas(partnerPage, partnerCanvas);
+                        });
+                    }
+                }
+            }
+        }
+
+        // Re-render active page
         requestAnimationFrame(() => {
             renderPageCanvas(page, canvas);
         });
@@ -684,17 +863,17 @@ function createInsertBar(index) {
     bar.innerHTML = `
         <div class="${line}"></div>
         <div class="flex gap-2">
-            <button class="text-xs bg-slate-700 hover:bg-indigo-600 text-white px-2 py-1 rounded flex items-center gap-1" onclick="triggerInsert(${index}, 'left')">
+            <button type="button" class="text-xs bg-slate-700 hover:bg-indigo-600 text-white px-2 py-1 rounded flex items-center gap-1" onclick="triggerInsert(${index}, 'left')" title="Insert File">
                 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
-                Page
+                File
             </button>
-             <button class="text-xs bg-slate-700 hover:bg-indigo-600 text-white px-2 py-1 rounded flex items-center gap-1" onclick="triggerInsert(${index}, 'spread')">
+            <button type="button" class="text-xs bg-slate-700 hover:bg-indigo-600 text-white px-2 py-1 rounded flex items-center gap-1" onclick="triggerInsert(${index}, 'blank')" title="Insert Blank Page">
+                <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                Blank
+            </button>
+             <button type="button" class="text-xs bg-slate-700 hover:bg-indigo-600 text-white px-2 py-1 rounded flex items-center gap-1" onclick="triggerInsert(${index}, 'spread')" title="Insert Spread (File)">
                 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
                 Spread
-            </button>
-             <button class="text-xs bg-slate-700 hover:bg-indigo-600 text-white px-2 py-1 rounded flex items-center gap-1" onclick="triggerInsert(${index}, 'right')">
-                Page
-                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
             </button>
         </div>
         <div class="${line}"></div>
@@ -706,8 +885,42 @@ window.triggerInsert = (index, type) => {
     // Set global state for insertion
     window._insertIndex = index;
     window._insertType = type;
-    insertFileInput.click();
+
+    if (type === 'blank') {
+        // Insert blank page(s) immediately
+        addBlankPages(index, 1);
+    } else {
+        insertFileInput.click();
+    }
 };
+
+function addBlankPages(insertAtIndex, count = 1) {
+    const newPages = [];
+
+    // For now, assume inserting SINGLE blank pages unless we want blank spreads?
+    // Let's just add standard single pages which will flow into spreads naturally.
+    for (let i = 0; i < count; i++) {
+        // Use a special ID for blank pages or just null sourceFileId?
+        // We need a unique ID for the page itself.
+        const pageId = `blank_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+        newPages.push({
+            id: pageId,
+            sourceFileId: null, // Indicates blank
+            pageIndex: 1, // Irrelevant
+            settings: { scaleMode: 'fit', alignment: 'center', panX: 0, panY: 0 },
+            isSpread: false
+        });
+    }
+
+    if (insertAtIndex !== null && insertAtIndex >= 0 && insertAtIndex <= pages.length) {
+        pages.splice(insertAtIndex, 0, ...newPages);
+    } else {
+        pages.push(...newPages);
+    }
+
+    renderBookViewer();
+}
 
 insertFileInput.addEventListener('change', (e) => {
     if (e.target.files.length > 0) {
@@ -724,11 +937,11 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     let classes = "page-card relative group bg-slate-800 shadow-lg border border-slate-700 transition-all hover:border-indigo-500 overflow-hidden cursor-grab active:cursor-grabbing";
 
     if (isFirstPage) {
-        classes += " rounded-r-lg rounded-l-sm border-l-2 border-l-slate-900";
+        classes += " border-l-2 border-l-slate-900";
     } else if (isRightPage) {
-        classes += " rounded-r-lg rounded-l-none border-l-0";
+        classes += " border-l-0";
     } else {
-        classes += " rounded-l-lg rounded-r-none border-r-0";
+        classes += " border-r-0";
     }
     card.className = classes;
 
@@ -739,6 +952,7 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     let canvasLeft, canvasTop;
 
     // Spread Logic
+    // Use exact floats for containerW/containerH to prevent rounding gaps/clipping
     if (isRightPage) {
          // Right Page: Clip LEFT bleed (Spine)
          containerW = (width + bleed) * pixelsPerInch;
@@ -765,11 +979,19 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
 
     canvasContainer.appendChild(canvas);
 
+    // Drag Handle
+    const dragHandle = document.createElement('div');
+    dragHandle.className = "drag-handle absolute top-2 left-2 p-1.5 bg-slate-900/80 text-white rounded cursor-move opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-sm z-30 hover:bg-indigo-600 shadow-sm";
+    dragHandle.title = "Drag to Reorder";
+    // Grid/Grip Icon
+    dragHandle.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>';
+    card.appendChild(dragHandle);
+
     // Overlay Controls
     const controls = document.createElement('div');
     controls.className = "absolute top-2 right-2 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-900/80 p-1 rounded backdrop-blur-sm z-20";
     controls.innerHTML = `
-        <button onclick="deletePage('${page.id}')" class="text-red-400 hover:text-white p-1" title="Delete Page">
+        <button type="button" onclick="deletePage('${page.id}')" class="text-red-400 hover:text-white p-1" title="Delete Page">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
         </button>
     `;
@@ -786,6 +1008,7 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
 
     modes.forEach(mode => {
         const btn = document.createElement('button');
+        btn.type = 'button'; // Prevent form submission
         btn.className = `p-1.5 rounded border ${page.settings.scaleMode === mode.id ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800/80 border-slate-600 text-gray-400 hover:bg-slate-700 hover:text-white'}`;
         btn.innerHTML = mode.icon;
         btn.title = mode.title;
@@ -809,13 +1032,96 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     placeholder.id = `placeholder-${page.id}`;
     canvasContainer.appendChild(placeholder);
 
+    // Add specific drop handling for this card
+    // We use the input ID trick again, but specific to this card if needed?
+    // Actually, we can just reuse the logic: drop -> updates this page's source.
+
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        card.addEventListener(eventName, (e) => {
+            // Only intercept if it's a FILE drag. Allow SortableJS drags to bubble.
+            if (e.dataTransfer.types.includes('Files')) {
+                e.preventDefault();
+                e.stopPropagation();
+
+                if (eventName === 'dragenter' || eventName === 'dragover') {
+                    card.classList.add('ring-2', 'ring-indigo-500', 'ring-offset-2');
+                } else {
+                    card.classList.remove('ring-2', 'ring-indigo-500', 'ring-offset-2');
+                }
+            }
+        }, false);
+    });
+
+    card.addEventListener('drop', async (e) => {
+        if (e.dataTransfer.types.includes('Files')) {
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                const file = files[0];
+                // Replace content of THIS page
+                await updatePageContent(page.id, file);
+            }
+        }
+    });
+
     observer.observe(card);
     return card;
 }
 
-async function renderPageCanvas(page, canvas) {
-    const sourceEntry = sourceFiles[page.sourceFileId];
+// Helper to replace page content
+async function updatePageContent(pageId, file) {
+    const page = pages.find(p => p.id === pageId);
+    if (!page) return;
 
+    const sourceId = Date.now() + Math.random().toString(16).slice(2);
+    const isLocal = file.type === 'application/pdf' || file.type.startsWith('image/');
+
+    if (isLocal) {
+        sourceFiles[sourceId] = file;
+        page.sourceFileId = sourceId;
+        page.pageIndex = 1; // Reset to page 1 of new file
+
+        // If it's a PDF, we might want to know if it has more pages, but for a single replacement we usually just take page 1.
+        // Unless we want to expand? For now, simple replacement.
+
+        // Update UI
+        const canvas = document.getElementById(`canvas-${pageId}`);
+        if (canvas) renderPageCanvas(page, canvas);
+
+    } else {
+        // Server side processing needed
+        sourceFiles[sourceId] = { file: file, status: 'uploading', previewUrl: null };
+        page.sourceFileId = sourceId;
+        page.pageIndex = 1;
+
+        const placeholder = document.getElementById(`placeholder-${pageId}`);
+        if (placeholder) {
+            placeholder.style.opacity = '1';
+            placeholder.innerHTML = '<p class="text-xs text-indigo-400 animate-pulse">Processing...</p>';
+        }
+
+        await processServerFile(file, sourceId);
+    }
+
+    // Trigger re-render to update thumbnails or other UI if needed
+    // But renderPageCanvas above might be enough.
+    // Safest to re-render viewer if we want to ensure everything syncs?
+    // renderPageCanvas is faster.
+}
+
+async function renderPageCanvas(page, canvas) {
+    // Determine View based on index (Even = Right, Odd = Left)
+    // This ensures correct spread logic regardless of initial settings
+    const pageIndex = pages.indexOf(page);
+    const isRightPage = pageIndex === 0 || pageIndex % 2 === 0;
+    const view = isRightPage ? 'right' : 'left';
+
+    // Handle Blank Page
+    if (page.sourceFileId === null) {
+        drawBlankPage(page, canvas, view);
+        return;
+    }
+
+    const sourceEntry = sourceFiles[page.sourceFileId];
     if (!sourceEntry || !projectSpecs.dimensions) return;
 
     // Unwrap Source (handle both raw File and server-processed object)
@@ -836,17 +1142,34 @@ async function renderPageCanvas(page, canvas) {
     const totalW = width + (bleed*2);
     const totalH = height + (bleed*2);
 
-    canvas.width = totalW * pixelsPerInch * pixelDensity;
-    canvas.height = totalH * pixelsPerInch * pixelDensity;
+    canvas.width = Math.ceil(totalW * pixelsPerInch * pixelDensity);
+    canvas.height = Math.ceil(totalH * pixelsPerInch * pixelDensity);
 
     // Style width/height is set by renderBookViewer container logic mostly,
     // but we need to ensure the canvas element itself has the right size to be positioned.
+    // Use exact floats for CSS to let browser handle sub-pixels
     canvas.style.width = `${totalW * pixelsPerInch}px`;
     canvas.style.height = `${totalH * pixelsPerInch}px`;
 
     // Update position to ensure centering (in case scale changed)
-    canvas.style.left = `-${bleed * pixelsPerInch}px`;
-    canvas.style.top = `-${bleed * pixelsPerInch}px`;
+    // Vertical: Container includes bleed, Canvas includes bleed. Align Top.
+    canvas.style.top = '0px';
+
+    // Horizontal: Depend on View Mode
+    // Right Page (Page 1, 3...): Left edge is Spine (Inner). Hide it by shifting left.
+    // Left Page (Page 2, 4...): Right edge is Spine (Inner). Keep at 0. Container clips right.
+    if (view === 'right') {
+        // Right Page: Canvas 0 is Left Bleed (Spine).
+        // We want to HIDE the Left/Spine bleed.
+        // So we shift LEFT by bleed width.
+        canvas.style.left = `-${bleed * pixelsPerInch}px`;
+    } else {
+        // Left Page: Canvas 0 is Left Bleed (Outer Edge).
+        // We want to SHOW the Left/Outer bleed.
+        // So we keep it at 0.
+        // The Container width (width+bleed) will CLIP the Right/Spine bleed.
+        canvas.style.left = '0px';
+    }
 
     ctx.setTransform(pixelDensity, 0, 0, pixelDensity, 0, 0);
     ctx.scale(pixelsPerInch, pixelsPerInch);
@@ -857,7 +1180,7 @@ async function renderPageCanvas(page, canvas) {
 
     // Draw Content
     // Pass additional Pan Settings
-    await drawFileWithTransform(ctx, sourceEntry, 0, 0, totalW, totalH, page.settings.scaleMode, page.settings.alignment, page.pageIndex, page.id, page.settings.view, page.settings.panX, page.settings.panY);
+    await drawFileWithTransform(ctx, sourceEntry, 0, 0, totalW, totalH, page.settings.scaleMode, page.settings.alignment, page.pageIndex, page.id, view, page.settings.panX, page.settings.panY);
 
     // Guides
     const mockSpecs = {
@@ -874,17 +1197,121 @@ async function renderPageCanvas(page, canvas) {
     // So scale = pixelsPerInch / 72.
     const guideScale = pixelsPerInch / 72;
 
+    // Adjust renderInfo to align guides correctly within the partially cropped view
+    // Right Page: Canvas is shifted LEFT by bleed.
+    // guides.js draws Left Trim at relative 0.
+    // We want Trim at 0 relative to the container, but the container starts at Trim Line.
+    // Wait, the container starts at Trim Line.
+    // The Canvas is at Left = -Bleed.
+    // So Canvas (0,0) is (Left Bleed Edge).
+    // guides.js Left Trim is at 0 (if we pass x=0).
+    // But guides.js thinks "Trim starts at 0" relative to the passed Render Area.
+    // If we pass RenderX = Bleed, then TrimX = Bleed.
+    // Canvas X = Bleed is the Trim Line.
+    // So we must pass x: bleed * pixelsPerInch.
+
+    // Left Page: Canvas is at Left = 0.
+    // Canvas (0,0) is (Left Bleed Edge).
+    // We want Right Trim at (Width - Bleed).
+    // guides.js calculates Right Trim as (RenderX + RenderWidth - TrimWidth).
+    // 0 + RenderW - TrimW = TargetTrimX (Bleed).
+    // RenderW = TrimW + Bleed.
+    // So we pass width: (Trim + Bleed).
+
     const renderInfo = {
-        x: 0,
+        x: view === 'right' ? bleed * pixelsPerInch : 0,
         y: 0,
-        width: totalW * pixelsPerInch, // Full canvas width in logical pixels
+        width: view === 'left' ? (width + bleed) * pixelsPerInch : totalW * pixelsPerInch,
         height: totalH * pixelsPerInch,
         scale: guideScale,
-        isSpread: false // We draw guides per page canvas individually
+        isSpread: true,
+        isLeftPage: view === 'left'
     };
 
     // Ensure guides are drawn on TOP.
+    // Reset transform to simple pixel density for drawing guides (which are calculated in pixels)
+    // This avoids double-scaling where the guide calculation (in pixels) is multiplied again by pixelsPerInch.
+    ctx.save();
+    ctx.setTransform(pixelDensity, 0, 0, pixelDensity, 0, 0);
     drawGuides(ctx, mockSpecs, [renderInfo], { trim: true, bleed: true, safety: true });
+    ctx.restore();
+}
+
+function drawBlankPage(page, canvas) {
+    if (!projectSpecs.dimensions) return;
+
+    const ctx = canvas.getContext('2d');
+    const width = projectSpecs.dimensions.width;
+    const height = projectSpecs.dimensions.height;
+    const bleed = 0.125;
+
+    // Consistent Scaling Logic
+    const visualScale = (250 * viewerScale) / ((width + bleed*2) * 96);
+    const pixelsPerInch = 96 * visualScale;
+    const pixelDensity = 1.5;
+
+    const totalW = width + (bleed*2);
+    const totalH = height + (bleed*2);
+
+    canvas.width = Math.ceil(totalW * pixelsPerInch * pixelDensity);
+    canvas.height = Math.ceil(totalH * pixelsPerInch * pixelDensity);
+
+    canvas.style.width = `${totalW * pixelsPerInch}px`;
+    canvas.style.height = `${totalH * pixelsPerInch}px`;
+
+    // Position logic (match renderPageCanvas)
+    canvas.style.top = '0px';
+    if (view === 'right') {
+        canvas.style.left = `-${bleed * pixelsPerInch}px`;
+    } else {
+        canvas.style.left = '0px';
+    }
+
+    ctx.setTransform(pixelDensity, 0, 0, pixelDensity, 0, 0);
+    ctx.scale(pixelsPerInch, pixelsPerInch);
+
+    // 1. Draw Background (Light Gray to indicate empty)
+    ctx.fillStyle = '#f8fafc'; // Slate-50
+    ctx.fillRect(0, 0, totalW, totalH);
+
+    // 2. Draw Dashed Border or Icon
+    ctx.strokeStyle = '#cbd5e1'; // Slate-300
+    ctx.lineWidth = 2 / pixelsPerInch;
+    ctx.setLineDash([10 / pixelsPerInch, 10 / pixelsPerInch]);
+    ctx.strokeRect(bleed, bleed, width, height); // Trim area
+    ctx.setLineDash([]);
+
+    // 3. Text
+    ctx.fillStyle = '#94a3b8'; // Slate-400
+    ctx.font = 'italic 0.4px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText("Drop File Here", totalW / 2, totalH / 2);
+
+    // Draw Guides
+    const guideScale = pixelsPerInch / 72; // Correct for guides.js
+    const mockSpecs = {
+        dimensions: { width: width, height: height, units: 'in' },
+        bleedInches: bleed,
+        safetyInches: 0.125
+    };
+
+    // Adjust renderInfo to align guides correctly within the partially cropped view
+    // Match logic from renderPageCanvas
+    const renderInfo = {
+        x: view === 'right' ? bleed * pixelsPerInch : 0,
+        y: 0,
+        width: view === 'left' ? (width + bleed) * pixelsPerInch : totalW * pixelsPerInch,
+        height: totalH * pixelsPerInch,
+        scale: guideScale,
+        isSpread: true,
+        isLeftPage: view === 'left'
+    };
+
+    ctx.save();
+    ctx.setTransform(pixelDensity, 0, 0, pixelDensity, 0, 0);
+    drawGuides(ctx, mockSpecs, [renderInfo], { trim: true, bleed: true, safety: true });
+    ctx.restore();
 }
 
 async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW, targetH, mode, align, pageIndex = 1, pageId = null, viewMode = 'full', panX = 0, panY = 0) {
@@ -1472,6 +1899,9 @@ async function init() {
         updateFileName('file-spine', 'file-name-spine');
         updateFileName('file-cover-back', 'file-name-cover-back');
 
+        // Restore State from Persistence
+        await restoreBuilderState();
+
         validateForm();
 
     } catch (err) {
@@ -1480,6 +1910,134 @@ async function init() {
         if (err.message.includes('expired')) msg = 'This link has expired.';
         if (err.message.includes('Invalid')) msg = 'Invalid guest link.';
         showError(msg);
+    }
+}
+
+// --- Persistence Functions ---
+
+// (Removed unused saveBuilderState function)
+
+// We'll modify the submit handler to call this with the paths.
+async function persistStateAfterSubmit(uploadedPaths) {
+    if (!projectId) return;
+
+    try {
+        // Update sourceFiles with new storage paths so they can be restored
+        // We need a persistent map of sourceId -> storagePath
+        const persistentSources = {};
+
+        // Merge existing sources with new uploads
+        // We need to look at `pages` to see what sources are used.
+        // And we need to see if we have a storage path for them.
+
+        // Current `sourceFiles` key is the sourceId.
+        // `uploadedPaths` maps sourceId -> storagePath.
+
+        // We also need to keep track of sources that were ALREADY uploaded (from previous session).
+        // So we need to load existing persistentSources first?
+        // Or we just store the map in Firestore.
+
+        const projectRef = doc(db, 'projects', projectId);
+        const projectDoc = await getDoc(projectRef);
+        const existingState = projectDoc.data().guestBuilderState || {};
+        const existingSources = existingState.sourceFiles || {};
+
+        // Merge
+        for (const [id, path] of Object.entries(uploadedPaths)) {
+            existingSources[id] = { storagePath: path, type: 'interior_source' };
+        }
+
+        // Also handle cover files
+        if (uploadedPaths['cover_front']) existingSources['cover_front'] = { storagePath: uploadedPaths['cover_front'], type: 'cover_front' };
+        if (uploadedPaths['cover_spine']) existingSources['cover_spine'] = { storagePath: uploadedPaths['cover_spine'], type: 'cover_spine' };
+        if (uploadedPaths['cover_back']) existingSources['cover_back'] = { storagePath: uploadedPaths['cover_back'], type: 'cover_back' };
+
+        // Save
+        await updateDoc(projectRef, {
+            guestBuilderState: {
+                pages: pages,
+                sourceFiles: existingSources,
+                updatedAt: new Date()
+            }
+        });
+
+    } catch(e) {
+        console.error("Failed to persist state:", e);
+    }
+}
+
+async function restoreBuilderState() {
+    if (!projectId) return;
+
+    try {
+        const projectRef = doc(db, 'projects', projectId);
+        const docSnap = await getDoc(projectRef);
+
+        if (!docSnap.exists()) return;
+
+        const state = docSnap.data().guestBuilderState;
+        if (!state || !state.pages || !state.sourceFiles) return;
+
+        // Restore Pages
+        pages = state.pages;
+
+        // Restore Sources
+        // We need to convert storagePaths back to something usable (Signed URLs)
+        // and populate `sourceFiles` map.
+
+        for (const [id, meta] of Object.entries(state.sourceFiles)) {
+            try {
+                // Check if it's a cover file (not in sourceFiles map usually, but handled by selectedFiles?)
+                if (id.startsWith('cover_')) {
+                    // Handle cover restoration
+                    // We need to fetch the file blob to populate `selectedFiles` for the previewer to work?
+                    // Or modify `renderCoverPreview` to accept URLs.
+                    // `renderCoverPreview` uses `selectedFiles[inputId]`.
+                    // `drawImageOnCanvas` checks `file.type`.
+
+                    // Complex: converting URL to Blob for existing logic
+                    const url = await getDownloadURL(ref(storage, meta.storagePath));
+                    const response = await fetch(url);
+                    const blob = await response.blob();
+                    // Mock file object
+                    const file = new File([blob], "Restored File", { type: blob.type });
+
+                    if (id === 'cover_front') selectedFiles['file-cover-front'] = file;
+                    if (id === 'cover_spine') selectedFiles['file-spine'] = file;
+                    if (id === 'cover_back') selectedFiles['file-cover-back'] = file;
+
+                    // Update UI text
+                    const displayId = id === 'cover_front' ? 'file-name-cover-front' :
+                                      id === 'cover_spine' ? 'file-name-spine' : 'file-name-cover-back';
+                    const el = document.getElementById(displayId);
+                    if (el) el.textContent = "Restored File";
+
+                } else {
+                    // Interior Source
+                    // Get URL
+                    const url = await getDownloadURL(ref(storage, meta.storagePath));
+
+                    // We treat it as a "Server" file
+                    sourceFiles[id] = {
+                        status: 'ready',
+                        previewUrl: url,
+                        isServer: true,
+                        // We also need original metadata if possible, but for now this is enough to render
+                        storagePath: meta.storagePath // Keep ref
+                    };
+                }
+            } catch (e) {
+                console.warn(`Failed to restore source ${id}`, e);
+            }
+        }
+
+        // Trigger Renders
+        renderBookViewer();
+        renderCoverPreview();
+        validateForm();
+
+    } catch(e) {
+        console.error("Error restoring state:", e);
     }
 }
 
@@ -1551,12 +2109,43 @@ uploadForm.addEventListener('submit', async (e) => {
 
         // Add Pages (Interior)
         pages.forEach(p => {
-            bookletMetadata.push({
-                storagePath: uploadedPaths[p.sourceFileId],
-                sourcePageIndex: p.pageIndex - 1, // Convert to 0-based for backend
-                settings: p.settings,
-                type: 'interior_page'
-            });
+            // Sanitize settings to ensure numbers are passed as numbers
+            const safeSettings = {
+                scaleMode: p.settings.scaleMode || 'fit',
+                alignment: p.settings.alignment || 'center',
+                panX: typeof p.settings.panX === 'number' ? p.settings.panX : parseFloat(p.settings.panX) || 0,
+                panY: typeof p.settings.panY === 'number' ? p.settings.panY : parseFloat(p.settings.panY) || 0
+            };
+
+            if (p.sourceFileId === null) {
+                 // Blank Page
+                 bookletMetadata.push({
+                    storagePath: null, // Signal blank to backend
+                    sourcePageIndex: 0,
+                    settings: safeSettings,
+                    type: 'interior_page' // Keep type as interior_page so it's processed in the interior loop
+                 });
+            } else {
+                 // Logic Change: We must look up path in `sourceFiles` if not in `uploadedPaths` (i.e. restored file)
+                 // `uploadedPaths` contains ONLY files uploaded in THIS session.
+                 // `sourceFiles[id].storagePath` contains path for restored files.
+
+                 let finalStoragePath = uploadedPaths[p.sourceFileId];
+                 if (!finalStoragePath && sourceFiles[p.sourceFileId] && sourceFiles[p.sourceFileId].storagePath) {
+                     finalStoragePath = sourceFiles[p.sourceFileId].storagePath;
+                 }
+
+                 if (finalStoragePath) {
+                     bookletMetadata.push({
+                        storagePath: finalStoragePath,
+                        sourcePageIndex: p.pageIndex - 1, // Convert to 0-based for backend
+                        settings: safeSettings,
+                        type: 'interior_page'
+                    });
+                 } else {
+                     console.warn("Skipping page with missing file:", p);
+                 }
+            }
         });
 
         // Add Cover Parts (if uploaded)
@@ -1566,6 +2155,13 @@ uploadForm.addEventListener('submit', async (e) => {
 
         // Use variable name expected by next block
         const uploadMetadata = bookletMetadata;
+
+        // DEBUG LOGGING
+        console.log("Sending Metadata to generateBooklet:", JSON.stringify(uploadMetadata));
+        // END DEBUG LOGGING
+
+        // Persist State (so users can return later)
+        await persistStateAfterSubmit(uploadedPaths);
 
         // Call Backend to Finalize
         progressText.textContent = 'Finalizing...';
@@ -1593,3 +2189,131 @@ uploadForm.addEventListener('submit', async (e) => {
 
 // Initialize
 init();
+// Helper to create a merged card for a spread
+function createSpreadCard(leftPage, rightPage, index, width, height, bleed, pixelsPerInch, observer) {
+    const card = document.createElement('div');
+    // Use a composite ID for Sortable tracking
+    card.dataset.id = `spread:${leftPage.id}:${rightPage.id}`;
+
+    let classes = "page-card relative group bg-slate-800 shadow-lg border border-slate-700 transition-all hover:border-indigo-500 overflow-hidden cursor-grab active:cursor-grabbing flex-shrink-0";
+    card.className = classes;
+
+    const bleedPx = bleed * pixelsPerInch;
+    // Total Spread Width = (Width * 2) + (Bleed * 2)
+    // But we display as two cropped viewports side-by-side
+
+    // Viewport Width per page = Width + Bleed
+    const singlePageW = (width + bleed) * pixelsPerInch;
+    const singlePageH = (height + (bleed * 2)) * pixelsPerInch;
+
+    // Total Container Width = 2 * singlePageW
+    // Actually, visual logic:
+    // Left Page: [Bleed, Width, 0] (Right edge clipped/flush)
+    // Right Page: [0, Width, Bleed] (Left edge clipped/flush)
+    // Total Visual Width = (Width + Bleed) + (Width + Bleed) = 2 * Width + 2 * Bleed
+
+    const totalW = singlePageW * 2;
+
+    // Wrapper for side-by-side
+    const wrapper = document.createElement('div');
+    wrapper.className = "flex pointer-events-none"; // pointer-events-none to let drag handle work, but re-enable for canvas?
+    // Actually, if wrapper is none, we can't pan.
+    // Let's make individual canvas containers interactive.
+    wrapper.style.pointerEvents = "auto";
+
+    // --- LEFT PAGE RENDER ---
+    const leftContainer = document.createElement('div');
+    leftContainer.className = "relative overflow-hidden bg-white border-r border-gray-200"; // divider
+    leftContainer.style.width = `${singlePageW}px`;
+    leftContainer.style.height = `${singlePageH}px`;
+
+    const leftCanvas = document.createElement('canvas');
+    leftCanvas.id = `canvas-${leftPage.id}`;
+    leftCanvas.style.position = "absolute";
+    leftCanvas.style.top = "0";
+    leftCanvas.style.left = "0"; // Left page shows left bleed
+    leftContainer.appendChild(leftCanvas);
+
+    // --- RIGHT PAGE RENDER ---
+    const rightContainer = document.createElement('div');
+    rightContainer.className = "relative overflow-hidden bg-white";
+    rightContainer.style.width = `${singlePageW}px`;
+    rightContainer.style.height = `${singlePageH}px`;
+
+    const rightCanvas = document.createElement('canvas');
+    rightCanvas.id = `canvas-${rightPage.id}`;
+    rightCanvas.style.position = "absolute";
+    rightCanvas.style.top = "0";
+    rightCanvas.style.left = `-${bleedPx}px`; // Right page hides left bleed (spine)
+    rightContainer.appendChild(rightCanvas);
+
+    wrapper.appendChild(leftContainer);
+    wrapper.appendChild(rightContainer);
+    card.appendChild(wrapper);
+
+    // Drag Handle (Shared)
+    const dragHandle = document.createElement('div');
+    dragHandle.className = "drag-handle absolute top-2 left-2 p-1.5 bg-slate-900/80 text-white rounded cursor-move opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-sm z-30 hover:bg-indigo-600 shadow-sm";
+    dragHandle.title = "Drag Spread";
+    dragHandle.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>';
+    card.appendChild(dragHandle);
+
+    // Controls (Delete)
+    const controls = document.createElement('div');
+    controls.className = "absolute top-2 right-2 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-900/80 p-1 rounded backdrop-blur-sm z-20";
+    controls.innerHTML = `
+        <button type="button" onclick="deletePage('${leftPage.id}'); deletePage('${rightPage.id}')" class="text-red-400 hover:text-white p-1" title="Delete Spread">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+        </button>
+    `;
+    card.appendChild(controls);
+
+    // Page Numbers
+    const pageNum = document.createElement('span');
+    pageNum.className = "absolute bottom-1 left-2 text-[10px] text-white/50 font-mono z-20";
+    pageNum.textContent = `P${index + 1}-${index + 2}`;
+    card.appendChild(pageNum);
+
+    // Placeholders
+    [leftPage, rightPage].forEach(p => {
+        const ph = document.createElement('div');
+        ph.className = "absolute inset-0 flex items-center justify-center text-gray-600 bg-slate-200 z-10 transition-opacity duration-300 pointer-events-none";
+        ph.innerHTML = '<div class="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>';
+        ph.id = `placeholder-${p.id}`;
+        // Only show if needed (logic in observer usually hides it)
+        // We need to append to the specific container?
+        // Placeholders usually overlay the canvas.
+        // Let's append to left/right containers respectively.
+        if (p === leftPage) leftContainer.appendChild(ph);
+        else rightContainer.appendChild(ph);
+    });
+
+    // Scale Mode Settings (Applies to both?)
+    // If it's a spread upload, they are locked. We can show one set of controls.
+    const settingsOverlay = document.createElement('div');
+    settingsOverlay.className = "absolute bottom-0 inset-x-0 p-2 opacity-0 group-hover:opacity-100 transition-opacity bg-gradient-to-t from-slate-900/90 to-transparent flex justify-center gap-2 z-20";
+
+    const modes = [
+        { id: 'fit', icon: '<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"/></svg>', title: 'Fit to Page' },
+        { id: 'fill', icon: '<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4h16v16H4z"/></svg>', title: 'Fill Page' },
+        { id: 'stretch', icon: '<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8h16M4 16h16"/></svg>', title: 'Stretch to Fit' }
+    ];
+
+    modes.forEach(mode => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        // Use left page setting as source of truth
+        btn.className = `p-1.5 rounded border ${leftPage.settings.scaleMode === mode.id ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800/80 border-slate-600 text-gray-400 hover:bg-slate-700 hover:text-white'}`;
+        btn.innerHTML = mode.icon;
+        btn.title = mode.title;
+        btn.onclick = () => {
+            updatePageSetting(leftPage.id, 'scaleMode', mode.id);
+            updatePageSetting(rightPage.id, 'scaleMode', mode.id);
+        };
+        settingsOverlay.appendChild(btn);
+    });
+    card.appendChild(settingsOverlay);
+
+    observer.observe(card);
+    return card;
+}

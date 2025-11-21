@@ -58,6 +58,12 @@ exports.optimizePdf = onObjectFinalized({
       return logger.log(`File is not in the proofs/ directory, skipping optimization.`);
   }
 
+  // Exit if the file is in the 'sources/' or 'temp_sources/' subdirectory
+  // We only want to process the FINAL built PDFs that are in the root of proofs/{projectId}/
+  if (filePath.includes('/sources/') || filePath.includes('/temp_sources/')) {
+      return logger.log(`File is a source file, skipping optimization/version creation.`);
+  }
+
 
   // Extract projectId from the file path
   const parts = filePath.split('/');
@@ -66,7 +72,8 @@ exports.optimizePdf = onObjectFinalized({
   }
   const projectId = parts[1];
   const fullFileName = parts[parts.length - 1]; // Filename including timestamp prefix
-  const isCover = fullFileName.includes('_cover_');
+  // Case insensitive check for cover files
+  const isCover = fullFileName.toLowerCase().includes('_cover_');
 
   logger.log(`Processing storage file: ${fullFileName} for project: ${projectId}. Is cover: ${isCover}`);
 
@@ -118,6 +125,13 @@ exports.optimizePdf = onObjectFinalized({
                     ? `http://${process.env.FIREBASE_STORAGE_EMULATOR_HOST}/v0/b/${fileBucket}/o/${encodeURIComponent(filePath)}?alt=media`
                     : `gs://${fileBucket}/${filePath}`;
 
+                let type = 'upload';
+                if (fullFileName.toLowerCase().includes('interior_built')) {
+                    type = 'interior_build';
+                } else if (fullFileName.toLowerCase().includes('cover_built')) {
+                    type = 'cover_build';
+                }
+
                 const newVersion = {
                     versionNumber: newVersionNumber,
                     fileURL: fileURL,
@@ -126,6 +140,7 @@ exports.optimizePdf = onObjectFinalized({
                     processingStatus: 'processing',
                     preflightStatus: preflightStatus,
                     preflightResults: preflightResults,
+                    type: type
                     // If dimensions were found, store them in specs on the version itself if needed
                 };
 
@@ -140,18 +155,19 @@ exports.optimizePdf = onObjectFinalized({
                 }
 
                 transaction.update(projectRef, updates);
-                logger.log(`Auto-created Version ${newVersionNumber} for file ${filePath} in project ${projectId}.`);
-                return; // Exit, we are done for this transaction
-            }
+                logger.log(`Auto-created Version ${newVersionNumber} for file ${filePath} in project ${projectId}. Proceeding to optimization.`);
 
-            versions[versionIndex].preflightStatus = preflightStatus;
-            versions[versionIndex].preflightResults = preflightResults;
-            if (versions[versionIndex].processingStatus !== 'error') {
-                versions[versionIndex].processingStatus = 'processing';
-            }
+                // IMPORTANT: We do NOT return here anymore. We continue to optimize this new version.
+            } else {
+                versions[versionIndex].preflightStatus = preflightStatus;
+                versions[versionIndex].preflightResults = preflightResults;
+                if (versions[versionIndex].processingStatus !== 'error') {
+                    versions[versionIndex].processingStatus = 'processing';
+                }
 
-            transaction.update(projectRef, { versions: versions });
-            logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with preflight results.`);
+                transaction.update(projectRef, { versions: versions });
+                logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with preflight results.`);
+            }
         }
     });
 
@@ -1317,7 +1333,7 @@ exports.createFileRequest = onCall({ region: 'us-central1' }, async (request) =>
 // --- NEW Callable Function for Submitting Guest Upload ---
 exports.submitGuestUpload = onCall({ region: 'us-central1' }, async (request) => {
     // This function is called by the guest after they finish uploading files.
-    // It validates their token (via context or explicit check) and updates the status.
+    // It validates the token (via context or explicit check) and updates the status.
 
     // 1. Auth Check (Guests are anonymous but have a token claim, or we check token manually)
     // Since the guest is signed in anonymously and has a claim, request.auth should be populated.
@@ -1783,7 +1799,7 @@ exports.generateFinalPdf = onCall({
 // --- NEW Generate Booklet Function ---
 exports.generateBooklet = onCall({
     region: 'us-central1',
-    memory: '4GiB',
+    memory: '8GiB',
     timeoutSeconds: 540
 }, async (request) => {
     if (!request.auth) throw new HttpsError('unauthenticated', 'User must be authenticated.');
@@ -1793,7 +1809,13 @@ exports.generateBooklet = onCall({
         throw new HttpsError('invalid-argument', 'Missing projectId or files array.');
     }
 
+    // --- DEBUG LOGGING START ---
     logger.log(`Generating booklet for project ${projectId} with ${files.length} files.`);
+    if (files.length > 0) {
+        logger.log(`DEBUG: First file object: ${JSON.stringify(files[0])}`);
+    }
+    // --- DEBUG LOGGING END ---
+
     const bucket = admin.storage().bucket();
     const authAxios = await getAuthenticatedClient();
 
@@ -1815,6 +1837,7 @@ exports.generateBooklet = onCall({
 
     // Cache for downloaded/converted files to avoid redundancy
     const fileCache = {}; // storagePath -> { path: localPath, isPdf: boolean }
+    const pdfDocCache = {}; // localPath -> PDFDocument instance (Optimization for re-use)
     const tempFiles = []; // Track for cleanup
 
     try {
@@ -1856,6 +1879,10 @@ exports.generateBooklet = onCall({
 
         // Process Files
         const interiorFiles = files.filter(f => f.type.startsWith('interior'));
+        // --- DEBUG LOGGING START ---
+        logger.log(`DEBUG: Found ${interiorFiles.length} interior files.`);
+        // --- DEBUG LOGGING END ---
+
         const coverFiles = {
             front: files.find(f => f.type === 'cover_front'),
             spine: files.find(f => f.type === 'cover_spine'),
@@ -1863,21 +1890,40 @@ exports.generateBooklet = onCall({
         };
 
         // --- 1. Build Interior ---
-        for (const fileMeta of interiorFiles) {
+        for (const [index, fileMeta] of interiorFiles.entries()) {
+            logger.log(`Processing Interior Page ${index + 1}/${interiorFiles.length}. Source: ${fileMeta.storagePath}, PageIdx: ${fileMeta.sourcePageIndex}, Settings: ${JSON.stringify(fileMeta.settings)}`);
+
+            // Handle Blank Page
+            if (!fileMeta.storagePath) {
+                // Draw blank page
+                drawOnSheet(interiorDoc, { isBlank: true }, trimWidth, trimHeight, bleed, fileMeta.settings || {}, false);
+                continue;
+            }
+
             const { path: localPath, isPdf } = await prepareFileForEmbedding(fileMeta.storagePath, fileMeta.type);
             const settings = fileMeta.settings || { scaleMode: 'fit', alignment: 'center' };
 
-            let sourcePages = [];
-
             if (isPdf) {
-                const srcDoc = await PDFDocument.load(fs.readFileSync(localPath));
+                let srcDoc;
+
+                // OPTIMIZATION: Re-use PDFDocument instance if already loaded
+                if (pdfDocCache[localPath]) {
+                    srcDoc = pdfDocCache[localPath];
+                } else {
+                    // Load and cache
+                    const pdfBytes = fs.readFileSync(localPath);
+                    // IMPORTANT: Load without indices for speed if we only need sequential access, but here we access random pages.
+                    // Just standard load.
+                    srcDoc = await PDFDocument.load(pdfBytes);
+                    pdfDocCache[localPath] = srcDoc;
+                }
 
                 // Extract specific page index if provided, otherwise default to 0
                 const pageIndex = fileMeta.sourcePageIndex !== undefined ? fileMeta.sourcePageIndex : 0;
 
                 if (pageIndex < srcDoc.getPageCount()) {
                     const [embeddedPage] = await interiorDoc.embedPages([srcDoc.getPage(pageIndex)]);
-                    drawOnSheet(interiorDoc, embeddedPage, trimWidth, trimHeight, bleed, settings);
+                    drawOnSheet(interiorDoc, embeddedPage, trimWidth, trimHeight, bleed, settings, true);
                 } else {
                     logger.warn(`Requested page index ${pageIndex} out of bounds for file ${fileMeta.storagePath}`);
                 }
@@ -1889,7 +1935,7 @@ exports.generateBooklet = onCall({
                 if (localPath.toLowerCase().endsWith('.png')) embeddedImage = await interiorDoc.embedPng(imgBytes);
                 else embeddedImage = await interiorDoc.embedJpg(imgBytes);
 
-                drawOnSheet(interiorDoc, embeddedImage, trimWidth, trimHeight, bleed, settings);
+                drawOnSheet(interiorDoc, embeddedImage, trimWidth, trimHeight, bleed, settings, false);
             }
         }
 
@@ -1931,7 +1977,6 @@ exports.generateBooklet = onCall({
                     const srcDoc = await PDFDocument.load(fs.readFileSync(localPath));
                     const [embedded] = await coverDoc.embedPages([srcDoc.getPage(0)]);
                     embeddable = embedded;
-                    // PDFPageProxy width/height
                     srcW = embedded.width;
                     srcH = embedded.height;
                 } else {
@@ -1942,31 +1987,13 @@ exports.generateBooklet = onCall({
                     srcH = embeddable.height;
                 }
 
-                // Calculate Aspect Fill (Center Crop)
-                // Note: PDF-lib coords are Bottom-Left origin, but drawImage x,y are from Bottom-Left?
-                // Wait, drawPage/drawImage x,y is bottom-left corner of the image on the page.
-                // But our inputs x, y are usually Top-Left in typical graphics.
-                // Let's assume x, y passed here are from Top-Left of the sheet relative to our mental model,
-                // but PDF-lib uses Bottom-Left.
-                // Actually, the `drawPart` calls below pass x,y assuming 0,0 is top-left of the layout?
-                // In PDF-lib, (0,0) is bottom-left.
-                // So if we want to draw at "Top Left" of the page, y should be (PageHeight - h).
+                // Sanitize inputs
+                const targetW = Number.isFinite(w) ? w * 72 : 0;
+                const targetH = Number.isFinite(h) ? h * 72 : 0;
+                const targetX = Number.isFinite(x) ? x * 72 : 0;
+                const targetY = Number.isFinite(y) ? y * 72 : 0;
 
-                // Let's check how `coverPage` was created:
-                // const coverPage = coverDoc.addPage([totalWidth * 72, totalHeight * 72]);
-                // `drawPart` calls:
-                // drawPart(coverFiles.back, 0, 0, ...) -> This draws at 0,0 (Bottom-Left)
-                // If the intention is a flat spread, 0,0 Bottom-Left is fine for the "Back Cover" if the back cover is on the LEFT.
-                // Wait.
-                // LTR Book: Back (Left), Spine (Middle), Front (Right).
-                // If we draw Back at x=0, y=0, width=Trim+Bleed, height=FullHeight.
-                // This covers the left portion. This is correct for PDF coord system if y=0 is bottom.
-
-                const targetW = w * 72;
-                const targetH = h * 72;
-                const targetX = x * 72;
-                const targetY = y * 72; // Assuming y is 0 for all parts as they span full height?
-                // Yes, calls are: drawPart(..., 0, 0, ...). So y is 0.
+                if (targetW <= 0 || targetH <= 0) return;
 
                 const srcRatio = srcW / srcH;
                 const targetRatio = targetW / targetH;
@@ -1975,65 +2002,52 @@ exports.generateBooklet = onCall({
 
                 // Fill Logic
                 if (srcRatio > targetRatio) {
-                    // Image is wider: Crop width (match height)
+                    // Image is wider: Crop width
                     drawH = targetH;
                     drawW = targetH * srcRatio;
                     drawY = targetY;
                     drawX = targetX - (drawW - targetW) / 2;
                 } else {
-                    // Image is taller: Crop height (match width)
+                    // Image is taller: Crop height
                     drawW = targetW;
                     drawH = targetW / srcRatio;
                     drawX = targetX;
                     drawY = targetY - (drawH - targetH) / 2;
                 }
 
-                // --- IMPLEMENTING CLIPPING ---
-                // We must clip to the target box (x, y, w, h) to prevent bleed-over.
-                // Using pdf-lib operators: q (save), re (rect), W (clip), n (end path), Q (restore)
+                // Ensure finite
+                drawW = Number.isFinite(drawW) ? drawW : 0;
+                drawH = Number.isFinite(drawH) ? drawH : 0;
+                drawX = Number.isFinite(drawX) ? drawX : 0;
+                drawY = Number.isFinite(drawY) ? drawY : 0;
 
-                const { pushGraphicsState, popGraphicsState, clip, endPath, appendBezierCurve, moveTo, lineTo } = require('pdf-lib');
+                if (drawW <= 0 || drawH <= 0) return;
+
+                // --- IMPLEMENTING CLIPPING ---
+                const { pushGraphicsState, popGraphicsState, clip, endPath, moveTo, lineTo } = require('pdf-lib');
 
                 // 1. Save State
                 coverPage.pushOperators(pushGraphicsState());
 
-                // 2. Define Clipping Rectangle
-                // PDF coords are bottom-left origin.
-                // We want to clip to (targetX, targetY) with (targetW, targetH).
-                // Since our targetY is 0 (bottom), this is straightforward.
-
-                // Use low-level drawing for the path
-                coverPage.drawRectangle({
-                    x: targetX,
-                    y: targetY,
-                    width: targetW,
-                    height: targetH,
-                    borderWidth: 0,
-                    color: undefined,
-                    borderColor: undefined
-                });
-
-                // Note: drawRectangle draws. It doesn't set a clipping path.
-                // We need to construct the path and clip.
-
+                // 2. Clip
                 coverPage.pushOperators(
                      moveTo(targetX, targetY),
                      lineTo(targetX + targetW, targetY),
                      lineTo(targetX + targetW, targetY + targetH),
                      lineTo(targetX, targetY + targetH),
-                     lineTo(targetX, targetY), // Close
+                     lineTo(targetX, targetY),
                      clip(),
                      endPath()
                 );
 
-                // 3. Draw the Image (It will be clipped)
+                // 3. Draw
                 if (isPdf) {
                     coverPage.drawPage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
                 } else {
                     coverPage.drawImage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
                 }
 
-                // 4. Restore State (Remove clipping)
+                // 4. Restore State
                 coverPage.pushOperators(popGraphicsState());
             }
 
@@ -2047,49 +2061,33 @@ exports.generateBooklet = onCall({
             await drawPart(coverFiles.front, trimWidth + bleed + spineWidth, 0, trimWidth + bleed, totalHeight);
         }
 
+        // Force cleanup of cached PDF docs to free memory before saving
+        for (const key in pdfDocCache) {
+            delete pdfDocCache[key];
+        }
+
         // --- 3. Save & Update ---
 
         // Interior
         if (interiorFiles.length > 0) {
             const pdfBytes = await interiorDoc.save();
-            const fileName = `${Date.now()}_Interior_Built.pdf`;
+            // Use lowercase to match optimizePdf detection patterns and avoid case sensitivity issues
+            const fileName = `${Date.now()}_interior_built.pdf`;
             const storagePath = `proofs/${projectId}/${fileName}`;
             await bucket.file(storagePath).save(pdfBytes, { contentType: 'application/pdf' });
 
-            // Generate Signed URL
-            // (Standard signed URL logic)
-             const [signedUrl] = await bucket.file(storagePath).getSignedUrl({ action: 'read', expires: '03-09-2491' });
-
-             // Update Firestore Versions
-             await projectRef.update({
-                versions: admin.firestore.FieldValue.arrayUnion({
-                    versionNumber: (projectData.versions?.length || 0) + 1,
-                    fileURL: signedUrl,
-                    filePath: storagePath,
-                    createdAt: admin.firestore.Timestamp.now(),
-                    processingStatus: 'complete',
-                    type: 'interior_build'
-                })
-             });
+            logger.log(`Uploaded interior booklet to ${storagePath}. Relying on optimizePdf trigger to create version entry.`);
         }
 
         // Cover
         if (coverDoc) {
             const pdfBytes = await coverDoc.save();
-            const fileName = `${Date.now()}_Cover_Built.pdf`;
+            // Use lowercase to match optimizePdf detection patterns
+            const fileName = `${Date.now()}_cover_built.pdf`;
             const storagePath = `proofs/${projectId}/${fileName}`;
             await bucket.file(storagePath).save(pdfBytes, { contentType: 'application/pdf' });
 
-             const [signedUrl] = await bucket.file(storagePath).getSignedUrl({ action: 'read', expires: '03-09-2491' });
-
-             await projectRef.update({
-                 cover: {
-                     fileURL: signedUrl,
-                     filePath: storagePath,
-                     createdAt: admin.firestore.Timestamp.now(),
-                     processingStatus: 'complete'
-                 }
-             });
+            logger.log(`Uploaded cover booklet to ${storagePath}. Relying on optimizePdf trigger to update cover entry.`);
         }
 
         return { success: true };
@@ -2105,20 +2103,26 @@ exports.generateBooklet = onCall({
     }
 });
 
-function drawOnSheet(doc, embeddable, trimW, trimH, bleed, settings) {
+function drawOnSheet(doc, embeddable, trimW, trimH, bleed, settings, isPdf) {
     // Sheet Size = Trim + Bleed * 2
     const sheetW = trimW + (bleed * 2);
     const sheetH = trimH + (bleed * 2);
 
     const page = doc.addPage([sheetW * 72, sheetH * 72]);
 
-    // Calculate Scale
-    // Src dims
-    const srcW = embeddable.width || embeddable.scale(1).width; // Handle different object types
-    const srcH = embeddable.height || embeddable.scale(1).height;
-
     const targetW = sheetW * 72; // Points
     const targetH = sheetH * 72;
+
+    // Calculate Scale
+    // Src dims
+    let srcW = 0, srcH = 0;
+    if (embeddable.isBlank) {
+        srcW = targetW;
+        srcH = targetH;
+    } else {
+        srcW = embeddable.width || embeddable.scale(1).width; // Handle different object types
+        srcH = embeddable.height || embeddable.scale(1).height;
+    }
 
     // ... Scaling Logic (Fit/Fill/Stretch) similar to frontend ...
     // For brevity, assume 'fit' means fit within safe area, 'fill' means fill bleed.
@@ -2158,11 +2162,19 @@ function drawOnSheet(doc, embeddable, trimW, trimH, bleed, settings) {
     // Plan assumes frontend sends points or we normalize.
     // Let's assume frontend sends values normalized to Points (72dpi) matching the PDF dimensions.
 
-    const panX = settings.panX || 0;
-    const panY = settings.panY || 0;
+    // Ensure panX/panY are finite numbers, default to 0
+    const panX = Number.isFinite(settings.panX) ? settings.panX : 0;
+    const panY = Number.isFinite(settings.panY) ? settings.panY : 0;
 
-    const x = ((targetW - drawW) / 2) + panX;
-    const y = ((targetH - drawH) / 2) - panY; // Invert Y because PDF coords are bottom-up?
+    // Ensure targetW/targetH/drawW/drawH are finite to avoid NaN errors in pdf-lib
+    const validTargetW = Number.isFinite(targetW) ? targetW : 0;
+    const validTargetH = Number.isFinite(targetH) ? targetH : 0;
+    const validDrawW = Number.isFinite(drawW) ? drawW : 0;
+    const validDrawH = Number.isFinite(drawH) ? drawH : 0;
+
+    if (validDrawW <= 0 || validDrawH <= 0) return; // Nothing to draw
+
+    // Calculate x,y
     // PDF-lib's drawPage/drawImage uses (x,y) as bottom-left corner of the image rect.
     // If we pan UP visually, we want image to move UP.
     // In PDF (bottom-left origin), moving UP is +Y.
@@ -2172,13 +2184,35 @@ function drawOnSheet(doc, embeddable, trimW, trimH, bleed, settings) {
     // Let's assume standard web convention: panY > 0 means image moves DOWN.
     // Image moving DOWN means y decreases in PDF coords. So -panY is correct.
 
+    // Note: If panX/panY were NaN, the fallback to 0 above handles it.
+    // If targetW/drawW were NaN, validTargetW/validDrawW handles it.
 
-    if (embeddable.dims) {
+    // Calculate offsets based on ratio of target dimensions (0-1 scale)
+    // Frontend sends panX/panY as ratios relative to the canvas/sheet size.
+    const offsetX = panX * validTargetW;
+    const offsetY = panY * validTargetH;
+
+    const x = ((validTargetW - validDrawW) / 2) + offsetX;
+    const y = ((validTargetH - validDrawH) / 2) - offsetY;
+
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return; // Safety check
+
+    if (!embeddable) {
+        // Safety check to prevent crashing if embeddable is undefined or null
+        return;
+    }
+
+    if (embeddable.isBlank) {
+        // Skip drawing for blank page
+        return;
+    }
+
+    if (isPdf) {
          // Is PDF Page
-         page.drawPage(embeddable, { x, y, width: drawW, height: drawH });
+         page.drawPage(embeddable, { x, y, width: validDrawW, height: validDrawH });
     } else {
          // Is Image
-         page.drawImage(embeddable, { x, y, width: drawW, height: drawH });
+         page.drawImage(embeddable, { x, y, width: validDrawW, height: validDrawH });
     }
 }
 
