@@ -672,11 +672,14 @@ function renderBookViewer() {
 
 // Global Pointer Event Handlers for Panning
 let activePageId = null;
+let partnerPageId = null;
 let isDragging = false;
 let startX = 0;
 let startY = 0;
 let startPanX = 0;
 let startPanY = 0;
+let partnerStartPanX = 0;
+let partnerStartPanY = 0;
 
 document.addEventListener('pointerdown', (e) => {
     const card = e.target.closest('[data-id]');
@@ -696,6 +699,22 @@ document.addEventListener('pointerdown', (e) => {
         startY = e.clientY;
         startPanX = page.settings.panX || 0;
         startPanY = page.settings.panY || 0;
+
+        // Identify Partner Page immediately
+        partnerPageId = null;
+        if (activePageId.endsWith('_L') || activePageId.endsWith('_R')) {
+            const isLeft = activePageId.endsWith('_L');
+            const pId = isLeft
+                ? activePageId.slice(0, -2) + '_R'
+                : activePageId.slice(0, -2) + '_L';
+
+            const partnerPage = pages.find(p => p.id === pId);
+            if (partnerPage && partnerPage.sourceFileId === page.sourceFileId) {
+                partnerPageId = pId;
+                partnerStartPanX = partnerPage.settings.panX || 0;
+                partnerStartPanY = partnerPage.settings.panY || 0;
+            }
+        }
 
         card.classList.add('cursor-grabbing');
         e.preventDefault(); // Prevent text selection and default drag
@@ -730,21 +749,17 @@ document.addEventListener('pointermove', (e) => {
             page.settings.panX = Number.isFinite(newPanX) ? newPanX : 0;
             page.settings.panY = Number.isFinite(newPanY) ? newPanY : 0;
 
-            // Check for Partner Page (Spread Logic)
-            // If ID ends in _L, partner is _R (and same prefix).
-            if (activePageId.endsWith('_L') || activePageId.endsWith('_R')) {
-                const isLeft = activePageId.endsWith('_L');
-                const partnerId = isLeft
-                    ? activePageId.slice(0, -2) + '_R'
-                    : activePageId.slice(0, -2) + '_L';
+            // Update Partner Page (Synced)
+            if (partnerPageId) {
+                const partnerPage = pages.find(p => p.id === partnerPageId);
+                if (partnerPage) {
+                    const pNewPanX = partnerStartPanX + deltaX;
+                    const pNewPanY = partnerStartPanY + deltaY;
 
-                const partnerPage = pages.find(p => p.id === partnerId);
-                // Only sync if they share sourceFileId (true for Spread Uploads)
-                if (partnerPage && partnerPage.sourceFileId === page.sourceFileId) {
-                    partnerPage.settings.panX = (partnerPage.settings.panX || 0) + deltaX;
-                    partnerPage.settings.panY = (partnerPage.settings.panY || 0) + deltaY;
+                    partnerPage.settings.panX = Number.isFinite(pNewPanX) ? pNewPanX : 0;
+                    partnerPage.settings.panY = Number.isFinite(pNewPanY) ? pNewPanY : 0;
 
-                    const partnerCanvas = document.getElementById(`canvas-${partnerId}`);
+                    const partnerCanvas = document.getElementById(`canvas-${partnerPageId}`);
                     if (partnerCanvas) {
                         requestAnimationFrame(() => {
                             renderPageCanvas(partnerPage, partnerCanvas);
