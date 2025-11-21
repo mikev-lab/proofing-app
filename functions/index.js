@@ -72,7 +72,8 @@ exports.optimizePdf = onObjectFinalized({
   }
   const projectId = parts[1];
   const fullFileName = parts[parts.length - 1]; // Filename including timestamp prefix
-  const isCover = fullFileName.includes('_cover_');
+  // Case insensitive check for cover files
+  const isCover = fullFileName.toLowerCase().includes('_cover_');
 
   logger.log(`Processing storage file: ${fullFileName} for project: ${projectId}. Is cover: ${isCover}`);
 
@@ -124,6 +125,13 @@ exports.optimizePdf = onObjectFinalized({
                     ? `http://${process.env.FIREBASE_STORAGE_EMULATOR_HOST}/v0/b/${fileBucket}/o/${encodeURIComponent(filePath)}?alt=media`
                     : `gs://${fileBucket}/${filePath}`;
 
+                let type = 'upload';
+                if (fullFileName.toLowerCase().includes('interior_built')) {
+                    type = 'interior_build';
+                } else if (fullFileName.toLowerCase().includes('cover_built')) {
+                    type = 'cover_build';
+                }
+
                 const newVersion = {
                     versionNumber: newVersionNumber,
                     fileURL: fileURL,
@@ -132,6 +140,7 @@ exports.optimizePdf = onObjectFinalized({
                     processingStatus: 'processing',
                     preflightStatus: preflightStatus,
                     preflightResults: preflightResults,
+                    type: type
                     // If dimensions were found, store them in specs on the version itself if needed
                 };
 
@@ -146,18 +155,19 @@ exports.optimizePdf = onObjectFinalized({
                 }
 
                 transaction.update(projectRef, updates);
-                logger.log(`Auto-created Version ${newVersionNumber} for file ${filePath} in project ${projectId}.`);
-                return; // Exit, we are done for this transaction
-            }
+                logger.log(`Auto-created Version ${newVersionNumber} for file ${filePath} in project ${projectId}. Proceeding to optimization.`);
 
-            versions[versionIndex].preflightStatus = preflightStatus;
-            versions[versionIndex].preflightResults = preflightResults;
-            if (versions[versionIndex].processingStatus !== 'error') {
-                versions[versionIndex].processingStatus = 'processing';
-            }
+                // IMPORTANT: We do NOT return here anymore. We continue to optimize this new version.
+            } else {
+                versions[versionIndex].preflightStatus = preflightStatus;
+                versions[versionIndex].preflightResults = preflightResults;
+                if (versions[versionIndex].processingStatus !== 'error') {
+                    versions[versionIndex].processingStatus = 'processing';
+                }
 
-            transaction.update(projectRef, { versions: versions });
-            logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with preflight results.`);
+                transaction.update(projectRef, { versions: versions });
+                logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with preflight results.`);
+            }
         }
     });
 
@@ -2061,44 +2071,23 @@ exports.generateBooklet = onCall({
         // Interior
         if (interiorFiles.length > 0) {
             const pdfBytes = await interiorDoc.save();
-            const fileName = `${Date.now()}_Interior_Built.pdf`;
+            // Use lowercase to match optimizePdf detection patterns and avoid case sensitivity issues
+            const fileName = `${Date.now()}_interior_built.pdf`;
             const storagePath = `proofs/${projectId}/${fileName}`;
             await bucket.file(storagePath).save(pdfBytes, { contentType: 'application/pdf' });
 
-            // Generate Signed URL
-            // (Standard signed URL logic)
-             const [signedUrl] = await bucket.file(storagePath).getSignedUrl({ action: 'read', expires: '03-09-2491' });
-
-             // Update Firestore Versions
-             await projectRef.update({
-                versions: admin.firestore.FieldValue.arrayUnion({
-                    versionNumber: (projectData.versions?.length || 0) + 1,
-                    fileURL: signedUrl,
-                    filePath: storagePath,
-                    createdAt: admin.firestore.Timestamp.now(),
-                    processingStatus: 'complete',
-                    type: 'interior_build'
-                })
-             });
+            logger.log(`Uploaded interior booklet to ${storagePath}. Relying on optimizePdf trigger to create version entry.`);
         }
 
         // Cover
         if (coverDoc) {
             const pdfBytes = await coverDoc.save();
-            const fileName = `${Date.now()}_Cover_Built.pdf`;
+            // Use lowercase to match optimizePdf detection patterns
+            const fileName = `${Date.now()}_cover_built.pdf`;
             const storagePath = `proofs/${projectId}/${fileName}`;
             await bucket.file(storagePath).save(pdfBytes, { contentType: 'application/pdf' });
 
-             const [signedUrl] = await bucket.file(storagePath).getSignedUrl({ action: 'read', expires: '03-09-2491' });
-
-             await projectRef.update({
-                 cover: {
-                     fileURL: signedUrl,
-                     filePath: storagePath,
-                     createdAt: admin.firestore.Timestamp.now(),
-                     processingStatus: 'complete'
-                 }
-             });
+            logger.log(`Uploaded cover booklet to ${storagePath}. Relying on optimizePdf trigger to update cover entry.`);
         }
 
         return { success: true };
