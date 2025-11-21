@@ -975,8 +975,8 @@ async function renderPageCanvas(page, canvas) {
     const totalW = width + (bleed*2);
     const totalH = height + (bleed*2);
 
-    canvas.width = totalW * pixelsPerInch * pixelDensity;
-    canvas.height = totalH * pixelsPerInch * pixelDensity;
+    canvas.width = Math.ceil(totalW * pixelsPerInch * pixelDensity);
+    canvas.height = Math.ceil(totalH * pixelsPerInch * pixelDensity);
 
     // Style width/height is set by renderBookViewer container logic mostly,
     // but we need to ensure the canvas element itself has the right size to be positioned.
@@ -1047,8 +1047,8 @@ function drawBlankPage(page, canvas) {
     const totalW = width + (bleed*2);
     const totalH = height + (bleed*2);
 
-    canvas.width = totalW * pixelsPerInch * pixelDensity;
-    canvas.height = totalH * pixelsPerInch * pixelDensity;
+    canvas.width = Math.ceil(totalW * pixelsPerInch * pixelDensity);
+    canvas.height = Math.ceil(totalH * pixelsPerInch * pixelDensity);
 
     canvas.style.width = `${totalW * pixelsPerInch}px`;
     canvas.style.height = `${totalH * pixelsPerInch}px`;
@@ -1757,12 +1757,22 @@ uploadForm.addEventListener('submit', async (e) => {
 
         // Add Pages (Interior)
         pages.forEach(p => {
-            bookletMetadata.push({
-                storagePath: uploadedPaths[p.sourceFileId],
-                sourcePageIndex: p.pageIndex - 1, // Convert to 0-based for backend
-                settings: p.settings,
-                type: 'interior_page'
-            });
+            if (p.sourceFileId === null) {
+                 // Blank Page
+                 bookletMetadata.push({
+                    storagePath: null, // Signal blank to backend
+                    sourcePageIndex: 0,
+                    settings: p.settings,
+                    type: 'interior_page' // Keep type as interior_page so it's processed in the interior loop
+                 });
+            } else {
+                 bookletMetadata.push({
+                    storagePath: uploadedPaths[p.sourceFileId],
+                    sourcePageIndex: p.pageIndex - 1, // Convert to 0-based for backend
+                    settings: p.settings,
+                    type: 'interior_page'
+                });
+            }
         });
 
         // Add Cover Parts (if uploaded)

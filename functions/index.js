@@ -1864,6 +1864,13 @@ exports.generateBooklet = onCall({
 
         // --- 1. Build Interior ---
         for (const fileMeta of interiorFiles) {
+            // Handle Blank Page
+            if (!fileMeta.storagePath) {
+                // Draw blank page
+                drawOnSheet(interiorDoc, { isBlank: true }, trimWidth, trimHeight, bleed, fileMeta.settings || {});
+                continue;
+            }
+
             const { path: localPath, isPdf } = await prepareFileForEmbedding(fileMeta.storagePath, fileMeta.type);
             const settings = fileMeta.settings || { scaleMode: 'fit', alignment: 'center' };
 
@@ -2114,8 +2121,14 @@ function drawOnSheet(doc, embeddable, trimW, trimH, bleed, settings) {
 
     // Calculate Scale
     // Src dims
-    const srcW = embeddable.width || embeddable.scale(1).width; // Handle different object types
-    const srcH = embeddable.height || embeddable.scale(1).height;
+    let srcW = 0, srcH = 0;
+    if (embeddable.isBlank) {
+        srcW = targetW;
+        srcH = targetH;
+    } else {
+        srcW = embeddable.width || embeddable.scale(1).width; // Handle different object types
+        srcH = embeddable.height || embeddable.scale(1).height;
+    }
 
     const targetW = sheetW * 72; // Points
     const targetH = sheetH * 72;
@@ -2202,6 +2215,11 @@ function drawOnSheet(doc, embeddable, trimW, trimH, bleed, settings) {
     const y = ((validTargetH - validDrawH) / 2) - (panY * validTargetH);
 
     if (!Number.isFinite(x) || !Number.isFinite(y)) return; // Safety check
+
+    if (embeddable.isBlank) {
+        // Skip drawing for blank page
+        return;
+    }
 
     if (embeddable.dims) {
          // Is PDF Page
