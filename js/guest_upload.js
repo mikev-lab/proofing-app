@@ -1899,6 +1899,9 @@ async function init() {
         updateFileName('file-spine', 'file-name-spine');
         updateFileName('file-cover-back', 'file-name-cover-back');
 
+        // Restore State from Persistence
+        await restoreBuilderState();
+
         validateForm();
 
     } catch (err) {
@@ -1907,6 +1910,134 @@ async function init() {
         if (err.message.includes('expired')) msg = 'This link has expired.';
         if (err.message.includes('Invalid')) msg = 'Invalid guest link.';
         showError(msg);
+    }
+}
+
+// --- Persistence Functions ---
+
+// (Removed unused saveBuilderState function)
+
+// We'll modify the submit handler to call this with the paths.
+async function persistStateAfterSubmit(uploadedPaths) {
+    if (!projectId) return;
+
+    try {
+        // Update sourceFiles with new storage paths so they can be restored
+        // We need a persistent map of sourceId -> storagePath
+        const persistentSources = {};
+
+        // Merge existing sources with new uploads
+        // We need to look at `pages` to see what sources are used.
+        // And we need to see if we have a storage path for them.
+
+        // Current `sourceFiles` key is the sourceId.
+        // `uploadedPaths` maps sourceId -> storagePath.
+
+        // We also need to keep track of sources that were ALREADY uploaded (from previous session).
+        // So we need to load existing persistentSources first?
+        // Or we just store the map in Firestore.
+
+        const projectRef = doc(db, 'projects', projectId);
+        const projectDoc = await getDoc(projectRef);
+        const existingState = projectDoc.data().guestBuilderState || {};
+        const existingSources = existingState.sourceFiles || {};
+
+        // Merge
+        for (const [id, path] of Object.entries(uploadedPaths)) {
+            existingSources[id] = { storagePath: path, type: 'interior_source' };
+        }
+
+        // Also handle cover files
+        if (uploadedPaths['cover_front']) existingSources['cover_front'] = { storagePath: uploadedPaths['cover_front'], type: 'cover_front' };
+        if (uploadedPaths['cover_spine']) existingSources['cover_spine'] = { storagePath: uploadedPaths['cover_spine'], type: 'cover_spine' };
+        if (uploadedPaths['cover_back']) existingSources['cover_back'] = { storagePath: uploadedPaths['cover_back'], type: 'cover_back' };
+
+        // Save
+        await updateDoc(projectRef, {
+            guestBuilderState: {
+                pages: pages,
+                sourceFiles: existingSources,
+                updatedAt: new Date()
+            }
+        });
+
+    } catch(e) {
+        console.error("Failed to persist state:", e);
+    }
+}
+
+async function restoreBuilderState() {
+    if (!projectId) return;
+
+    try {
+        const projectRef = doc(db, 'projects', projectId);
+        const docSnap = await getDoc(projectRef);
+
+        if (!docSnap.exists()) return;
+
+        const state = docSnap.data().guestBuilderState;
+        if (!state || !state.pages || !state.sourceFiles) return;
+
+        // Restore Pages
+        pages = state.pages;
+
+        // Restore Sources
+        // We need to convert storagePaths back to something usable (Signed URLs)
+        // and populate `sourceFiles` map.
+
+        for (const [id, meta] of Object.entries(state.sourceFiles)) {
+            try {
+                // Check if it's a cover file (not in sourceFiles map usually, but handled by selectedFiles?)
+                if (id.startsWith('cover_')) {
+                    // Handle cover restoration
+                    // We need to fetch the file blob to populate `selectedFiles` for the previewer to work?
+                    // Or modify `renderCoverPreview` to accept URLs.
+                    // `renderCoverPreview` uses `selectedFiles[inputId]`.
+                    // `drawImageOnCanvas` checks `file.type`.
+
+                    // Complex: converting URL to Blob for existing logic
+                    const url = await getDownloadURL(ref(storage, meta.storagePath));
+                    const response = await fetch(url);
+                    const blob = await response.blob();
+                    // Mock file object
+                    const file = new File([blob], "Restored File", { type: blob.type });
+
+                    if (id === 'cover_front') selectedFiles['file-cover-front'] = file;
+                    if (id === 'cover_spine') selectedFiles['file-spine'] = file;
+                    if (id === 'cover_back') selectedFiles['file-cover-back'] = file;
+
+                    // Update UI text
+                    const displayId = id === 'cover_front' ? 'file-name-cover-front' :
+                                      id === 'cover_spine' ? 'file-name-spine' : 'file-name-cover-back';
+                    const el = document.getElementById(displayId);
+                    if (el) el.textContent = "Restored File";
+
+                } else {
+                    // Interior Source
+                    // Get URL
+                    const url = await getDownloadURL(ref(storage, meta.storagePath));
+
+                    // We treat it as a "Server" file
+                    sourceFiles[id] = {
+                        status: 'ready',
+                        previewUrl: url,
+                        isServer: true,
+                        // We also need original metadata if possible, but for now this is enough to render
+                        storagePath: meta.storagePath // Keep ref
+                    };
+                }
+            } catch (e) {
+                console.warn(`Failed to restore source ${id}`, e);
+            }
+        }
+
+        // Trigger Renders
+        renderBookViewer();
+        renderCoverPreview();
+        validateForm();
+
+    } catch(e) {
+        console.error("Error restoring state:", e);
     }
 }
 
@@ -1995,12 +2126,25 @@ uploadForm.addEventListener('submit', async (e) => {
                     type: 'interior_page' // Keep type as interior_page so it's processed in the interior loop
                  });
             } else {
-                 bookletMetadata.push({
-                    storagePath: uploadedPaths[p.sourceFileId],
-                    sourcePageIndex: p.pageIndex - 1, // Convert to 0-based for backend
-                    settings: safeSettings,
-                    type: 'interior_page'
-                });
+                 // Logic Change: We must look up path in `sourceFiles` if not in `uploadedPaths` (i.e. restored file)
+                 // `uploadedPaths` contains ONLY files uploaded in THIS session.
+                 // `sourceFiles[id].storagePath` contains path for restored files.
+
+                 let finalStoragePath = uploadedPaths[p.sourceFileId];
+                 if (!finalStoragePath && sourceFiles[p.sourceFileId] && sourceFiles[p.sourceFileId].storagePath) {
+                     finalStoragePath = sourceFiles[p.sourceFileId].storagePath;
+                 }
+
+                 if (finalStoragePath) {
+                     bookletMetadata.push({
+                        storagePath: finalStoragePath,
+                        sourcePageIndex: p.pageIndex - 1, // Convert to 0-based for backend
+                        settings: safeSettings,
+                        type: 'interior_page'
+                    });
+                 } else {
+                     console.warn("Skipping page with missing file:", p);
+                 }
             }
         });
 
@@ -2015,6 +2159,9 @@ uploadForm.addEventListener('submit', async (e) => {
         // DEBUG LOGGING
         console.log("Sending Metadata to generateBooklet:", JSON.stringify(uploadMetadata));
         // END DEBUG LOGGING
+
+        // Persist State (so users can return later)
+        await persistStateAfterSubmit(uploadedPaths);
 
         // Call Backend to Finalize
         progressText.textContent = 'Finalizing...';
