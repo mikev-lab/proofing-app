@@ -665,6 +665,9 @@ document.addEventListener('pointerdown', (e) => {
     const card = e.target.closest('[data-id]');
     if (!card) return;
 
+    // Only allow panning if target is canvas (Image)
+    if (e.target.tagName.toLowerCase() !== 'canvas') return;
+
     const pageId = card.dataset.id;
     const page = pages.find(p => p.id === pageId);
 
@@ -678,7 +681,7 @@ document.addEventListener('pointerdown', (e) => {
         startPanY = page.settings.panY || 0;
 
         card.classList.add('cursor-grabbing');
-        e.preventDefault(); // Prevent text selection
+        e.preventDefault(); // Prevent text selection and default drag
     }
 });
 
@@ -903,17 +906,28 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
 
     ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
         card.addEventListener(eventName, (e) => {
-            e.preventDefault();
-            e.stopPropagation();
+            // Only intercept if it's a FILE drag. Allow SortableJS drags to bubble.
+            if (e.dataTransfer.types.includes('Files')) {
+                e.preventDefault();
+                e.stopPropagation();
+
+                if (eventName === 'dragenter' || eventName === 'dragover') {
+                    card.classList.add('ring-2', 'ring-indigo-500', 'ring-offset-2');
+                } else {
+                    card.classList.remove('ring-2', 'ring-indigo-500', 'ring-offset-2');
+                }
+            }
         }, false);
     });
 
     card.addEventListener('drop', async (e) => {
-        const files = e.dataTransfer.files;
-        if (files.length > 0) {
-            const file = files[0];
-            // Replace content of THIS page
-            await updatePageContent(page.id, file);
+        if (e.dataTransfer.types.includes('Files')) {
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                const file = files[0];
+                // Replace content of THIS page
+                await updatePageContent(page.id, file);
+            }
         }
     });
 
@@ -1051,13 +1065,34 @@ async function renderPageCanvas(page, canvas) {
     // So scale = pixelsPerInch / 72.
     const guideScale = pixelsPerInch / 72;
 
+    // Adjust renderInfo to align guides correctly within the partially cropped view
+    // Right Page: Canvas is shifted LEFT by bleed.
+    // guides.js draws Left Trim at relative 0.
+    // We want Trim at 0 relative to the container, but the container starts at Trim Line.
+    // Wait, the container starts at Trim Line.
+    // The Canvas is at Left = -Bleed.
+    // So Canvas (0,0) is (Left Bleed Edge).
+    // guides.js Left Trim is at 0 (if we pass x=0).
+    // But guides.js thinks "Trim starts at 0" relative to the passed Render Area.
+    // If we pass RenderX = Bleed, then TrimX = Bleed.
+    // Canvas X = Bleed is the Trim Line.
+    // So we must pass x: bleed * pixelsPerInch.
+
+    // Left Page: Canvas is at Left = 0.
+    // Canvas (0,0) is (Left Bleed Edge).
+    // We want Right Trim at (Width - Bleed).
+    // guides.js calculates Right Trim as (RenderX + RenderWidth - TrimWidth).
+    // 0 + RenderW - TrimW = TargetTrimX (Bleed).
+    // RenderW = TrimW + Bleed.
+    // So we pass width: (Trim + Bleed).
+
     const renderInfo = {
-        x: 0,
+        x: view === 'right' ? bleed * pixelsPerInch : 0,
         y: 0,
-        width: totalW * pixelsPerInch, // Full canvas width in logical pixels
+        width: view === 'left' ? (width + bleed) * pixelsPerInch : totalW * pixelsPerInch,
         height: totalH * pixelsPerInch,
         scale: guideScale,
-        isSpread: true, // Always treat as spread in this view
+        isSpread: true,
         isLeftPage: view === 'left'
     };
 
@@ -1094,7 +1129,7 @@ function drawBlankPage(page, canvas) {
 
     // Position logic (match renderPageCanvas)
     canvas.style.top = '0px';
-    if (page.settings.view === 'right') {
+    if (view === 'right') {
         canvas.style.left = `-${bleed * pixelsPerInch}px`;
     } else {
         canvas.style.left = '0px';
@@ -1128,14 +1163,17 @@ function drawBlankPage(page, canvas) {
         bleedInches: bleed,
         safetyInches: 0.125
     };
+
+    // Adjust renderInfo to align guides correctly within the partially cropped view
+    // Match logic from renderPageCanvas
     const renderInfo = {
-        x: 0,
+        x: view === 'right' ? bleed * pixelsPerInch : 0,
         y: 0,
-        width: totalW * pixelsPerInch,
+        width: view === 'left' ? (width + bleed) * pixelsPerInch : totalW * pixelsPerInch,
         height: totalH * pixelsPerInch,
         scale: guideScale,
-        isSpread: page.settings.view === 'left' || page.settings.view === 'right',
-        isLeftPage: page.settings.view === 'left'
+        isSpread: true,
+        isLeftPage: view === 'left'
     };
 
     ctx.save();
