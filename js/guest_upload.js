@@ -625,29 +625,42 @@ function renderBookViewer() {
     const spreadDivs = container.querySelectorAll('.spread-row');
     spreadDivs.forEach(spreadDiv => {
         new Sortable(spreadDiv, {
-            group: 'shared-spreads', // Allow dragging between spreads
+            group: {
+                name: 'shared-spreads',
+                pull: true,
+                put: true
+            },
             animation: 150,
             draggable: '.page-card', // The actual card
-            handle: '.page-card', // Drag by card
+            handle: '.drag-handle', // Drag by dedicated handle
+            forceFallback: true, // Fixes issues with native DnD and "snap back"
+            fallbackOnBody: true, // Appends clone to body to avoid overflow clipping
+            swapThreshold: 0.65, // Sensitivity
             ghostClass: 'opacity-50',
             onEnd: (evt) => {
-                // When drop ends, we need to sync the `pages` array order to the new DOM order.
-                // 1. Collect all data-ids from the DOM in order.
-                const allCards = document.querySelectorAll('.page-card');
-                const newOrderIds = Array.from(allCards).map(c => c.dataset.id);
+                try {
+                    // When drop ends, we need to sync the `pages` array order to the new DOM order.
+                    // 1. Collect all data-ids from the DOM in order.
+                    const allCards = document.querySelectorAll('.page-card');
+                    const newOrderIds = Array.from(allCards).map(c => c.dataset.id);
 
-                // 2. Reorder `pages` array
-                const newPages = [];
-                newOrderIds.forEach(id => {
-                    const p = pages.find(x => x.id === id);
-                    if (p) newPages.push(p);
-                });
+                    // 2. Reorder `pages` array
+                    const newPages = [];
+                    newOrderIds.forEach(id => {
+                        const p = pages.find(x => x.id === id);
+                        if (p) newPages.push(p);
+                    });
 
-                pages = newPages;
+                    pages = newPages;
 
-                // 3. Re-render fully to fix layout (e.g. Left vs Right page styling)
-                // We must delay slightly to let the drag event finish or Sortable might glitch
-                setTimeout(() => renderBookViewer(), 50);
+                    // 3. Re-render fully to fix layout (e.g. Left vs Right page styling)
+                    // We must delay slightly to let the drag event finish or Sortable might glitch
+                    setTimeout(() => {
+                        requestAnimationFrame(() => renderBookViewer());
+                    }, 50);
+                } catch (err) {
+                    console.error("Error during drag reorder:", err);
+                }
             }
         });
     });
