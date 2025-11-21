@@ -586,37 +586,57 @@ function renderBookViewer() {
         const spreadDiv = document.createElement('div');
         spreadDiv.className = "spread-row flex justify-center items-end gap-0 mb-4 min-h-[100px] p-2 border border-transparent hover:border-dashed hover:border-gray-600 rounded";
 
-        // Left Page
-        let leftCard = null;
-        if (pages[i]) {
-            leftCard = createPageCard(pages[i], i, false, false, width, height, bleed, pixelsPerInch, observer);
-            spreadDiv.appendChild(leftCard);
+        // Check if current position is a Linked Spread
+        const isLeft = pages[i];
+        const isRight = pages[i+1];
+
+        let isLinkedSpread = false;
+        if (isLeft && isRight && isLeft.sourceFileId && isLeft.sourceFileId === isRight.sourceFileId) {
+            if (isLeft.id.endsWith('_L') && isRight.id.endsWith('_R')) {
+                isLinkedSpread = true;
+            }
         }
 
-        // Right Page
-        let rightCard = null;
-        if (i + 1 < pages.length) {
-            rightCard = createPageCard(pages[i+1], i+1, true, false, width, height, bleed, pixelsPerInch, observer);
-            spreadDiv.appendChild(rightCard);
-        }
+        if (isLinkedSpread) {
+            // Create merged card for dragging
+            const spreadCard = createSpreadCard(isLeft, isRight, i, width, height, bleed, pixelsPerInch, observer);
+            spreadDiv.appendChild(spreadCard);
 
-        // Fix overlapping borders:
-        // If both pages exist, the Left card's right border and Right card's left border are removed by classes,
-        // but if any negative margin exists or flex shrinking happens, they overlap.
-        // Ensure they don't shrink.
-        if (leftCard) leftCard.style.flexShrink = '0';
-        if (rightCard) rightCard.style.flexShrink = '0';
+            // Increment by 2 since we consumed both
+            i += 2;
+        } else {
+            // Standard Separate Cards logic
+            // Left Page
+            let leftCard = null;
+            if (pages[i]) {
+                leftCard = createPageCard(pages[i], i, false, false, width, height, bleed, pixelsPerInch, observer);
+                spreadDiv.appendChild(leftCard);
+            }
 
-        if (!rightCard) {
-            // Spacer if single page at end
-             const endSpacer = document.createElement('div');
-             endSpacer.style.width = `${width * pixelsPerInch}px`;
-             endSpacer.className = "pointer-events-none";
-             spreadDiv.appendChild(endSpacer);
+            // Right Page
+            let rightCard = null;
+            if (i + 1 < pages.length) {
+                // Check if next page is start of a spread (shouldn't happen if array is valid, but safety)
+                // If next page is start of a linked spread, we should probably not put it here?
+                // But the loop handles it.
+                rightCard = createPageCard(pages[i+1], i+1, true, false, width, height, bleed, pixelsPerInch, observer);
+                spreadDiv.appendChild(rightCard);
+            }
+
+            if (leftCard) leftCard.style.flexShrink = '0';
+            if (rightCard) rightCard.style.flexShrink = '0';
+
+            if (!rightCard) {
+                 const endSpacer = document.createElement('div');
+                 endSpacer.style.width = `${width * pixelsPerInch}px`;
+                 endSpacer.className = "pointer-events-none";
+                 spreadDiv.appendChild(endSpacer);
+            }
+
+            i += 2;
         }
 
         container.appendChild(spreadDiv);
-        i += 2;
     }
 
     // Final Insert Bar
@@ -651,8 +671,20 @@ function renderBookViewer() {
                     // 2. Reorder `pages` array
                     const newPages = [];
                     newOrderIds.forEach(id => {
+                    // Check if ID is a composite spread ID
+                    if (id.startsWith('spread:')) {
+                        // Format: spread:ID1:ID2
+                        const parts = id.split(':');
+                        if (parts.length === 3) {
+                            const p1 = pages.find(x => x.id === parts[1]);
+                            const p2 = pages.find(x => x.id === parts[2]);
+                            if (p1) newPages.push(p1);
+                            if (p2) newPages.push(p2);
+                        }
+                    } else {
                         const p = pages.find(x => x.id === id);
                         if (p) newPages.push(p);
+                    }
                     });
 
                     pages = newPages;
@@ -794,15 +826,15 @@ function createInsertBar(index) {
     bar.innerHTML = `
         <div class="${line}"></div>
         <div class="flex gap-2">
-            <button class="text-xs bg-slate-700 hover:bg-indigo-600 text-white px-2 py-1 rounded flex items-center gap-1" onclick="triggerInsert(${index}, 'left')" title="Insert File">
+            <button type="button" class="text-xs bg-slate-700 hover:bg-indigo-600 text-white px-2 py-1 rounded flex items-center gap-1" onclick="triggerInsert(${index}, 'left')" title="Insert File">
                 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
                 File
             </button>
-            <button class="text-xs bg-slate-700 hover:bg-indigo-600 text-white px-2 py-1 rounded flex items-center gap-1" onclick="triggerInsert(${index}, 'blank')" title="Insert Blank Page">
+            <button type="button" class="text-xs bg-slate-700 hover:bg-indigo-600 text-white px-2 py-1 rounded flex items-center gap-1" onclick="triggerInsert(${index}, 'blank')" title="Insert Blank Page">
                 <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                 Blank
             </button>
-             <button class="text-xs bg-slate-700 hover:bg-indigo-600 text-white px-2 py-1 rounded flex items-center gap-1" onclick="triggerInsert(${index}, 'spread')" title="Insert Spread (File)">
+             <button type="button" class="text-xs bg-slate-700 hover:bg-indigo-600 text-white px-2 py-1 rounded flex items-center gap-1" onclick="triggerInsert(${index}, 'spread')" title="Insert Spread (File)">
                 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
                 Spread
             </button>
@@ -1961,3 +1993,131 @@ uploadForm.addEventListener('submit', async (e) => {
 
 // Initialize
 init();
+// Helper to create a merged card for a spread
+function createSpreadCard(leftPage, rightPage, index, width, height, bleed, pixelsPerInch, observer) {
+    const card = document.createElement('div');
+    // Use a composite ID for Sortable tracking
+    card.dataset.id = `spread:${leftPage.id}:${rightPage.id}`;
+
+    let classes = "page-card relative group bg-slate-800 shadow-lg border border-slate-700 transition-all hover:border-indigo-500 overflow-hidden cursor-grab active:cursor-grabbing flex-shrink-0";
+    card.className = classes;
+
+    const bleedPx = bleed * pixelsPerInch;
+    // Total Spread Width = (Width * 2) + (Bleed * 2)
+    // But we display as two cropped viewports side-by-side
+
+    // Viewport Width per page = Width + Bleed
+    const singlePageW = (width + bleed) * pixelsPerInch;
+    const singlePageH = (height + (bleed * 2)) * pixelsPerInch;
+
+    // Total Container Width = 2 * singlePageW
+    // Actually, visual logic:
+    // Left Page: [Bleed, Width, 0] (Right edge clipped/flush)
+    // Right Page: [0, Width, Bleed] (Left edge clipped/flush)
+    // Total Visual Width = (Width + Bleed) + (Width + Bleed) = 2 * Width + 2 * Bleed
+
+    const totalW = singlePageW * 2;
+
+    // Wrapper for side-by-side
+    const wrapper = document.createElement('div');
+    wrapper.className = "flex pointer-events-none"; // pointer-events-none to let drag handle work, but re-enable for canvas?
+    // Actually, if wrapper is none, we can't pan.
+    // Let's make individual canvas containers interactive.
+    wrapper.style.pointerEvents = "auto";
+
+    // --- LEFT PAGE RENDER ---
+    const leftContainer = document.createElement('div');
+    leftContainer.className = "relative overflow-hidden bg-white border-r border-gray-200"; // divider
+    leftContainer.style.width = `${singlePageW}px`;
+    leftContainer.style.height = `${singlePageH}px`;
+
+    const leftCanvas = document.createElement('canvas');
+    leftCanvas.id = `canvas-${leftPage.id}`;
+    leftCanvas.style.position = "absolute";
+    leftCanvas.style.top = "0";
+    leftCanvas.style.left = "0"; // Left page shows left bleed
+    leftContainer.appendChild(leftCanvas);
+
+    // --- RIGHT PAGE RENDER ---
+    const rightContainer = document.createElement('div');
+    rightContainer.className = "relative overflow-hidden bg-white";
+    rightContainer.style.width = `${singlePageW}px`;
+    rightContainer.style.height = `${singlePageH}px`;
+
+    const rightCanvas = document.createElement('canvas');
+    rightCanvas.id = `canvas-${rightPage.id}`;
+    rightCanvas.style.position = "absolute";
+    rightCanvas.style.top = "0";
+    rightCanvas.style.left = `-${bleedPx}px`; // Right page hides left bleed (spine)
+    rightContainer.appendChild(rightCanvas);
+
+    wrapper.appendChild(leftContainer);
+    wrapper.appendChild(rightContainer);
+    card.appendChild(wrapper);
+
+    // Drag Handle (Shared)
+    const dragHandle = document.createElement('div');
+    dragHandle.className = "drag-handle absolute top-2 left-2 p-1.5 bg-slate-900/80 text-white rounded cursor-move opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-sm z-30 hover:bg-indigo-600 shadow-sm";
+    dragHandle.title = "Drag Spread";
+    dragHandle.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>';
+    card.appendChild(dragHandle);
+
+    // Controls (Delete)
+    const controls = document.createElement('div');
+    controls.className = "absolute top-2 right-2 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-900/80 p-1 rounded backdrop-blur-sm z-20";
+    controls.innerHTML = `
+        <button type="button" onclick="deletePage('${leftPage.id}'); deletePage('${rightPage.id}')" class="text-red-400 hover:text-white p-1" title="Delete Spread">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+        </button>
+    `;
+    card.appendChild(controls);
+
+    // Page Numbers
+    const pageNum = document.createElement('span');
+    pageNum.className = "absolute bottom-1 left-2 text-[10px] text-white/50 font-mono z-20";
+    pageNum.textContent = `P${index + 1}-${index + 2}`;
+    card.appendChild(pageNum);
+
+    // Placeholders
+    [leftPage, rightPage].forEach(p => {
+        const ph = document.createElement('div');
+        ph.className = "absolute inset-0 flex items-center justify-center text-gray-600 bg-slate-200 z-10 transition-opacity duration-300 pointer-events-none";
+        ph.innerHTML = '<div class="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>';
+        ph.id = `placeholder-${p.id}`;
+        // Only show if needed (logic in observer usually hides it)
+        // We need to append to the specific container?
+        // Placeholders usually overlay the canvas.
+        // Let's append to left/right containers respectively.
+        if (p === leftPage) leftContainer.appendChild(ph);
+        else rightContainer.appendChild(ph);
+    });
+
+    // Scale Mode Settings (Applies to both?)
+    // If it's a spread upload, they are locked. We can show one set of controls.
+    const settingsOverlay = document.createElement('div');
+    settingsOverlay.className = "absolute bottom-0 inset-x-0 p-2 opacity-0 group-hover:opacity-100 transition-opacity bg-gradient-to-t from-slate-900/90 to-transparent flex justify-center gap-2 z-20";
+
+    const modes = [
+        { id: 'fit', icon: '<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"/></svg>', title: 'Fit to Page' },
+        { id: 'fill', icon: '<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4h16v16H4z"/></svg>', title: 'Fill Page' },
+        { id: 'stretch', icon: '<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8h16M4 16h16"/></svg>', title: 'Stretch to Fit' }
+    ];
+
+    modes.forEach(mode => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        // Use left page setting as source of truth
+        btn.className = `p-1.5 rounded border ${leftPage.settings.scaleMode === mode.id ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800/80 border-slate-600 text-gray-400 hover:bg-slate-700 hover:text-white'}`;
+        btn.innerHTML = mode.icon;
+        btn.title = mode.title;
+        btn.onclick = () => {
+            updatePageSetting(leftPage.id, 'scaleMode', mode.id);
+            updatePageSetting(rightPage.id, 'scaleMode', mode.id);
+        };
+        settingsOverlay.appendChild(btn);
+    });
+    card.appendChild(settingsOverlay);
+
+    observer.observe(card);
+    return card;
+}
