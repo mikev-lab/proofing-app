@@ -1783,7 +1783,7 @@ exports.generateFinalPdf = onCall({
 // --- NEW Generate Booklet Function ---
 exports.generateBooklet = onCall({
     region: 'us-central1',
-    memory: '16GiB',
+    memory: '8GiB',
     timeoutSeconds: 540
 }, async (request) => {
     if (!request.auth) throw new HttpsError('unauthenticated', 'User must be authenticated.');
