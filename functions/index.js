@@ -1938,7 +1938,6 @@ exports.generateBooklet = onCall({
                     const srcDoc = await PDFDocument.load(fs.readFileSync(localPath));
                     const [embedded] = await coverDoc.embedPages([srcDoc.getPage(0)]);
                     embeddable = embedded;
-                    // PDFPageProxy width/height
                     srcW = embedded.width;
                     srcH = embedded.height;
                 } else {
@@ -1949,31 +1948,13 @@ exports.generateBooklet = onCall({
                     srcH = embeddable.height;
                 }
 
-                // Calculate Aspect Fill (Center Crop)
-                // Note: PDF-lib coords are Bottom-Left origin, but drawImage x,y are from Bottom-Left?
-                // Wait, drawPage/drawImage x,y is bottom-left corner of the image on the page.
-                // But our inputs x, y are usually Top-Left in typical graphics.
-                // Let's assume x, y passed here are from Top-Left of the sheet relative to our mental model,
-                // but PDF-lib uses Bottom-Left.
-                // Actually, the `drawPart` calls below pass x,y assuming 0,0 is top-left of the layout?
-                // In PDF-lib, (0,0) is bottom-left.
-                // So if we want to draw at "Top Left" of the page, y should be (PageHeight - h).
+                // Sanitize inputs
+                const targetW = Number.isFinite(w) ? w * 72 : 0;
+                const targetH = Number.isFinite(h) ? h * 72 : 0;
+                const targetX = Number.isFinite(x) ? x * 72 : 0;
+                const targetY = Number.isFinite(y) ? y * 72 : 0;
 
-                // Let's check how `coverPage` was created:
-                // const coverPage = coverDoc.addPage([totalWidth * 72, totalHeight * 72]);
-                // `drawPart` calls:
-                // drawPart(coverFiles.back, 0, 0, ...) -> This draws at 0,0 (Bottom-Left)
-                // If the intention is a flat spread, 0,0 Bottom-Left is fine for the "Back Cover" if the back cover is on the LEFT.
-                // Wait.
-                // LTR Book: Back (Left), Spine (Middle), Front (Right).
-                // If we draw Back at x=0, y=0, width=Trim+Bleed, height=FullHeight.
-                // This covers the left portion. This is correct for PDF coord system if y=0 is bottom.
-
-                const targetW = w * 72;
-                const targetH = h * 72;
-                const targetX = x * 72;
-                const targetY = y * 72; // Assuming y is 0 for all parts as they span full height?
-                // Yes, calls are: drawPart(..., 0, 0, ...). So y is 0.
+                if (targetW <= 0 || targetH <= 0) return;
 
                 const srcRatio = srcW / srcH;
                 const targetRatio = targetW / targetH;
@@ -1982,65 +1963,52 @@ exports.generateBooklet = onCall({
 
                 // Fill Logic
                 if (srcRatio > targetRatio) {
-                    // Image is wider: Crop width (match height)
+                    // Image is wider: Crop width
                     drawH = targetH;
                     drawW = targetH * srcRatio;
                     drawY = targetY;
                     drawX = targetX - (drawW - targetW) / 2;
                 } else {
-                    // Image is taller: Crop height (match width)
+                    // Image is taller: Crop height
                     drawW = targetW;
                     drawH = targetW / srcRatio;
                     drawX = targetX;
                     drawY = targetY - (drawH - targetH) / 2;
                 }
 
-                // --- IMPLEMENTING CLIPPING ---
-                // We must clip to the target box (x, y, w, h) to prevent bleed-over.
-                // Using pdf-lib operators: q (save), re (rect), W (clip), n (end path), Q (restore)
+                // Ensure finite
+                drawW = Number.isFinite(drawW) ? drawW : 0;
+                drawH = Number.isFinite(drawH) ? drawH : 0;
+                drawX = Number.isFinite(drawX) ? drawX : 0;
+                drawY = Number.isFinite(drawY) ? drawY : 0;
 
-                const { pushGraphicsState, popGraphicsState, clip, endPath, appendBezierCurve, moveTo, lineTo } = require('pdf-lib');
+                if (drawW <= 0 || drawH <= 0) return;
+
+                // --- IMPLEMENTING CLIPPING ---
+                const { pushGraphicsState, popGraphicsState, clip, endPath, moveTo, lineTo } = require('pdf-lib');
 
                 // 1. Save State
                 coverPage.pushOperators(pushGraphicsState());
 
-                // 2. Define Clipping Rectangle
-                // PDF coords are bottom-left origin.
-                // We want to clip to (targetX, targetY) with (targetW, targetH).
-                // Since our targetY is 0 (bottom), this is straightforward.
-
-                // Use low-level drawing for the path
-                coverPage.drawRectangle({
-                    x: targetX,
-                    y: targetY,
-                    width: targetW,
-                    height: targetH,
-                    borderWidth: 0,
-                    color: undefined,
-                    borderColor: undefined
-                });
-
-                // Note: drawRectangle draws. It doesn't set a clipping path.
-                // We need to construct the path and clip.
-
+                // 2. Clip
                 coverPage.pushOperators(
                      moveTo(targetX, targetY),
                      lineTo(targetX + targetW, targetY),
                      lineTo(targetX + targetW, targetY + targetH),
                      lineTo(targetX, targetY + targetH),
-                     lineTo(targetX, targetY), // Close
+                     lineTo(targetX, targetY),
                      clip(),
                      endPath()
                 );
 
-                // 3. Draw the Image (It will be clipped)
+                // 3. Draw
                 if (isPdf) {
                     coverPage.drawPage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
                 } else {
                     coverPage.drawImage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
                 }
 
-                // 4. Restore State (Remove clipping)
+                // 4. Restore State
                 coverPage.pushOperators(popGraphicsState());
             }
 

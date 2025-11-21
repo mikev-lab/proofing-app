@@ -1034,7 +1034,8 @@ async function renderPageCanvas(page, canvas) {
         width: totalW * pixelsPerInch, // Full canvas width in logical pixels
         height: totalH * pixelsPerInch,
         scale: guideScale,
-        isSpread: false // We draw guides per page canvas individually
+        isSpread: page.settings.view === 'left' || page.settings.view === 'right',
+        isLeftPage: page.settings.view === 'left'
     };
 
     // Ensure guides are drawn on TOP.
@@ -1099,7 +1100,13 @@ function drawBlankPage(page, canvas) {
         safetyInches: 0.125
     };
     const renderInfo = {
-        x: 0, y: 0, width: totalW * pixelsPerInch, height: totalH * pixelsPerInch, scale: guideScale, isSpread: false
+        x: 0,
+        y: 0,
+        width: totalW * pixelsPerInch,
+        height: totalH * pixelsPerInch,
+        scale: guideScale,
+        isSpread: page.settings.view === 'left' || page.settings.view === 'right',
+        isLeftPage: page.settings.view === 'left'
     };
 
     ctx.save();
