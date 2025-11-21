@@ -1783,7 +1783,7 @@ exports.generateFinalPdf = onCall({
 // --- NEW Generate Booklet Function ---
 exports.generateBooklet = onCall({
     region: 'us-central1',
-    memory: '4GiB',
+    memory: '8GiB',
     timeoutSeconds: 540
 }, async (request) => {
     if (!request.auth) throw new HttpsError('unauthenticated', 'User must be authenticated.');
@@ -1815,6 +1815,7 @@ exports.generateBooklet = onCall({
 
     // Cache for downloaded/converted files to avoid redundancy
     const fileCache = {}; // storagePath -> { path: localPath, isPdf: boolean }
+    const pdfDocCache = {}; // localPath -> PDFDocument instance (Optimization for re-use)
     const tempFiles = []; // Track for cleanup
 
     try {
@@ -1874,10 +1875,20 @@ exports.generateBooklet = onCall({
             const { path: localPath, isPdf } = await prepareFileForEmbedding(fileMeta.storagePath, fileMeta.type);
             const settings = fileMeta.settings || { scaleMode: 'fit', alignment: 'center' };
 
-            let sourcePages = [];
-
             if (isPdf) {
-                const srcDoc = await PDFDocument.load(fs.readFileSync(localPath));
+                let srcDoc;
+
+                // OPTIMIZATION: Re-use PDFDocument instance if already loaded
+                if (pdfDocCache[localPath]) {
+                    srcDoc = pdfDocCache[localPath];
+                } else {
+                    // Load and cache
+                    const pdfBytes = fs.readFileSync(localPath);
+                    // IMPORTANT: Load without indices for speed if we only need sequential access, but here we access random pages.
+                    // Just standard load.
+                    srcDoc = await PDFDocument.load(pdfBytes);
+                    pdfDocCache[localPath] = srcDoc;
+                }
 
                 // Extract specific page index if provided, otherwise default to 0
                 const pageIndex = fileMeta.sourcePageIndex !== undefined ? fileMeta.sourcePageIndex : 0;
@@ -2020,6 +2031,11 @@ exports.generateBooklet = onCall({
 
             // Draw Front (Right)
             await drawPart(coverFiles.front, trimWidth + bleed + spineWidth, 0, trimWidth + bleed, totalHeight);
+        }
+
+        // Force cleanup of cached PDF docs to free memory before saving
+        for (const key in pdfDocCache) {
+            delete pdfDocCache[key];
         }
 
         // --- 3. Save & Update ---
