@@ -530,17 +530,52 @@ function renderBookViewer() {
         entries.forEach(entry => {
             if (entry.isIntersecting) {
                 const card = entry.target;
-                const pageId = card.dataset.id;
-                const canvas = document.getElementById(`canvas-${pageId}`);
-                const page = pages.find(p => p.id === pageId);
+                const cardId = card.dataset.id;
 
-                if (canvas && page) {
-                    renderPageCanvas(page, canvas).then(() => {
-                        const placeholder = document.getElementById(`placeholder-${pageId}`);
-                        if(placeholder) placeholder.style.opacity = '0';
-                        setTimeout(() => placeholder?.remove(), 300);
-                    });
+                if (cardId.startsWith('spread:')) {
+                    // Handle Spread Card
+                    // ID Format: spread:ID1:ID2
+                    const parts = cardId.split(':');
+                    const id1 = parts[1];
+                    const id2 = parts[2];
+                    const page1 = pages.find(p => p.id === id1);
+                    const page2 = pages.find(p => p.id === id2);
+                    const canvas1 = document.getElementById(`canvas-${id1}`);
+                    const canvas2 = document.getElementById(`canvas-${id2}`);
+
+                    if (page1 && canvas1) {
+                        renderPageCanvas(page1, canvas1).then(() => {
+                            const ph = document.getElementById(`placeholder-${id1}`);
+                            if (ph) {
+                                ph.style.opacity = '0';
+                                setTimeout(() => ph.remove(), 300);
+                            }
+                        });
+                    }
+                    if (page2 && canvas2) {
+                        renderPageCanvas(page2, canvas2).then(() => {
+                            const ph = document.getElementById(`placeholder-${id2}`);
+                            if (ph) {
+                                ph.style.opacity = '0';
+                                setTimeout(() => ph.remove(), 300);
+                            }
+                        });
+                    }
                     obs.unobserve(card);
+
+                } else {
+                    // Handle Single Card
+                    const canvas = document.getElementById(`canvas-${cardId}`);
+                    const page = pages.find(p => p.id === cardId);
+
+                    if (canvas && page) {
+                        renderPageCanvas(page, canvas).then(() => {
+                            const placeholder = document.getElementById(`placeholder-${cardId}`);
+                            if (placeholder) placeholder.style.opacity = '0';
+                            setTimeout(() => placeholder?.remove(), 300);
+                        });
+                        obs.unobserve(card);
+                    }
                 }
             }
         });
