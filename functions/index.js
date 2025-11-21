@@ -1864,7 +1864,9 @@ exports.generateBooklet = onCall({
         };
 
         // --- 1. Build Interior ---
-        for (const fileMeta of interiorFiles) {
+        for (const [index, fileMeta] of interiorFiles.entries()) {
+            logger.log(`Processing Interior Page ${index + 1}/${interiorFiles.length}. Source: ${fileMeta.storagePath}, PageIdx: ${fileMeta.sourcePageIndex}, Settings: ${JSON.stringify(fileMeta.settings)}`);
+
             // Handle Blank Page
             if (!fileMeta.storagePath) {
                 // Draw blank page

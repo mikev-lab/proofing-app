@@ -1978,19 +1978,27 @@ uploadForm.addEventListener('submit', async (e) => {
 
         // Add Pages (Interior)
         pages.forEach(p => {
+            // Sanitize settings to ensure numbers are passed as numbers
+            const safeSettings = {
+                scaleMode: p.settings.scaleMode || 'fit',
+                alignment: p.settings.alignment || 'center',
+                panX: typeof p.settings.panX === 'number' ? p.settings.panX : parseFloat(p.settings.panX) || 0,
+                panY: typeof p.settings.panY === 'number' ? p.settings.panY : parseFloat(p.settings.panY) || 0
+            };
+
             if (p.sourceFileId === null) {
                  // Blank Page
                  bookletMetadata.push({
                     storagePath: null, // Signal blank to backend
                     sourcePageIndex: 0,
-                    settings: p.settings,
+                    settings: safeSettings,
                     type: 'interior_page' // Keep type as interior_page so it's processed in the interior loop
                  });
             } else {
                  bookletMetadata.push({
                     storagePath: uploadedPaths[p.sourceFileId],
                     sourcePageIndex: p.pageIndex - 1, // Convert to 0-based for backend
-                    settings: p.settings,
+                    settings: safeSettings,
                     type: 'interior_page'
                 });
             }
