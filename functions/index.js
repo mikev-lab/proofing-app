@@ -1867,7 +1867,7 @@ exports.generateBooklet = onCall({
             // Handle Blank Page
             if (!fileMeta.storagePath) {
                 // Draw blank page
-                drawOnSheet(interiorDoc, { isBlank: true }, trimWidth, trimHeight, bleed, fileMeta.settings || {});
+                drawOnSheet(interiorDoc, { isBlank: true }, trimWidth, trimHeight, bleed, fileMeta.settings || {}, false);
                 continue;
             }
 
@@ -1884,7 +1884,7 @@ exports.generateBooklet = onCall({
 
                 if (pageIndex < srcDoc.getPageCount()) {
                     const [embeddedPage] = await interiorDoc.embedPages([srcDoc.getPage(pageIndex)]);
-                    drawOnSheet(interiorDoc, embeddedPage, trimWidth, trimHeight, bleed, settings);
+                    drawOnSheet(interiorDoc, embeddedPage, trimWidth, trimHeight, bleed, settings, true);
                 } else {
                     logger.warn(`Requested page index ${pageIndex} out of bounds for file ${fileMeta.storagePath}`);
                 }
@@ -1896,7 +1896,7 @@ exports.generateBooklet = onCall({
                 if (localPath.toLowerCase().endsWith('.png')) embeddedImage = await interiorDoc.embedPng(imgBytes);
                 else embeddedImage = await interiorDoc.embedJpg(imgBytes);
 
-                drawOnSheet(interiorDoc, embeddedImage, trimWidth, trimHeight, bleed, settings);
+                drawOnSheet(interiorDoc, embeddedImage, trimWidth, trimHeight, bleed, settings, false);
             }
         }
 
@@ -2080,7 +2080,7 @@ exports.generateBooklet = onCall({
     }
 });
 
-function drawOnSheet(doc, embeddable, trimW, trimH, bleed, settings) {
+function drawOnSheet(doc, embeddable, trimW, trimH, bleed, settings, isPdf) {
     // Sheet Size = Trim + Bleed * 2
     const sheetW = trimW + (bleed * 2);
     const sheetH = trimH + (bleed * 2);
@@ -2194,7 +2194,7 @@ function drawOnSheet(doc, embeddable, trimW, trimH, bleed, settings) {
         return;
     }
 
-    if (embeddable.dims) {
+    if (isPdf) {
          // Is PDF Page
          page.drawPage(embeddable, { x, y, width: validDrawW, height: validDrawH });
     } else {

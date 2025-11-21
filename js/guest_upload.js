@@ -755,12 +755,14 @@ document.addEventListener('pointerdown', (e) => {
     // Only allow panning if target is canvas (Image)
     if (e.target.tagName.toLowerCase() !== 'canvas') return;
 
-    const pageId = card.dataset.id;
-    const page = pages.find(p => p.id === pageId);
+    // Resolve the actual page ID from the Canvas element ID
+    // because card.dataset.id might be a composite spread ID (e.g. spread:p1:p2)
+    const clickedPageId = e.target.id.replace('canvas-', '');
+    const page = pages.find(p => p.id === clickedPageId);
 
     // Only allow panning if scaleMode is 'fill'
     if (page && page.settings.scaleMode === 'fill') {
-        activePageId = pageId;
+        activePageId = clickedPageId;
         isDragging = true;
         startX = e.clientX;
         startY = e.clientY;
