@@ -35,6 +35,9 @@ const progressBar = document.getElementById('progress-bar');
 const progressText = document.getElementById('progress-text');
 const progressPercent = document.getElementById('progress-percent');
 
+// Navigation Elements
+const navBackBtn = document.getElementById('nav-back-btn');
+
 // Specs Modal Elements
 const specsModal = document.getElementById('specs-modal');
 const specsForm = document.getElementById('specs-form');
@@ -83,6 +86,11 @@ const settingsPreviewCanvas = document.getElementById('settings-preview-canvas')
 const settingAlignment = document.getElementById('setting-alignment');
 const scaleModeBtns = document.querySelectorAll('.scale-mode-btn');
 
+// Toolbar Elements
+const toolbarJump = document.getElementById('toolbar-jump');
+const toolbarActionsBooklet = document.getElementById('toolbar-actions-booklet');
+const toolbarSpreadUpload = document.getElementById('toolbar-spread-upload');
+const builderTabs = document.getElementById('builder-tabs');
 
 // State
 let projectId = null;
@@ -143,8 +151,7 @@ Array.from(projectTypeRadios).forEach(radio => {
             paperSection.classList.add('hidden');
             specPageCount.required = false;
             specPaper.required = false;
-        // Set cover fields as not required
-        specCoverPaper.required = false;
+            specCoverPaper.required = false;
         } else if (val === 'saddleStitch') {
             pageCountSection.classList.remove('hidden');
             paperSection.classList.add('hidden');
@@ -159,6 +166,18 @@ Array.from(projectTypeRadios).forEach(radio => {
         }
     });
 });
+
+// --- Back Button Logic ---
+if (navBackBtn) {
+    navBackBtn.addEventListener('click', () => {
+        // Hide Builder
+        uploadContainer.classList.add('hidden');
+        navBackBtn.classList.add('hidden');
+
+        // Show Modal
+        specsModal.classList.remove('hidden');
+    });
+}
 
 
 // --- Helper: Update File Name Display (Legacy/Cover) ---
@@ -508,17 +527,6 @@ function renderBookViewer() {
 
     container.innerHTML = ''; // Clear
 
-    if (pages.length === 0) {
-         // Show Initial Insert Bar
-         container.appendChild(createInsertBar(0));
-
-         const empty = document.createElement('div');
-         empty.className = "flex flex-col items-center justify-center h-32 text-gray-500";
-         empty.innerHTML = "<p>Drag files or use the arrows to add pages.</p>";
-         container.appendChild(empty);
-         return;
-    }
-
     // Dimensions for layout
     const width = projectSpecs.dimensions.width;
     const height = projectSpecs.dimensions.height;
@@ -534,7 +542,6 @@ function renderBookViewer() {
 
                 if (cardId.startsWith('spread:')) {
                     // Handle Spread Card
-                    // ID Format: spread:ID1:ID2
                     const parts = cardId.split(':');
                     const id1 = parts[1];
                     const id2 = parts[2];
@@ -543,24 +550,8 @@ function renderBookViewer() {
                     const canvas1 = document.getElementById(`canvas-${id1}`);
                     const canvas2 = document.getElementById(`canvas-${id2}`);
 
-                    if (page1 && canvas1) {
-                        renderPageCanvas(page1, canvas1).then(() => {
-                            const ph = document.getElementById(`placeholder-${id1}`);
-                            if (ph) {
-                                ph.style.opacity = '0';
-                                setTimeout(() => ph.remove(), 300);
-                            }
-                        });
-                    }
-                    if (page2 && canvas2) {
-                        renderPageCanvas(page2, canvas2).then(() => {
-                            const ph = document.getElementById(`placeholder-${id2}`);
-                            if (ph) {
-                                ph.style.opacity = '0';
-                                setTimeout(() => ph.remove(), 300);
-                            }
-                        });
-                    }
+                    if (page1 && canvas1) renderPageCanvas(page1, canvas1).then(() => removePlaceholder(id1));
+                    if (page2 && canvas2) renderPageCanvas(page2, canvas2).then(() => removePlaceholder(id2));
                     obs.unobserve(card);
 
                 } else {
@@ -569,11 +560,7 @@ function renderBookViewer() {
                     const page = pages.find(p => p.id === cardId);
 
                     if (canvas && page) {
-                        renderPageCanvas(page, canvas).then(() => {
-                            const placeholder = document.getElementById(`placeholder-${cardId}`);
-                            if (placeholder) placeholder.style.opacity = '0';
-                            setTimeout(() => placeholder?.remove(), 300);
-                        });
+                        renderPageCanvas(page, canvas).then(() => removePlaceholder(cardId));
                         obs.unobserve(card);
                     }
                 }
@@ -581,32 +568,103 @@ function renderBookViewer() {
         });
     }, { root: container.parentElement, rootMargin: '200px' });
 
-    // Render Spreads Loop
+    const removePlaceholder = (id) => {
+        const ph = document.getElementById(`placeholder-${id}`);
+        if (ph) {
+            ph.style.opacity = '0';
+            setTimeout(() => ph.remove(), 300);
+        }
+    };
+
+    // --- LOOSE SHEETS / SINGLE LAYOUT ---
+    if (projectType === 'single') {
+        container.className = "flex flex-wrap gap-8 items-start justify-center p-6";
+
+        // We strictly show 2 slots: Front and Back.
+        const slots = [
+            { label: "Front Side", index: 0 },
+            { label: "Back Side", index: 1 }
+        ];
+
+        slots.forEach(slot => {
+            const slotContainer = document.createElement('div');
+            slotContainer.className = "flex flex-col items-center gap-2";
+            slotContainer.innerHTML = `<h3 class="text-indigo-200 text-xs font-bold uppercase tracking-widest">${slot.label}</h3>`;
+
+            const page = pages[slot.index];
+
+            let content;
+            if (page) {
+                content = createPageCard(page, slot.index, false, false, width, height, bleed, pixelsPerInch, observer);
+            } else {
+                // Create Empty Slot
+                content = document.createElement('div');
+                content.className = "relative border-2 border-dashed border-slate-600 rounded-lg bg-slate-800/30 hover:bg-slate-800/60 hover:border-indigo-500 transition-all cursor-pointer group flex flex-col items-center justify-center";
+                // Match visual size
+                const wPx = (width + (bleed * 2)) * pixelsPerInch;
+                const hPx = (height + (bleed * 2)) * pixelsPerInch;
+                content.style.width = `${wPx}px`;
+                content.style.height = `${hPx}px`;
+
+                content.innerHTML = `
+                    <div class="text-center p-4">
+                         <svg class="w-8 h-8 text-gray-500 group-hover:text-indigo-400 mb-2 mx-auto transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                        <span class="text-xs text-gray-400 group-hover:text-white">Add File</span>
+                    </div>
+                `;
+                content.onclick = () => {
+                    // Set insert index and trigger
+                    window._insertIndex = slot.index;
+                    hiddenInteriorInput.click();
+                };
+
+                // Enable Drop on empty slot
+                content.addEventListener('dragover', (e) => { e.preventDefault(); content.classList.add('border-indigo-400', 'bg-slate-700'); });
+                content.addEventListener('dragleave', (e) => { e.preventDefault(); content.classList.remove('border-indigo-400', 'bg-slate-700'); });
+                content.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    if (e.dataTransfer.files.length > 0) {
+                        addInteriorFiles(e.dataTransfer.files, false, slot.index);
+                    }
+                });
+            }
+
+            slotContainer.appendChild(content);
+            container.appendChild(slotContainer);
+        });
+
+        validateForm();
+        return;
+    }
+
+    // --- BOOKLET LAYOUT ---
+
+    if (pages.length === 0) {
+         container.appendChild(createInsertBar(0));
+         const empty = document.createElement('div');
+         empty.className = "flex flex-col items-center justify-center h-32 text-gray-500";
+         empty.innerHTML = "<p>Drag files or use the arrows to add pages.</p>";
+         container.appendChild(empty);
+         return;
+    }
+
     // Pages: [0, 1, 2, 3]
     // Spread 0: [null, 0]
     // Spread 1: [1, 2]
-    // Spread 2: [3, null]
-
-    // We start with Index 0.
-    // Page 1 is ALWAYS on the Right (Index 0).
+    // ...
 
     // Insert Bar at Top (Index 0)
     container.appendChild(createInsertBar(0));
 
-    // First Spread (Page 1)
+    // First Spread (Page 1 - Right Only)
     const firstSpread = document.createElement('div');
     firstSpread.className = "spread-row flex justify-center items-end gap-0 mb-4 min-h-[100px] p-2 border border-transparent hover:border-dashed hover:border-gray-600 rounded";
-    // Added min-height and hover effect to make it a drop target even if empty (though it shouldn't be empty usually)
 
-    // Empty Left slot for Page 1
-    // IMPORTANT: SortableJS might treat this spacer as a draggable item if we aren't careful.
-    // We used draggable: '.page-card' in the config, so this spacer is safe.
     const spacer = document.createElement('div');
-    spacer.style.width = `${width * pixelsPerInch}px`; // Match page width
-    spacer.className = "pointer-events-none"; // Prevent interaction
+    spacer.style.width = `${width * pixelsPerInch}px`;
+    spacer.className = "pointer-events-none";
     firstSpread.appendChild(spacer);
 
-    // Page 1 (Right)
     if (pages[0]) {
         firstSpread.appendChild(createPageCard(pages[0], 0, true, false, width, height, bleed, pixelsPerInch, observer));
     }
@@ -615,13 +673,11 @@ function renderBookViewer() {
     // Rest of pages
     let i = 1;
     while (i < pages.length) {
-        // Insert Bar before this spread
         container.appendChild(createInsertBar(i));
 
         const spreadDiv = document.createElement('div');
         spreadDiv.className = "spread-row flex justify-center items-end gap-0 mb-4 min-h-[100px] p-2 border border-transparent hover:border-dashed hover:border-gray-600 rounded";
 
-        // Check if current position is a Linked Spread
         const isLeft = pages[i];
         const isRight = pages[i+1];
 
@@ -633,27 +689,18 @@ function renderBookViewer() {
         }
 
         if (isLinkedSpread) {
-            // Create merged card for dragging
             const spreadCard = createSpreadCard(isLeft, isRight, i, width, height, bleed, pixelsPerInch, observer);
             spreadDiv.appendChild(spreadCard);
-
-            // Increment by 2 since we consumed both
             i += 2;
         } else {
-            // Standard Separate Cards logic
-            // Left Page
             let leftCard = null;
             if (pages[i]) {
                 leftCard = createPageCard(pages[i], i, false, false, width, height, bleed, pixelsPerInch, observer);
                 spreadDiv.appendChild(leftCard);
             }
 
-            // Right Page
             let rightCard = null;
             if (i + 1 < pages.length) {
-                // Check if next page is start of a spread (shouldn't happen if array is valid, but safety)
-                // If next page is start of a linked spread, we should probably not put it here?
-                // But the loop handles it.
                 rightCard = createPageCard(pages[i+1], i+1, true, false, width, height, bleed, pixelsPerInch, observer);
                 spreadDiv.appendChild(rightCard);
             }
@@ -670,68 +717,47 @@ function renderBookViewer() {
 
             i += 2;
         }
-
         container.appendChild(spreadDiv);
     }
 
-    // Final Insert Bar
     container.appendChild(createInsertBar(pages.length));
 
     validateForm();
 
-    // Re-initialize Sortable for the new DOM
-    // We want shared lists between all spread rows.
+    // Sortable for Booklets
     const spreadDivs = container.querySelectorAll('.spread-row');
     spreadDivs.forEach(spreadDiv => {
         new Sortable(spreadDiv, {
-            group: {
-                name: 'shared-spreads',
-                pull: true,
-                put: true
-            },
+            group: { name: 'shared-spreads', pull: true, put: true },
             animation: 150,
-            draggable: '.page-card', // The actual card
-            handle: '.drag-handle', // Drag by dedicated handle
-            forceFallback: true, // Fixes issues with native DnD and "snap back"
-            fallbackOnBody: true, // Appends clone to body to avoid overflow clipping
-            swapThreshold: 0.65, // Sensitivity
+            draggable: '.page-card',
+            handle: '.drag-handle',
+            forceFallback: true,
+            fallbackOnBody: true,
+            swapThreshold: 0.65,
             ghostClass: 'opacity-50',
             onEnd: (evt) => {
                 try {
-                    // When drop ends, we need to sync the `pages` array order to the new DOM order.
-                    // 1. Collect all data-ids from the DOM in order.
                     const allCards = document.querySelectorAll('.page-card');
                     const newOrderIds = Array.from(allCards).map(c => c.dataset.id);
-
-                    // 2. Reorder `pages` array
                     const newPages = [];
                     newOrderIds.forEach(id => {
-                    // Check if ID is a composite spread ID
-                    if (id.startsWith('spread:')) {
-                        // Format: spread:ID1:ID2
-                        const parts = id.split(':');
-                        if (parts.length === 3) {
-                            const p1 = pages.find(x => x.id === parts[1]);
-                            const p2 = pages.find(x => x.id === parts[2]);
-                            if (p1) newPages.push(p1);
-                            if (p2) newPages.push(p2);
+                        if (id.startsWith('spread:')) {
+                            const parts = id.split(':');
+                            if (parts.length === 3) {
+                                const p1 = pages.find(x => x.id === parts[1]);
+                                const p2 = pages.find(x => x.id === parts[2]);
+                                if (p1) newPages.push(p1);
+                                if (p2) newPages.push(p2);
+                            }
+                        } else {
+                            const p = pages.find(x => x.id === id);
+                            if (p) newPages.push(p);
                         }
-                    } else {
-                        const p = pages.find(x => x.id === id);
-                        if (p) newPages.push(p);
-                    }
                     });
-
                     pages = newPages;
-
-                    // 3. Re-render fully to fix layout (e.g. Left vs Right page styling)
-                    // We must delay slightly to let the drag event finish or Sortable might glitch
-                    setTimeout(() => {
-                        requestAnimationFrame(() => renderBookViewer());
-                    }, 50);
-                } catch (err) {
-                    console.error("Error during drag reorder:", err);
-                }
+                    setTimeout(() => { requestAnimationFrame(() => renderBookViewer()); }, 50);
+                } catch (err) { console.error("Error during drag reorder:", err); }
             }
         });
     });
@@ -936,35 +962,46 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
 
     let classes = "page-card relative group bg-slate-800 shadow-lg border border-slate-700 transition-all hover:border-indigo-500 overflow-hidden cursor-grab active:cursor-grabbing";
 
-    if (isFirstPage) {
-        classes += " border-l-2 border-l-slate-900";
-    } else if (isRightPage) {
-        classes += " border-l-0";
+    if (projectType === 'single') {
+        // Loose sheets: Full border, rounded
+        classes += " rounded-lg border-2";
     } else {
-        classes += " border-r-0";
+        // Booklet: Spread styling
+        if (isFirstPage) {
+            classes += " border-l-2 border-l-slate-900";
+        } else if (isRightPage) {
+            classes += " border-l-0";
+        } else {
+            classes += " border-r-0";
+        }
     }
     card.className = classes;
 
-    // Layout Logic: Show Reader Spreads with Bleed visible on outside edges
+    // Layout Logic
     const bleedPx = bleed * pixelsPerInch;
-
     let containerW, containerH;
     let canvasLeft, canvasTop;
 
-    // Spread Logic
-    // Use exact floats for containerW/containerH to prevent rounding gaps/clipping
-    if (isRightPage) {
-         // Right Page: Clip LEFT bleed (Spine)
-         containerW = (width + bleed) * pixelsPerInch;
-         canvasLeft = -bleedPx;
+    if (projectType === 'single') {
+        // Loose Sheets: Full View
+        containerW = (width + (bleed * 2)) * pixelsPerInch;
+        containerH = (height + (bleed * 2)) * pixelsPerInch;
+        canvasLeft = 0;
+        canvasTop = 0;
     } else {
-         // Left Page: Clip RIGHT bleed (Spine)
-         containerW = (width + bleed) * pixelsPerInch;
-         canvasLeft = 0;
+        // Spread Logic
+        if (isRightPage) {
+            // Right Page: Clip LEFT bleed (Spine)
+            containerW = (width + bleed) * pixelsPerInch;
+            canvasLeft = -bleedPx;
+        } else {
+            // Left Page: Clip RIGHT bleed (Spine)
+            containerW = (width + bleed) * pixelsPerInch;
+            canvasLeft = 0;
+        }
+        containerH = (height + (bleed*2)) * pixelsPerInch;
+        canvasTop = 0;
     }
-    // Vertical Bleed always visible
-    containerH = (height + (bleed*2)) * pixelsPerInch;
-    canvasTop = 0;
 
     const canvasContainer = document.createElement('div');
     canvasContainer.className = "relative overflow-hidden bg-white shadow-sm mx-auto";
@@ -1113,7 +1150,10 @@ async function renderPageCanvas(page, canvas) {
     // This ensures correct spread logic regardless of initial settings
     const pageIndex = pages.indexOf(page);
     const isRightPage = pageIndex === 0 || pageIndex % 2 === 0;
-    const view = isRightPage ? 'right' : 'left';
+
+    // For Loose Sheets, view is 'full' (no clipping)
+    let view = isRightPage ? 'right' : 'left';
+    if (projectType === 'single') view = 'full';
 
     // Handle Blank Page
     if (page.sourceFileId === null) {
@@ -1155,19 +1195,15 @@ async function renderPageCanvas(page, canvas) {
     // Vertical: Container includes bleed, Canvas includes bleed. Align Top.
     canvas.style.top = '0px';
 
-    // Horizontal: Depend on View Mode
-    // Right Page (Page 1, 3...): Left edge is Spine (Inner). Hide it by shifting left.
-    // Left Page (Page 2, 4...): Right edge is Spine (Inner). Keep at 0. Container clips right.
+    // Horizontal Alignment Logic
     if (view === 'right') {
-        // Right Page: Canvas 0 is Left Bleed (Spine).
-        // We want to HIDE the Left/Spine bleed.
-        // So we shift LEFT by bleed width.
+        // Right Page: Canvas 0 is Left Bleed (Spine). Shift left to hide it.
         canvas.style.left = `-${bleed * pixelsPerInch}px`;
+    } else if (view === 'left') {
+        // Left Page: Canvas 0 is Left Bleed (Outer Edge). Keep at 0.
+        canvas.style.left = '0px';
     } else {
-        // Left Page: Canvas 0 is Left Bleed (Outer Edge).
-        // We want to SHOW the Left/Outer bleed.
-        // So we keep it at 0.
-        // The Container width (width+bleed) will CLIP the Right/Spine bleed.
+        // Full View (Loose Sheets): Show everything.
         canvas.style.left = '0px';
     }
 
@@ -1190,47 +1226,36 @@ async function renderPageCanvas(page, canvas) {
     };
 
     // Scale for Guides: guides.js expects points.
-    // Canvas context is already transformed by pixelDensity.
-    // We are drawing in pixels (pixelsPerInch).
-    // 1 point = 1/72 inch.
-    // We want 1 inch = pixelsPerInch.
-    // So scale = pixelsPerInch / 72.
     const guideScale = pixelsPerInch / 72;
 
-    // Adjust renderInfo to align guides correctly within the partially cropped view
-    // Right Page: Canvas is shifted LEFT by bleed.
-    // guides.js draws Left Trim at relative 0.
-    // We want Trim at 0 relative to the container, but the container starts at Trim Line.
-    // Wait, the container starts at Trim Line.
-    // The Canvas is at Left = -Bleed.
-    // So Canvas (0,0) is (Left Bleed Edge).
-    // guides.js Left Trim is at 0 (if we pass x=0).
-    // But guides.js thinks "Trim starts at 0" relative to the passed Render Area.
-    // If we pass RenderX = Bleed, then TrimX = Bleed.
-    // Canvas X = Bleed is the Trim Line.
-    // So we must pass x: bleed * pixelsPerInch.
+    // Adjust renderInfo based on View Mode
+    let renderInfo;
 
-    // Left Page: Canvas is at Left = 0.
-    // Canvas (0,0) is (Left Bleed Edge).
-    // We want Right Trim at (Width - Bleed).
-    // guides.js calculates Right Trim as (RenderX + RenderWidth - TrimWidth).
-    // 0 + RenderW - TrimW = TargetTrimX (Bleed).
-    // RenderW = TrimW + Bleed.
-    // So we pass width: (Trim + Bleed).
-
-    const renderInfo = {
-        x: view === 'right' ? bleed * pixelsPerInch : 0,
-        y: 0,
-        width: view === 'left' ? (width + bleed) * pixelsPerInch : totalW * pixelsPerInch,
-        height: totalH * pixelsPerInch,
-        scale: guideScale,
-        isSpread: true,
-        isLeftPage: view === 'left'
-    };
+    if (view === 'full') {
+        // Loose Sheets: Render Full Canvas, No Clipping
+        renderInfo = {
+            x: 0,
+            y: 0,
+            width: totalW * pixelsPerInch,
+            height: totalH * pixelsPerInch,
+            scale: guideScale,
+            isSpread: false, // Full Bleed on all sides
+            isLeftPage: false
+        };
+    } else {
+        // Spread Logic
+        renderInfo = {
+            x: view === 'right' ? bleed * pixelsPerInch : 0,
+            y: 0,
+            width: view === 'left' ? (width + bleed) * pixelsPerInch : totalW * pixelsPerInch,
+            height: totalH * pixelsPerInch,
+            scale: guideScale,
+            isSpread: true,
+            isLeftPage: view === 'left'
+        };
+    }
 
     // Ensure guides are drawn on TOP.
-    // Reset transform to simple pixel density for drawing guides (which are calculated in pixels)
-    // This avoids double-scaling where the guide calculation (in pixels) is multiplied again by pixelsPerInch.
     ctx.save();
     ctx.setTransform(pixelDensity, 0, 0, pixelDensity, 0, 0);
     drawGuides(ctx, mockSpecs, [renderInfo], { trim: true, bleed: true, safety: true });
@@ -1790,25 +1815,39 @@ specsForm.addEventListener('submit', async (e) => {
 });
 
 function refreshBuilderUI() {
+    // Update Header Nav
+    if (navBackBtn) navBackBtn.classList.remove('hidden');
+
     // Show/Hide Tabs based on project type
     if (projectType === 'single') {
-        // For Loose Sheets, hide Cover Builder
-        tabCover.classList.add('hidden');
-        // Ensure Interior is active
-        tabInterior.click();
+        // For Loose Sheets
+        if (builderTabs) builderTabs.classList.add('hidden');
+        if (contentCover) contentCover.classList.add('hidden');
+        if (contentInterior) contentInterior.classList.remove('hidden');
+
+        // Toolbar Adjustments
+        if (toolbarJump) toolbarJump.classList.add('hidden');
+        if (toolbarActionsBooklet) toolbarActionsBooklet.classList.add('hidden');
+        if (toolbarSpreadUpload) toolbarSpreadUpload.classList.add('hidden');
+
+        // Force simple view if needed, but renderBookViewer handles it
     } else {
         // Booklet
-        tabCover.classList.remove('hidden');
+        if (builderTabs) builderTabs.classList.remove('hidden');
+        if (toolbarJump) toolbarJump.classList.remove('hidden');
+        if (toolbarActionsBooklet) toolbarActionsBooklet.classList.remove('hidden');
+        if (toolbarSpreadUpload) toolbarSpreadUpload.classList.remove('hidden');
+
         // Configure Cover Builder
         if (projectSpecs.binding === 'saddleStitch') {
             // Hide Spine Upload & Display
             if(fileSpineInput) fileSpineInput.closest('.drop-zone').parentElement.classList.add('hidden');
-            // Or disable it? Hidden is better.
         } else {
             if(fileSpineInput) fileSpineInput.closest('.drop-zone').parentElement.classList.remove('hidden');
         }
-        // Re-render preview
-        renderCoverPreview();
+
+        // Default to Interior Tab
+        if (tabInterior) tabInterior.click();
     }
 }
 
