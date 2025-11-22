@@ -772,11 +772,9 @@ function renderBookViewer() {
 }
 
 // --- Minimap Logic ---
-function renderMinimap() {
+async function renderMinimap() {
     const container = document.getElementById('minimap-container');
     if (!container || projectType === 'single') {
-        // Hide for single pages as it's redundant? Or maybe keep it?
-        // For 2 pages it's redundant.
         if (container) container.classList.add('hidden');
         return;
     }
@@ -785,60 +783,25 @@ function renderMinimap() {
     container.innerHTML = '';
 
     // Render simplified thumbnails list
-    // We will render one item per Spread/Row
-
-    // Initial Index
-    let i = 0;
 
     // Spread 0 (Page 1)
-    addMinimapItem(container, [pages[0]], 0, "P1");
+    await addMinimapItem(container, [pages[0]], 0, "P1");
 
     // Spreads
-    i = 1;
+    let i = 1;
     while(i < pages.length) {
         const p1 = pages[i];
         const p2 = pages[i+1];
         const label = p2 ? `P${i+1}-${i+2}` : `P${i+1}`;
-        addMinimapItem(container, [p1, p2], i, label);
+        await addMinimapItem(container, [p1, p2], i, label);
         i += 2;
     }
 }
 
-function addMinimapItem(container, pageList, mainIndex, label) {
+async function addMinimapItem(container, pageList, mainIndex, label) {
     const wrapper = document.createElement('div');
     wrapper.className = "w-full aspect-[3/2] bg-slate-800 rounded cursor-pointer border border-transparent hover:border-indigo-500 transition-all relative overflow-hidden";
 
-    // Click to scroll
-    wrapper.onclick = () => {
-        // Find the spread row in the main view
-        // We need a robust way to map index to DOM element.
-        // The spread rows don't have IDs.
-        // But we know the order.
-        const mainContainer = document.getElementById('book-viewer-container');
-        // Spreads + Insert Bars.
-        // InsertBar, Spread0, InsertBar, Spread1...
-        // DOM Children: InsertBar(0), SpreadRow(1), InsertBar(2), SpreadRow(3)...
-        // Index 0 (Page 1) is at Child 1.
-        // Index 1 (Page 2-3) is at Child 3.
-        // Formula: (SpreadIndex * 2) + 1.
-
-        // Wait, pageList index passed here is `i`.
-        // Spread 0: i=0. Child 1.
-        // Spread 1: i=1. Child 3.
-        // Correct.
-
-        // But wait, `i` passed to `addMinimapItem` is the page index.
-        // Spread 0 is handled manually.
-        // The loop starts at i=1.
-        // Let's just count spreads.
-
-        // Re-calculating target index logic is messy.
-        // Let's use ID if possible.
-        // We can attach data-index to spread rows in `renderBookViewer`.
-    };
-
-    // For now, simple scroll to ratio? No.
-    // Let's attach the click handler to scroll to the specific page ID.
     const targetPageId = pageList[0]?.id;
     if (targetPageId) {
         wrapper.onclick = () => {
@@ -851,30 +814,65 @@ function addMinimapItem(container, pageList, mainIndex, label) {
         };
     }
 
-    // Draw simple representations
+    // Canvas for thumbnail
     const canvas = document.createElement('canvas');
-    canvas.width = 150;
-    canvas.height = 100;
+    const w = 150;
+    const h = 100;
+    canvas.width = w;
+    canvas.height = h;
     canvas.className = "w-full h-full object-contain";
     const ctx = canvas.getContext('2d');
 
     // Gray Background
     ctx.fillStyle = '#1e293b';
-    ctx.fillRect(0, 0, 150, 100);
+    ctx.fillRect(0, 0, w, h);
 
-    // Draw Pages
-    ctx.fillStyle = '#ffffff';
+    // Thumb Margin
+    const margin = 5;
+    const pageW = (w - (margin*3)) / 2;
+    const pageH = h - (margin*2);
+
+    // Coordinates
+    const leftX = margin;
+    const rightX = margin + pageW + margin;
+    const topY = margin;
+
+    // Helper to draw one page
+    const drawThumbPage = async (page, x, y, w, h) => {
+        // Draw white paper base
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(x, y, w, h);
+
+        if (!page || !page.sourceFileId) return;
+
+        const sourceEntry = sourceFiles[page.sourceFileId];
+        if (!sourceEntry) return;
+
+        // Reuse existing draw function but with specific target
+        await drawFileWithTransform(
+            ctx,
+            sourceEntry,
+            x, y, w, h,
+            page.settings.scaleMode || 'fit',
+            page.settings.alignment || 'center',
+            page.pageIndex || 1,
+            page.id,
+            'full', // View mode full for thumbnail
+            page.settings.panX || 0,
+            page.settings.panY || 0
+        );
+    };
 
     if (pageList.length === 1 && mainIndex === 0) {
         // First page (Right)
-        ctx.fillRect(75, 10, 60, 80);
-    } else if (pageList.length === 2) {
-        // Spread
-        ctx.fillRect(15, 10, 60, 80); // Left
-        ctx.fillRect(75, 10, 60, 80); // Right
-    } else {
-        // End Single Left
-        ctx.fillRect(15, 10, 60, 80);
+        await drawThumbPage(pageList[0], rightX, topY, pageW, pageH);
+    } else if (pageList.length >= 1) {
+        // Left Page
+        await drawThumbPage(pageList[0], leftX, topY, pageW, pageH);
+        // Right Page (if exists)
+        if (pageList[1]) {
+            await drawThumbPage(pageList[1], rightX, topY, pageW, pageH);
+        }
     }
 
     // Label
