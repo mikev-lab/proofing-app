@@ -117,6 +117,9 @@ let selectedFiles = {}; // Keep for Legacy/Single logic
 let projectSpecs = {}; // Store loaded/saved specs here
 let builderInitialized = false;
 let coverZoom = 1.0;
+let coverRenderId = 0;
+let _previewOffscreen = null;
+let _previewCtx = null;
 // New Data Model for Virtual Book
 let sourceFiles = {}; // Map: id -> File object
 let pages = []; // Array: { id, sourceFileId, pageIndex, settings: { scaleMode, alignment }, isSpread: boolean }
@@ -515,7 +518,6 @@ function updateFileName(inputId, displayId) {
 async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pageIndex = 1) {
     if (!sourceEntry) return;
 
-    // --- Status Handling ---
     const status = sourceEntry.status || 'ready';
     if (status === 'processing' || status === 'uploading') {
         drawProcessingState(ctx, targetZone.x, targetZone.y, targetZone.w, targetZone.h);
@@ -527,38 +529,44 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
         return;
     }
 
-    // --- Load Image ---
     const file = sourceEntry.file;
+    const isServer = sourceEntry.isServer;
+    const previewUrl = sourceEntry.previewUrl;
     let imgBitmap;
 
+    const cacheKey = (isServer ? previewUrl : file.name) + '_' + pageIndex + '_' + (file.lastModified || 'server') + '_cover';
+
     try {
-        if (sourceEntry.isServer) {
-             const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
-             const pdf = await loadingTask.promise;
-             const page = await pdf.getPage(pageIndex);
-             const viewport = page.getViewport({ scale: 2 });
-             const cvs = document.createElement('canvas');
-             cvs.width = viewport.width; cvs.height = viewport.height;
-             await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
-             imgBitmap = await createImageBitmap(cvs);
-
-        } else if (file && file.type === 'application/pdf') {
-             const pdf = await pdfjsLib.getDocument(URL.createObjectURL(file)).promise;
-             const page = await pdf.getPage(pageIndex);
-             const viewport = page.getViewport({ scale: 2 });
-             const cvs = document.createElement('canvas');
-             cvs.width = viewport.width; cvs.height = viewport.height;
-             await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
-             imgBitmap = await createImageBitmap(cvs);
-
-        } else if (file && file.type.startsWith('image/')) {
-            imgBitmap = await createImageBitmap(file);
+        if (imageCache.has(cacheKey)) {
+            imgBitmap = imageCache.get(cacheKey);
         } else {
-            return;
+            if (isServer) {
+                 const loadingTask = pdfjsLib.getDocument(previewUrl);
+                 const pdf = await loadingTask.promise;
+                 const page = await pdf.getPage(pageIndex);
+                 const viewport = page.getViewport({ scale: 2 });
+                 const cvs = document.createElement('canvas');
+                 cvs.width = viewport.width; cvs.height = viewport.height;
+                 await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+                 imgBitmap = await createImageBitmap(cvs);
+            } else if (file && file.type === 'application/pdf') {
+                 const pdf = await pdfjsLib.getDocument(URL.createObjectURL(file)).promise;
+                 const page = await pdf.getPage(pageIndex);
+                 const viewport = page.getViewport({ scale: 2 });
+                 const cvs = document.createElement('canvas');
+                 cvs.width = viewport.width; cvs.height = viewport.height;
+                 await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+                 imgBitmap = await createImageBitmap(cvs);
+            } else if (file && file.type.startsWith('image/')) {
+                imgBitmap = await createImageBitmap(file);
+            }
+            
+            if (imgBitmap) imageCache.set(cacheKey, imgBitmap);
         }
     } catch (e) { return; }
 
-    // --- Draw Logic ---
+    if (!imgBitmap) return;
+
     ctx.save();
     ctx.beginPath();
     ctx.rect(targetZone.x, targetZone.y, targetZone.w, targetZone.h);
@@ -567,7 +575,6 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
     const imgW = imgBitmap.width;
     const imgH = imgBitmap.height;
 
-    // Scale to fill TOTAL zone
     let scale = totalZone.h / imgH; 
     if (imgW * scale < totalZone.w) {
         scale = totalZone.w / imgW;
@@ -2239,175 +2246,91 @@ function drawProcessingState(ctx, x, y, w, h) {
 async function renderCoverPreview() {
     if (!coverCanvas || !projectSpecs || !projectSpecs.dimensions) return;
 
-    const ctx = coverCanvas.getContext('2d');
-    const scale = 2; 
+    // 1. Lock this render ID
+    const myRenderId = ++coverRenderId;
 
-    // 1. Calculate Dimensions
+    const scale = 2; 
     const trimWidth = projectSpecs.dimensions.width;
     const trimHeight = projectSpecs.dimensions.height;
     const bleed = 0.125;
     const spineWidth = calculateSpineWidth(projectSpecs);
 
-    if (spineWidthDisplay) spineWidthDisplay.textContent = spineWidth.toFixed(3);
-
     const totalWidth = (trimWidth * 2) + spineWidth + (bleed * 2);
     const totalHeight = trimHeight + (bleed * 2);
 
-    // Zoom Logic
     const basePPI = 40; 
     const pixelsPerInch = basePPI * coverZoom; 
+    
+    // 2. REUSE Offscreen Canvas
+    if (!_previewOffscreen) {
+        _previewOffscreen = document.createElement('canvas');
+        _previewCtx = _previewOffscreen.getContext('2d', { alpha: false });
+    }
 
-    coverCanvas.width = totalWidth * pixelsPerInch * scale;
-    coverCanvas.height = totalHeight * pixelsPerInch * scale;
-    coverCanvas.style.width = `${totalWidth * pixelsPerInch}px`;
-    coverCanvas.style.height = `${totalHeight * pixelsPerInch}px`;
+    const reqW = Math.ceil(totalWidth * pixelsPerInch * scale);
+    const reqH = Math.ceil(totalHeight * pixelsPerInch * scale);
+
+    // Only resize if dimensions changed (avoids clearing memory unnecessarily)
+    if (_previewOffscreen.width !== reqW || _previewOffscreen.height !== reqH) {
+        _previewOffscreen.width = reqW;
+        _previewOffscreen.height = reqH;
+    }
+
+    const ctx = _previewCtx;
+
+    // Clear & Setup
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, reqW, reqH);
 
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
     ctx.scale(pixelsPerInch, pixelsPerInch);
 
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, totalWidth, totalHeight);
-
-    // --- CHECK PROCESSING STATUS ---
-    const slots = ['file-cover-front', 'file-cover-back', 'file-spine'];
-    
-    let activeStatus = null;
-    const processingSlot = slots.find(slot => {
-        const src = coverSources[slot];
-        if (src && (src.status === 'processing' || src.status === 'uploading')) {
-            activeStatus = src.status;
-            return true;
-        }
-        return false;
-    });
-
-    const placeholderEl = document.getElementById('cover-preview-placeholder');
-    if (placeholderEl) {
-        if (processingSlot) {
-            // SHOW SPINNER + DYNAMIC TEXT
-            const text = activeStatus === 'uploading' ? 'Uploading File...' : 'Processing File...';
-            
-            placeholderEl.style.display = 'flex';
-            placeholderEl.innerHTML = `
-                <div class="flex flex-col items-center gap-3 bg-slate-900/90 p-6 rounded-xl backdrop-blur-md shadow-2xl border border-slate-700">
-                    <div class="w-10 h-10 border-4 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin"></div>
-                    <span class="text-indigo-200 text-sm font-semibold tracking-wide animate-pulse">${text}</span>
-                </div>
-            `;
-        } else {
-            // HIDE or Show Default
-            // Only hide if we actually have content, otherwise show default "Preview will update" text
-            const hasContent = slots.some(slot => coverSources[slot] || selectedFiles[slot]);
-            if (hasContent) {
-                placeholderEl.style.display = 'none';
-            } else {
-                placeholderEl.style.display = 'flex';
-                placeholderEl.innerHTML = '<div class="text-center"><p class="text-gray-500 text-sm">Preview will update automatically</p></div>';
-            }
-        }
-    }
-
-    // --- Define Zones ---
     const zoneBack = { x: 0, y: 0, w: bleed + trimWidth, h: totalHeight };
     const zoneSpine = { x: bleed + trimWidth, y: 0, w: spineWidth, h: totalHeight };
     const zoneFront = { x: bleed + trimWidth + spineWidth, y: 0, w: trimWidth + bleed, h: totalHeight };
-
     const zoneBackPlusSpine = { x: 0, y: 0, w: zoneBack.w + zoneSpine.w, h: totalHeight };
     const zoneFrontPlusSpine = { x: zoneSpine.x, y: 0, w: zoneSpine.w + zoneFront.w, h: totalHeight };
-
     const spineMode = window.currentSpineMode || 'file';
 
-    // --- 1. Draw Back Cover ---
+    // --- DRAWING WITH ABORT CHECKS ---
+    
+    // 1. Back Cover
     if (spineMode === 'wrap-back-stretch') {
-        await drawStretched(
-            ctx, 
-            coverSources['file-cover-back'], 
-            zoneBack,          
-            zoneBackPlusSpine, 
-            'left',            
-            coverSettings['file-cover-back'].pageIndex
-        );
+        await drawStretched(ctx, coverSources['file-cover-back'], zoneBack, zoneBackPlusSpine, 'left', coverSettings['file-cover-back'].pageIndex);
     } else {
-        await drawImageOnCanvas(
-            ctx, 
-            coverSources['file-cover-back'], 
-            zoneBack.x, zoneBack.y, zoneBack.w, zoneBack.h, 
-            coverSettings['file-cover-back'].pageIndex,
-            coverSettings['file-cover-back'].scaleMode
-        );
+        await drawImageOnCanvas(ctx, coverSources['file-cover-back'], zoneBack.x, zoneBack.y, zoneBack.w, zoneBack.h, coverSettings['file-cover-back'].pageIndex, coverSettings['file-cover-back'].scaleMode);
     }
+    if (myRenderId !== coverRenderId) return; // Abort if new zoom happened
 
-    // --- 2. Draw Spine ---
+    // 2. Spine
     if (spineMode === 'file') {
-        await drawImageOnCanvas(
-            ctx, 
-            coverSources['file-spine'], 
-            zoneSpine.x, zoneSpine.y, zoneSpine.w, zoneSpine.h, 
-            coverSettings['file-spine'].pageIndex,
-            coverSettings['file-spine'].scaleMode
-        );
+        await drawImageOnCanvas(ctx, coverSources['file-spine'], zoneSpine.x, zoneSpine.y, zoneSpine.w, zoneSpine.h, coverSettings['file-spine'].pageIndex, coverSettings['file-spine'].scaleMode);
     } else if (spineMode === 'wrap-front-stretch') {
-        await drawStretched(
-            ctx,
-            coverSources['file-cover-front'], 
-            zoneSpine,          
-            zoneFrontPlusSpine, 
-            'right',            
-            coverSettings['file-cover-front'].pageIndex
-        );
+        await drawStretched(ctx, coverSources['file-cover-front'], zoneSpine, zoneFrontPlusSpine, 'right', coverSettings['file-cover-front'].pageIndex);
     } else if (spineMode === 'wrap-back-stretch') {
-        await drawStretched(
-            ctx,
-            coverSources['file-cover-back'], 
-            zoneSpine,          
-            zoneBackPlusSpine,  
-            'left',             
-            coverSettings['file-cover-back'].pageIndex
-        );
+        await drawStretched(ctx, coverSources['file-cover-back'], zoneSpine, zoneBackPlusSpine, 'left', coverSettings['file-cover-back'].pageIndex);
     } else if (spineMode.includes('wrap')) {
-        // Handle Mirrors
         const isFrontSource = spineMode.includes('front');
         const sourceEntry = isFrontSource ? coverSources['file-cover-front'] : coverSources['file-cover-back'];
         const settings = isFrontSource ? coverSettings['file-cover-front'] : coverSettings['file-cover-back'];
-        
-        await drawWrapper(
-            ctx, 
-            sourceEntry, 
-            zoneSpine.x, zoneSpine.y, zoneSpine.w, zoneSpine.h, 
-            'mirror', 
-            isFrontSource, 
-            0, 
-            settings.pageIndex
-        );
+        await drawWrapper(ctx, sourceEntry, zoneSpine.x, zoneSpine.y, zoneSpine.w, zoneSpine.h, 'mirror', isFrontSource, 0, settings.pageIndex);
     }
+    if (myRenderId !== coverRenderId) return; // Abort
 
-    // --- 3. Draw Front Cover ---
+    // 3. Front Cover
     if (spineMode === 'wrap-front-stretch') {
-        await drawStretched(
-            ctx, 
-            coverSources['file-cover-front'], 
-            zoneFront,          
-            zoneFrontPlusSpine, 
-            'right',            
-            coverSettings['file-cover-front'].pageIndex
-        );
+        await drawStretched(ctx, coverSources['file-cover-front'], zoneFront, zoneFrontPlusSpine, 'right', coverSettings['file-cover-front'].pageIndex);
     } else {
-        await drawImageOnCanvas(
-            ctx, 
-            coverSources['file-cover-front'], 
-            zoneFront.x, zoneFront.y, zoneFront.w, zoneFront.h, 
-            coverSettings['file-cover-front'].pageIndex,
-            coverSettings['file-cover-front'].scaleMode
-        );
+        await drawImageOnCanvas(ctx, coverSources['file-cover-front'], zoneFront.x, zoneFront.y, zoneFront.w, zoneFront.h, coverSettings['file-cover-front'].pageIndex, coverSettings['file-cover-front'].scaleMode);
     }
+    if (myRenderId !== coverRenderId) return; // Abort
 
-    // --- Draw Guides ---
+    // 4. Guides (Fast, no await needed)
     ctx.lineWidth = 1 / pixelsPerInch; 
-    
     const xTrimBackLeft = bleed;
     const xSpineLeft = bleed + trimWidth;
     const xSpineRight = bleed + trimWidth + spineWidth;
-    const xTrimFrontRight = bleed + trimWidth + spineWidth + trimWidth;
     const yBleedTop = bleed;
 
     // Bleed Fill
@@ -2415,9 +2338,9 @@ async function renderCoverPreview() {
     ctx.fillStyle = 'rgba(255, 0, 0, 0.2)';
     ctx.beginPath();
     ctx.rect(0, 0, totalWidth, totalHeight);
-    ctx.rect(bleed, bleed, trimWidth, trimHeight); // Back Trim
-    if (spineWidth > 0) ctx.rect(bleed + trimWidth, bleed, spineWidth, trimHeight); // Spine Trim
-    ctx.rect(bleed + trimWidth + spineWidth, bleed, trimWidth, trimHeight); // Front Trim
+    ctx.rect(bleed, bleed, trimWidth, trimHeight); 
+    if (spineWidth > 0) ctx.rect(bleed + trimWidth, bleed, spineWidth, trimHeight); 
+    ctx.rect(bleed + trimWidth + spineWidth, bleed, trimWidth, trimHeight); 
     ctx.fill("evenodd");
     ctx.restore();
 
@@ -2429,10 +2352,6 @@ async function renderCoverPreview() {
     ctx.rect(bleed + trimWidth + spineWidth, bleed, trimWidth, trimHeight);
     ctx.stroke();
 
-    // Bleed Line
-    ctx.strokeStyle = 'rgba(239, 68, 68, 0.8)';
-    ctx.strokeRect(0, 0, totalWidth, totalHeight);
-    
     // Safe Area
     const safe = 0.125;
     ctx.strokeStyle = 'rgba(34, 197, 94, 0.5)';
@@ -2443,12 +2362,38 @@ async function renderCoverPreview() {
          ctx.rect(xSpineLeft + safe, yBleedTop + safe, spineWidth - (2*safe), trimHeight - (2*safe));
     }
     ctx.stroke();
+
+    // 5. COMMIT TO MAIN CANVAS
+    if (myRenderId !== coverRenderId) return;
+
+    if (spineWidthDisplay) spineWidthDisplay.textContent = spineWidth.toFixed(3);
+    
+    // Update Placeholder visibility... (Same logic as before)
+    const placeholderEl = document.getElementById('cover-preview-placeholder');
+    if (placeholderEl) {
+        const slots = ['file-cover-front', 'file-cover-back', 'file-spine'];
+        const hasContent = slots.some(slot => coverSources[slot] || selectedFiles[slot]);
+        if (hasContent) placeholderEl.style.display = 'none';
+        else {
+            placeholderEl.style.display = 'flex';
+            placeholderEl.innerHTML = '<div class="text-center"><p class="text-gray-500 text-sm">Preview will update automatically</p></div>';
+        }
+    }
+
+    if (coverCanvas.width !== _previewOffscreen.width || coverCanvas.height !== _previewOffscreen.height) {
+        coverCanvas.width = _previewOffscreen.width;
+        coverCanvas.height = _previewOffscreen.height;
+    }
+    coverCanvas.style.width = `${totalWidth * pixelsPerInch}px`;
+    coverCanvas.style.height = `${totalHeight * pixelsPerInch}px`;
+
+    const mainCtx = coverCanvas.getContext('2d');
+    mainCtx.drawImage(_previewOffscreen, 0, 0);
 }
 
 async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageIndex = 1, scaleMode = 'fill') {
     if (!sourceEntry) return;
 
-    // --- ROBUST INPUT HANDLING ---
     let file, status, isServer, previewUrl;
 
     if (sourceEntry instanceof File) {
@@ -2464,58 +2409,58 @@ async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageI
 
     if (!file && !isServer) return;
 
-    // --- STATUS HANDLING ---
     if (status === 'processing' || status === 'uploading') {
         drawProcessingState(ctx, x, y, targetW, targetH);
         return;
     }
     
     if (status === 'error') {
-        ctx.fillStyle = '#fee2e2'; // Light Red
+        ctx.fillStyle = '#fee2e2'; 
         ctx.fillRect(x, y, targetW, targetH);
-        ctx.fillStyle = '#ef4444'; // Red Text
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.font = '12px sans-serif';
-        ctx.fillText("Processing Failed", x + targetW/2, y + targetH/2);
         return;
     }
 
     let imgBitmap;
+    // Use a distinct cache key for cover (scale 2) vs interior (scale 1)
+    const cacheKey = (isServer ? previewUrl : file.name) + '_' + pageIndex + '_' + (file.lastModified || 'server') + '_cover';
 
     try {
-        if (isServer) {
-            const loadingTask = pdfjsLib.getDocument(previewUrl);
-            const pdf = await loadingTask.promise;
-            const page = await pdf.getPage(pageIndex);
-            const viewport = page.getViewport({ scale: 2 });
-            const cvs = document.createElement('canvas');
-            cvs.width = viewport.width; cvs.height = viewport.height;
-            await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
-            imgBitmap = await createImageBitmap(cvs);
-
-        } else if (file && file.type === 'application/pdf') {
-            const arrayBuffer = await file.arrayBuffer();
-            const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
-            const page = await pdf.getPage(pageIndex);
-            const viewport = page.getViewport({ scale: 2 });
-            const cvs = document.createElement('canvas');
-            cvs.width = viewport.width; cvs.height = viewport.height;
-            await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
-            imgBitmap = await createImageBitmap(cvs);
-
-        } else if (file && file.type.startsWith('image/')) {
-            const supportedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp'];
-            if (supportedTypes.includes(file.type)) {
-                imgBitmap = await createImageBitmap(file);
-            } else {
-                return; 
-            }
+        if (imageCache.has(cacheKey)) {
+            imgBitmap = imageCache.get(cacheKey);
         } else {
-            return;
+            // Render New
+            if (isServer) {
+                const loadingTask = pdfjsLib.getDocument(previewUrl);
+                const pdf = await loadingTask.promise;
+                const page = await pdf.getPage(pageIndex);
+                const viewport = page.getViewport({ scale: 2 }); // High res for cover
+                const cvs = document.createElement('canvas');
+                cvs.width = viewport.width; cvs.height = viewport.height;
+                await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+                imgBitmap = await createImageBitmap(cvs);
+
+            } else if (file && file.type === 'application/pdf') {
+                const arrayBuffer = await file.arrayBuffer();
+                const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
+                const page = await pdf.getPage(pageIndex);
+                const viewport = page.getViewport({ scale: 2 });
+                const cvs = document.createElement('canvas');
+                cvs.width = viewport.width; cvs.height = viewport.height;
+                await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+                imgBitmap = await createImageBitmap(cvs);
+
+            } else if (file && file.type.startsWith('image/')) {
+                imgBitmap = await createImageBitmap(file);
+            }
+
+            if (imgBitmap) {
+                imageCache.set(cacheKey, imgBitmap);
+            }
         }
 
-        // --- DRAWING LOGIC ---
+        if (!imgBitmap) return;
+
+        // Drawing Logic
         const srcW = imgBitmap.width;
         const srcH = imgBitmap.height;
         const srcRatio = srcW / srcH;
@@ -2560,9 +2505,6 @@ async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageI
 
     } catch (e) {
         console.error("Error rendering cover image:", e);
-        // Fallback visual for error
-        ctx.fillStyle = '#fecaca'; 
-        ctx.fillRect(x, y, targetW, targetH);
     }
 }
 
