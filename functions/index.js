@@ -24,15 +24,22 @@ admin.initializeApp();
 const storage = new Storage();
 const db = admin.firestore();
 
+//
+
 // Gen 2 Function Definition:
 // Use the correct onObjectFinalized (with a 'd')
-exports.optimizePdf = onObjectFinalized({
+const optimizePdfLogic = onObjectFinalized({
   region: 'us-central1', // Specify your region
   memory: '4GiB',      // *** INCREASED MEMORY TO 4GiB ***
   cpu: 2,                // More CPU for Ghostscript
   timeoutSeconds: 540,   // Longer timeout for processing
   // NOTE: Gen 2 functions use the default Compute Engine service account.
   // Ensure it has permissions for Storage (Storage Object Admin) and Firestore (Cloud Datastore User).
+  // Circuit Breaker Config:
+  minInstances: 0,
+  maxInstances: 10,      // Keep this safe to prevent cost explosion
+  retry: false,          // Disable infrastructure-level retries to stop death spirals
+  concurrency: 1         // Process 1 file per instance to prevent OOM crashes
 }, async (event) => {
 
   // The 'object' is now 'event.data'
@@ -42,6 +49,15 @@ exports.optimizePdf = onObjectFinalized({
   const fileBucket = file.bucket;
 
   logger.log('Function triggered for file:', filePath, 'Content-Type:', contentType);
+
+  // --- 1. CIRCUIT BREAKER: Ignore Builder & Temporary Files ---
+  // Stop the fan-out. We only want to process the user's final upload.
+  if (filePath.includes('/sources/') || 
+      filePath.includes('/temp_sources/') || 
+      filePath.includes('guest_uploads/') || 
+      filePath.includes('/assets/')) {
+      return logger.log(`Skipping builder/temp file: ${filePath}`);
+  }
 
   // Exit if this is the preview file we generated
   if (filePath.endsWith('_preview.pdf')) {
@@ -56,12 +72,6 @@ exports.optimizePdf = onObjectFinalized({
   // Exit if the file is not in the 'proofs/' directory
   if (!filePath.startsWith('proofs/')) {
       return logger.log(`File is not in the proofs/ directory, skipping optimization.`);
-  }
-
-  // Exit if the file is in the 'sources/' or 'temp_sources/' subdirectory
-  // We only want to process the FINAL built PDFs that are in the root of proofs/{projectId}/
-  if (filePath.includes('/sources/') || filePath.includes('/temp_sources/')) {
-      return logger.log(`File is a source file, skipping optimization/version creation.`);
   }
 
 
@@ -173,23 +183,45 @@ exports.optimizePdf = onObjectFinalized({
 
 
     // --- STEP 2: Optimize the PDF using Ghostscript ---
-    await spawn('gs', [
-        '-sDEVICE=pdfwrite',
-        '-dCompatibilityLevel=1.4',
-        '-dPDFSETTINGS=/ebook',
-        '-dJPEGQ=90',
-        '-dColorImageResolution=150',
-        '-dGrayImageResolution=150',
-        '-dMonoImageResolution=150',
-        '-dDetectDuplicateImages=false',
-        '-dConvertCMYKImagesToRGB=true',
-        '-dNOPAUSE',
-        '-dQUIET',
-        '-dBATCH',
-        `-sOutputFile=${tempPreviewPath}`,
-        tempFilePath
-    ]);
-    logger.log('PDF optimized and saved to', tempPreviewPath);
+    try {
+        await spawn('gs', [
+            '-sDEVICE=pdfwrite',
+            '-dCompatibilityLevel=1.4',
+            '-dPDFSETTINGS=/screen',
+            '-dJPEGQ=75',
+            '-dColorImageResolution=72',
+            '-dGrayImageResolution=72',
+            '-dMonoImageResolution=72',
+            '-dDetectDuplicateImages=false',
+            '-dConvertCMYKImagesToRGB=true',
+            '-dNOPAUSE',
+            '-dQUIET',
+            '-dBATCH',
+            `-sOutputFile=${tempPreviewPath}`,
+            tempFilePath
+        ]);
+        logger.log('PDF optimized and saved to', tempPreviewPath);
+    } catch (gsError) {
+        // --- CIRCUIT BREAKER ENABLED ---
+        // If Ghostscript crashes (e.g. corrupt file, OOM), we LOG it and RETURN NULL.
+        // Returning null tells Eventarc "Job Done", preventing the infinite retry loop.
+        logger.error('Ghostscript failed. Marking as handled to stop retries.', gsError);
+        
+        // Optional: Update Firestore to say "Processing Failed" so user knows
+        // We use a separate non-transactional update here for safety
+        const verSnap = await projectRef.get();
+        if (verSnap.exists) {
+             const vData = verSnap.data();
+             const vList = vData.versions || [];
+             const vIdx = vList.findIndex(v => v.filePath === filePath);
+             if (vIdx !== -1) {
+                 vList[vIdx].processingStatus = 'error';
+                 vList[vIdx].processingError = 'Optimization failed: ' + gsError.message;
+                 await projectRef.update({ versions: vList });
+             }
+        }
+        return null; 
+    }
 
     // Upload the optimized PDF
     const destination = filePath.replace(path.basename(filePath), previewFileName);
@@ -280,6 +312,7 @@ exports.optimizePdf = onObjectFinalized({
         }
       });
     } catch (dbError) {
+      // Do NOT throw here. Log and exit to stop retry loop.
       logger.error('FATAL: Could not update Firestore with error state.', dbError);
     }
 
@@ -295,6 +328,10 @@ exports.optimizePdf = onObjectFinalized({
 
   return null;
 });
+
+if (process.env.FUNCTION_TARGET === 'optimizePdf' || process.env.FUNCTIONS_EMULATOR === 'true') {
+    exports.optimizePdf = optimizePdfLogic;
+}
 
 // --- Shared Constants (Mirrored from Frontend) ---
 const HARDCODED_PAPER_TYPES = [

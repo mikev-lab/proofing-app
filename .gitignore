@@ -2,3 +2,4 @@ node_modules
 firestore-debug.log
 server.log
 js/firebase-config.js
+*.yaml

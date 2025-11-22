@@ -2088,8 +2088,8 @@ uploadForm.addEventListener('submit', async (e) => {
             const timestamp = Date.now();
             const ext = file.name.split('.').pop();
 
-            // Use a 'sources/' subfolder to keep raw uploads separate from processed proofs
-            const storagePath = `proofs/${projectId}/sources/${timestamp}_${item.type}_${file.name}`;
+            // Use a 'guest_uploads/' folder to prevent triggering the 'optimizePdf' function (which listens to proofs/)
+            const storagePath = `guest_uploads/${projectId}/${timestamp}_${item.type}_${file.name}`;
             const storageRef = ref(storage, storagePath);
 
             progressText.textContent = `Uploading ${file.name}...`;
