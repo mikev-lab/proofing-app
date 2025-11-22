@@ -8,7 +8,7 @@ import Sortable from 'https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/modular/sor
 
 import { firebaseConfig } from "./firebase.js";
 import { HARDCODED_PAPER_TYPES, BINDING_TYPES } from "./guest_constants.js";
-import { drawGuides } from "./guides.js";
+import { drawGuides, STANDARD_PAPER_SIZES, INCH_TO_POINTS, MM_TO_POINTS } from "./guides.js";
 
 // Set worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://mozilla.github.io/pdf.js/build/pdf.worker.mjs';
@@ -35,9 +35,17 @@ const progressBar = document.getElementById('progress-bar');
 const progressText = document.getElementById('progress-text');
 const progressPercent = document.getElementById('progress-percent');
 
+// Navigation Elements
+const navBackBtn = document.getElementById('nav-back-btn');
+
 // Specs Modal Elements
 const specsModal = document.getElementById('specs-modal');
 const specsForm = document.getElementById('specs-form');
+const specSizePreset = document.getElementById('spec-size-preset');
+const customSizeContainer = document.getElementById('custom-size-container');
+const unitToggles = document.querySelectorAll('.unit-toggle');
+const unitLabels = document.querySelectorAll('.unit-label');
+const specUnit = document.getElementById('spec-unit');
 const specWidth = document.getElementById('spec-width');
 const specHeight = document.getElementById('spec-height');
 const specBinding = document.getElementById('spec-binding'); // Hidden input now
@@ -63,6 +71,7 @@ const addInteriorFileBtn = document.getElementById('add-interior-file-btn');
 const hiddenInteriorInput = document.getElementById('hidden-interior-input');
 const fileInteriorDrop = document.getElementById('file-interior-drop');
 const viewerZoom = document.getElementById('viewer-zoom');
+const coverZoomInput = document.getElementById('cover-zoom');
 const jumpToPageInput = document.getElementById('jump-to-page');
 const setAllFitBtn = document.getElementById('set-all-fit');
 const setAllFillBtn = document.getElementById('set-all-fill');
@@ -83,6 +92,22 @@ const settingsPreviewCanvas = document.getElementById('settings-preview-canvas')
 const settingAlignment = document.getElementById('setting-alignment');
 const scaleModeBtns = document.querySelectorAll('.scale-mode-btn');
 
+// Toolbar Elements
+const toolbarJump = document.getElementById('toolbar-jump');
+const toolbarActionsBooklet = document.getElementById('toolbar-actions-booklet');
+const toolbarSpreadUpload = document.getElementById('toolbar-spread-upload');
+const builderTabs = document.getElementById('builder-tabs');
+
+const pdfDocCache = new Map(); // Cache for loaded PDF documents
+
+const undoStack = [];
+const GRID_SIZE = 0.01;
+
+const coverSettings = {
+    'file-cover-front': { pageIndex: 1, scaleMode: 'fill' },
+    'file-cover-back':  { pageIndex: 1, scaleMode: 'fill' },
+    'file-spine':       { pageIndex: 1, scaleMode: 'fill' }
+};
 
 // State
 let projectId = null;
@@ -90,12 +115,15 @@ let guestToken = null;
 let projectType = 'single'; // Default
 let selectedFiles = {}; // Keep for Legacy/Single logic
 let projectSpecs = {}; // Store loaded/saved specs here
-
+let builderInitialized = false;
+let coverZoom = 1.0;
 // New Data Model for Virtual Book
 let sourceFiles = {}; // Map: id -> File object
 let pages = []; // Array: { id, sourceFileId, pageIndex, settings: { scaleMode, alignment }, isSpread: boolean }
 let viewerScale = 0.5; // Zoom level for viewer
 const imageCache = new Map(); // Cache for rendered ImageBitmaps: key=pageId -> { bitmap, scale }
+let hasFitCover = false;
+let coverSources = {};
 
 // --- Helper: Parse URL Params ---
 function getUrlParams() {
@@ -104,6 +132,38 @@ function getUrlParams() {
         projectId: params.get('projectId'),
         guestToken: params.get('guestToken')
     };
+}
+
+// --- Helper: Resolve Dimensions ---
+function resolveDimensions(specDimensions) {
+    // If it's already an object with width/height
+    if (typeof specDimensions === 'object' && specDimensions !== null && specDimensions.width && specDimensions.height) {
+        // Normalize MM to Inches for internal viewer consistency
+        if (specDimensions.units === 'mm') {
+            return {
+                width: parseFloat(specDimensions.width) / 25.4,
+                height: parseFloat(specDimensions.height) / 25.4,
+                units: 'in' // Normalize to inches for viewer
+            };
+        }
+        return specDimensions;
+    }
+
+    // If it's a string (Standard Preset), look it up
+    if (typeof specDimensions === 'string' && STANDARD_PAPER_SIZES[specDimensions]) {
+        const size = STANDARD_PAPER_SIZES[specDimensions];
+        // Convert MM to Inches for internal viewer consistency (since viewer code usually expects inches)
+        // 1 inch = 25.4 mm
+        return {
+            width: size.width_mm / 25.4,
+            height: size.height_mm / 25.4,
+            units: 'in'
+        };
+    }
+
+    // Fallback or legacy string "WxH" parsing could go here if needed,
+    // but for now return defaults or null
+    return { width: 8.5, height: 11, units: 'in' }; // Default Letter
 }
 
 // --- Helper: Show Error ---
@@ -116,6 +176,34 @@ function showError(msg) {
 
 // --- Helper: Populate Selects ---
 function populateSelects() {
+    // Populate Sizes
+    const groups = {};
+    Object.entries(STANDARD_PAPER_SIZES).forEach(([key, val]) => {
+        if (!groups[val.group]) groups[val.group] = [];
+        groups[val.group].push({ key, ...val });
+    });
+
+    // Clear but keep default and custom
+    // Actually easier to rebuild
+    specSizePreset.innerHTML = '<option value="" disabled selected>Select a Size</option>';
+
+    for (const [groupName, items] of Object.entries(groups)) {
+        const optgroup = document.createElement('optgroup');
+        optgroup.label = groupName;
+        items.forEach(item => {
+            const opt = document.createElement('option');
+            opt.value = item.key;
+            opt.textContent = `${item.name} (${item.width_mm} x ${item.height_mm} mm)`;
+            optgroup.appendChild(opt);
+        });
+        specSizePreset.appendChild(optgroup);
+    }
+    const customOpt = document.createElement('option');
+    customOpt.value = 'custom';
+    customOpt.textContent = 'Custom Size...';
+    specSizePreset.appendChild(customOpt);
+
+
     // Populate Paper
     specPaper.innerHTML = '<option value="" disabled selected>Select Interior Paper</option>';
     specCoverPaper.innerHTML = '<option value="" disabled selected>Select Cover Paper</option>';
@@ -128,6 +216,80 @@ function populateSelects() {
         specCoverPaper.appendChild(opt);
     });
 }
+
+// --- Handle Size Preset Change ---
+if (specSizePreset) {
+    specSizePreset.addEventListener('change', (e) => {
+        const val = e.target.value;
+        if (val === 'custom') {
+            customSizeContainer.classList.remove('hidden');
+            specWidth.required = true;
+            specHeight.required = true;
+            // Fix: Enable inputs so they can be validated/focused
+            specWidth.disabled = false;
+            specHeight.disabled = false;
+        } else {
+            customSizeContainer.classList.add('hidden');
+            specWidth.required = false;
+            specHeight.required = false;
+            // Fix: Disable inputs so browser ignores them during validation
+            specWidth.disabled = true;
+            specHeight.disabled = true;
+
+            // Auto-fill for preview/logic if needed...
+        }
+    });
+}
+// --- Handle Unit Toggle ---
+unitToggles.forEach(btn => {
+    btn.addEventListener('click', () => {
+        const newUnit = btn.dataset.unit;
+        const oldUnit = specUnit.value;
+        
+        // If clicking the same unit, do nothing
+        if (newUnit === oldUnit) return;
+
+        // 1. Convert Values
+        const w = parseFloat(specWidth.value);
+        const h = parseFloat(specHeight.value);
+
+        // Helper to remove trailing zeros after fixing to decimal
+        const format = (num) => parseFloat(num.toFixed(3));
+
+        if (!isNaN(w)) {
+            if (oldUnit === 'in' && newUnit === 'mm') {
+                specWidth.value = format(w * 25.4);
+            } else if (oldUnit === 'mm' && newUnit === 'in') {
+                specWidth.value = format(w / 25.4);
+            }
+        }
+
+        if (!isNaN(h)) {
+            if (oldUnit === 'in' && newUnit === 'mm') {
+                specHeight.value = format(h * 25.4);
+            } else if (oldUnit === 'mm' && newUnit === 'in') {
+                specHeight.value = format(h / 25.4);
+            }
+        }
+
+        // 2. Update State
+        specUnit.value = newUnit;
+
+        // 3. Update UI State
+        unitToggles.forEach(b => {
+            if (b.dataset.unit === newUnit) {
+                b.classList.remove('text-gray-400', 'hover:text-white');
+                b.classList.add('bg-indigo-600', 'text-white', 'font-medium');
+            } else {
+                b.classList.add('text-gray-400', 'hover:text-white');
+                b.classList.remove('bg-indigo-600', 'text-white', 'font-medium');
+            }
+        });
+
+        // 4. Update Labels
+        unitLabels.forEach(l => l.textContent = newUnit);
+    });
+});
 
 // --- Handle Project Type Selection ---
 Array.from(projectTypeRadios).forEach(radio => {
@@ -143,8 +305,7 @@ Array.from(projectTypeRadios).forEach(radio => {
             paperSection.classList.add('hidden');
             specPageCount.required = false;
             specPaper.required = false;
-        // Set cover fields as not required
-        specCoverPaper.required = false;
+            specCoverPaper.required = false;
         } else if (val === 'saddleStitch') {
             pageCountSection.classList.remove('hidden');
             paperSection.classList.add('hidden');
@@ -160,33 +321,272 @@ Array.from(projectTypeRadios).forEach(radio => {
     });
 });
 
+// --- Helper: Populate Specs Form ---
+function populateSpecsForm() {
+    // 1. Project Type / Binding
+    let radioValue = '';
+    if (projectSpecs.binding === 'loose') {
+        radioValue = 'loose';
+    } else if (projectSpecs.binding === 'saddleStitch') {
+        radioValue = 'saddleStitch';
+    } else if (projectSpecs.binding === 'perfectBound') {
+        radioValue = 'perfectBound';
+    }
 
-// --- Helper: Update File Name Display (Legacy/Cover) ---
+    if (radioValue) {
+        const radio = document.querySelector(`input[name="projectType"][value="${radioValue}"]`);
+        if (radio) {
+            radio.checked = true;
+            radio.dispatchEvent(new Event('change')); // Trigger visibility logic
+        }
+    }
+
+    // 2. Dimensions
+    if (projectSpecs.dimensions) {
+        if (typeof projectSpecs.dimensions === 'object') {
+            // Check if it matches a preset? Hard to check exact float matches.
+            // Default to Custom for safety unless we want to reverse-lookup.
+            // Or just set values.
+            specSizePreset.value = 'custom';
+            specSizePreset.dispatchEvent(new Event('change'));
+
+            specWidth.value = projectSpecs.dimensions.width || '';
+            specHeight.value = projectSpecs.dimensions.height || '';
+
+            if (projectSpecs.dimensions.units) {
+                const btn = document.querySelector(`.unit-toggle[data-unit="${projectSpecs.dimensions.units}"]`);
+                if (btn) btn.click();
+            }
+        } else if (typeof projectSpecs.dimensions === 'string') {
+             specSizePreset.value = projectSpecs.dimensions;
+             specSizePreset.dispatchEvent(new Event('change'));
+        }
+    }
+
+    // 3. Other Fields
+    if (specPageCount) specPageCount.value = projectSpecs.pageCount || '';
+    if (specPaper) specPaper.value = projectSpecs.paperType || '';
+    if (specCoverPaper) specCoverPaper.value = projectSpecs.coverPaperType || '';
+}
+
+// --- Back Button Logic ---
+if (navBackBtn) {
+    navBackBtn.addEventListener('click', () => {
+        // Hide Builder
+        uploadContainer.classList.add('hidden');
+        navBackBtn.classList.add('hidden');
+
+        // Populate Form with current data
+        populateSpecsForm();
+
+        // Show Modal
+        specsModal.classList.remove('hidden');
+    });
+}
+
+
+// --- Enhanced Cover Upload with Page Selection ---
 function updateFileName(inputId, displayId) {
     const input = document.getElementById(inputId);
     const display = document.getElementById(displayId);
-    // Ensure elements exist before adding listeners (crucial for booklet mode where some might not exist)
-    if(!input) return;
+    if (!input) return;
 
     input.addEventListener('change', async (e) => {
-        if (e.target.files.length > 0) {
-            const file = e.target.files[0];
-            if(display) display.textContent = file.name;
-            selectedFiles[inputId] = file;
+        const file = e.target.files[0];
 
-            // Trigger preview update if it's a cover file
-            if (inputId.includes('cover') || inputId.includes('spine')) {
-                await renderCoverPreview();
+        // Clear controls
+        const existingControls = input.parentElement.querySelectorAll('.custom-controls');
+        existingControls.forEach(el => el.remove());
+
+        if (file) {
+            if (display) display.textContent = file.name;
+            selectedFiles[inputId] = file; 
+
+            // --- FIX: Strict Check for Browser-Supported Types ---
+            // Only treat these as local. Everything else (PSD, AI, TIFF) goes to server.
+            const supportedImages = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp'];
+            const isPDF = file.type === 'application/pdf';
+            const isSupportedImage = supportedImages.includes(file.type);
+            
+            // Fallback: Check extension if mime type is generic or missing
+            const isPsd = file.name.toLowerCase().endsWith('.psd');
+            
+            const isLocal = (isPDF || isSupportedImage) && !isPsd;
+
+            if (!isLocal) {
+                // *** SERVER SIDE PROCESSING (PSD, AI, etc) ***
+                processCoverFile(file, inputId);
+            } else {
+                // *** LOCAL RENDERING ***
+                coverSources[inputId] = { 
+                    file: file, 
+                    status: 'ready', 
+                    isServer: false 
+                };
             }
+
+            // --- Create UI Controls ---
+            const controls = document.createElement('div');
+            controls.className = 'custom-controls mt-2 flex flex-col gap-2 z-20 relative';
+
+            // 1. Page Selector (Only for Local PDF)
+            const checkAndSetupPdfControls = async (urlOrBlob) => {
+                try {
+                    const pdf = await pdfjsLib.getDocument(urlOrBlob).promise;
+                    if (pdf.numPages > 1) {
+                        const pageCtrl = document.createElement('div');
+                        pageCtrl.className = "flex items-center justify-center gap-1 text-xs";
+                        pageCtrl.innerHTML = `
+                             <button type="button" class="bg-slate-700 px-2 py-1 rounded hover:bg-indigo-600 text-white" id="prev-${inputId}"><</button>
+                             <div class="flex items-center gap-1 bg-slate-800 rounded px-1 border border-slate-600">
+                                <span class="text-gray-400 text-[10px]">Pg</span>
+                                <input type="number" id="pg-input-${inputId}" value="1" min="1" max="${pdf.numPages}" 
+                                    class="w-8 bg-transparent text-center text-white font-mono focus:outline-none appearance-none text-xs py-1">
+                                <span class="text-gray-400 text-[10px]">/ ${pdf.numPages}</span>
+                             </div>
+                             <button type="button" class="bg-slate-700 px-2 py-1 rounded hover:bg-indigo-600 text-white" id="next-${inputId}">></button>
+                        `;
+                        controls.prepend(pageCtrl); 
+
+                        // Logic
+                        coverSettings[inputId].pageIndex = 1;
+                        
+                        setTimeout(() => {
+                            const setPage = (val) => {
+                                let newPg = parseInt(val);
+                                if (isNaN(newPg) || newPg < 1) newPg = 1;
+                                if (newPg > pdf.numPages) newPg = pdf.numPages;
+                                coverSettings[inputId].pageIndex = newPg;
+                                const el = document.getElementById(`pg-input-${inputId}`);
+                                if(el) el.value = newPg;
+                                renderCoverPreview();
+                            };
+                            
+                            const inputEl = document.getElementById(`pg-input-${inputId}`);
+                            if(inputEl) {
+                                inputEl.onclick = (ev) => ev.stopPropagation();
+                                inputEl.onchange = (ev) => setPage(ev.target.value);
+                            }
+                            document.getElementById(`prev-${inputId}`).onclick = (ev) => { ev.stopPropagation(); setPage(coverSettings[inputId].pageIndex - 1); };
+                            document.getElementById(`next-${inputId}`).onclick = (ev) => { ev.stopPropagation(); setPage(coverSettings[inputId].pageIndex + 1); };
+                        }, 0);
+                    }
+                } catch(e) {}
+            };
+
+            if (isPDF) {
+                checkAndSetupPdfControls(URL.createObjectURL(file));
+            }
+
+            // 2. Scale Buttons
+            const scaleCtrl = document.createElement('div');
+            scaleCtrl.className = "flex justify-center gap-1 mt-1";
+            ['fit', 'fill', 'stretch'].forEach(mode => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = `text-[10px] px-2 py-1 rounded border ${coverSettings[inputId].scaleMode === mode ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-600 text-gray-400 hover:text-white'}`;
+                btn.textContent = mode.charAt(0).toUpperCase() + mode.slice(1);
+                btn.onclick = (ev) => {
+                    ev.stopPropagation();
+                    ev.preventDefault();
+                    coverSettings[inputId].scaleMode = mode;
+                    Array.from(scaleCtrl.children).forEach(b => b.className = 'text-[10px] px-2 py-1 rounded border bg-slate-800 border-slate-600 text-gray-400 hover:text-white');
+                    btn.className = 'text-[10px] px-2 py-1 rounded border bg-indigo-600 border-indigo-500 text-white';
+                    renderCoverPreview();
+                };
+                scaleCtrl.appendChild(btn);
+            });
+            controls.appendChild(scaleCtrl);
+            input.parentElement.appendChild(controls);
+
+            // Only render immediately if it's local. If server, processCoverFile handles the render.
+            if (isLocal) renderCoverPreview();
+
         } else {
-            if(display) display.textContent = '';
+            if (display) display.textContent = '';
             delete selectedFiles[inputId];
-             if (inputId.includes('cover') || inputId.includes('spine')) {
-                await renderCoverPreview();
-            }
+            delete coverSources[inputId]; 
+            renderCoverPreview();
         }
         validateForm();
     });
+}
+
+async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pageIndex = 1) {
+    if (!sourceEntry) return;
+
+    // --- Status Handling ---
+    const status = sourceEntry.status || 'ready';
+    if (status === 'processing' || status === 'uploading') {
+        drawProcessingState(ctx, targetZone.x, targetZone.y, targetZone.w, targetZone.h);
+        return;
+    }
+    if (status === 'error') {
+        ctx.fillStyle = '#fee2e2';
+        ctx.fillRect(targetZone.x, targetZone.y, targetZone.w, targetZone.h);
+        return;
+    }
+
+    // --- Load Image ---
+    const file = sourceEntry.file;
+    let imgBitmap;
+
+    try {
+        if (sourceEntry.isServer) {
+             const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
+             const pdf = await loadingTask.promise;
+             const page = await pdf.getPage(pageIndex);
+             const viewport = page.getViewport({ scale: 2 });
+             const cvs = document.createElement('canvas');
+             cvs.width = viewport.width; cvs.height = viewport.height;
+             await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+             imgBitmap = await createImageBitmap(cvs);
+
+        } else if (file && file.type === 'application/pdf') {
+             const pdf = await pdfjsLib.getDocument(URL.createObjectURL(file)).promise;
+             const page = await pdf.getPage(pageIndex);
+             const viewport = page.getViewport({ scale: 2 });
+             const cvs = document.createElement('canvas');
+             cvs.width = viewport.width; cvs.height = viewport.height;
+             await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+             imgBitmap = await createImageBitmap(cvs);
+
+        } else if (file && file.type.startsWith('image/')) {
+            imgBitmap = await createImageBitmap(file);
+        } else {
+            return;
+        }
+    } catch (e) { return; }
+
+    // --- Draw Logic ---
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(targetZone.x, targetZone.y, targetZone.w, targetZone.h);
+    ctx.clip();
+
+    const imgW = imgBitmap.width;
+    const imgH = imgBitmap.height;
+
+    // Scale to fill TOTAL zone
+    let scale = totalZone.h / imgH; 
+    if (imgW * scale < totalZone.w) {
+        scale = totalZone.w / imgW;
+    }
+
+    const drawW = imgW * scale;
+    const drawH = imgH * scale;
+    const drawY = totalZone.y + (totalZone.h - drawH) / 2;
+
+    let drawX;
+    if (anchor === 'right') {
+        const totalRight = totalZone.x + totalZone.w;
+        drawX = totalRight - drawW;
+    } else {
+        drawX = totalZone.x;
+    }
+
+    ctx.drawImage(imgBitmap, 0, 0, imgW, imgH, drawX, drawY, drawW, drawH);
+    ctx.restore();
 }
 
 // --- Helper: Setup Drag and Drop (Generic) ---
@@ -241,9 +641,14 @@ function validateForm() {
 
     // Also consider cover files if booklet
     if (projectType === 'booklet') {
-         if (selectedFiles['file-cover-front'] && selectedFiles['file-cover-back']) {
-             // Maybe allow just cover? For now let's say valid if pages exist OR full cover exists.
-             isValid = true;
+         // Check if either pages OR a full cover exists
+         if (pages.length === 0) {
+             // If no pages, require cover components
+             if (selectedFiles['file-cover-front'] && selectedFiles['file-cover-back']) {
+                 isValid = true;
+             } else {
+                 isValid = false;
+             }
          }
     }
 
@@ -269,17 +674,26 @@ if (tabInterior && tabCover) {
     });
 
     tabCover.addEventListener('click', () => {
-        tabCover.classList.add('text-indigo-400', 'border-indigo-500');
-        tabCover.classList.remove('text-gray-400', 'hover:text-gray-200');
-        tabInterior.classList.add('text-gray-400', 'hover:text-gray-200');
-        tabInterior.classList.remove('text-indigo-400', 'border-indigo-500');
+            // ... (Existing UI toggles for classes) ...
+            tabCover.classList.add('text-indigo-400', 'border-indigo-500');
+            tabCover.classList.remove('text-gray-400', 'hover:text-gray-200');
+            tabInterior.classList.add('text-gray-400', 'hover:text-gray-200');
+            tabInterior.classList.remove('text-indigo-400', 'border-indigo-500');
 
-        contentCover.classList.remove('hidden');
-        contentInterior.classList.add('hidden');
+            contentCover.classList.remove('hidden');
+            contentInterior.classList.add('hidden');
 
-        // Render preview when tab opens (in case of window resize or init)
-        renderCoverPreview();
-    });
+            // --- NEW AUTO-FIT LOGIC ---
+            if (!hasFitCover) {
+                // Slight delay to let the DOM layout update (remove 'hidden') before measuring
+                setTimeout(() => {
+                    fitCoverToView();
+                    hasFitCover = true;
+                }, 10);
+            } else {
+                renderCoverPreview();
+            }
+        });
 }
 
 
@@ -291,8 +705,16 @@ async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = n
     for (const file of Array.from(files)) {
         const sourceId = Date.now() + Math.random().toString(16).slice(2);
 
-        // Check if file is supported locally (PDF, JPG, PNG) or requires server (PSD, AI)
-        const isLocal = file.type === 'application/pdf' || file.type.startsWith('image/');
+        // --- FIX: Strict Check for Browser-Supported Types ---
+        const supportedImages = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp'];
+        const isPDF = file.type === 'application/pdf';
+        const isSupportedImage = supportedImages.includes(file.type);
+        
+        // Fallback: Check extension if mime type is generic or missing
+        const isPsd = file.name.toLowerCase().endsWith('.psd');
+        
+        // Only treat as local if it's a PDF or a supported web image (and NOT a PSD)
+        const isLocal = (isPDF || isSupportedImage) && !isPsd;
 
         if (isLocal) {
             sourceFiles[sourceId] = file;
@@ -300,11 +722,10 @@ async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = n
             let numPages = 1;
             if (file.type === 'application/pdf') {
                  try {
-                    // Use Blob URL to avoid loading entire file into memory
                     const fileUrl = URL.createObjectURL(file);
                     const pdf = await pdfjsLib.getDocument(fileUrl).promise;
                     numPages = pdf.numPages;
-                    URL.revokeObjectURL(fileUrl); // Cleanup
+                    // For caching/performance, we don't revoke immediately here in the loop
                  } catch (e) {
                      console.warn("Could not parse PDF", e);
                  }
@@ -314,19 +735,16 @@ async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = n
 
         } else {
             // SERVER SIDE PROCESSING (PSD, AI)
-            // 1. Create Placeholder Pages immediately so UI updates
-            // We assume 1 page for now (Gotenberg splitting for PSD is complex to sync here immediately without waiting)
-            // Actually, we can show a "Processing" state on the card itself.
-
-            sourceFiles[sourceId] = { file: file, status: 'uploading', previewUrl: null }; // Placeholder
-
-            // We add 1 placeholder page for now. If the server returns more (e.g. multi-page PDF from AI),
-            // we would need to dynamically insert them. For now, let's assume single file = 1 page
-            // or we update later. To keep it simple, we'll treat complex files as 1 object for now unless we wait.
+            sourceFiles[sourceId] = { 
+                file: file, 
+                status: 'uploading', 
+                previewUrl: null,
+                isServer: true // Explicitly flag as server source
+            }; 
 
             addPagesToModel(newPages, sourceId, 1, isSpreadUpload);
 
-            // 2. Start Background Process
+            // Start Background Process
             processServerFile(file, sourceId);
         }
     }
@@ -375,18 +793,85 @@ function addPagesToModel(targetArray, sourceId, numPages, isSpreadUpload) {
     }
 }
 
+async function processCoverFile(file, slotId) {
+    try {
+        // 1. Set Initial State (Uploading)
+        coverSources[slotId] = { 
+            file: file, 
+            status: 'uploading', 
+            isServer: true 
+        };
+        renderCoverPreview(); 
+
+        const userId = auth.currentUser ? auth.currentUser.uid : 'guest';
+        const tempId = Date.now().toString();
+        const storagePath = `temp_uploads/${userId}/${tempId}/${file.name}`;
+        const storageRef = ref(storage, storagePath);
+        
+        await uploadBytesResumable(storageRef, file);
+
+        // 2. Update State (Processing)
+        coverSources[slotId].status = 'processing';
+        renderCoverPreview();
+
+        const generatePreviews = httpsCallable(functions, 'generatePreviews');
+        const result = await generatePreviews({
+            filePath: storagePath,
+            originalName: file.name
+        });
+
+        if (result.data && result.data.pages && result.data.pages.length > 0) {
+            const firstPage = result.data.pages[0];
+            const previewRef = ref(storage, firstPage.tempPreviewPath);
+            const previewUrl = await getDownloadURL(previewRef);
+
+            coverSources[slotId] = {
+                file: file,
+                status: 'ready',
+                previewUrl: previewUrl,
+                isServer: true
+            };
+            
+            renderCoverPreview();
+        } else {
+            throw new Error("No preview generated");
+        }
+
+    } catch (err) {
+        console.error("Cover processing failed", err);
+        coverSources[slotId] = { 
+            file: file, 
+            status: 'error', 
+            error: err.message,
+            isServer: true 
+        };
+        renderCoverPreview();
+    }
+}
+
 async function processServerFile(file, sourceId) {
     try {
-        // 1. Upload to Temp Storage
+        const userId = auth.currentUser ? auth.currentUser.uid : 'guest';
         const tempId = Date.now().toString();
-        const storageRef = ref(storage, `temp_uploads/${tempId}/${file.name}`);
+        const storagePath = `temp_uploads/${userId}/${tempId}/${file.name}`;
+        const storageRef = ref(storage, storagePath);
 
-        // Find all cards for this source to update status
+        // --- FIX: Update UI with Spinner AND Text ---
         const updateStatus = (msg) => {
+            if(sourceFiles[sourceId]) sourceFiles[sourceId].status = 'processing';
+            
             const relatedPages = pages.filter(p => p.sourceFileId === sourceId);
             relatedPages.forEach(p => {
                 const placeholder = document.getElementById(`placeholder-${p.id}`);
-                if (placeholder) placeholder.innerHTML = `<p class="text-xs text-indigo-400 animate-pulse">${msg}</p>`;
+                if (placeholder) {
+                    // Re-inject the spinner with the new message
+                    placeholder.innerHTML = `
+                        <div class="flex flex-col items-center gap-3">
+                            <div class="w-8 h-8 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div>
+                            <p class="text-xs text-indigo-600 font-bold tracking-wide uppercase animate-pulse">${msg}</p>
+                        </div>
+                    `;
+                }
             });
         };
 
@@ -395,38 +880,25 @@ async function processServerFile(file, sourceId) {
 
         updateStatus("Processing...");
 
-        // 2. Call Generate Previews
         const generatePreviews = httpsCallable(functions, 'generatePreviews');
         const result = await generatePreviews({
-            filePath: `temp_uploads/${tempId}/${file.name}`,
+            filePath: storagePath,
             originalName: file.name
         });
 
-        // 3. Update Source File Data with Result
         if (result.data && result.data.pages && result.data.pages.length > 0) {
-            // We only support 1 page preview for complex files in this simplified flow for now,
-            // or strictly speaking, we map the first page of the result to our existing page entry.
-            // Ideally we'd expand if it turned out to be multi-page.
-
             const firstPage = result.data.pages[0];
-
-            // Get Signed URL for the preview path (tempPreviewPath)
-            // The function returns `tempPreviewPath` which is a storage path.
             const previewRef = ref(storage, firstPage.tempPreviewPath);
             const previewUrl = await getDownloadURL(previewRef);
 
-            // Update the source registry
             sourceFiles[sourceId] = {
                 file: file,
                 status: 'ready',
                 previewUrl: previewUrl,
                 isServer: true
             };
-
-            // Clear Image Cache if any (unlikely)
+            
             imageCache.delete(sourceId + '_1_' + file.lastModified);
-
-            // Trigger Re-render
             renderBookViewer();
         } else {
             throw new Error("No preview generated");
@@ -435,7 +907,7 @@ async function processServerFile(file, sourceId) {
     } catch (err) {
         console.error("Server file processing failed", err);
         sourceFiles[sourceId] = { file: file, status: 'error', error: err.message };
-        renderBookViewer(); // Will show error state
+        renderBookViewer();
     }
 }
 
@@ -508,16 +980,8 @@ function renderBookViewer() {
 
     container.innerHTML = ''; // Clear
 
-    if (pages.length === 0) {
-         // Show Initial Insert Bar
-         container.appendChild(createInsertBar(0));
-
-         const empty = document.createElement('div');
-         empty.className = "flex flex-col items-center justify-center h-32 text-gray-500";
-         empty.innerHTML = "<p>Drag files or use the arrows to add pages.</p>";
-         container.appendChild(empty);
-         return;
-    }
+    // Render Minimap
+    renderMinimap();
 
     // Dimensions for layout
     const width = projectSpecs.dimensions.width;
@@ -533,8 +997,7 @@ function renderBookViewer() {
                 const cardId = card.dataset.id;
 
                 if (cardId.startsWith('spread:')) {
-                    // Handle Spread Card
-                    // ID Format: spread:ID1:ID2
+                    // Handle Spread
                     const parts = cardId.split(':');
                     const id1 = parts[1];
                     const id2 = parts[2];
@@ -543,24 +1006,23 @@ function renderBookViewer() {
                     const canvas1 = document.getElementById(`canvas-${id1}`);
                     const canvas2 = document.getElementById(`canvas-${id2}`);
 
-                    if (page1 && canvas1) {
-                        renderPageCanvas(page1, canvas1).then(() => {
-                            const ph = document.getElementById(`placeholder-${id1}`);
-                            if (ph) {
-                                ph.style.opacity = '0';
-                                setTimeout(() => ph.remove(), 300);
-                            }
-                        });
-                    }
-                    if (page2 && canvas2) {
-                        renderPageCanvas(page2, canvas2).then(() => {
-                            const ph = document.getElementById(`placeholder-${id2}`);
-                            if (ph) {
-                                ph.style.opacity = '0';
-                                setTimeout(() => ph.remove(), 300);
-                            }
-                        });
-                    }
+                    const processPage = (p, cvs, pid) => {
+                        if (p && cvs) {
+                            renderPageCanvas(p, cvs).then(() => {
+                                // FIX: Only remove placeholder if READY
+                                const src = sourceFiles[p.sourceFileId];
+                                if (!src || src.status === 'ready' || src.status === 'error') {
+                                    removePlaceholder(pid);
+                                }
+                            });
+                        }
+                    };
+
+                    processPage(page1, canvas1, id1);
+                    processPage(page2, canvas2, id2);
+                    
+                    // We don't unobserve immediately if processing, but usually we do 
+                    // because re-renders trigger new observers.
                     obs.unobserve(card);
 
                 } else {
@@ -570,9 +1032,11 @@ function renderBookViewer() {
 
                     if (canvas && page) {
                         renderPageCanvas(page, canvas).then(() => {
-                            const placeholder = document.getElementById(`placeholder-${cardId}`);
-                            if (placeholder) placeholder.style.opacity = '0';
-                            setTimeout(() => placeholder?.remove(), 300);
+                            // FIX: Only remove placeholder if READY
+                            const src = sourceFiles[page.sourceFileId];
+                            if (!src || src.status === 'ready' || src.status === 'error') {
+                                removePlaceholder(cardId);
+                            }
                         });
                         obs.unobserve(card);
                     }
@@ -581,32 +1045,101 @@ function renderBookViewer() {
         });
     }, { root: container.parentElement, rootMargin: '200px' });
 
-    // Render Spreads Loop
-    // Pages: [0, 1, 2, 3]
-    // Spread 0: [null, 0]
-    // Spread 1: [1, 2]
-    // Spread 2: [3, null]
+    const removePlaceholder = (id) => {
+        const ph = document.getElementById(`placeholder-${id}`);
+        if (ph) {
+            ph.style.opacity = '0';
+            setTimeout(() => ph.remove(), 300);
+        }
+    };
 
-    // We start with Index 0.
-    // Page 1 is ALWAYS on the Right (Index 0).
+    // ... (Rest of the function logic for Single/Booklet layout remains exactly the same) ...
+    // ... Paste the rest of your existing renderBookViewer code here ...
+    
+    // --- LOOSE SHEETS / SINGLE LAYOUT ---
+    if (projectType === 'single') {
+        container.className = "flex flex-wrap gap-8 items-start justify-center p-6";
+
+        // We strictly show 2 slots: Front and Back.
+        const slots = [
+            { label: "Front Side", index: 0 },
+            { label: "Back Side", index: 1 }
+        ];
+
+        slots.forEach(slot => {
+            const slotContainer = document.createElement('div');
+            slotContainer.className = "flex flex-col items-center gap-2";
+            slotContainer.innerHTML = `<h3 class="text-indigo-200 text-xs font-bold uppercase tracking-widest">${slot.label}</h3>`;
+
+            const page = pages[slot.index];
+
+            let content;
+            if (page) {
+                content = createPageCard(page, slot.index, false, false, width, height, bleed, pixelsPerInch, observer);
+            } else {
+                // Create Empty Slot
+                content = document.createElement('div');
+                content.className = "relative border-2 border-dashed border-slate-600 rounded-lg bg-slate-800/30 hover:bg-slate-800/60 hover:border-indigo-500 transition-all cursor-pointer group flex flex-col items-center justify-center";
+                // Match visual size
+                const wPx = (width + (bleed * 2)) * pixelsPerInch;
+                const hPx = (height + (bleed * 2)) * pixelsPerInch;
+                content.style.width = `${wPx}px`;
+                content.style.height = `${hPx}px`;
+
+                content.innerHTML = `
+                    <div class="text-center p-4">
+                         <svg class="w-8 h-8 text-gray-500 group-hover:text-indigo-400 mb-2 mx-auto transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                        <span class="text-xs text-gray-400 group-hover:text-white">Add File</span>
+                    </div>
+                `;
+                content.onclick = () => {
+                    // Set insert index and trigger
+                    window._insertIndex = slot.index;
+                    hiddenInteriorInput.click();
+                };
+
+                // Enable Drop on empty slot
+                content.addEventListener('dragover', (e) => { e.preventDefault(); content.classList.add('border-indigo-400', 'bg-slate-700'); });
+                content.addEventListener('dragleave', (e) => { e.preventDefault(); content.classList.remove('border-indigo-400', 'bg-slate-700'); });
+                content.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    if (e.dataTransfer.files.length > 0) {
+                        addInteriorFiles(e.dataTransfer.files, false, slot.index);
+                    }
+                });
+            }
+
+            slotContainer.appendChild(content);
+            container.appendChild(slotContainer);
+        });
+
+        validateForm();
+        return;
+    }
+
+    // --- BOOKLET LAYOUT ---
+
+    if (pages.length === 0) {
+         container.appendChild(createInsertBar(0));
+         const empty = document.createElement('div');
+         empty.className = "flex flex-col items-center justify-center h-32 text-gray-500";
+         empty.innerHTML = "<p>Drag files or use the arrows to add pages.</p>";
+         container.appendChild(empty);
+         return;
+    }
 
     // Insert Bar at Top (Index 0)
     container.appendChild(createInsertBar(0));
 
-    // First Spread (Page 1)
+    // First Spread (Page 1 - Right Only)
     const firstSpread = document.createElement('div');
     firstSpread.className = "spread-row flex justify-center items-end gap-0 mb-4 min-h-[100px] p-2 border border-transparent hover:border-dashed hover:border-gray-600 rounded";
-    // Added min-height and hover effect to make it a drop target even if empty (though it shouldn't be empty usually)
 
-    // Empty Left slot for Page 1
-    // IMPORTANT: SortableJS might treat this spacer as a draggable item if we aren't careful.
-    // We used draggable: '.page-card' in the config, so this spacer is safe.
     const spacer = document.createElement('div');
-    spacer.style.width = `${width * pixelsPerInch}px`; // Match page width
-    spacer.className = "pointer-events-none"; // Prevent interaction
+    spacer.style.width = `${width * pixelsPerInch}px`;
+    spacer.className = "pointer-events-none";
     firstSpread.appendChild(spacer);
 
-    // Page 1 (Right)
     if (pages[0]) {
         firstSpread.appendChild(createPageCard(pages[0], 0, true, false, width, height, bleed, pixelsPerInch, observer));
     }
@@ -615,13 +1148,11 @@ function renderBookViewer() {
     // Rest of pages
     let i = 1;
     while (i < pages.length) {
-        // Insert Bar before this spread
         container.appendChild(createInsertBar(i));
 
         const spreadDiv = document.createElement('div');
         spreadDiv.className = "spread-row flex justify-center items-end gap-0 mb-4 min-h-[100px] p-2 border border-transparent hover:border-dashed hover:border-gray-600 rounded";
 
-        // Check if current position is a Linked Spread
         const isLeft = pages[i];
         const isRight = pages[i+1];
 
@@ -633,27 +1164,18 @@ function renderBookViewer() {
         }
 
         if (isLinkedSpread) {
-            // Create merged card for dragging
             const spreadCard = createSpreadCard(isLeft, isRight, i, width, height, bleed, pixelsPerInch, observer);
             spreadDiv.appendChild(spreadCard);
-
-            // Increment by 2 since we consumed both
             i += 2;
         } else {
-            // Standard Separate Cards logic
-            // Left Page
             let leftCard = null;
             if (pages[i]) {
                 leftCard = createPageCard(pages[i], i, false, false, width, height, bleed, pixelsPerInch, observer);
                 spreadDiv.appendChild(leftCard);
             }
 
-            // Right Page
             let rightCard = null;
             if (i + 1 < pages.length) {
-                // Check if next page is start of a spread (shouldn't happen if array is valid, but safety)
-                // If next page is start of a linked spread, we should probably not put it here?
-                // But the loop handles it.
                 rightCard = createPageCard(pages[i+1], i+1, true, false, width, height, bleed, pixelsPerInch, observer);
                 spreadDiv.appendChild(rightCard);
             }
@@ -670,71 +1192,164 @@ function renderBookViewer() {
 
             i += 2;
         }
-
         container.appendChild(spreadDiv);
     }
 
-    // Final Insert Bar
     container.appendChild(createInsertBar(pages.length));
 
     validateForm();
 
-    // Re-initialize Sortable for the new DOM
-    // We want shared lists between all spread rows.
+    // Sortable for Booklets
     const spreadDivs = container.querySelectorAll('.spread-row');
     spreadDivs.forEach(spreadDiv => {
         new Sortable(spreadDiv, {
-            group: {
-                name: 'shared-spreads',
-                pull: true,
-                put: true
-            },
+            group: { name: 'shared-spreads', pull: true, put: true },
             animation: 150,
-            draggable: '.page-card', // The actual card
-            handle: '.drag-handle', // Drag by dedicated handle
-            forceFallback: true, // Fixes issues with native DnD and "snap back"
-            fallbackOnBody: true, // Appends clone to body to avoid overflow clipping
-            swapThreshold: 0.65, // Sensitivity
+            draggable: '.page-card',
+            handle: '.drag-handle',
+            forceFallback: true,
+            fallbackOnBody: true,
+            swapThreshold: 0.65,
             ghostClass: 'opacity-50',
             onEnd: (evt) => {
                 try {
-                    // When drop ends, we need to sync the `pages` array order to the new DOM order.
-                    // 1. Collect all data-ids from the DOM in order.
                     const allCards = document.querySelectorAll('.page-card');
                     const newOrderIds = Array.from(allCards).map(c => c.dataset.id);
-
-                    // 2. Reorder `pages` array
                     const newPages = [];
                     newOrderIds.forEach(id => {
-                    // Check if ID is a composite spread ID
-                    if (id.startsWith('spread:')) {
-                        // Format: spread:ID1:ID2
-                        const parts = id.split(':');
-                        if (parts.length === 3) {
-                            const p1 = pages.find(x => x.id === parts[1]);
-                            const p2 = pages.find(x => x.id === parts[2]);
-                            if (p1) newPages.push(p1);
-                            if (p2) newPages.push(p2);
+                        if (id.startsWith('spread:')) {
+                            const parts = id.split(':');
+                            if (parts.length === 3) {
+                                const p1 = pages.find(x => x.id === parts[1]);
+                                const p2 = pages.find(x => x.id === parts[2]);
+                                if (p1) newPages.push(p1);
+                                if (p2) newPages.push(p2);
+                            }
+                        } else {
+                            const p = pages.find(x => x.id === id);
+                            if (p) newPages.push(p);
                         }
-                    } else {
-                        const p = pages.find(x => x.id === id);
-                        if (p) newPages.push(p);
-                    }
                     });
-
                     pages = newPages;
-
-                    // 3. Re-render fully to fix layout (e.g. Left vs Right page styling)
-                    // We must delay slightly to let the drag event finish or Sortable might glitch
-                    setTimeout(() => {
-                        requestAnimationFrame(() => renderBookViewer());
-                    }, 50);
-                } catch (err) {
-                    console.error("Error during drag reorder:", err);
-                }
+                    setTimeout(() => { requestAnimationFrame(() => renderBookViewer()); }, 50);
+                } catch (err) { console.error("Error during drag reorder:", err); }
             }
         });
     });
+}
+
+// --- Minimap Logic ---
+async function renderMinimap() {
+    const container = document.getElementById('minimap-container');
+    if (!container || projectType === 'single') {
+        if (container) container.classList.add('hidden');
+        return;
+    }
+
+    container.classList.remove('hidden');
+    container.innerHTML = '';
+
+    // Render simplified thumbnails list
+
+    // Spread 0 (Page 1)
+    await addMinimapItem(container, [pages[0]], 0, "P1");
+
+    // Spreads
+    let i = 1;
+    while(i < pages.length) {
+        const p1 = pages[i];
+        const p2 = pages[i+1];
+        const label = p2 ? `P${i+1}-${i+2}` : `P${i+1}`;
+        await addMinimapItem(container, [p1, p2], i, label);
+        i += 2;
+    }
+}
+
+async function addMinimapItem(container, pageList, mainIndex, label) {
+    const wrapper = document.createElement('div');
+    wrapper.className = "w-full aspect-[3/2] bg-slate-800 rounded cursor-pointer border border-transparent hover:border-indigo-500 transition-all relative overflow-hidden";
+
+    const targetPageId = pageList[0]?.id;
+    if (targetPageId) {
+        wrapper.onclick = () => {
+            const el = document.querySelector(`[data-id="${targetPageId}"]`) || document.querySelector(`[data-id^="spread:${targetPageId}"]`);
+            if (el) {
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                el.classList.add('ring-2', 'ring-indigo-500');
+                setTimeout(() => el.classList.remove('ring-2', 'ring-indigo-500'), 1500);
+            }
+        };
+    }
+
+    // Canvas for thumbnail
+    const canvas = document.createElement('canvas');
+    const w = 150;
+    const h = 100;
+    canvas.width = w;
+    canvas.height = h;
+    canvas.className = "w-full h-full object-contain";
+    const ctx = canvas.getContext('2d');
+
+    // Gray Background
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(0, 0, w, h);
+
+    // Thumb Margin
+    const margin = 5;
+    const pageW = (w - (margin*3)) / 2;
+    const pageH = h - (margin*2);
+
+    // Coordinates
+    const leftX = margin;
+    const rightX = margin + pageW + margin;
+    const topY = margin;
+
+    // Helper to draw one page
+    const drawThumbPage = async (page, x, y, w, h) => {
+        // Draw white paper base
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(x, y, w, h);
+
+        if (!page || !page.sourceFileId) return;
+
+        const sourceEntry = sourceFiles[page.sourceFileId];
+        if (!sourceEntry) return;
+
+        // Reuse existing draw function but with specific target
+        await drawFileWithTransform(
+            ctx,
+            sourceEntry,
+            x, y, w, h,
+            page.settings.scaleMode || 'fit',
+            page.settings.alignment || 'center',
+            page.pageIndex || 1,
+            page.id,
+            'full', // View mode full for thumbnail
+            page.settings.panX || 0,
+            page.settings.panY || 0
+        );
+    };
+
+    if (pageList.length === 1 && mainIndex === 0) {
+        // First page (Right)
+        await drawThumbPage(pageList[0], rightX, topY, pageW, pageH);
+    } else if (pageList.length >= 1) {
+        // Left Page
+        await drawThumbPage(pageList[0], leftX, topY, pageW, pageH);
+        // Right Page (if exists)
+        if (pageList[1]) {
+            await drawThumbPage(pageList[1], rightX, topY, pageW, pageH);
+        }
+    }
+
+    // Label
+    const textDiv = document.createElement('div');
+    textDiv.className = "absolute bottom-1 right-1 bg-black/50 text-[10px] px-1 rounded text-white";
+    textDiv.textContent = label;
+
+    wrapper.appendChild(canvas);
+    wrapper.appendChild(textDiv);
+    container.appendChild(wrapper);
 }
 
 // Global Pointer Event Handlers for Panning
@@ -762,6 +1377,8 @@ document.addEventListener('pointerdown', (e) => {
 
     // Only allow panning if scaleMode is 'fill'
     if (page && page.settings.scaleMode === 'fill') {
+        saveState(); // <--- Add this line to enable Undo
+
         activePageId = clickedPageId;
         isDragging = true;
         startX = e.clientX;
@@ -811,8 +1428,15 @@ document.addEventListener('pointermove', (e) => {
             const deltaX = (dx / rect.width) * sensitivity;
             const deltaY = (dy / rect.height) * sensitivity;
 
-            const newPanX = startPanX + deltaX;
-            const newPanY = startPanY + deltaY;
+            let newPanX = startPanX + deltaX;
+            let newPanY = startPanY + deltaY;
+
+            // --- GRID SNAP LOGIC ---
+            // Snap to nearest 5% (0.05)
+            if (GRID_SIZE) {
+                newPanX = Math.round(newPanX / GRID_SIZE) * GRID_SIZE;
+                newPanY = Math.round(newPanY / GRID_SIZE) * GRID_SIZE;
+            }
 
             // Update Active Page
             page.settings.panX = Number.isFinite(newPanX) ? newPanX : 0;
@@ -936,35 +1560,69 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
 
     let classes = "page-card relative group bg-slate-800 shadow-lg border border-slate-700 transition-all hover:border-indigo-500 overflow-hidden cursor-grab active:cursor-grabbing";
 
-    if (isFirstPage) {
-        classes += " border-l-2 border-l-slate-900";
-    } else if (isRightPage) {
-        classes += " border-l-0";
+    // Prevent frame scaling weirdness by not applying transition to width/height changes if JS handles it
+    // But classes is a string.
+
+    if (projectType === 'single') {
+        // Loose sheets: Full border, NO rounded corners (Square)
+        // Ensure it doesn't scale border thickness. Border is 2px.
+        classes += " border-2";
     } else {
-        classes += " border-r-0";
+        // Booklet: Spread styling
+        if (isFirstPage) {
+            classes += " border-l-2 border-l-slate-900";
+        } else if (isRightPage) {
+            classes += " border-l-0";
+        } else {
+            classes += " border-r-0";
+        }
     }
     card.className = classes;
 
-    // Layout Logic: Show Reader Spreads with Bleed visible on outside edges
-    const bleedPx = bleed * pixelsPerInch;
+    // Fix: Ensure the CARD element adapts size but doesn't glitch.
+    // The card size is usually determined by its content (the canvasContainer).
+    // canvasContainer has fixed pixel width/height set by JS.
+    // So the card should grow naturally.
+    // The "Frame scales up" issue might be due to border-width appearing smaller relative to content?
+    // No, border is in CSS pixels. If we zoom (browser zoom or canvas scale?), standard CSS handles it.
+    // If we increase `pixelsPerInch`, the DIV grows in pixels.
+    // 2px border remains 2px.
+    // Maybe the user means the border looks too thin/thick?
+    // "Frame scales up as you zoom in and canvas gets larger."
+    // If `viewerScale` increases, `pixelsPerInch` increases.
+    // `containerW` increases. `style.width` increases.
+    // The DOM element gets bigger.
+    // The border is constant 1px (or 2px).
+    // Visually, the frame (border) should stay relative?
+    // Standard behavior is fine. Maybe the user saw layout shift.
+    // `flex-shrink-0` on card helps.
+    card.style.flexShrink = '0';
 
+    // Layout Logic
+    const bleedPx = bleed * pixelsPerInch;
     let containerW, containerH;
     let canvasLeft, canvasTop;
 
-    // Spread Logic
-    // Use exact floats for containerW/containerH to prevent rounding gaps/clipping
-    if (isRightPage) {
-         // Right Page: Clip LEFT bleed (Spine)
-         containerW = (width + bleed) * pixelsPerInch;
-         canvasLeft = -bleedPx;
+    if (projectType === 'single') {
+        // Loose Sheets: Full View
+        containerW = (width + (bleed * 2)) * pixelsPerInch;
+        containerH = (height + (bleed * 2)) * pixelsPerInch;
+        canvasLeft = 0;
+        canvasTop = 0;
     } else {
-         // Left Page: Clip RIGHT bleed (Spine)
-         containerW = (width + bleed) * pixelsPerInch;
-         canvasLeft = 0;
+        // Spread Logic
+        if (isRightPage) {
+            // Right Page: Clip LEFT bleed (Spine)
+            containerW = (width + bleed) * pixelsPerInch;
+            canvasLeft = -bleedPx;
+        } else {
+            // Left Page: Clip RIGHT bleed (Spine)
+            containerW = (width + bleed) * pixelsPerInch;
+            canvasLeft = 0;
+        }
+        containerH = (height + (bleed*2)) * pixelsPerInch;
+        canvasTop = 0;
     }
-    // Vertical Bleed always visible
-    containerH = (height + (bleed*2)) * pixelsPerInch;
-    canvasTop = 0;
 
     const canvasContainer = document.createElement('div');
     canvasContainer.className = "relative overflow-hidden bg-white shadow-sm mx-auto";
@@ -987,7 +1645,7 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     dragHandle.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>';
     card.appendChild(dragHandle);
 
-    // Overlay Controls
+    // Overlay Controls - Always render these
     const controls = document.createElement('div');
     controls.className = "absolute top-2 right-2 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-900/80 p-1 rounded backdrop-blur-sm z-20";
     controls.innerHTML = `
@@ -995,8 +1653,9 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
         </button>
     `;
+    card.appendChild(controls);
 
-    // Overlay Settings (Transparent Buttons)
+    // Overlay Settings (Transparent Buttons) - Always render these
     const settingsOverlay = document.createElement('div');
     settingsOverlay.className = "absolute bottom-0 inset-x-0 p-2 opacity-0 group-hover:opacity-100 transition-opacity bg-gradient-to-t from-slate-900/90 to-transparent flex justify-center gap-2 z-20";
 
@@ -1015,6 +1674,7 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
         btn.onclick = () => updatePageSetting(page.id, 'scaleMode', mode.id);
         settingsOverlay.appendChild(btn);
     });
+    card.appendChild(settingsOverlay);
 
     const pageNum = document.createElement('span');
     pageNum.className = "absolute bottom-1 left-2 text-[10px] text-white/50 font-mono z-20";
@@ -1113,7 +1773,10 @@ async function renderPageCanvas(page, canvas) {
     // This ensures correct spread logic regardless of initial settings
     const pageIndex = pages.indexOf(page);
     const isRightPage = pageIndex === 0 || pageIndex % 2 === 0;
-    const view = isRightPage ? 'right' : 'left';
+
+    // For Loose Sheets, view is 'full' (no clipping)
+    let view = isRightPage ? 'right' : 'left';
+    if (projectType === 'single') view = 'full';
 
     // Handle Blank Page
     if (page.sourceFileId === null) {
@@ -1155,19 +1818,15 @@ async function renderPageCanvas(page, canvas) {
     // Vertical: Container includes bleed, Canvas includes bleed. Align Top.
     canvas.style.top = '0px';
 
-    // Horizontal: Depend on View Mode
-    // Right Page (Page 1, 3...): Left edge is Spine (Inner). Hide it by shifting left.
-    // Left Page (Page 2, 4...): Right edge is Spine (Inner). Keep at 0. Container clips right.
+    // Horizontal Alignment Logic
     if (view === 'right') {
-        // Right Page: Canvas 0 is Left Bleed (Spine).
-        // We want to HIDE the Left/Spine bleed.
-        // So we shift LEFT by bleed width.
+        // Right Page: Canvas 0 is Left Bleed (Spine). Shift left to hide it.
         canvas.style.left = `-${bleed * pixelsPerInch}px`;
+    } else if (view === 'left') {
+        // Left Page: Canvas 0 is Left Bleed (Outer Edge). Keep at 0.
+        canvas.style.left = '0px';
     } else {
-        // Left Page: Canvas 0 is Left Bleed (Outer Edge).
-        // We want to SHOW the Left/Outer bleed.
-        // So we keep it at 0.
-        // The Container width (width+bleed) will CLIP the Right/Spine bleed.
+        // Full View (Loose Sheets): Show everything.
         canvas.style.left = '0px';
     }
 
@@ -1190,47 +1849,36 @@ async function renderPageCanvas(page, canvas) {
     };
 
     // Scale for Guides: guides.js expects points.
-    // Canvas context is already transformed by pixelDensity.
-    // We are drawing in pixels (pixelsPerInch).
-    // 1 point = 1/72 inch.
-    // We want 1 inch = pixelsPerInch.
-    // So scale = pixelsPerInch / 72.
     const guideScale = pixelsPerInch / 72;
 
-    // Adjust renderInfo to align guides correctly within the partially cropped view
-    // Right Page: Canvas is shifted LEFT by bleed.
-    // guides.js draws Left Trim at relative 0.
-    // We want Trim at 0 relative to the container, but the container starts at Trim Line.
-    // Wait, the container starts at Trim Line.
-    // The Canvas is at Left = -Bleed.
-    // So Canvas (0,0) is (Left Bleed Edge).
-    // guides.js Left Trim is at 0 (if we pass x=0).
-    // But guides.js thinks "Trim starts at 0" relative to the passed Render Area.
-    // If we pass RenderX = Bleed, then TrimX = Bleed.
-    // Canvas X = Bleed is the Trim Line.
-    // So we must pass x: bleed * pixelsPerInch.
+    // Adjust renderInfo based on View Mode
+    let renderInfo;
 
-    // Left Page: Canvas is at Left = 0.
-    // Canvas (0,0) is (Left Bleed Edge).
-    // We want Right Trim at (Width - Bleed).
-    // guides.js calculates Right Trim as (RenderX + RenderWidth - TrimWidth).
-    // 0 + RenderW - TrimW = TargetTrimX (Bleed).
-    // RenderW = TrimW + Bleed.
-    // So we pass width: (Trim + Bleed).
-
-    const renderInfo = {
-        x: view === 'right' ? bleed * pixelsPerInch : 0,
-        y: 0,
-        width: view === 'left' ? (width + bleed) * pixelsPerInch : totalW * pixelsPerInch,
-        height: totalH * pixelsPerInch,
-        scale: guideScale,
-        isSpread: true,
-        isLeftPage: view === 'left'
-    };
+    if (view === 'full') {
+        // Loose Sheets: Render Full Canvas, No Clipping
+        renderInfo = {
+            x: 0,
+            y: 0,
+            width: totalW * pixelsPerInch,
+            height: totalH * pixelsPerInch,
+            scale: guideScale,
+            isSpread: false, // Full Bleed on all sides
+            isLeftPage: false
+        };
+    } else {
+        // Spread Logic
+        renderInfo = {
+            x: view === 'right' ? bleed * pixelsPerInch : 0,
+            y: 0,
+            width: view === 'left' ? (width + bleed) * pixelsPerInch : totalW * pixelsPerInch,
+            height: totalH * pixelsPerInch,
+            scale: guideScale,
+            isSpread: true,
+            isLeftPage: view === 'left'
+        };
+    }
 
     // Ensure guides are drawn on TOP.
-    // Reset transform to simple pixel density for drawing guides (which are calculated in pixels)
-    // This avoids double-scaling where the guide calculation (in pixels) is multiplied again by pixelsPerInch.
     ctx.save();
     ctx.setTransform(pixelDensity, 0, 0, pixelDensity, 0, 0);
     drawGuides(ctx, mockSpecs, [renderInfo], { trim: true, bleed: true, safety: true });
@@ -1315,28 +1963,35 @@ function drawBlankPage(page, canvas) {
 }
 
 async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW, targetH, mode, align, pageIndex = 1, pageId = null, viewMode = 'full', panX = 0, panY = 0) {
+    // Handle blank pages (sourceEntry is null/undefined check usually handled by caller, but safe to keep)
+    if (!sourceEntry) return;
+
     let imgBitmap;
     let srcW, srcH;
 
     const isServer = sourceEntry.isServer;
     const file = isServer ? sourceEntry.file : sourceEntry;
+    const status = sourceEntry.status || 'ready';
 
-    // 1. Check Error/Status
-    if (isServer && sourceEntry.status === 'error') {
+    // --- 1. Check Status & Draw Throbber ---
+    if (status === 'error') {
         ctx.fillStyle = '#fee2e2';
         ctx.fillRect(targetX, targetY, targetW, targetH);
         ctx.fillStyle = '#ef4444';
-        ctx.font = '0.2px sans-serif';
-        ctx.fillText("Processing Failed", targetX + 0.5, targetY + targetH/2);
+        ctx.font = '12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText("Processing Failed", targetX + targetW/2, targetY + targetH/2);
         return;
     }
 
-    if (isServer && sourceEntry.status !== 'ready') {
-         // Keep placeholder (spinner handled by DOM overlay)
-         return;
+    if (status === 'processing' || status === 'uploading') {
+        // Draw the visual throbber on the canvas
+        drawProcessingState(ctx, targetX, targetY, targetW, targetH);
+        return;
     }
 
-    // 2. Check Cache
+    // --- 2. Check Cache & Render ---
     const cacheKey = (isServer ? sourceEntry.previewUrl : file.name) + '_' + pageIndex + '_' + (file.lastModified || 'server');
 
     if (imageCache.has(cacheKey)) {
@@ -1345,47 +2000,11 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
         srcH = imgBitmap.height;
     } else {
         // Render New
-        if (isServer) {
-            // Load from Preview URL
-            try {
-                // For now, assume previewUrl is a PDF (as returned by generatePreviews)
-                // But generatePreviews returns a path to a PDF.
-                // We need to load that PDF using PDF.js just like a local file, but from URL.
-
+        try {
+            if (isServer) {
+                // Load from Server Preview URL
                 const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
                 const pdf = await loadingTask.promise;
-                // Preview PDFs are usually 1 page per file if split, OR multi-page.
-                // Our generatePreviews splits them. So pageIndex 1 is likely correct if it's a single page PDF.
-                // But if we kept them merged, we'd use pageIndex.
-                // Let's assume we use pageIndex relative to the *preview file*.
-                // If `generatePreviews` returns individual pages, we'd map them.
-                // In `processServerFile`, we only mapped the first page result.
-                // So let's try page 1.
-                const page = await pdf.getPage(1);
-
-                const viewport = page.getViewport({ scale: 1.0 });
-                const tempCanvas = document.createElement('canvas');
-                tempCanvas.width = viewport.width;
-                tempCanvas.height = viewport.height;
-
-                await page.render({
-                    canvasContext: tempCanvas.getContext('2d'),
-                    viewport: viewport
-                }).promise;
-
-                imgBitmap = await createImageBitmap(tempCanvas);
-                imageCache.set(cacheKey, imgBitmap);
-                srcW = viewport.width;
-                srcH = viewport.height;
-
-            } catch(e) {
-                console.error("Server Preview Render Error", e);
-            }
-
-        } else if (file.type === 'application/pdf') {
-            try {
-                const fileUrl = URL.createObjectURL(file);
-                const pdf = await pdfjsLib.getDocument(fileUrl).promise;
                 const page = await pdf.getPage(pageIndex);
 
                 const viewport = page.getViewport({ scale: 1.0 });
@@ -1403,28 +2022,52 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
                 srcW = viewport.width;
                 srcH = viewport.height;
 
-                URL.revokeObjectURL(fileUrl);
-            } catch (e) {
-                console.error("PDF Render Error", e);
-            }
-        } else if (file.type.startsWith('image/')) {
-            try {
+            } else if (file.type === 'application/pdf') {
+                // Load Local PDF
+                let pdfDoc = pdfDocCache.get(file);
+                if (!pdfDoc) {
+                    const fileUrl = URL.createObjectURL(file);
+                    pdfDoc = pdfjsLib.getDocument(fileUrl).promise;
+                    pdfDocCache.set(file, pdfDoc);
+                }
+
+                const pdf = await pdfDoc;
+                const page = await pdf.getPage(pageIndex);
+                const viewport = page.getViewport({ scale: 1.0 });
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = viewport.width;
+                tempCanvas.height = viewport.height;
+
+                await page.render({
+                    canvasContext: tempCanvas.getContext('2d'),
+                    viewport: viewport
+                }).promise;
+
+                imgBitmap = await createImageBitmap(tempCanvas);
+                imageCache.set(cacheKey, imgBitmap);
+                srcW = viewport.width;
+                srcH = viewport.height;
+
+            } else if (file.type.startsWith('image/')) {
+                // Load Local Image
                 imgBitmap = await createImageBitmap(file);
                 imageCache.set(cacheKey, imgBitmap);
                 srcW = imgBitmap.width;
                 srcH = imgBitmap.height;
-            } catch(e) {}
+            }
+        } catch (e) {
+            console.error("Render Error", e);
+            return; 
         }
     }
 
     if (!imgBitmap) {
-        // Grey Box
         ctx.fillStyle = '#f1f5f9';
         ctx.fillRect(targetX, targetY, targetW, targetH);
         return;
     }
 
-    // Standard Transform Logic
+    // --- 3. Transform Logic ---
     const srcRatio = srcW / srcH;
     const targetRatio = targetW / targetH;
     let drawW, drawH, drawX, drawY;
@@ -1440,7 +2083,7 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
             drawH = targetH;
             drawW = targetH * srcRatio;
         }
-    } else if (mode === 'fill') {
+    } else { // fill
         if (srcRatio > targetRatio) {
             drawH = targetH;
             drawW = targetH * srcRatio;
@@ -1450,23 +2093,9 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
         }
     }
 
-    // Center + Pan
-    // PanX/PanY are expected to be in "Inches" or "Normalized"?
-    // If we implement drag in pixels on the viewer, we need to convert those pixels to canvas scale here.
-    // Let's assume panX/panY are stored in *inches* relative to the paper size, to be resolution independent.
-    // In render logic: panPixels = panInches * pixelsPerInch (from renderPageCanvas scope, passed in? No)
-    // We need pixelsPerInch here or pass normalized coords.
-
-    // Actually, the simplest way for the interactive drag to work is if we store pan in *percentage* of the SHEET dimensions.
-    // Let's say panX = 0.1 means shift right by 10% of sheet width.
-    // Then drawX += targetW * 0.1.
-
-    // Let's assume panX, panY are ratios of Target Dimension (0.0 - 1.0).
-
     drawX = targetX + (targetW - drawW) / 2 + (panX * targetW);
     drawY = targetY + (targetH - drawH) / 2 + (panY * targetH);
 
-    // Clip
     ctx.save();
     ctx.beginPath();
     ctx.rect(targetX, targetY, targetW, targetH);
@@ -1509,6 +2138,13 @@ if (viewerZoom) {
     });
 }
 
+if (coverZoomInput) {
+    coverZoomInput.addEventListener('input', (e) => {
+        coverZoom = parseFloat(e.target.value);
+        renderCoverPreview();
+    });
+}
+
 if (jumpToPageInput) {
     jumpToPageInput.addEventListener('change', (e) => {
         const pageNum = parseInt(e.target.value);
@@ -1548,140 +2184,338 @@ function calculateSpineWidth(specs) {
     return Math.max(0, width);
 }
 
+function fitCoverToView() {
+    const container = document.getElementById('cover-preview-canvas')?.parentElement;
+    if (!container || !projectSpecs.dimensions) return;
+
+    // 1. Calculate visual size of the book at 1.0 scale (40 PPI)
+    const trimWidth = projectSpecs.dimensions.width;
+    const trimHeight = projectSpecs.dimensions.height;
+    const bleed = 0.125;
+    const spineWidth = calculateSpineWidth(projectSpecs);
+    
+    const totalWidth = (trimWidth * 2) + spineWidth + (bleed * 2);
+    const totalHeight = trimHeight + (bleed * 2);
+    
+    const basePPI = 40;
+    const bookPixelW = totalWidth * basePPI;
+    const bookPixelH = totalHeight * basePPI;
+
+    // 2. Get Container Size (minus padding)
+    const viewW = container.clientWidth - 60; // 30px padding buffer on each side
+    const viewH = container.clientHeight - 60;
+
+    if (viewW <= 0 || viewH <= 0) return;
+
+    // 3. Calculate Zoom to Fit
+    const scaleX = viewW / bookPixelW;
+    const scaleY = viewH / bookPixelH;
+    
+    // Use the smaller scale to ensure both width and height fit
+    let optimalZoom = Math.min(scaleX, scaleY);
+    
+    // Clamp results (e.g., min 0.3, max 1.5)
+    optimalZoom = Math.min(Math.max(optimalZoom, 0.3), 1.5);
+    
+    // Round to 1 decimal place for the slider
+    optimalZoom = Math.floor(optimalZoom * 10) / 10;
+
+    // 4. Apply
+    coverZoom = optimalZoom;
+    const slider = document.getElementById('cover-zoom');
+    if (slider) slider.value = coverZoom;
+    
+    renderCoverPreview();
+}
+
+function drawProcessingState(ctx, x, y, w, h) {
+    // Just fill white so the background is clean behind the DOM spinner
+    ctx.save();
+    ctx.fillStyle = '#ffffff'; 
+    ctx.fillRect(x, y, w, h);
+    ctx.restore();
+}
+
 async function renderCoverPreview() {
     if (!coverCanvas || !projectSpecs || !projectSpecs.dimensions) return;
 
     const ctx = coverCanvas.getContext('2d');
-    const dpi = 96; // Screen DPI
-    const scale = 2; // Retain high res
+    const scale = 2; 
 
     // 1. Calculate Dimensions
     const trimWidth = projectSpecs.dimensions.width;
     const trimHeight = projectSpecs.dimensions.height;
-    const bleed = 0.125; // Standard 1/8 inch bleed
+    const bleed = 0.125;
     const spineWidth = calculateSpineWidth(projectSpecs);
 
-    // Update display
     if (spineWidthDisplay) spineWidthDisplay.textContent = spineWidth.toFixed(3);
 
-    // Full Spread Dimensions (Back + Spine + Front)
-    // Width = Bleed + Back + Spine + Front + Bleed
-    // Height = Bleed + Height + Bleed
     const totalWidth = (trimWidth * 2) + spineWidth + (bleed * 2);
     const totalHeight = trimHeight + (bleed * 2);
 
-    // Set Canvas Size
-    // We limit visual height to 400px usually in CSS, but canvas pixels should match ratio
-    // Let's map 1 inch to X pixels.
-    const pixelsPerInch = 40; // Base scale for canvas drawing
+    // Zoom Logic
+    const basePPI = 40; 
+    const pixelsPerInch = basePPI * coverZoom; 
+
     coverCanvas.width = totalWidth * pixelsPerInch * scale;
     coverCanvas.height = totalHeight * pixelsPerInch * scale;
+    coverCanvas.style.width = `${totalWidth * pixelsPerInch}px`;
+    coverCanvas.style.height = `${totalHeight * pixelsPerInch}px`;
 
-    // Reset Transform
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
     ctx.scale(pixelsPerInch, pixelsPerInch);
 
-    // Clear
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, totalWidth, totalHeight);
 
-    // --- Draw Zones ---
+    // --- CHECK PROCESSING STATUS ---
+    const slots = ['file-cover-front', 'file-cover-back', 'file-spine'];
+    
+    let activeStatus = null;
+    const processingSlot = slots.find(slot => {
+        const src = coverSources[slot];
+        if (src && (src.status === 'processing' || src.status === 'uploading')) {
+            activeStatus = src.status;
+            return true;
+        }
+        return false;
+    });
 
-    // Coordinates (origin is top-left of bleed box)
-    const y0 = 0;
-    const yBleedTop = bleed;
-    const yBleedBottom = totalHeight - bleed;
-    const hFull = totalHeight;
+    const placeholderEl = document.getElementById('cover-preview-placeholder');
+    if (placeholderEl) {
+        if (processingSlot) {
+            // SHOW SPINNER + DYNAMIC TEXT
+            const text = activeStatus === 'uploading' ? 'Uploading File...' : 'Processing File...';
+            
+            placeholderEl.style.display = 'flex';
+            placeholderEl.innerHTML = `
+                <div class="flex flex-col items-center gap-3 bg-slate-900/90 p-6 rounded-xl backdrop-blur-md shadow-2xl border border-slate-700">
+                    <div class="w-10 h-10 border-4 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin"></div>
+                    <span class="text-indigo-200 text-sm font-semibold tracking-wide animate-pulse">${text}</span>
+                </div>
+            `;
+        } else {
+            // HIDE or Show Default
+            // Only hide if we actually have content, otherwise show default "Preview will update" text
+            const hasContent = slots.some(slot => coverSources[slot] || selectedFiles[slot]);
+            if (hasContent) {
+                placeholderEl.style.display = 'none';
+            } else {
+                placeholderEl.style.display = 'flex';
+                placeholderEl.innerHTML = '<div class="text-center"><p class="text-gray-500 text-sm">Preview will update automatically</p></div>';
+            }
+        }
+    }
 
-    const x0 = 0;
-    const xBleedBackLeft = 0;
+    // --- Define Zones ---
+    const zoneBack = { x: 0, y: 0, w: bleed + trimWidth, h: totalHeight };
+    const zoneSpine = { x: bleed + trimWidth, y: 0, w: spineWidth, h: totalHeight };
+    const zoneFront = { x: bleed + trimWidth + spineWidth, y: 0, w: trimWidth + bleed, h: totalHeight };
+
+    const zoneBackPlusSpine = { x: 0, y: 0, w: zoneBack.w + zoneSpine.w, h: totalHeight };
+    const zoneFrontPlusSpine = { x: zoneSpine.x, y: 0, w: zoneSpine.w + zoneFront.w, h: totalHeight };
+
+    const spineMode = window.currentSpineMode || 'file';
+
+    // --- 1. Draw Back Cover ---
+    if (spineMode === 'wrap-back-stretch') {
+        await drawStretched(
+            ctx, 
+            coverSources['file-cover-back'], 
+            zoneBack,          
+            zoneBackPlusSpine, 
+            'left',            
+            coverSettings['file-cover-back'].pageIndex
+        );
+    } else {
+        await drawImageOnCanvas(
+            ctx, 
+            coverSources['file-cover-back'], 
+            zoneBack.x, zoneBack.y, zoneBack.w, zoneBack.h, 
+            coverSettings['file-cover-back'].pageIndex,
+            coverSettings['file-cover-back'].scaleMode
+        );
+    }
+
+    // --- 2. Draw Spine ---
+    if (spineMode === 'file') {
+        await drawImageOnCanvas(
+            ctx, 
+            coverSources['file-spine'], 
+            zoneSpine.x, zoneSpine.y, zoneSpine.w, zoneSpine.h, 
+            coverSettings['file-spine'].pageIndex,
+            coverSettings['file-spine'].scaleMode
+        );
+    } else if (spineMode === 'wrap-front-stretch') {
+        await drawStretched(
+            ctx,
+            coverSources['file-cover-front'], 
+            zoneSpine,          
+            zoneFrontPlusSpine, 
+            'right',            
+            coverSettings['file-cover-front'].pageIndex
+        );
+    } else if (spineMode === 'wrap-back-stretch') {
+        await drawStretched(
+            ctx,
+            coverSources['file-cover-back'], 
+            zoneSpine,          
+            zoneBackPlusSpine,  
+            'left',             
+            coverSettings['file-cover-back'].pageIndex
+        );
+    } else if (spineMode.includes('wrap')) {
+        // Handle Mirrors
+        const isFrontSource = spineMode.includes('front');
+        const sourceEntry = isFrontSource ? coverSources['file-cover-front'] : coverSources['file-cover-back'];
+        const settings = isFrontSource ? coverSettings['file-cover-front'] : coverSettings['file-cover-back'];
+        
+        await drawWrapper(
+            ctx, 
+            sourceEntry, 
+            zoneSpine.x, zoneSpine.y, zoneSpine.w, zoneSpine.h, 
+            'mirror', 
+            isFrontSource, 
+            0, 
+            settings.pageIndex
+        );
+    }
+
+    // --- 3. Draw Front Cover ---
+    if (spineMode === 'wrap-front-stretch') {
+        await drawStretched(
+            ctx, 
+            coverSources['file-cover-front'], 
+            zoneFront,          
+            zoneFrontPlusSpine, 
+            'right',            
+            coverSettings['file-cover-front'].pageIndex
+        );
+    } else {
+        await drawImageOnCanvas(
+            ctx, 
+            coverSources['file-cover-front'], 
+            zoneFront.x, zoneFront.y, zoneFront.w, zoneFront.h, 
+            coverSettings['file-cover-front'].pageIndex,
+            coverSettings['file-cover-front'].scaleMode
+        );
+    }
+
+    // --- Draw Guides ---
+    ctx.lineWidth = 1 / pixelsPerInch; 
+    
     const xTrimBackLeft = bleed;
     const xSpineLeft = bleed + trimWidth;
     const xSpineRight = bleed + trimWidth + spineWidth;
     const xTrimFrontRight = bleed + trimWidth + spineWidth + trimWidth;
-    const xBleedFrontRight = totalWidth;
+    const yBleedTop = bleed;
 
-    // Draw Content (Placeholders or Images)
-    await drawImageOnCanvas(ctx, selectedFiles['file-cover-back'], xTrimBackLeft, yBleedTop, trimWidth, trimHeight);
-    await drawImageOnCanvas(ctx, selectedFiles['file-spine'], xSpineLeft, yBleedTop, spineWidth, trimHeight);
-    await drawImageOnCanvas(ctx, selectedFiles['file-cover-front'], xSpineRight, yBleedTop, trimWidth, trimHeight);
-
-    // --- Draw Guides ---
-    ctx.lineWidth = 1 / pixelsPerInch; // 1px line at this scale
-
-    // 1. Bleed Line (Red) - The outer edge of the canvas is the bleed edge actually.
-    // But let's visualize it.
-    ctx.strokeStyle = 'rgba(239, 68, 68, 0.5)'; // Red-500
-    ctx.strokeRect(0, 0, totalWidth, totalHeight);
-
-    // 2. Trim Line (Blue) - The actual cut line
-    ctx.strokeStyle = 'rgba(59, 130, 246, 0.8)'; // Blue-500
+    // Bleed Fill
+    ctx.save();
+    ctx.fillStyle = 'rgba(255, 0, 0, 0.2)';
     ctx.beginPath();
-    // Back Trim
-    ctx.rect(xTrimBackLeft, yBleedTop, trimWidth, trimHeight);
-    // Spine Trim (Only if width > 0)
-    if (spineWidth > 0) {
-        ctx.rect(xSpineLeft, yBleedTop, spineWidth, trimHeight);
-    }
-    // Front Trim
-    ctx.rect(xSpineRight, yBleedTop, trimWidth, trimHeight);
+    ctx.rect(0, 0, totalWidth, totalHeight);
+    ctx.rect(bleed, bleed, trimWidth, trimHeight); // Back Trim
+    if (spineWidth > 0) ctx.rect(bleed + trimWidth, bleed, spineWidth, trimHeight); // Spine Trim
+    ctx.rect(bleed + trimWidth + spineWidth, bleed, trimWidth, trimHeight); // Front Trim
+    ctx.fill("evenodd");
+    ctx.restore();
+
+    // Trim Lines
+    ctx.strokeStyle = '#000000';
+    ctx.beginPath(); 
+    ctx.rect(bleed, bleed, trimWidth, trimHeight);
+    if (spineWidth > 0) ctx.rect(bleed + trimWidth, bleed, spineWidth, trimHeight);
+    ctx.rect(bleed + trimWidth + spineWidth, bleed, trimWidth, trimHeight);
     ctx.stroke();
 
-    // 3. Safe Area (Green) - 0.125" inside Trim
+    // Bleed Line
+    ctx.strokeStyle = 'rgba(239, 68, 68, 0.8)';
+    ctx.strokeRect(0, 0, totalWidth, totalHeight);
+    
+    // Safe Area
     const safe = 0.125;
-    ctx.strokeStyle = 'rgba(34, 197, 94, 0.5)'; // Green-500
+    ctx.strokeStyle = 'rgba(34, 197, 94, 0.5)';
     ctx.beginPath();
-    // Back Safe
     ctx.rect(xTrimBackLeft + safe, yBleedTop + safe, trimWidth - (2*safe), trimHeight - (2*safe));
-    // Front Safe
     ctx.rect(xSpineRight + safe, yBleedTop + safe, trimWidth - (2*safe), trimHeight - (2*safe));
-    // Spine Safe (Usually smaller, maybe 0.0625?)
     if (spineWidth > 0.25) {
          ctx.rect(xSpineLeft + safe, yBleedTop + safe, spineWidth - (2*safe), trimHeight - (2*safe));
     }
     ctx.stroke();
 }
 
-async function drawImageOnCanvas(ctx, file, x, y, targetW, targetH) {
-    if (!file) return;
+async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageIndex = 1, scaleMode = 'fill') {
+    if (!sourceEntry) return;
+
+    // --- ROBUST INPUT HANDLING ---
+    let file, status, isServer, previewUrl;
+
+    if (sourceEntry instanceof File) {
+        file = sourceEntry;
+        status = 'ready';
+        isServer = false;
+    } else {
+        file = sourceEntry.file;
+        status = sourceEntry.status;
+        isServer = sourceEntry.isServer;
+        previewUrl = sourceEntry.previewUrl;
+    }
+
+    if (!file && !isServer) return;
+
+    // --- STATUS HANDLING ---
+    if (status === 'processing' || status === 'uploading') {
+        drawProcessingState(ctx, x, y, targetW, targetH);
+        return;
+    }
+    
+    if (status === 'error') {
+        ctx.fillStyle = '#fee2e2'; // Light Red
+        ctx.fillRect(x, y, targetW, targetH);
+        ctx.fillStyle = '#ef4444'; // Red Text
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = '12px sans-serif';
+        ctx.fillText("Processing Failed", x + targetW/2, y + targetH/2);
+        return;
+    }
+
+    let imgBitmap;
 
     try {
-        let imgBitmap;
+        if (isServer) {
+            const loadingTask = pdfjsLib.getDocument(previewUrl);
+            const pdf = await loadingTask.promise;
+            const page = await pdf.getPage(pageIndex);
+            const viewport = page.getViewport({ scale: 2 });
+            const cvs = document.createElement('canvas');
+            cvs.width = viewport.width; cvs.height = viewport.height;
+            await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+            imgBitmap = await createImageBitmap(cvs);
 
-        if (file.type === 'application/pdf') {
-            // Render first page of PDF
+        } else if (file && file.type === 'application/pdf') {
             const arrayBuffer = await file.arrayBuffer();
             const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
-            const page = await pdf.getPage(1);
-
-            // Get viewport at high scale
+            const page = await pdf.getPage(pageIndex);
             const viewport = page.getViewport({ scale: 2 });
-            const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = viewport.width;
-            tempCanvas.height = viewport.height;
+            const cvs = document.createElement('canvas');
+            cvs.width = viewport.width; cvs.height = viewport.height;
+            await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+            imgBitmap = await createImageBitmap(cvs);
 
-            await page.render({
-                canvasContext: tempCanvas.getContext('2d'),
-                viewport: viewport
-            }).promise;
-
-            imgBitmap = await createImageBitmap(tempCanvas);
-
-        } else if (file.type.startsWith('image/')) {
-            // Standard Image
-            imgBitmap = await createImageBitmap(file);
+        } else if (file && file.type.startsWith('image/')) {
+            const supportedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp'];
+            if (supportedTypes.includes(file.type)) {
+                imgBitmap = await createImageBitmap(file);
+            } else {
+                return; 
+            }
         } else {
-            // Unsupported for preview (e.g. PSD)
-            // Draw placeholder text
-            ctx.fillStyle = '#e2e8f0';
-            ctx.fillRect(x, y, targetW, targetH);
-            ctx.fillStyle = '#64748b';
-            ctx.font = '0.4px sans-serif';
-            ctx.fillText('Preview Unavailable', x + 0.5, y + (targetH/2));
             return;
         }
 
-        // Draw Image using "Aspect Fill" logic
+        // --- DRAWING LOGIC ---
         const srcW = imgBitmap.width;
         const srcH = imgBitmap.height;
         const srcRatio = srcW / srcH;
@@ -1689,18 +2523,32 @@ async function drawImageOnCanvas(ctx, file, x, y, targetW, targetH) {
 
         let drawW, drawH, drawX, drawY;
 
-        if (srcRatio > targetRatio) {
-            // Image is wider than target: Crop width
-            drawH = targetH;
-            drawW = targetH * srcRatio;
-            drawY = y;
-            drawX = x - (drawW - targetW) / 2; // Center horizontally
-        } else {
-            // Image is taller than target: Crop height
+        if (scaleMode === 'stretch') {
             drawW = targetW;
-            drawH = targetW / srcRatio;
+            drawH = targetH;
             drawX = x;
-            drawY = y - (drawH - targetH) / 2; // Center vertically
+            drawY = y;
+        } else if (scaleMode === 'fit') {
+            if (srcRatio > targetRatio) {
+                drawW = targetW;
+                drawH = targetW / srcRatio;
+            } else {
+                drawH = targetH;
+                drawW = targetH * srcRatio;
+            }
+            drawX = x + (targetW - drawW) / 2;
+            drawY = y + (targetH - drawH) / 2;
+        } else {
+            // Fill
+            if (srcRatio > targetRatio) {
+                drawH = targetH;
+                drawW = targetH * srcRatio;
+            } else {
+                drawW = targetW;
+                drawH = targetW / srcRatio;
+            }
+            drawX = x + (targetW - drawW) / 2;
+            drawY = y + (targetH - drawH) / 2;
         }
 
         ctx.save();
@@ -1710,12 +2558,13 @@ async function drawImageOnCanvas(ctx, file, x, y, targetW, targetH) {
         ctx.drawImage(imgBitmap, drawX, drawY, drawW, drawH);
         ctx.restore();
 
-
     } catch (e) {
-        console.error("Error rendering preview image:", e);
+        console.error("Error rendering cover image:", e);
+        // Fallback visual for error
+        ctx.fillStyle = '#fecaca'; 
+        ctx.fillRect(x, y, targetW, targetH);
     }
 }
-
 
 // --- Specs Form Submit Handler ---
 specsForm.addEventListener('submit', async (e) => {
@@ -1731,20 +2580,37 @@ specsForm.addEventListener('submit', async (e) => {
         }
         const typeValue = selectedType.value; // 'loose', 'saddleStitch', 'perfectBound'
 
-        const width = parseFloat(specWidth.value);
-        const height = parseFloat(specHeight.value);
+        const sizePreset = specSizePreset.value;
+        let dimensionsVal; // For Firestore
+        let localDimensions; // For local state
 
-        if (isNaN(width) || width <= 0 || isNaN(height) || height <= 0) {
-            throw new Error('Invalid dimensions');
+        if (!sizePreset) throw new Error("Please select a finished size.");
+
+        if (sizePreset === 'custom') {
+            const width = parseFloat(specWidth.value);
+            const height = parseFloat(specHeight.value);
+            const unit = specUnit.value;
+
+            if (isNaN(width) || width <= 0 || isNaN(height) || height <= 0) {
+                throw new Error('Invalid custom dimensions');
+            }
+
+            dimensionsVal = {
+                width: width,
+                height: height,
+                units: unit
+            };
+            // Normalize for local viewer immediately
+            localDimensions = resolveDimensions(dimensionsVal);
+        } else {
+            // Standard Size Key (e.g., 'A4')
+            dimensionsVal = sizePreset;
+            localDimensions = resolveDimensions(dimensionsVal);
         }
 
         const specsUpdate = {
             'projectType': typeValue === 'loose' ? 'single' : 'booklet',
-            'specs.dimensions': {
-                width: width,
-                height: height,
-                units: 'in' // Default to inches for now
-            }
+            'specs.dimensions': dimensionsVal
         };
 
         // Set Binding Logic
@@ -1765,7 +2631,7 @@ specsForm.addEventListener('submit', async (e) => {
 
         // Reload page or Update State locally to avoid reload
         projectSpecs = {
-            dimensions: { width, height, units: 'in' },
+            dimensions: localDimensions,
             binding: specsUpdate['specs.binding'],
             pageCount: specsUpdate['specs.pageCount'],
             paperType: specsUpdate['specs.paperType'],
@@ -1780,6 +2646,8 @@ specsForm.addEventListener('submit', async (e) => {
         // Refresh UI logic
         refreshBuilderUI();
 
+        await initializeBuilder();
+
     } catch (err) {
         console.error("Error saving specs:", err);
         alert("Failed to save specifications: " + err.message);
@@ -1790,38 +2658,221 @@ specsForm.addEventListener('submit', async (e) => {
 });
 
 function refreshBuilderUI() {
+    // Update Header Nav
+    if (navBackBtn) navBackBtn.classList.remove('hidden');
+
+    const spineGroup = document.getElementById('spine-upload-group');
+    if (spineGroup && !document.getElementById('spine-mode-select')) {
+        const wrapper = document.createElement('div');
+        wrapper.className = "mb-2 flex justify-between items-center";
+        wrapper.innerHTML = `
+            <label class="text-xs font-medium text-gray-400">Spine Mode</label>
+            <select id="spine-mode-select" class="text-xs bg-slate-900 border border-slate-600 rounded px-2 py-1 text-white focus:outline-none">
+                <option value="file">Upload File</option>
+                <option value="wrap-front">Mirror Front</option>
+                <option value="wrap-back">Mirror Back</option>
+                <option value="wrap-front-stretch">Stretch Front</option>
+                <option value="wrap-back-stretch">Stretch Back</option>
+            </select>
+        `;
+        // Insert before the upload box
+        spineGroup.insertBefore(wrapper, spineGroup.querySelector('.drop-zone'));
+
+        // Listener
+        document.getElementById('spine-mode-select').addEventListener('change', (e) => {
+            window.currentSpineMode = e.target.value;
+            const dropZone = spineGroup.querySelector('.drop-zone');
+            
+            // Hide/Show Dropzone based on mode
+            if (e.target.value === 'file') {
+                dropZone.classList.remove('hidden');
+            } else {
+                dropZone.classList.add('hidden');
+            }
+            renderCoverPreview();
+        });
+    }
+
     // Show/Hide Tabs based on project type
     if (projectType === 'single') {
-        // For Loose Sheets, hide Cover Builder
-        tabCover.classList.add('hidden');
-        // Ensure Interior is active
-        tabInterior.click();
+        // For Loose Sheets
+        if (builderTabs) builderTabs.classList.add('hidden');
+        if (contentCover) contentCover.classList.add('hidden');
+        if (contentInterior) contentInterior.classList.remove('hidden');
+
+        // Toolbar Adjustments
+        if (toolbarJump) toolbarJump.classList.add('hidden');
+        if (toolbarActionsBooklet) toolbarActionsBooklet.classList.add('hidden');
+        if (toolbarSpreadUpload) toolbarSpreadUpload.classList.add('hidden');
+
     } else {
         // Booklet
-        tabCover.classList.remove('hidden');
-        // Configure Cover Builder
-        if (projectSpecs.binding === 'saddleStitch') {
-            // Hide Spine Upload & Display
-            if(fileSpineInput) fileSpineInput.closest('.drop-zone').parentElement.classList.add('hidden');
-            // Or disable it? Hidden is better.
-        } else {
-            if(fileSpineInput) fileSpineInput.closest('.drop-zone').parentElement.classList.remove('hidden');
+        if (builderTabs) builderTabs.classList.remove('hidden');
+        if (toolbarJump) toolbarJump.classList.remove('hidden');
+        if (toolbarActionsBooklet) toolbarActionsBooklet.classList.remove('hidden');
+        if (toolbarSpreadUpload) toolbarSpreadUpload.classList.remove('hidden');
+
+        // --- IMPROVEMENT 1: INJECT UNDO BUTTON ---
+        // We check if it exists first to prevent duplicates if refresh is called multiple times
+        if (!document.getElementById('undo-btn')) {
+            const toolbar = document.getElementById('toolbar-actions-booklet');
+            if (toolbar) {
+                const undoBtn = document.createElement('button');
+                undoBtn.id = 'undo-btn';
+                undoBtn.type = 'button';
+                undoBtn.className = 'text-xs bg-slate-700 hover:bg-slate-600 text-gray-200 px-3 py-1.5 rounded border border-slate-600 transition-colors opacity-50 flex items-center gap-1';
+                undoBtn.innerHTML = '↶ Undo';
+                undoBtn.onclick = window.undo; // Calls the global undo function
+                undoBtn.disabled = true;
+                toolbar.prepend(undoBtn);
+            }
         }
-        // Re-render preview
-        renderCoverPreview();
+
+        // Configure Cover Builder
+        const spineGroup = document.getElementById('spine-upload-group');
+        
+        if (projectSpecs.binding === 'saddleStitch') {
+            // Hide Spine Upload & Display completely for Saddle Stitch
+            if (spineGroup) spineGroup.classList.add('hidden');
+        } else {
+            if (spineGroup) spineGroup.classList.remove('hidden');
+
+            // --- IMPROVEMENT 2: INJECT SPINE MODE SELECTOR ---
+            // Only for Perfect Bound, and only if we haven't created it yet
+            if (spineGroup && !document.getElementById('spine-mode-select')) {
+                const wrapper = document.createElement('div');
+                wrapper.className = "mb-2 flex justify-between items-center";
+                wrapper.innerHTML = `
+                    <label class="text-xs font-medium text-gray-400">Spine Mode</label>
+                    <select id="spine-mode-select" class="text-xs bg-slate-900 border border-slate-600 rounded px-2 py-1 text-white focus:outline-none">
+                        <option value="file">Upload File</option>
+                        <option value="wrap-front">Wrap Front</option>
+                        <option value="wrap-back">Wrap Back</option>
+                    </select>
+                `;
+                
+                // Insert before the drop-zone container
+                const dropZone = spineGroup.querySelector('.drop-zone');
+                if (dropZone) {
+                    spineGroup.insertBefore(wrapper, dropZone);
+                }
+
+                // Add Change Listener
+                document.getElementById('spine-mode-select').addEventListener('change', (e) => {
+                    window.currentSpineMode = e.target.value;
+                    
+                    // Show/Hide Dropzone based on selection
+                    if (e.target.value === 'file') {
+                        dropZone.classList.remove('hidden');
+                    } else {
+                        dropZone.classList.add('hidden');
+                    }
+                    
+                    // Refresh Preview
+                    renderCoverPreview();
+                });
+            }
+        }
+
+        // Default to Interior Tab
+        if (tabInterior) tabInterior.click();
     }
 }
 
+async function initializeBuilder() {
+    if (builderInitialized) {
+        // If already initialized, just re-render with new specs
+        renderBookViewer();
+        validateForm();
+        return;
+    }
+
+    // Restore State from Persistence (only on first load)
+    if (projectId !== 'mock-project-id') {
+        await restoreBuilderState();
+    }
+
+    // Ensure viewer is rendered (initial state)
+    renderBookViewer();
+    validateForm();
+
+    builderInitialized = true;
+}
+
+async function drawWrapper(ctx, sourceEntry, targetX, targetY, targetW, targetH, type, isFrontSource, neighborWidth, pageIndex = 1) {
+    if (!sourceEntry) return;
+
+    // --- Status Handling ---
+    const status = sourceEntry.status || 'ready';
+    if (status === 'processing' || status === 'uploading') {
+        drawProcessingState(ctx, targetX, targetY, targetW, targetH);
+        return;
+    }
+    if (status === 'error') {
+        ctx.fillStyle = '#fee2e2';
+        ctx.fillRect(targetX, targetY, targetW, targetH);
+        return;
+    }
+
+    // --- Load Image ---
+    const file = sourceEntry.file;
+    let imgBitmap;
+    try {
+        if (sourceEntry.isServer) {
+             const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
+             const pdf = await loadingTask.promise;
+             const page = await pdf.getPage(pageIndex); 
+             const viewport = page.getViewport({ scale: 2 });
+             const cvs = document.createElement('canvas');
+             cvs.width = viewport.width; cvs.height = viewport.height;
+             await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+             imgBitmap = await createImageBitmap(cvs);
+        } else if (file && file.type === 'application/pdf') {
+             const pdf = await pdfjsLib.getDocument(URL.createObjectURL(file)).promise;
+             const page = await pdf.getPage(pageIndex); 
+             const viewport = page.getViewport({ scale: 2 });
+             const cvs = document.createElement('canvas');
+             cvs.width = viewport.width; cvs.height = viewport.height;
+             await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+             imgBitmap = await createImageBitmap(cvs);
+        } else if (file && file.type.startsWith('image/')) {
+            imgBitmap = await createImageBitmap(file);
+        } else {
+            return;
+        }
+    } catch(e) { return; }
+
+    // --- Draw Logic ---
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(targetX, targetY, targetW, targetH);
+    ctx.clip();
+
+    const scale = targetH / imgBitmap.height;
+    const scaledW = imgBitmap.width * scale;
+    
+    if (isFrontSource) { 
+        ctx.translate(targetX + targetW, targetY);
+        ctx.scale(-1, 1); 
+        ctx.drawImage(imgBitmap, 0, 0, imgBitmap.width, imgBitmap.height, 0, 0, scaledW, targetH);
+    } else { 
+        ctx.translate(targetX, targetY);
+        ctx.scale(-1, 1);
+        ctx.drawImage(imgBitmap, 0, 0, imgBitmap.width, imgBitmap.height, -scaledW, 0, scaledW, targetH);
+    }
+    ctx.restore();
+}
 
 // --- Main Initialization ---
 async function init() {
     populateSelects();
-    const params = getUrlParams();
-    projectId = params.projectId;
-    guestToken = params.guestToken;
+
+    const { projectId: pId, guestToken: gToken } = getUrlParams();
+    projectId = pId;
+    guestToken = gToken;
 
     if (!projectId || !guestToken) {
-        showError('Invalid link parameters.');
+        showError('Missing project ID or token.');
         return;
     }
 
@@ -1834,13 +2885,10 @@ async function init() {
             throw new Error("Failed to obtain access token.");
         }
 
-        // Sign in with the custom token which contains claims: { guestProjectId: '...', guestPermissions: {...} }
+        // Sign in with the custom token
         await signInWithCustomToken(auth, authResult.data.token);
 
         // 2. Fetch Project Details
-        // Now that we are authenticated with the right claims, we can read the project doc
-        // (assuming firestore.rules allows it based on the claim)
-
         const projectRef = doc(db, 'projects', projectId);
         const projectSnap = await getDoc(projectRef);
 
@@ -1851,8 +2899,13 @@ async function init() {
 
         const projectData = projectSnap.data();
         projectNameEl.textContent = projectData.projectName;
-        projectType = projectData.projectType || 'single'; // Default to single if not set
-        projectSpecs = projectData.specs || {}; // Load specs
+        projectType = projectData.projectType || 'single'; 
+        projectSpecs = projectData.specs || {}; 
+
+        // Ensure dimensions are resolved to object locally
+        if (projectSpecs.dimensions) {
+            projectSpecs.dimensions = resolveDimensions(projectSpecs.dimensions);
+        }
 
         loadingState.classList.add('hidden');
 
@@ -1861,48 +2914,36 @@ async function init() {
         const specs = projectSpecs;
 
         // Check Dimensions
-        if (!specs.dimensions || !specs.dimensions.width || !specs.dimensions.height) {
-            specsMissing = true;
-        }
+        let dimValid = false;
+        if (typeof specs.dimensions === 'object' && specs.dimensions.width && specs.dimensions.height) dimValid = true;
+        if (!dimValid) specsMissing = true;
 
-        // Check Binding if it's missing (Old projects might not have it)
+        // Check Binding
         if (!specs.binding) specsMissing = true;
 
-        // We want to FORCE the new flow if any required data is missing
-        // But if they already set it, we skip.
-
-        if (specsMissing) {
-            // Show Modal
-            specsModal.classList.remove('hidden');
-            // Reset form state if needed
-
-            // Pre-fill if some data exists
-            if (specs.dimensions) {
-                specWidth.value = specs.dimensions.width || '';
-                specHeight.value = specs.dimensions.height || '';
-            }
-
-        } else {
-            // Specs exist, show upload UI directly
-            uploadContainer.classList.remove('hidden');
-            refreshBuilderUI();
-        }
-
+        // --- REMOVED REDUNDANT BLOCK HERE ---
 
         // 5. Setup UI based on type
-        // Always show booklet section now as it contains the new unified builder
         bookletUploadSection.classList.remove('hidden');
-
-        // Note: Sortable is initialized in renderBookViewer now, not here.
 
         updateFileName('file-cover-front', 'file-name-cover-front');
         updateFileName('file-spine', 'file-name-spine');
         updateFileName('file-cover-back', 'file-name-cover-back');
 
-        // Restore State from Persistence
-        await restoreBuilderState();
-
-        validateForm();
+        // 6. Finalize State & Initialize
+        if (specsMissing) {
+            // Show Modal if specs are missing
+            specsModal.classList.remove('hidden');
+            populateSpecsForm();
+            // STOP HERE: Do not render viewer until specs are saved via the form
+        } else {
+            // Specs exist, show upload UI directly
+            uploadContainer.classList.remove('hidden');
+            refreshBuilderUI();
+            
+            // Safe to initialize builder (renders viewer)
+            await initializeBuilder();
+        }
 
     } catch (err) {
         console.error('Init Error:', err);
@@ -1982,48 +3023,55 @@ async function restoreBuilderState() {
         pages = state.pages;
 
         // Restore Sources
-        // We need to convert storagePaths back to something usable (Signed URLs)
-        // and populate `sourceFiles` map.
-
         for (const [id, meta] of Object.entries(state.sourceFiles)) {
             try {
-                // Check if it's a cover file (not in sourceFiles map usually, but handled by selectedFiles?)
+                // Check if it's a cover file
                 if (id.startsWith('cover_')) {
-                    // Handle cover restoration
-                    // We need to fetch the file blob to populate `selectedFiles` for the previewer to work?
-                    // Or modify `renderCoverPreview` to accept URLs.
-                    // `renderCoverPreview` uses `selectedFiles[inputId]`.
-                    // `drawImageOnCanvas` checks `file.type`.
-
-                    // Complex: converting URL to Blob for existing logic
+                    // 1. Fetch the file content (Legacy support requires a File object)
                     const url = await getDownloadURL(ref(storage, meta.storagePath));
                     const response = await fetch(url);
                     const blob = await response.blob();
-                    // Mock file object
                     const file = new File([blob], "Restored File", { type: blob.type });
 
-                    if (id === 'cover_front') selectedFiles['file-cover-front'] = file;
-                    if (id === 'cover_spine') selectedFiles['file-spine'] = file;
-                    if (id === 'cover_back') selectedFiles['file-cover-back'] = file;
+                    // 2. Determine which slot this belongs to
+                    let inputId;
+                    if (id === 'cover_front') inputId = 'file-cover-front';
+                    else if (id === 'cover_spine') inputId = 'file-spine';
+                    else if (id === 'cover_back') inputId = 'file-cover-back';
 
-                    // Update UI text
-                    const displayId = id === 'cover_front' ? 'file-name-cover-front' :
-                                      id === 'cover_spine' ? 'file-name-spine' : 'file-name-cover-back';
-                    const el = document.getElementById(displayId);
-                    if (el) el.textContent = "Restored File";
+                    if (inputId) {
+                        // Populate Legacy State
+                        selectedFiles[inputId] = file;
+
+                        // Populate New System State (Fixes "undefined" crash)
+                        coverSources[inputId] = {
+                            file: file,
+                            status: 'ready',
+                            isServer: false // Treat as local since we have the blob
+                        };
+
+                        // Update UI text
+                        const displayId = id === 'cover_front' ? 'file-name-cover-front' :
+                                          id === 'cover_spine' ? 'file-name-spine' : 'file-name-cover-back';
+                        const el = document.getElementById(displayId);
+                        if (el) el.textContent = "Restored File";
+                        
+                        // If it's a PDF, attempt to set up page controls (optional enhancement)
+                        if (file.type === 'application/pdf') {
+                             // Logic to re-init PDF controls could go here if needed
+                             // For now, the file name display is sufficient
+                        }
+                    }
 
                 } else {
-                    // Interior Source
-                    // Get URL
+                    // Restore Interior Source (Server-side logic)
                     const url = await getDownloadURL(ref(storage, meta.storagePath));
 
-                    // We treat it as a "Server" file
                     sourceFiles[id] = {
                         status: 'ready',
                         previewUrl: url,
                         isServer: true,
-                        // We also need original metadata if possible, but for now this is enough to render
-                        storagePath: meta.storagePath // Keep ref
+                        storagePath: meta.storagePath
                     };
                 }
             } catch (e) {
@@ -2036,15 +3084,15 @@ async function restoreBuilderState() {
         renderCoverPreview();
         validateForm();
 
-    } catch(e) {
+    } catch (e) {
         console.error("Error restoring state:", e);
     }
 }
 
 
 // --- Upload Handler ---
-uploadForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
+async function handleUpload(e) {
+    if (e) e.preventDefault();
 
     // Disable inputs
     submitButton.disabled = true;
@@ -2182,10 +3230,45 @@ uploadForm.addEventListener('submit', async (e) => {
         console.error("Upload failed:", err);
         alert("Upload failed: " + err.message);
         submitButton.disabled = false;
-        submitButton.textContent = 'Start Upload';
+        submitButton.textContent = 'Complete Upload';
         uploadProgress.classList.add('hidden');
     }
+}
+
+function saveState() {
+    // Deep copy pages to history
+    undoStack.push(JSON.stringify(pages));
+    // Limit stack size to 50 steps
+    if (undoStack.length > 50) undoStack.shift();
+    updateUndoUI();
+}
+
+window.undo = () => {
+    if (undoStack.length === 0) return;
+    const prevState = undoStack.pop();
+    pages = JSON.parse(prevState);
+    renderBookViewer();
+    updateUndoUI();
+};
+
+function updateUndoUI() {
+    const btn = document.getElementById('undo-btn');
+    if (btn) {
+        btn.disabled = undoStack.length === 0;
+        btn.classList.toggle('opacity-50', undoStack.length === 0);
+    }
+}
+
+// Listen for Ctrl+Z
+document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+        e.preventDefault();
+        window.undo();
+    }
 });
+
+// Attach to button click (since it's type="button")
+submitButton.addEventListener('click', handleUpload);
 
 // Initialize
 init();
