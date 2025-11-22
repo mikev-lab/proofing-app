@@ -1011,7 +1011,7 @@ function renderBookViewer() {
                             renderPageCanvas(p, cvs).then(() => {
                                 // FIX: Only remove placeholder if READY
                                 const src = sourceFiles[p.sourceFileId];
-                                if (!src || src.status === 'ready' || src.status === 'error') {
+                                if (!src || src instanceof File || src.status === 'ready' || src.status === 'error') {
                                     removePlaceholder(pid);
                                 }
                             });
@@ -1034,7 +1034,7 @@ function renderBookViewer() {
                         renderPageCanvas(page, canvas).then(() => {
                             // FIX: Only remove placeholder if READY
                             const src = sourceFiles[page.sourceFileId];
-                            if (!src || src.status === 'ready' || src.status === 'error') {
+                            if (!src || src instanceof File || src.status === 'ready' || src.status === 'error') {
                                 removePlaceholder(cardId);
                             }
                         });
