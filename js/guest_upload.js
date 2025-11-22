@@ -137,6 +137,41 @@ function getUrlParams() {
     };
 }
 
+function debounce(func, wait) {
+    let timeout;
+    return function(...args) {
+        const context = this;
+        clearTimeout(timeout);
+        timeout = setTimeout(() => func.apply(context, args), wait);
+    };
+}
+
+// Create a debounced version that waits 2 seconds after the last action
+const triggerAutosave = debounce(async () => {
+    const saveBtn = document.getElementById('save-progress-btn');
+    if (saveBtn) {
+        saveBtn.innerHTML = `
+            <div class="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin mr-2"></div>
+            <span class="text-gray-400">Saving...</span>
+        `;
+    }
+
+    try {
+        // Reuse your existing sync logic
+        await syncProjectState('draft'); 
+        
+        if (saveBtn) {
+            saveBtn.innerHTML = `
+                <svg class="w-4 h-4 text-green-500 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                <span class="text-gray-300">All changes saved</span>
+            `;
+        }
+    } catch (e) {
+        console.error("Autosave failed", e);
+        if (saveBtn) saveBtn.innerHTML = `<span class="text-red-400">Save Failed</span>`;
+    }
+}, 2000); // 2000ms = 2 seconds
+
 // --- Helper: Resolve Dimensions ---
 function resolveDimensions(specDimensions) {
     // If it's already an object with width/height
@@ -387,8 +422,106 @@ if (navBackBtn) {
     });
 }
 
+// --- NEW: Reusable Control Builder ---
+async function createCoverControls(inputId, file) {
+    const container = document.getElementById(inputId)?.parentElement;
+    if (!container) return;
 
-// --- Enhanced Cover Upload with Page Selection ---
+    // Remove existing controls to prevent duplicates
+    const existing = container.querySelectorAll('.custom-controls');
+    existing.forEach(el => el.remove());
+
+    // Default settings if missing
+    if (!coverSettings[inputId]) {
+        coverSettings[inputId] = { pageIndex: 1, scaleMode: 'fill' };
+    }
+    const currentSettings = coverSettings[inputId];
+
+    const controls = document.createElement('div');
+    controls.className = 'custom-controls mt-2 flex flex-col gap-2 z-20 relative';
+
+    // 1. Page Selector (Only for PDF)
+    const isPDF = file.type === 'application/pdf';
+    if (isPDF) {
+        try {
+            const fileUrl = URL.createObjectURL(file);
+            const pdf = await pdfjsLib.getDocument(fileUrl).promise;
+            
+            if (pdf.numPages > 1) {
+                const pageCtrl = document.createElement('div');
+                pageCtrl.className = "flex items-center justify-center gap-1 text-xs";
+                pageCtrl.innerHTML = `
+                     <button type="button" class="bg-slate-700 px-2 py-1 rounded hover:bg-indigo-600 text-white" id="prev-${inputId}"><</button>
+                     <div class="flex items-center gap-1 bg-slate-800 rounded px-1 border border-slate-600">
+                        <span class="text-gray-400 text-[10px]">Pg</span>
+                        <input type="number" id="pg-input-${inputId}" value="${currentSettings.pageIndex}" min="1" max="${pdf.numPages}" 
+                            class="w-8 bg-transparent text-center text-white font-mono focus:outline-none appearance-none text-xs py-1">
+                        <span class="text-gray-400 text-[10px]">/ ${pdf.numPages}</span>
+                     </div>
+                     <button type="button" class="bg-slate-700 px-2 py-1 rounded hover:bg-indigo-600 text-white" id="next-${inputId}">></button>
+                `;
+                controls.appendChild(pageCtrl);
+
+                // Bind Events (Wrapped in timeout to ensure DOM insertion)
+                setTimeout(() => {
+                    const setPage = (val) => {
+                        let newPg = parseInt(val);
+                        if (isNaN(newPg) || newPg < 1) newPg = 1;
+                        if (newPg > pdf.numPages) newPg = pdf.numPages;
+                        
+                        coverSettings[inputId].pageIndex = newPg;
+                        const el = document.getElementById(`pg-input-${inputId}`);
+                        if(el) el.value = newPg;
+                        renderCoverPreview();
+                        triggerAutosave(); // Save on change
+                    };
+                    
+                    const inputEl = document.getElementById(`pg-input-${inputId}`);
+                    if(inputEl) {
+                        inputEl.onclick = (ev) => ev.stopPropagation();
+                        inputEl.onchange = (ev) => setPage(ev.target.value);
+                    }
+                    const prevBtn = document.getElementById(`prev-${inputId}`);
+                    if(prevBtn) prevBtn.onclick = (ev) => { ev.stopPropagation(); setPage(coverSettings[inputId].pageIndex - 1); };
+                    
+                    const nextBtn = document.getElementById(`next-${inputId}`);
+                    if(nextBtn) nextBtn.onclick = (ev) => { ev.stopPropagation(); setPage(coverSettings[inputId].pageIndex + 1); };
+                }, 0);
+            }
+        } catch (e) { console.warn("Error loading PDF for controls", e); }
+    }
+
+    // 2. Scale Buttons
+    const scaleCtrl = document.createElement('div');
+    scaleCtrl.className = "flex justify-center gap-1 mt-1";
+    ['fit', 'fill', 'stretch'].forEach(mode => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        // Set active class based on current settings
+        const isActive = currentSettings.scaleMode === mode;
+        btn.className = `text-[10px] px-2 py-1 rounded border ${isActive ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-600 text-gray-400 hover:text-white'}`;
+        btn.textContent = mode.charAt(0).toUpperCase() + mode.slice(1);
+        
+        btn.onclick = (ev) => {
+            ev.stopPropagation();
+            ev.preventDefault();
+            coverSettings[inputId].scaleMode = mode;
+            
+            // Update visual state
+            Array.from(scaleCtrl.children).forEach(b => b.className = 'text-[10px] px-2 py-1 rounded border bg-slate-800 border-slate-600 text-gray-400 hover:text-white');
+            btn.className = 'text-[10px] px-2 py-1 rounded border bg-indigo-600 border-indigo-500 text-white';
+            
+            renderCoverPreview();
+            triggerAutosave(); // Save on change
+        };
+        scaleCtrl.appendChild(btn);
+    });
+    controls.appendChild(scaleCtrl);
+    
+    container.appendChild(controls);
+}
+
+// --- UPDATED: updateFileName ---
 function updateFileName(inputId, displayId) {
     const input = document.getElementById(inputId);
     const display = document.getElementById(displayId);
@@ -397,7 +530,7 @@ function updateFileName(inputId, displayId) {
     input.addEventListener('change', async (e) => {
         const file = e.target.files[0];
 
-        // Clear controls
+        // Clear existing controls
         const existingControls = input.parentElement.querySelectorAll('.custom-controls');
         existingControls.forEach(el => el.remove());
 
@@ -405,22 +538,18 @@ function updateFileName(inputId, displayId) {
             if (display) display.textContent = file.name;
             selectedFiles[inputId] = file; 
 
-            // --- FIX: Strict Check for Browser-Supported Types ---
-            // Only treat these as local. Everything else (PSD, AI, TIFF) goes to server.
             const supportedImages = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp'];
             const isPDF = file.type === 'application/pdf';
             const isSupportedImage = supportedImages.includes(file.type);
-            
-            // Fallback: Check extension if mime type is generic or missing
             const isPsd = file.name.toLowerCase().endsWith('.psd');
-            
             const isLocal = (isPDF || isSupportedImage) && !isPsd;
 
+            // Reset settings for new file
+            coverSettings[inputId] = { pageIndex: 1, scaleMode: 'fill' };
+
             if (!isLocal) {
-                // *** SERVER SIDE PROCESSING (PSD, AI, etc) ***
                 processCoverFile(file, inputId);
             } else {
-                // *** LOCAL RENDERING ***
                 coverSources[inputId] = { 
                     file: file, 
                     status: 'ready', 
@@ -428,88 +557,18 @@ function updateFileName(inputId, displayId) {
                 };
             }
 
-            // --- Create UI Controls ---
-            const controls = document.createElement('div');
-            controls.className = 'custom-controls mt-2 flex flex-col gap-2 z-20 relative';
+            // Generate Controls (using the new reusable function)
+            await createCoverControls(inputId, file);
 
-            // 1. Page Selector (Only for Local PDF)
-            const checkAndSetupPdfControls = async (urlOrBlob) => {
-                try {
-                    const pdf = await pdfjsLib.getDocument(urlOrBlob).promise;
-                    if (pdf.numPages > 1) {
-                        const pageCtrl = document.createElement('div');
-                        pageCtrl.className = "flex items-center justify-center gap-1 text-xs";
-                        pageCtrl.innerHTML = `
-                             <button type="button" class="bg-slate-700 px-2 py-1 rounded hover:bg-indigo-600 text-white" id="prev-${inputId}"><</button>
-                             <div class="flex items-center gap-1 bg-slate-800 rounded px-1 border border-slate-600">
-                                <span class="text-gray-400 text-[10px]">Pg</span>
-                                <input type="number" id="pg-input-${inputId}" value="1" min="1" max="${pdf.numPages}" 
-                                    class="w-8 bg-transparent text-center text-white font-mono focus:outline-none appearance-none text-xs py-1">
-                                <span class="text-gray-400 text-[10px]">/ ${pdf.numPages}</span>
-                             </div>
-                             <button type="button" class="bg-slate-700 px-2 py-1 rounded hover:bg-indigo-600 text-white" id="next-${inputId}">></button>
-                        `;
-                        controls.prepend(pageCtrl); 
-
-                        // Logic
-                        coverSettings[inputId].pageIndex = 1;
-                        
-                        setTimeout(() => {
-                            const setPage = (val) => {
-                                let newPg = parseInt(val);
-                                if (isNaN(newPg) || newPg < 1) newPg = 1;
-                                if (newPg > pdf.numPages) newPg = pdf.numPages;
-                                coverSettings[inputId].pageIndex = newPg;
-                                const el = document.getElementById(`pg-input-${inputId}`);
-                                if(el) el.value = newPg;
-                                renderCoverPreview();
-                            };
-                            
-                            const inputEl = document.getElementById(`pg-input-${inputId}`);
-                            if(inputEl) {
-                                inputEl.onclick = (ev) => ev.stopPropagation();
-                                inputEl.onchange = (ev) => setPage(ev.target.value);
-                            }
-                            document.getElementById(`prev-${inputId}`).onclick = (ev) => { ev.stopPropagation(); setPage(coverSettings[inputId].pageIndex - 1); };
-                            document.getElementById(`next-${inputId}`).onclick = (ev) => { ev.stopPropagation(); setPage(coverSettings[inputId].pageIndex + 1); };
-                        }, 0);
-                    }
-                } catch(e) {}
-            };
-
-            if (isPDF) {
-                checkAndSetupPdfControls(URL.createObjectURL(file));
-            }
-
-            // 2. Scale Buttons
-            const scaleCtrl = document.createElement('div');
-            scaleCtrl.className = "flex justify-center gap-1 mt-1";
-            ['fit', 'fill', 'stretch'].forEach(mode => {
-                const btn = document.createElement('button');
-                btn.type = 'button';
-                btn.className = `text-[10px] px-2 py-1 rounded border ${coverSettings[inputId].scaleMode === mode ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-600 text-gray-400 hover:text-white'}`;
-                btn.textContent = mode.charAt(0).toUpperCase() + mode.slice(1);
-                btn.onclick = (ev) => {
-                    ev.stopPropagation();
-                    ev.preventDefault();
-                    coverSettings[inputId].scaleMode = mode;
-                    Array.from(scaleCtrl.children).forEach(b => b.className = 'text-[10px] px-2 py-1 rounded border bg-slate-800 border-slate-600 text-gray-400 hover:text-white');
-                    btn.className = 'text-[10px] px-2 py-1 rounded border bg-indigo-600 border-indigo-500 text-white';
-                    renderCoverPreview();
-                };
-                scaleCtrl.appendChild(btn);
-            });
-            controls.appendChild(scaleCtrl);
-            input.parentElement.appendChild(controls);
-
-            // Only render immediately if it's local. If server, processCoverFile handles the render.
             if (isLocal) renderCoverPreview();
+            triggerAutosave(); // Trigger save on new file
 
         } else {
             if (display) display.textContent = '';
             delete selectedFiles[inputId];
             delete coverSources[inputId]; 
             renderCoverPreview();
+            triggerAutosave();
         }
         validateForm();
     });
@@ -534,7 +593,10 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
     const previewUrl = sourceEntry.previewUrl;
     let imgBitmap;
 
-    const cacheKey = (isServer ? previewUrl : file.name) + '_' + pageIndex + '_' + (file.lastModified || 'server') + '_cover';
+    // FIX: Safely handle missing file
+    const fileKey = isServer ? (previewUrl || 'server_url') : (file ? file.name : 'unknown_file');
+    const timestamp = (file && file.lastModified) ? file.lastModified : 'server_timestamp';
+    const cacheKey = `${fileKey}_${pageIndex}_${timestamp}_cover`;
 
     try {
         if (imageCache.has(cacheKey)) {
@@ -798,6 +860,8 @@ function addPagesToModel(targetArray, sourceId, numPages, isSpreadUpload) {
             });
         }
     }
+    renderBookViewer();
+    triggerAutosave();
 }
 
 async function processCoverFile(file, slotId) {
@@ -971,12 +1035,15 @@ window.updatePageSetting = (pageId, setting, value) => {
         const canvas = document.getElementById(`canvas-${pageId}`);
         if (canvas) renderPageCanvas(page, canvas);
     }
+    // TRIGGER AUTOSAVE
+    triggerAutosave();
 };
 
 window.deletePage = (pageId) => {
     pages = pages.filter(p => p.id !== pageId);
     imageCache.delete(pageId); // Cleanup
     renderBookViewer();
+    triggerAutosave();
 };
 
 // --- Book Viewer Rendering ---
@@ -1240,6 +1307,8 @@ function renderBookViewer() {
                     pages = newPages;
                     setTimeout(() => { requestAnimationFrame(() => renderBookViewer()); }, 50);
                 } catch (err) { console.error("Error during drag reorder:", err); }
+                // TRIGGER AUTOSAVE
+                triggerAutosave();
             }
         });
     });
@@ -1970,12 +2039,13 @@ function drawBlankPage(page, canvas) {
 }
 
 async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW, targetH, mode, align, pageIndex = 1, pageId = null, viewMode = 'full', panX = 0, panY = 0) {
-    // Handle blank pages (sourceEntry is null/undefined check usually handled by caller, but safe to keep)
+    // Handle blank pages
     if (!sourceEntry) return;
 
     let imgBitmap;
     let srcW, srcH;
 
+    // Unwrap Source
     const isServer = sourceEntry.isServer;
     const file = isServer ? sourceEntry.file : sourceEntry;
     const status = sourceEntry.status || 'ready';
@@ -1993,13 +2063,16 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
     }
 
     if (status === 'processing' || status === 'uploading') {
-        // Draw the visual throbber on the canvas
         drawProcessingState(ctx, targetX, targetY, targetW, targetH);
         return;
     }
 
     // --- 2. Check Cache & Render ---
-    const cacheKey = (isServer ? sourceEntry.previewUrl : file.name) + '_' + pageIndex + '_' + (file.lastModified || 'server');
+    // FIX: Safely handle missing 'file' object for server sources
+    const fileKey = isServer ? (sourceEntry.previewUrl || 'server_url') : (file ? file.name : 'unknown_file');
+    const timestamp = (file && file.lastModified) ? file.lastModified : 'server_timestamp';
+    
+    const cacheKey = `${fileKey}_${pageIndex}_${timestamp}`;
 
     if (imageCache.has(cacheKey)) {
         imgBitmap = imageCache.get(cacheKey);
@@ -2010,6 +2083,8 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
         try {
             if (isServer) {
                 // Load from Server Preview URL
+                if (!sourceEntry.previewUrl) return; 
+                
                 const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
                 const pdf = await loadingTask.promise;
                 const page = await pdf.getPage(pageIndex);
@@ -2029,7 +2104,7 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
                 srcW = viewport.width;
                 srcH = viewport.height;
 
-            } else if (file.type === 'application/pdf') {
+            } else if (file && file.type === 'application/pdf') {
                 // Load Local PDF
                 let pdfDoc = pdfDocCache.get(file);
                 if (!pdfDoc) {
@@ -2055,7 +2130,7 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
                 srcW = viewport.width;
                 srcH = viewport.height;
 
-            } else if (file.type.startsWith('image/')) {
+            } else if (file && file.type.startsWith('image/')) {
                 // Load Local Image
                 imgBitmap = await createImageBitmap(file);
                 imageCache.set(cacheKey, imgBitmap);
@@ -2181,13 +2256,17 @@ function calculateSpineWidth(specs) {
 
     const paper = HARDCODED_PAPER_TYPES.find(p => p.name === specs.paperType);
     const caliper = paper ? paper.caliper : 0.004; // Fallback default
-    const pageCount = specs.pageCount || 0;
+    
+    // Use actual page count from builder if available
+    // 'pages' is the global array storing the internal book pages
+    let count = (typeof pages !== 'undefined' && pages.length > 0) ? pages.length : (specs.pageCount || 0);
 
-    // Simple calculation: (Pages / 2) * Caliper
-    // (Assuming caliper is per sheet, i.e., 2 pages)
-    let width = (pageCount / 2) * caliper;
+    // Calculate sheets (2 pages = 1 sheet)
+    // We use Math.ceil because an odd number of pages (e.g., 3) still uses 2 physical sheets of paper
+    const sheets = Math.ceil(count / 2);
+    
+    let width = sheets * caliper;
 
-    // Ensure minimum spine for glue if needed (optional logic)
     return Math.max(0, width);
 }
 
@@ -2421,8 +2500,11 @@ async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageI
     }
 
     let imgBitmap;
-    // Use a distinct cache key for cover (scale 2) vs interior (scale 1)
-    const cacheKey = (isServer ? previewUrl : file.name) + '_' + pageIndex + '_' + (file.lastModified || 'server') + '_cover';
+    
+    // FIX: Safely handle missing file for restored covers
+    const fileKey = isServer ? (previewUrl || 'server_url') : (file ? file.name : 'unknown_file');
+    const timestamp = (file && file.lastModified) ? file.lastModified : 'server_timestamp';
+    const cacheKey = `${fileKey}_${pageIndex}_${timestamp}_cover`;
 
     try {
         if (imageCache.has(cacheKey)) {
@@ -2433,7 +2515,7 @@ async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageI
                 const loadingTask = pdfjsLib.getDocument(previewUrl);
                 const pdf = await loadingTask.promise;
                 const page = await pdf.getPage(pageIndex);
-                const viewport = page.getViewport({ scale: 2 }); // High res for cover
+                const viewport = page.getViewport({ scale: 2 }); 
                 const cvs = document.createElement('canvas');
                 cvs.width = viewport.width; cvs.height = viewport.height;
                 await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
@@ -2506,7 +2588,7 @@ async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageI
     } catch (e) {
         console.error("Error rendering cover image:", e);
     }
-}
+}   
 
 // --- Specs Form Submit Handler ---
 specsForm.addEventListener('submit', async (e) => {
@@ -2603,6 +2685,22 @@ function refreshBuilderUI() {
     // Update Header Nav
     if (navBackBtn) navBackBtn.classList.remove('hidden');
 
+    // --- 1. INJECT AUTOSAVE STATUS INDICATOR ---
+    const headerActions = document.getElementById('submit-button')?.parentElement;
+    if (headerActions && !document.getElementById('save-progress-btn')) {
+        const statusIndicator = document.createElement('button'); 
+        statusIndicator.id = 'save-progress-btn';
+        statusIndicator.type = 'button';
+        statusIndicator.className = 'mr-4 text-xs font-medium text-gray-400 flex items-center transition-colors hover:text-white cursor-pointer';
+        statusIndicator.innerHTML = `
+            <svg class="w-4 h-4 text-green-500 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+            <span>All changes saved</span>
+        `;
+        statusIndicator.addEventListener('click', () => triggerAutosave()); 
+        headerActions.insertBefore(statusIndicator, document.getElementById('submit-button'));
+    }
+
+    // --- 2. INJECT SPINE MODE SELECTOR ---
     const spineGroup = document.getElementById('spine-upload-group');
     if (spineGroup && !document.getElementById('spine-mode-select')) {
         const wrapper = document.createElement('div');
@@ -2617,45 +2715,43 @@ function refreshBuilderUI() {
                 <option value="wrap-back-stretch">Stretch Back</option>
             </select>
         `;
-        // Insert before the upload box
         spineGroup.insertBefore(wrapper, spineGroup.querySelector('.drop-zone'));
 
-        // Listener
-        document.getElementById('spine-mode-select').addEventListener('change', (e) => {
+        const selectEl = document.getElementById('spine-mode-select');
+
+        // --- RESTORE VALUE IF EXISTS ---
+        if (window.currentSpineMode) {
+            selectEl.value = window.currentSpineMode;
+            const dropZone = spineGroup.querySelector('.drop-zone');
+            if (window.currentSpineMode === 'file') dropZone.classList.remove('hidden');
+            else dropZone.classList.add('hidden');
+        }
+
+        selectEl.addEventListener('change', (e) => {
             window.currentSpineMode = e.target.value;
             const dropZone = spineGroup.querySelector('.drop-zone');
-            
-            // Hide/Show Dropzone based on mode
-            if (e.target.value === 'file') {
-                dropZone.classList.remove('hidden');
-            } else {
-                dropZone.classList.add('hidden');
-            }
+            if (e.target.value === 'file') dropZone.classList.remove('hidden');
+            else dropZone.classList.add('hidden');
             renderCoverPreview();
+            triggerAutosave(); 
         });
     }
 
-    // Show/Hide Tabs based on project type
+    // --- 3. CONFIGURE TABS & TOOLBARS ---
+    // ... (Same as your existing code) ...
     if (projectType === 'single') {
-        // For Loose Sheets
         if (builderTabs) builderTabs.classList.add('hidden');
         if (contentCover) contentCover.classList.add('hidden');
         if (contentInterior) contentInterior.classList.remove('hidden');
-
-        // Toolbar Adjustments
         if (toolbarJump) toolbarJump.classList.add('hidden');
         if (toolbarActionsBooklet) toolbarActionsBooklet.classList.add('hidden');
         if (toolbarSpreadUpload) toolbarSpreadUpload.classList.add('hidden');
-
     } else {
-        // Booklet
         if (builderTabs) builderTabs.classList.remove('hidden');
         if (toolbarJump) toolbarJump.classList.remove('hidden');
         if (toolbarActionsBooklet) toolbarActionsBooklet.classList.remove('hidden');
         if (toolbarSpreadUpload) toolbarSpreadUpload.classList.remove('hidden');
 
-        // --- IMPROVEMENT 1: INJECT UNDO BUTTON ---
-        // We check if it exists first to prevent duplicates if refresh is called multiple times
         if (!document.getElementById('undo-btn')) {
             const toolbar = document.getElementById('toolbar-actions-booklet');
             if (toolbar) {
@@ -2664,59 +2760,21 @@ function refreshBuilderUI() {
                 undoBtn.type = 'button';
                 undoBtn.className = 'text-xs bg-slate-700 hover:bg-slate-600 text-gray-200 px-3 py-1.5 rounded border border-slate-600 transition-colors opacity-50 flex items-center gap-1';
                 undoBtn.innerHTML = '↶ Undo';
-                undoBtn.onclick = window.undo; // Calls the global undo function
+                undoBtn.onclick = () => {
+                    window.undo();
+                    triggerAutosave(); 
+                };
                 undoBtn.disabled = true;
                 toolbar.prepend(undoBtn);
             }
         }
 
-        // Configure Cover Builder
-        const spineGroup = document.getElementById('spine-upload-group');
-        
         if (projectSpecs.binding === 'saddleStitch') {
-            // Hide Spine Upload & Display completely for Saddle Stitch
             if (spineGroup) spineGroup.classList.add('hidden');
         } else {
             if (spineGroup) spineGroup.classList.remove('hidden');
-
-            // --- IMPROVEMENT 2: INJECT SPINE MODE SELECTOR ---
-            // Only for Perfect Bound, and only if we haven't created it yet
-            if (spineGroup && !document.getElementById('spine-mode-select')) {
-                const wrapper = document.createElement('div');
-                wrapper.className = "mb-2 flex justify-between items-center";
-                wrapper.innerHTML = `
-                    <label class="text-xs font-medium text-gray-400">Spine Mode</label>
-                    <select id="spine-mode-select" class="text-xs bg-slate-900 border border-slate-600 rounded px-2 py-1 text-white focus:outline-none">
-                        <option value="file">Upload File</option>
-                        <option value="wrap-front">Wrap Front</option>
-                        <option value="wrap-back">Wrap Back</option>
-                    </select>
-                `;
-                
-                // Insert before the drop-zone container
-                const dropZone = spineGroup.querySelector('.drop-zone');
-                if (dropZone) {
-                    spineGroup.insertBefore(wrapper, dropZone);
-                }
-
-                // Add Change Listener
-                document.getElementById('spine-mode-select').addEventListener('change', (e) => {
-                    window.currentSpineMode = e.target.value;
-                    
-                    // Show/Hide Dropzone based on selection
-                    if (e.target.value === 'file') {
-                        dropZone.classList.remove('hidden');
-                    } else {
-                        dropZone.classList.add('hidden');
-                    }
-                    
-                    // Refresh Preview
-                    renderCoverPreview();
-                });
-            }
         }
 
-        // Default to Interior Tab
         if (tabInterior) tabInterior.click();
     }
 }
@@ -2901,49 +2959,33 @@ async function init() {
 // (Removed unused saveBuilderState function)
 
 // We'll modify the submit handler to call this with the paths.
-async function persistStateAfterSubmit(uploadedPaths) {
+async function persistStateAfterSubmit(allSourcePaths, status = 'draft') {
     if (!projectId) return;
 
     try {
-        // Update sourceFiles with new storage paths so they can be restored
-        // We need a persistent map of sourceId -> storagePath
-        const persistentSources = {};
-
-        // Merge existing sources with new uploads
-        // We need to look at `pages` to see what sources are used.
-        // And we need to see if we have a storage path for them.
-
-        // Current `sourceFiles` key is the sourceId.
-        // `uploadedPaths` maps sourceId -> storagePath.
-
-        // We also need to keep track of sources that were ALREADY uploaded (from previous session).
-        // So we need to load existing persistentSources first?
-        // Or we just store the map in Firestore.
-
         const projectRef = doc(db, 'projects', projectId);
-        const projectDoc = await getDoc(projectRef);
-        const existingState = projectDoc.data().guestBuilderState || {};
-        const existingSources = existingState.sourceFiles || {};
-
-        // Merge
-        for (const [id, path] of Object.entries(uploadedPaths)) {
-            existingSources[id] = { storagePath: path, type: 'interior_source' };
+        const sourceFilesState = {};
+        
+        for (const [id, path] of Object.entries(allSourcePaths)) {
+            let type = 'interior_source';
+            if (id.startsWith('cover_')) type = id; 
+            sourceFilesState[id] = { storagePath: path, type: type };
         }
 
-        // Also handle cover files
-        if (uploadedPaths['cover_front']) existingSources['cover_front'] = { storagePath: uploadedPaths['cover_front'], type: 'cover_front' };
-        if (uploadedPaths['cover_spine']) existingSources['cover_spine'] = { storagePath: uploadedPaths['cover_spine'], type: 'cover_spine' };
-        if (uploadedPaths['cover_back']) existingSources['cover_back'] = { storagePath: uploadedPaths['cover_back'], type: 'cover_back' };
-
-        // Save
+        // Save to Firestore
         await updateDoc(projectRef, {
             guestBuilderState: {
                 pages: pages,
-                sourceFiles: existingSources,
+                sourceFiles: sourceFilesState,
+                // --- NEW SAVED FIELDS ---
+                coverSettings: coverSettings, 
+                spineMode: window.currentSpineMode || 'file',
+                // ------------------------
+                status: status,
                 updatedAt: new Date()
             }
         });
-
+        console.log("State persisted with status:", status);
     } catch(e) {
         console.error("Failed to persist state:", e);
     }
@@ -2959,65 +3001,75 @@ async function restoreBuilderState() {
         if (!docSnap.exists()) return;
 
         const state = docSnap.data().guestBuilderState;
-        if (!state || !state.pages || !state.sourceFiles) return;
+        if (!state) return;
 
-        // Restore Pages
-        pages = state.pages;
+        // 1. Restore Global Variables
+        if (state.pages) pages = state.pages;
+        
+        // Restore Cover Settings (Deep merge or assignment)
+        if (state.coverSettings) {
+            Object.assign(coverSettings, state.coverSettings);
+        }
 
-        // Restore Sources
-        for (const [id, meta] of Object.entries(state.sourceFiles)) {
-            try {
-                // Check if it's a cover file
-                if (id.startsWith('cover_')) {
-                    // 1. Fetch the file content (Legacy support requires a File object)
-                    const url = await getDownloadURL(ref(storage, meta.storagePath));
-                    const response = await fetch(url);
-                    const blob = await response.blob();
-                    const file = new File([blob], "Restored File", { type: blob.type });
+        // Restore Spine Mode
+        if (state.spineMode) {
+            window.currentSpineMode = state.spineMode;
+            // Update the dropdown UI if it exists
+            const spineSelect = document.getElementById('spine-mode-select');
+            if (spineSelect) {
+                spineSelect.value = state.spineMode;
+                spineSelect.dispatchEvent(new Event('change')); // Trigger UI update (hide/show dropzone)
+            }
+        }
 
-                    // 2. Determine which slot this belongs to
-                    let inputId;
-                    if (id === 'cover_front') inputId = 'file-cover-front';
-                    else if (id === 'cover_spine') inputId = 'file-spine';
-                    else if (id === 'cover_back') inputId = 'file-cover-back';
+        // 2. Restore Sources
+        if (state.sourceFiles) {
+            for (const [id, meta] of Object.entries(state.sourceFiles)) {
+                try {
+                    if (id.startsWith('cover_')) {
+                        // Fetch Content
+                        const url = await getDownloadURL(ref(storage, meta.storagePath));
+                        const response = await fetch(url);
+                        const blob = await response.blob();
+                        const file = new File([blob], "Restored File", { type: blob.type });
 
-                    if (inputId) {
-                        // Populate Legacy State
-                        selectedFiles[inputId] = file;
+                        let inputId;
+                        if (id === 'cover_front') inputId = 'file-cover-front';
+                        else if (id === 'cover_spine') inputId = 'file-spine';
+                        else if (id === 'cover_back') inputId = 'file-cover-back';
 
-                        // Populate New System State (Fixes "undefined" crash)
-                        coverSources[inputId] = {
-                            file: file,
-                            status: 'ready',
-                            isServer: false // Treat as local since we have the blob
-                        };
+                        if (inputId) {
+                            selectedFiles[inputId] = file;
+                            coverSources[inputId] = {
+                                file: file,
+                                status: 'ready',
+                                isServer: false,
+                                storagePath: meta.storagePath // Ensure path is kept to avoid re-upload
+                            };
 
-                        // Update UI text
-                        const displayId = id === 'cover_front' ? 'file-name-cover-front' :
-                                          id === 'cover_spine' ? 'file-name-spine' : 'file-name-cover-back';
-                        const el = document.getElementById(displayId);
-                        if (el) el.textContent = "Restored File";
-                        
-                        // If it's a PDF, attempt to set up page controls (optional enhancement)
-                        if (file.type === 'application/pdf') {
-                             // Logic to re-init PDF controls could go here if needed
-                             // For now, the file name display is sufficient
+                            // Update UI Text
+                            const displayId = id === 'cover_front' ? 'file-name-cover-front' :
+                                              id === 'cover_spine' ? 'file-name-spine' : 'file-name-cover-back';
+                            const el = document.getElementById(displayId);
+                            if (el) el.textContent = "Restored File";
+
+                            // --- REBUILD CONTROLS ---
+                            // This restores the Page Selector and Scale Buttons
+                            await createCoverControls(inputId, file);
                         }
+                    } else {
+                        // Interior Source
+                        const url = await getDownloadURL(ref(storage, meta.storagePath));
+                        sourceFiles[id] = {
+                            status: 'ready',
+                            previewUrl: url,
+                            isServer: true,
+                            storagePath: meta.storagePath
+                        };
                     }
-
-                } else {
-                    // Restore Interior Source (Server-side logic)
-                    const url = await getDownloadURL(ref(storage, meta.storagePath));
-
-                    sourceFiles[id] = {
-                        status: 'ready',
-                        previewUrl: url,
-                        isServer: true,
-                        storagePath: meta.storagePath
-                    };
+                } catch (e) {
+                    console.warn(`Failed to restore source ${id}`, e);
                 }
-            } catch (e) {
-                console.warn(`Failed to restore source ${id}`, e);
             }
         }
 
@@ -3033,138 +3085,197 @@ async function restoreBuilderState() {
 
 
 // --- Upload Handler ---
-async function handleUpload(e) {
-    if (e) e.preventDefault();
+// --- NEW: Helper to Upload Files & Save State ---
+async function syncProjectState(statusLabel) {
+    const progressBar = document.getElementById('progress-bar');
+    const progressText = document.getElementById('progress-text');
+    const progressPercent = document.getElementById('progress-percent');
+    const uploadProgress = document.getElementById('upload-progress');
 
-    // Disable inputs
-    submitButton.disabled = true;
-    submitButton.textContent = 'Uploading...';
     uploadProgress.classList.remove('hidden');
+    progressText.textContent = 'Preparing files...';
 
-    // 1. Identify Unique Source Files from Pages + Cover
-    const uniqueSourceIds = new Set();
-    pages.forEach(p => uniqueSourceIds.add(p.sourceFileId));
-
-    const filesToUploadMap = {}; // id -> { file, storagePath }
-
-    // Add Interior Files
-    uniqueSourceIds.forEach(id => {
-        if (sourceFiles[id]) {
-            filesToUploadMap[id] = { file: sourceFiles[id], type: 'interior_source' };
-        }
+    // 1. Identify Active Source IDs (Pages + Covers)
+    const activeSourceIds = new Set();
+    pages.forEach(p => {
+        if (p.sourceFileId) activeSourceIds.add(p.sourceFileId);
     });
 
-    // Add Cover Files (Only if Booklet)
+    // 2. Categorize Sources (New vs Existing)
+    const filesToUpload = []; // { id, file, type }
+    const allSourcePaths = {}; // id -> storagePath (Final Map)
+
+    // Helper to check source
+    const checkSource = (id, src, type) => {
+        if (!src) return;
+        
+        // If we already have a storage path recorded in memory, use it (skip upload)
+        if (src.storagePath) {
+            allSourcePaths[id] = src.storagePath;
+            return;
+        }
+
+        // Otherwise, check if we have a file to upload
+        if (src instanceof File) {
+            filesToUpload.push({ id, file: src, type });
+        } else if (src.file instanceof File) {
+            filesToUpload.push({ id, file: src.file, type });
+        } else if (selectedFiles[id]) {
+            // Legacy fallback
+            filesToUpload.push({ id, file: selectedFiles[id], type });
+        }
+    };
+
+    // Check Interior Files
+    activeSourceIds.forEach(id => checkSource(id, sourceFiles[id], 'interior_source'));
+
+    // Check Cover Files (Booklet Only)
     if (projectType === 'booklet') {
-        if (selectedFiles['file-cover-front']) filesToUploadMap['cover_front'] = { file: selectedFiles['file-cover-front'], type: 'cover_front' };
-        if (selectedFiles['file-spine']) filesToUploadMap['cover_spine'] = { file: selectedFiles['file-spine'], type: 'cover_spine' };
-        if (selectedFiles['file-cover-back']) filesToUploadMap['cover_back'] = { file: selectedFiles['file-cover-back'], type: 'cover_back' };
+        checkSource('cover_front', coverSources['file-cover-front'], 'cover_front');
+        checkSource('cover_spine', coverSources['file-spine'], 'cover_spine');
+        checkSource('cover_back', coverSources['file-cover-back'], 'cover_back');
     }
 
-    const filesToUpload = Object.values(filesToUploadMap);
-    if (filesToUpload.length === 0 && pages.length === 0) return;
-
-    // 2. Upload Files
+    // 3. Upload New Files
     let completed = 0;
     const total = filesToUpload.length;
 
-    // Map for mapping local ID to remote path
-    const uploadedPaths = {}; // localId -> storagePath
-
-    try {
-        for (const localId in filesToUploadMap) {
-            const item = filesToUploadMap[localId];
-            const file = item.file;
+    if (total > 0) {
+        for (const item of filesToUpload) {
             const timestamp = Date.now();
-            const ext = file.name.split('.').pop();
-
-            // Use a 'guest_uploads/' folder to prevent triggering the 'optimizePdf' function (which listens to proofs/)
-            const storagePath = `guest_uploads/${projectId}/${timestamp}_${item.type}_${file.name}`;
+            const cleanName = item.file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+            const storagePath = `guest_uploads/${projectId}/${timestamp}_${item.type}_${cleanName}`;
             const storageRef = ref(storage, storagePath);
 
-            progressText.textContent = `Uploading ${file.name}...`;
-
-            await uploadBytesResumable(storageRef, file);
-
-            uploadedPaths[localId] = storagePath;
+            progressText.textContent = `Uploading ${item.file.name}...`;
+            
+            await uploadBytesResumable(storageRef, item.file);
+            
+            // Update Master Map
+            allSourcePaths[item.id] = storagePath;
+            
+            // UPDATE MEMORY: Store the path so we don't re-upload next time
+            if (item.type === 'interior_source' && sourceFiles[item.id]) {
+                sourceFiles[item.id].storagePath = storagePath;
+            } else if (item.type.startsWith('cover_')) {
+                // Map remote ID back to local slot ID for updating memory
+                const localSlot = item.type === 'cover_front' ? 'file-cover-front' : 
+                                  item.type === 'cover_spine' ? 'file-spine' : 'file-cover-back';
+                if (coverSources[localSlot]) {
+                    coverSources[localSlot].storagePath = storagePath;
+                }
+            }
 
             completed++;
             const percent = (completed / total) * 100;
             progressBar.style.width = `${percent}%`;
             progressPercent.textContent = `${Math.round(percent)}%`;
         }
+    }
 
-        // 3. Construct Metadata (Page List)
+    // 4. Save State to Firestore
+    progressText.textContent = 'Saving Project State...';
+    await persistStateAfterSubmit(allSourcePaths, statusLabel);
+    
+    return allSourcePaths;
+}
+
+// --- NEW: Save Draft Handler ---
+async function handleSaveDraft() {
+    const saveBtn = document.getElementById('save-progress-btn');
+    if (saveBtn) {
+        saveBtn.disabled = true;
+        saveBtn.textContent = 'Saving...';
+    }
+    
+    try {
+        await syncProjectState('draft');
+        
+        // UI Feedback
+        const uploadProgress = document.getElementById('upload-progress');
+        uploadProgress.classList.add('hidden');
+        
+        if (saveBtn) {
+            saveBtn.innerHTML = `<svg class="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> Saved`;
+            setTimeout(() => {
+                saveBtn.disabled = false;
+                saveBtn.innerHTML = `<svg class="w-4 h-4 text-indigo-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"></path></svg> Save Progress`;
+            }, 2000);
+        }
+    } catch (err) {
+        console.error("Save draft failed:", err);
+        alert("Failed to save progress: " + err.message);
+        if (saveBtn) {
+            saveBtn.disabled = false;
+            saveBtn.textContent = 'Save Progress';
+        }
+    }
+}
+
+// --- UPDATED: Final Submit Handler ---
+async function handleUpload(e) {
+    if (e) e.preventDefault();
+
+    submitButton.disabled = true;
+    submitButton.textContent = 'Processing...';
+
+    try {
+        // 1. Upload & Save State (Mark as processing)
+        const allSourcePaths = await syncProjectState('submitted_processing');
+        const progressText = document.getElementById('progress-text');
+
+        // 2. Construct Metadata for Backend
         const bookletMetadata = [];
 
-        // Add Pages (Interior)
+        // Pages
         pages.forEach(p => {
-            // Sanitize settings to ensure numbers are passed as numbers
             const safeSettings = {
                 scaleMode: p.settings.scaleMode || 'fit',
                 alignment: p.settings.alignment || 'center',
-                panX: typeof p.settings.panX === 'number' ? p.settings.panX : parseFloat(p.settings.panX) || 0,
-                panY: typeof p.settings.panY === 'number' ? p.settings.panY : parseFloat(p.settings.panY) || 0
+                panX: Number(p.settings.panX) || 0,
+                panY: Number(p.settings.panY) || 0,
+                view: p.settings.view || 'full'
             };
 
             if (p.sourceFileId === null) {
-                 // Blank Page
                  bookletMetadata.push({
-                    storagePath: null, // Signal blank to backend
+                    storagePath: null, 
                     sourcePageIndex: 0,
                     settings: safeSettings,
-                    type: 'interior_page' // Keep type as interior_page so it's processed in the interior loop
+                    type: 'interior_page'
                  });
             } else {
-                 // Logic Change: We must look up path in `sourceFiles` if not in `uploadedPaths` (i.e. restored file)
-                 // `uploadedPaths` contains ONLY files uploaded in THIS session.
-                 // `sourceFiles[id].storagePath` contains path for restored files.
-
-                 let finalStoragePath = uploadedPaths[p.sourceFileId];
-                 if (!finalStoragePath && sourceFiles[p.sourceFileId] && sourceFiles[p.sourceFileId].storagePath) {
-                     finalStoragePath = sourceFiles[p.sourceFileId].storagePath;
-                 }
-
-                 if (finalStoragePath) {
+                 const path = allSourcePaths[p.sourceFileId];
+                 if (path) {
                      bookletMetadata.push({
-                        storagePath: finalStoragePath,
-                        sourcePageIndex: p.pageIndex - 1, // Convert to 0-based for backend
+                        storagePath: path,
+                        sourcePageIndex: (p.pageIndex || 1) - 1,
                         settings: safeSettings,
                         type: 'interior_page'
                     });
-                 } else {
-                     console.warn("Skipping page with missing file:", p);
                  }
             }
         });
 
-        // Add Cover Parts (if uploaded)
-        if (uploadedPaths['cover_front']) bookletMetadata.push({ storagePath: uploadedPaths['cover_front'], type: 'cover_front' });
-        if (uploadedPaths['cover_spine']) bookletMetadata.push({ storagePath: uploadedPaths['cover_spine'], type: 'cover_spine' });
-        if (uploadedPaths['cover_back']) bookletMetadata.push({ storagePath: uploadedPaths['cover_back'], type: 'cover_back' });
+        // Covers
+        if (allSourcePaths['cover_front']) bookletMetadata.push({ storagePath: allSourcePaths['cover_front'], type: 'cover_front' });
+        if (allSourcePaths['cover_spine']) bookletMetadata.push({ storagePath: allSourcePaths['cover_spine'], type: 'cover_spine' });
+        if (allSourcePaths['cover_back']) bookletMetadata.push({ storagePath: allSourcePaths['cover_back'], type: 'cover_back' });
 
-        // Use variable name expected by next block
-        const uploadMetadata = bookletMetadata;
-
-        // DEBUG LOGGING
-        console.log("Sending Metadata to generateBooklet:", JSON.stringify(uploadMetadata));
-        // END DEBUG LOGGING
-
-        // Persist State (so users can return later)
-        await persistStateAfterSubmit(uploadedPaths);
-
-        // Call Backend to Finalize
-        progressText.textContent = 'Finalizing...';
-
-        // Trigger Build
+        // 3. Call Backend to Generate Proof
+        progressText.textContent = 'Generating Proof...';
+        
         const generateBooklet = httpsCallable(functions, 'generateBooklet');
-        await generateBooklet({ projectId: projectId, files: uploadMetadata });
+        await generateBooklet({ projectId: projectId, files: bookletMetadata });
 
-        // Then call the notification one
+        progressText.textContent = 'Finalizing...';
         const submitGuestUpload = httpsCallable(functions, 'submitGuestUpload');
         await submitGuestUpload({ projectId: projectId });
 
-        // Show Success
+        // 4. Update State to Complete
+        await persistStateAfterSubmit(allSourcePaths, 'submitted_complete');
+
+        // 5. Show Success
         uploadContainer.classList.add('hidden');
         successState.classList.remove('hidden');
 
@@ -3173,7 +3284,7 @@ async function handleUpload(e) {
         alert("Upload failed: " + err.message);
         submitButton.disabled = false;
         submitButton.textContent = 'Complete Upload';
-        uploadProgress.classList.add('hidden');
+        document.getElementById('upload-progress').classList.add('hidden');
     }
 }
 

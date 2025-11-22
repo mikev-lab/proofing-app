@@ -26,23 +26,25 @@ service cloud.firestore {
         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
         getUserData(request.auth.uid).companyId == companyId;
     }
+    
     // --- Rules for 'admin_notifications' Collection ---
-        match /admin_notifications/{notificationId} {
-          // Only Admins can read or write these from the client-side
-          // (The Cloud Function writes via Admin SDK, which bypasses this, but the frontend needs this to READ it)
-          allow read, write: if isAdmin();
-        }
+    match /admin_notifications/{notificationId} {
+      // Only Admins can read or write these from the client-side
+      // (The Cloud Function writes via Admin SDK, which bypasses this, but the frontend needs this to READ it)
+      allow read, write: if isAdmin();
+    }
+
     // --- NEW Guest Helper Functions ---
     function hasValidGuestDataAccess(projectId, permission) {
        // Secure Custom Claim Check with Safe Access (.get)
        // Checks if 'guestProjectId' matches, and if permission is either null (any access) or explicitly true
        // We use default values '' and {} to prevent "Invalid type" warnings when claims are missing
        return request.auth != null &&
-              request.auth.token.get('guestProjectId', '') == projectId &&
-              (
-                permission == null ||
-                request.auth.token.get('guestPermissions', {}).get(permission, false) == true
-              );
+          request.auth.token.get('guestProjectId', '') == projectId &&
+          (
+            permission == null ||
+            request.auth.token.get('guestPermissions', {}).get(permission, false) == true
+          );
     }
 
 
@@ -96,7 +98,7 @@ service cloud.firestore {
       allow create, delete: if false;
     }
 
-// --- Rules for 'projects' Collection ---
+    // --- Rules for 'projects' Collection ---
     match /projects/{projectId} {
       // ** Admins have full access **
       allow write: if isAdmin();
@@ -105,62 +107,62 @@ service cloud.firestore {
       
       // ** Client & Guest Access for GET (reading a single document) **
       allow get: if (
-                      // 1. REGULAR CLIENT ACCESS (Skip if Anonymous)
-                      (request.auth != null &&
-                      request.auth.token.firebase.sign_in_provider != 'anonymous' && 
-                      exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-                      (
-                        getUserData(request.auth.uid).companyId == resource.data.companyId ||
-                        request.auth.uid == resource.data.clientId // Backward Compatibility
-                      ))
-                      // 2. OR GUEST READ ACCESS
-                      // CHANGE: Pass 'null' to check for ANY valid guest link
-                      || hasValidGuestDataAccess(projectId, null)
-                    );
-
+          // 1. REGULAR CLIENT ACCESS (Skip if Anonymous)
+          (request.auth != null &&
+          request.auth.token.firebase.sign_in_provider != 'anonymous' 
+          && 
+          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          (
+            getUserData(request.auth.uid).companyId == resource.data.companyId ||
+            request.auth.uid == resource.data.clientId 
+            // Backward Compatibility
+          ))
+          // 2. OR GUEST READ ACCESS
+          // CHANGE: Pass 'null' to check for ANY valid guest link
+          || hasValidGuestDataAccess(projectId, null)
+        );
+        
       // ** Client & Guest Access for LIST (querying documents) **
       allow list: if request.auth != null;
       
       // Client & Guest 'update' (for status changes or file uploads)
       allow update: if (
-                        // Client update logic
-                        request.auth != null &&
-                        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-                        getUserData(request.auth.uid).companyId == resource.data.companyId &&
-                        (
-                          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])) ||
-                        
-                          (resource.data.isAwaitingClientUpload == true &&
-                            request.resource.data.isAwaitingClientUpload == false &&
-                            request.resource.data.status == 'pending' &&
-                            request.resource.data.versions.size() == resource.data.versions.size() + 1 &&
-                            request.resource.data.companyId == resource.data.companyId &&
-                            request.resource.data.projectName == resource.data.projectName &&
-                            request.resource.data.specs == resource.data.specs
-                          )
-                        )
-                      )
-                      // ** OR Guest Approval Logic **
-                      ||
-                      (
-                        (hasValidGuestDataAccess(projectId, 'canApprove') || hasValidGuestDataAccess(projectId, 'isOwner')) &&
-                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
-                      )
-                      // ** OR Guest Upload Logic **
-                      ||
-                      (
-                        (hasValidGuestDataAccess(projectId, 'canUpload') || hasValidGuestDataAccess(projectId, 'isOwner')) &&
-                        request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'lastUploadAt', 'specs'])
-                      );
+            // Client update logic
+            request.auth != null &&
+            exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+            getUserData(request.auth.uid).companyId == resource.data.companyId &&
+            (
+              (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])) ||
+              (resource.data.isAwaitingClientUpload == true &&
+                request.resource.data.isAwaitingClientUpload == false &&
+                request.resource.data.status == 'pending' &&
+                request.resource.data.versions.size() == resource.data.versions.size() + 1 &&
+                request.resource.data.companyId == resource.data.companyId &&
+                request.resource.data.projectName == resource.data.projectName &&
+                request.resource.data.specs == resource.data.specs
+              )
+            )
+          )
+          // ** OR Guest Approval Logic **
+          ||
+          (
+            (hasValidGuestDataAccess(projectId, 'canApprove') || hasValidGuestDataAccess(projectId, 'isOwner')) &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+          )
+          // ** OR Guest Upload Logic **
+          ||
+          (
+            (hasValidGuestDataAccess(projectId, 'canUpload') || hasValidGuestDataAccess(projectId, 'isOwner')) &&
+            // FIX: Added 'guestBuilderState' and 'projectType' to the allowed list so saving drafts works
+            request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'lastUploadAt', 'specs', 'guestBuilderState', 'projectType'])
+          );
 
       // --- Rules for 'guestLinks' Sub-collection ---
       match /guestLinks/{linkId} {
           // Admins have full control
           allow read, write: if isAdmin();
-          
           // Allow guests/users to read the link to validate it
           allow get: if true;
-
           // [NEW] Allow guests to update ONLY the viewHistory field
           // This lets them increment the view counter without being able to change permissions or expiry
           allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewHistory']);
@@ -176,7 +178,7 @@ service cloud.firestore {
       match /history/{historyId} {
         // Allow read access to admins and members of the project's company
         // CHANGE: Added guest access (null permission) so history loads for guests
-        allow read: if isAdmin() || 
+        allow read: if isAdmin() ||
                        isCompanyMember(getProject(projectId).companyId) ||
                        hasValidGuestDataAccess(projectId, null);
                        
@@ -189,7 +191,6 @@ service cloud.firestore {
     match /projects/{projectId}/annotations/{annotationId} {
       // Admin full control
       allow read, create, update, delete: if isAdmin();
-
       // Client read/create
       allow read, create: if request.auth != null &&
         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
@@ -197,17 +198,17 @@ service cloud.firestore {
           getUserData(request.auth.uid).companyId == getProject(projectId).companyId ||
           request.auth.uid == getProject(projectId).clientId
         );
-
       // Author can update/delete their own annotations
       allow update, delete: if request.auth != null && request.auth.uid == resource.data.authorUid;
-
       // Guest read access
       // CHANGE: Added OR isOwner
-      allow read: if hasValidGuestDataAccess(projectId, 'canSeeComments') || hasValidGuestDataAccess(projectId, 'isOwner');
+      allow read: if hasValidGuestDataAccess(projectId, 'canSeeComments') ||
+        hasValidGuestDataAccess(projectId, 'isOwner');
 
       // Guest create access
       // CHANGE: Added OR isOwner
-      allow create: if hasValidGuestDataAccess(projectId, 'canAnnotate') || hasValidGuestDataAccess(projectId, 'isOwner');
+      allow create: if hasValidGuestDataAccess(projectId, 'canAnnotate') ||
+        hasValidGuestDataAccess(projectId, 'isOwner');
     }
 
     // --- Rules for 'vendors' Collection ---
@@ -241,8 +242,10 @@ service cloud.firestore {
 
     // Add this new rule
     match /settings/globalEstimatorDefaults {
-      allow read: if request.auth != null; // Allow all users (even public) to read
-      allow write: if isAdmin(); // Only admins can change them
+      allow read: if request.auth != null;
+      // Allow all users (even public) to read
+      allow write: if isAdmin();
+      // Only admins can change them
     }
 
     // This matches the path: 'settings/sheetSizes'
