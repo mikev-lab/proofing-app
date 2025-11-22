@@ -119,6 +119,38 @@ function getUrlParams() {
     };
 }
 
+// --- Helper: Resolve Dimensions ---
+function resolveDimensions(specDimensions) {
+    // If it's already an object with width/height
+    if (typeof specDimensions === 'object' && specDimensions !== null && specDimensions.width && specDimensions.height) {
+        // Normalize MM to Inches for internal viewer consistency
+        if (specDimensions.units === 'mm') {
+            return {
+                width: parseFloat(specDimensions.width) / 25.4,
+                height: parseFloat(specDimensions.height) / 25.4,
+                units: 'in' // Normalize to inches for viewer
+            };
+        }
+        return specDimensions;
+    }
+
+    // If it's a string (Standard Preset), look it up
+    if (typeof specDimensions === 'string' && STANDARD_PAPER_SIZES[specDimensions]) {
+        const size = STANDARD_PAPER_SIZES[specDimensions];
+        // Convert MM to Inches for internal viewer consistency (since viewer code usually expects inches)
+        // 1 inch = 25.4 mm
+        return {
+            width: size.width_mm / 25.4,
+            height: size.height_mm / 25.4,
+            units: 'in'
+        };
+    }
+
+    // Fallback or legacy string "WxH" parsing could go here if needed,
+    // but for now return defaults or null
+    return { width: 8.5, height: 11, units: 'in' }; // Default Letter
+}
+
 // --- Helper: Show Error ---
 function showError(msg) {
     loadingState.classList.add('hidden');
@@ -244,12 +276,63 @@ Array.from(projectTypeRadios).forEach(radio => {
     });
 });
 
+// --- Helper: Populate Specs Form ---
+function populateSpecsForm() {
+    // 1. Project Type / Binding
+    let radioValue = '';
+    if (projectSpecs.binding === 'loose') {
+        radioValue = 'loose';
+    } else if (projectSpecs.binding === 'saddleStitch') {
+        radioValue = 'saddleStitch';
+    } else if (projectSpecs.binding === 'perfectBound') {
+        radioValue = 'perfectBound';
+    }
+
+    if (radioValue) {
+        const radio = document.querySelector(`input[name="projectType"][value="${radioValue}"]`);
+        if (radio) {
+            radio.checked = true;
+            radio.dispatchEvent(new Event('change')); // Trigger visibility logic
+        }
+    }
+
+    // 2. Dimensions
+    if (projectSpecs.dimensions) {
+        if (typeof projectSpecs.dimensions === 'object') {
+            // Check if it matches a preset? Hard to check exact float matches.
+            // Default to Custom for safety unless we want to reverse-lookup.
+            // Or just set values.
+            specSizePreset.value = 'custom';
+            specSizePreset.dispatchEvent(new Event('change'));
+
+            specWidth.value = projectSpecs.dimensions.width || '';
+            specHeight.value = projectSpecs.dimensions.height || '';
+
+            if (projectSpecs.dimensions.units) {
+                const btn = document.querySelector(`.unit-toggle[data-unit="${projectSpecs.dimensions.units}"]`);
+                if (btn) btn.click();
+            }
+        } else if (typeof projectSpecs.dimensions === 'string') {
+             specSizePreset.value = projectSpecs.dimensions;
+             specSizePreset.dispatchEvent(new Event('change'));
+        }
+    }
+
+    // 3. Other Fields
+    if (specPageCount) specPageCount.value = projectSpecs.pageCount || '';
+    if (specPaper) specPaper.value = projectSpecs.paperType || '';
+    if (specCoverPaper) specCoverPaper.value = projectSpecs.coverPaperType || '';
+}
+
 // --- Back Button Logic ---
 if (navBackBtn) {
     navBackBtn.addEventListener('click', () => {
         // Hide Builder
         uploadContainer.classList.add('hidden');
         navBackBtn.classList.add('hidden');
+
+        // Populate Form with current data
+        populateSpecsForm();
 
         // Show Modal
         specsModal.classList.remove('hidden');
@@ -1995,7 +2078,8 @@ specsForm.addEventListener('submit', async (e) => {
         const typeValue = selectedType.value; // 'loose', 'saddleStitch', 'perfectBound'
 
         const sizePreset = specSizePreset.value;
-        let dimensionsVal;
+        let dimensionsVal; // For Firestore
+        let localDimensions; // For local state
 
         if (!sizePreset) throw new Error("Please select a finished size.");
 
@@ -2013,14 +2097,12 @@ specsForm.addEventListener('submit', async (e) => {
                 height: height,
                 units: unit
             };
+            // Normalize for local viewer immediately
+            localDimensions = resolveDimensions(dimensionsVal);
         } else {
             // Standard Size Key (e.g., 'A4')
-            // We save the string key directly as requested by user for Admin compatibility,
-            // OR we save the object derived from it.
-            // User said: "not actually importing properly... add drop down...".
-            // If I save 'A4', `getTrimDimensions` handles it.
-            // Let's save the String Key to match "options in admin_project".
             dimensionsVal = sizePreset;
+            localDimensions = resolveDimensions(dimensionsVal);
         }
 
         const specsUpdate = {
@@ -2046,7 +2128,7 @@ specsForm.addEventListener('submit', async (e) => {
 
         // Reload page or Update State locally to avoid reload
         projectSpecs = {
-            dimensions: { width, height, units: 'in' },
+            dimensions: localDimensions,
             binding: specsUpdate['specs.binding'],
             pageCount: specsUpdate['specs.pageCount'],
             paperType: specsUpdate['specs.paperType'],
@@ -2112,12 +2194,12 @@ function refreshBuilderUI() {
 async function init() {
     populateSelects();
 
-    const params = getUrlParams();
-    projectId = params.projectId;
-    guestToken = params.guestToken;
+    const { projectId: pId, guestToken: gToken } = getUrlParams();
+    projectId = pId;
+    guestToken = gToken;
 
     if (!projectId || !guestToken) {
-        showError("Missing project ID or token.");
+        showError('Missing project ID or token.');
         return;
     }
 
@@ -2143,10 +2225,14 @@ async function init() {
         }
 
         const projectData = projectSnap.data();
-
         projectNameEl.textContent = projectData.projectName;
         projectType = projectData.projectType || 'single'; // Default to single if not set
         projectSpecs = projectData.specs || {}; // Load specs
+
+        // Ensure dimensions are resolved to object locally
+        if (projectSpecs.dimensions) {
+            projectSpecs.dimensions = resolveDimensions(projectSpecs.dimensions);
+        }
 
         loadingState.classList.add('hidden');
 
@@ -2157,8 +2243,8 @@ async function init() {
         // Check Dimensions
         // Logic update: dimensions can be string OR object
         let dimValid = false;
-        if (typeof specs.dimensions === 'string' && specs.dimensions.length > 0) dimValid = true;
-        else if (typeof specs.dimensions === 'object' && specs.dimensions.width && specs.dimensions.height) dimValid = true;
+        // Since we resolved it above, it should be an object if it exists and is valid
+        if (typeof specs.dimensions === 'object' && specs.dimensions.width && specs.dimensions.height) dimValid = true;
 
         if (!dimValid) specsMissing = true;
 
@@ -2168,28 +2254,8 @@ async function init() {
         if (specsMissing) {
             // Show Modal
             specsModal.classList.remove('hidden');
-
-            // Pre-fill if some data exists
-            if (typeof specs.dimensions === 'object') {
-                specSizePreset.value = 'custom';
-                specSizePreset.dispatchEvent(new Event('change'));
-                specWidth.value = specs.dimensions.width || '';
-                specHeight.value = specs.dimensions.height || '';
-                if (specs.dimensions.units) {
-                    // Trigger unit click
-                    const btn = document.querySelector(`.unit-toggle[data-unit="${specs.dimensions.units}"]`);
-                    if (btn) btn.click();
-                }
-            } else if (typeof specs.dimensions === 'string') {
-                // Try to set preset
-                specSizePreset.value = specs.dimensions;
-                // If invalid (not in list), default to custom?
-                if (!specSizePreset.value) {
-                     specSizePreset.value = 'custom'; // Fallback
-                     specSizePreset.dispatchEvent(new Event('change'));
-                }
-            }
-
+            // Try to populate from existing specs if any
+            populateSpecsForm();
         } else {
             // Specs exist, show upload UI directly
             uploadContainer.classList.remove('hidden');
@@ -2208,7 +2274,9 @@ async function init() {
         updateFileName('file-cover-back', 'file-name-cover-back');
 
         // Restore State from Persistence
-        await restoreBuilderState();
+        if (projectId !== 'mock-project-id') {
+            await restoreBuilderState();
+        }
 
         // Ensure viewer is rendered (initial state)
         renderBookViewer();
