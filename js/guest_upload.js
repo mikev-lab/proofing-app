@@ -8,7 +8,7 @@ import Sortable from 'https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/modular/sor
 
 import { firebaseConfig } from "./firebase.js";
 import { HARDCODED_PAPER_TYPES, BINDING_TYPES } from "./guest_constants.js";
-import { drawGuides } from "./guides.js";
+import { drawGuides, STANDARD_PAPER_SIZES, INCH_TO_POINTS, MM_TO_POINTS } from "./guides.js";
 
 // Set worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://mozilla.github.io/pdf.js/build/pdf.worker.mjs';
@@ -41,6 +41,11 @@ const navBackBtn = document.getElementById('nav-back-btn');
 // Specs Modal Elements
 const specsModal = document.getElementById('specs-modal');
 const specsForm = document.getElementById('specs-form');
+const specSizePreset = document.getElementById('spec-size-preset');
+const customSizeContainer = document.getElementById('custom-size-container');
+const unitToggles = document.querySelectorAll('.unit-toggle');
+const unitLabels = document.querySelectorAll('.unit-label');
+const specUnit = document.getElementById('spec-unit');
 const specWidth = document.getElementById('spec-width');
 const specHeight = document.getElementById('spec-height');
 const specBinding = document.getElementById('spec-binding'); // Hidden input now
@@ -124,6 +129,34 @@ function showError(msg) {
 
 // --- Helper: Populate Selects ---
 function populateSelects() {
+    // Populate Sizes
+    const groups = {};
+    Object.entries(STANDARD_PAPER_SIZES).forEach(([key, val]) => {
+        if (!groups[val.group]) groups[val.group] = [];
+        groups[val.group].push({ key, ...val });
+    });
+
+    // Clear but keep default and custom
+    // Actually easier to rebuild
+    specSizePreset.innerHTML = '<option value="" disabled selected>Select a Size</option>';
+
+    for (const [groupName, items] of Object.entries(groups)) {
+        const optgroup = document.createElement('optgroup');
+        optgroup.label = groupName;
+        items.forEach(item => {
+            const opt = document.createElement('option');
+            opt.value = item.key;
+            opt.textContent = `${item.name} (${item.width_mm} x ${item.height_mm} mm)`;
+            optgroup.appendChild(opt);
+        });
+        specSizePreset.appendChild(optgroup);
+    }
+    const customOpt = document.createElement('option');
+    customOpt.value = 'custom';
+    customOpt.textContent = 'Custom Size...';
+    specSizePreset.appendChild(customOpt);
+
+
     // Populate Paper
     specPaper.innerHTML = '<option value="" disabled selected>Select Interior Paper</option>';
     specCoverPaper.innerHTML = '<option value="" disabled selected>Select Cover Paper</option>';
@@ -136,6 +169,50 @@ function populateSelects() {
         specCoverPaper.appendChild(opt);
     });
 }
+
+// --- Handle Size Preset Change ---
+if (specSizePreset) {
+    specSizePreset.addEventListener('change', (e) => {
+        const val = e.target.value;
+        if (val === 'custom') {
+            customSizeContainer.classList.remove('hidden');
+            specWidth.required = true;
+            specHeight.required = true;
+        } else {
+            customSizeContainer.classList.add('hidden');
+            specWidth.required = false;
+            specHeight.required = false;
+
+            // Auto-fill for preview/logic if needed, converting to selected unit
+            // But mostly we rely on the 'val' being the preset key.
+        }
+    });
+}
+
+// --- Handle Unit Toggle ---
+unitToggles.forEach(btn => {
+    btn.addEventListener('click', () => {
+        const unit = btn.dataset.unit;
+        specUnit.value = unit;
+
+        // Update UI State
+        unitToggles.forEach(b => {
+            if (b.dataset.unit === unit) {
+                b.classList.remove('text-gray-400', 'hover:text-white');
+                b.classList.add('bg-indigo-600', 'text-white', 'font-medium');
+            } else {
+                b.classList.add('text-gray-400', 'hover:text-white');
+                b.classList.remove('bg-indigo-600', 'text-white', 'font-medium');
+            }
+        });
+
+        // Update Labels
+        unitLabels.forEach(l => l.textContent = unit);
+
+        // Optional: Convert existing values if not empty?
+        // Let's keep it simple for now.
+    });
+});
 
 // --- Handle Project Type Selection ---
 Array.from(projectTypeRadios).forEach(radio => {
@@ -1088,9 +1165,9 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     // But classes is a string.
 
     if (projectType === 'single') {
-        // Loose sheets: Full border, rounded
+        // Loose sheets: Full border, NO rounded corners (Square)
         // Ensure it doesn't scale border thickness. Border is 2px.
-        classes += " rounded-lg border-2";
+        classes += " border-2";
     } else {
         // Booklet: Spread styling
         if (isFirstPage) {
@@ -1917,20 +1994,38 @@ specsForm.addEventListener('submit', async (e) => {
         }
         const typeValue = selectedType.value; // 'loose', 'saddleStitch', 'perfectBound'
 
-        const width = parseFloat(specWidth.value);
-        const height = parseFloat(specHeight.value);
+        const sizePreset = specSizePreset.value;
+        let dimensionsVal;
 
-        if (isNaN(width) || width <= 0 || isNaN(height) || height <= 0) {
-            throw new Error('Invalid dimensions');
+        if (!sizePreset) throw new Error("Please select a finished size.");
+
+        if (sizePreset === 'custom') {
+            const width = parseFloat(specWidth.value);
+            const height = parseFloat(specHeight.value);
+            const unit = specUnit.value;
+
+            if (isNaN(width) || width <= 0 || isNaN(height) || height <= 0) {
+                throw new Error('Invalid custom dimensions');
+            }
+
+            dimensionsVal = {
+                width: width,
+                height: height,
+                units: unit
+            };
+        } else {
+            // Standard Size Key (e.g., 'A4')
+            // We save the string key directly as requested by user for Admin compatibility,
+            // OR we save the object derived from it.
+            // User said: "not actually importing properly... add drop down...".
+            // If I save 'A4', `getTrimDimensions` handles it.
+            // Let's save the String Key to match "options in admin_project".
+            dimensionsVal = sizePreset;
         }
 
         const specsUpdate = {
             'projectType': typeValue === 'loose' ? 'single' : 'booklet',
-            'specs.dimensions': {
-                width: width,
-                height: height,
-                units: 'in' // Default to inches for now
-            }
+            'specs.dimensions': dimensionsVal
         };
 
         // Set Binding Logic
@@ -2016,12 +2111,13 @@ function refreshBuilderUI() {
 // --- Main Initialization ---
 async function init() {
     populateSelects();
+
     const params = getUrlParams();
     projectId = params.projectId;
     guestToken = params.guestToken;
 
     if (!projectId || !guestToken) {
-        showError('Invalid link parameters.');
+        showError("Missing project ID or token.");
         return;
     }
 
@@ -2034,13 +2130,10 @@ async function init() {
             throw new Error("Failed to obtain access token.");
         }
 
-        // Sign in with the custom token which contains claims: { guestProjectId: '...', guestPermissions: {...} }
+        // Sign in with the custom token
         await signInWithCustomToken(auth, authResult.data.token);
 
         // 2. Fetch Project Details
-        // Now that we are authenticated with the right claims, we can read the project doc
-        // (assuming firestore.rules allows it based on the claim)
-
         const projectRef = doc(db, 'projects', projectId);
         const projectSnap = await getDoc(projectRef);
 
@@ -2050,6 +2143,7 @@ async function init() {
         }
 
         const projectData = projectSnap.data();
+
         projectNameEl.textContent = projectData.projectName;
         projectType = projectData.projectType || 'single'; // Default to single if not set
         projectSpecs = projectData.specs || {}; // Load specs
@@ -2061,25 +2155,39 @@ async function init() {
         const specs = projectSpecs;
 
         // Check Dimensions
-        if (!specs.dimensions || !specs.dimensions.width || !specs.dimensions.height) {
-            specsMissing = true;
-        }
+        // Logic update: dimensions can be string OR object
+        let dimValid = false;
+        if (typeof specs.dimensions === 'string' && specs.dimensions.length > 0) dimValid = true;
+        else if (typeof specs.dimensions === 'object' && specs.dimensions.width && specs.dimensions.height) dimValid = true;
+
+        if (!dimValid) specsMissing = true;
 
         // Check Binding if it's missing (Old projects might not have it)
         if (!specs.binding) specsMissing = true;
 
-        // We want to FORCE the new flow if any required data is missing
-        // But if they already set it, we skip.
-
         if (specsMissing) {
             // Show Modal
             specsModal.classList.remove('hidden');
-            // Reset form state if needed
 
             // Pre-fill if some data exists
-            if (specs.dimensions) {
+            if (typeof specs.dimensions === 'object') {
+                specSizePreset.value = 'custom';
+                specSizePreset.dispatchEvent(new Event('change'));
                 specWidth.value = specs.dimensions.width || '';
                 specHeight.value = specs.dimensions.height || '';
+                if (specs.dimensions.units) {
+                    // Trigger unit click
+                    const btn = document.querySelector(`.unit-toggle[data-unit="${specs.dimensions.units}"]`);
+                    if (btn) btn.click();
+                }
+            } else if (typeof specs.dimensions === 'string') {
+                // Try to set preset
+                specSizePreset.value = specs.dimensions;
+                // If invalid (not in list), default to custom?
+                if (!specSizePreset.value) {
+                     specSizePreset.value = 'custom'; // Fallback
+                     specSizePreset.dispatchEvent(new Event('change'));
+                }
             }
 
         } else {
@@ -2101,6 +2209,9 @@ async function init() {
 
         // Restore State from Persistence
         await restoreBuilderState();
+
+        // Ensure viewer is rendered (initial state)
+        renderBookViewer();
 
         validateForm();
 
