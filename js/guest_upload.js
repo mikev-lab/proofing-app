@@ -260,9 +260,14 @@ function validateForm() {
 
     // Also consider cover files if booklet
     if (projectType === 'booklet') {
-         if (selectedFiles['file-cover-front'] && selectedFiles['file-cover-back']) {
-             // Maybe allow just cover? For now let's say valid if pages exist OR full cover exists.
-             isValid = true;
+         // Check if either pages OR a full cover exists
+         if (pages.length === 0) {
+             // If no pages, require cover components
+             if (selectedFiles['file-cover-front'] && selectedFiles['file-cover-back']) {
+                 isValid = true;
+             } else {
+                 isValid = false;
+             }
          }
     }
 
@@ -527,6 +532,9 @@ function renderBookViewer() {
 
     container.innerHTML = ''; // Clear
 
+    // Render Minimap
+    renderMinimap();
+
     // Dimensions for layout
     const width = projectSpecs.dimensions.width;
     const height = projectSpecs.dimensions.height;
@@ -763,6 +771,122 @@ function renderBookViewer() {
     });
 }
 
+// --- Minimap Logic ---
+function renderMinimap() {
+    const container = document.getElementById('minimap-container');
+    if (!container || projectType === 'single') {
+        // Hide for single pages as it's redundant? Or maybe keep it?
+        // For 2 pages it's redundant.
+        if (container) container.classList.add('hidden');
+        return;
+    }
+
+    container.classList.remove('hidden');
+    container.innerHTML = '';
+
+    // Render simplified thumbnails list
+    // We will render one item per Spread/Row
+
+    // Initial Index
+    let i = 0;
+
+    // Spread 0 (Page 1)
+    addMinimapItem(container, [pages[0]], 0, "P1");
+
+    // Spreads
+    i = 1;
+    while(i < pages.length) {
+        const p1 = pages[i];
+        const p2 = pages[i+1];
+        const label = p2 ? `P${i+1}-${i+2}` : `P${i+1}`;
+        addMinimapItem(container, [p1, p2], i, label);
+        i += 2;
+    }
+}
+
+function addMinimapItem(container, pageList, mainIndex, label) {
+    const wrapper = document.createElement('div');
+    wrapper.className = "w-full aspect-[3/2] bg-slate-800 rounded cursor-pointer border border-transparent hover:border-indigo-500 transition-all relative overflow-hidden";
+
+    // Click to scroll
+    wrapper.onclick = () => {
+        // Find the spread row in the main view
+        // We need a robust way to map index to DOM element.
+        // The spread rows don't have IDs.
+        // But we know the order.
+        const mainContainer = document.getElementById('book-viewer-container');
+        // Spreads + Insert Bars.
+        // InsertBar, Spread0, InsertBar, Spread1...
+        // DOM Children: InsertBar(0), SpreadRow(1), InsertBar(2), SpreadRow(3)...
+        // Index 0 (Page 1) is at Child 1.
+        // Index 1 (Page 2-3) is at Child 3.
+        // Formula: (SpreadIndex * 2) + 1.
+
+        // Wait, pageList index passed here is `i`.
+        // Spread 0: i=0. Child 1.
+        // Spread 1: i=1. Child 3.
+        // Correct.
+
+        // But wait, `i` passed to `addMinimapItem` is the page index.
+        // Spread 0 is handled manually.
+        // The loop starts at i=1.
+        // Let's just count spreads.
+
+        // Re-calculating target index logic is messy.
+        // Let's use ID if possible.
+        // We can attach data-index to spread rows in `renderBookViewer`.
+    };
+
+    // For now, simple scroll to ratio? No.
+    // Let's attach the click handler to scroll to the specific page ID.
+    const targetPageId = pageList[0]?.id;
+    if (targetPageId) {
+        wrapper.onclick = () => {
+            const el = document.querySelector(`[data-id="${targetPageId}"]`) || document.querySelector(`[data-id^="spread:${targetPageId}"]`);
+            if (el) {
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                el.classList.add('ring-2', 'ring-indigo-500');
+                setTimeout(() => el.classList.remove('ring-2', 'ring-indigo-500'), 1500);
+            }
+        };
+    }
+
+    // Draw simple representations
+    const canvas = document.createElement('canvas');
+    canvas.width = 150;
+    canvas.height = 100;
+    canvas.className = "w-full h-full object-contain";
+    const ctx = canvas.getContext('2d');
+
+    // Gray Background
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(0, 0, 150, 100);
+
+    // Draw Pages
+    ctx.fillStyle = '#ffffff';
+
+    if (pageList.length === 1 && mainIndex === 0) {
+        // First page (Right)
+        ctx.fillRect(75, 10, 60, 80);
+    } else if (pageList.length === 2) {
+        // Spread
+        ctx.fillRect(15, 10, 60, 80); // Left
+        ctx.fillRect(75, 10, 60, 80); // Right
+    } else {
+        // End Single Left
+        ctx.fillRect(15, 10, 60, 80);
+    }
+
+    // Label
+    const textDiv = document.createElement('div');
+    textDiv.className = "absolute bottom-1 right-1 bg-black/50 text-[10px] px-1 rounded text-white";
+    textDiv.textContent = label;
+
+    wrapper.appendChild(canvas);
+    wrapper.appendChild(textDiv);
+    container.appendChild(wrapper);
+}
+
 // Global Pointer Event Handlers for Panning
 let activePageId = null;
 let partnerPageId = null;
@@ -962,8 +1086,12 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
 
     let classes = "page-card relative group bg-slate-800 shadow-lg border border-slate-700 transition-all hover:border-indigo-500 overflow-hidden cursor-grab active:cursor-grabbing";
 
+    // Prevent frame scaling weirdness by not applying transition to width/height changes if JS handles it
+    // But classes is a string.
+
     if (projectType === 'single') {
         // Loose sheets: Full border, rounded
+        // Ensure it doesn't scale border thickness. Border is 2px.
         classes += " rounded-lg border-2";
     } else {
         // Booklet: Spread styling
@@ -976,6 +1104,25 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
         }
     }
     card.className = classes;
+
+    // Fix: Ensure the CARD element adapts size but doesn't glitch.
+    // The card size is usually determined by its content (the canvasContainer).
+    // canvasContainer has fixed pixel width/height set by JS.
+    // So the card should grow naturally.
+    // The "Frame scales up" issue might be due to border-width appearing smaller relative to content?
+    // No, border is in CSS pixels. If we zoom (browser zoom or canvas scale?), standard CSS handles it.
+    // If we increase `pixelsPerInch`, the DIV grows in pixels.
+    // 2px border remains 2px.
+    // Maybe the user means the border looks too thin/thick?
+    // "Frame scales up as you zoom in and canvas gets larger."
+    // If `viewerScale` increases, `pixelsPerInch` increases.
+    // `containerW` increases. `style.width` increases.
+    // The DOM element gets bigger.
+    // The border is constant 1px (or 2px).
+    // Visually, the frame (border) should stay relative?
+    // Standard behavior is fine. Maybe the user saw layout shift.
+    // `flex-shrink-0` on card helps.
+    card.style.flexShrink = '0';
 
     // Layout Logic
     const bleedPx = bleed * pixelsPerInch;
@@ -1024,7 +1171,7 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     dragHandle.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>';
     card.appendChild(dragHandle);
 
-    // Overlay Controls
+    // Overlay Controls - Always render these
     const controls = document.createElement('div');
     controls.className = "absolute top-2 right-2 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-900/80 p-1 rounded backdrop-blur-sm z-20";
     controls.innerHTML = `
@@ -1032,8 +1179,9 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
         </button>
     `;
+    card.appendChild(controls);
 
-    // Overlay Settings (Transparent Buttons)
+    // Overlay Settings (Transparent Buttons) - Always render these
     const settingsOverlay = document.createElement('div');
     settingsOverlay.className = "absolute bottom-0 inset-x-0 p-2 opacity-0 group-hover:opacity-100 transition-opacity bg-gradient-to-t from-slate-900/90 to-transparent flex justify-center gap-2 z-20";
 
@@ -1052,6 +1200,7 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
         btn.onclick = () => updatePageSetting(page.id, 'scaleMode', mode.id);
         settingsOverlay.appendChild(btn);
     });
+    card.appendChild(settingsOverlay);
 
     const pageNum = document.createElement('span');
     pageNum.className = "absolute bottom-1 left-2 text-[10px] text-white/50 font-mono z-20";
@@ -1634,13 +1783,27 @@ async function renderCoverPreview() {
     // --- Draw Guides ---
     ctx.lineWidth = 1 / pixelsPerInch; // 1px line at this scale
 
-    // 1. Bleed Line (Red) - The outer edge of the canvas is the bleed edge actually.
-    // But let's visualize it.
-    ctx.strokeStyle = 'rgba(239, 68, 68, 0.5)'; // Red-500
+    // 1. Bleed Area Fill (Red Transparent)
+    // Fill the area between the canvas edge (bleed) and the trim line
+    ctx.save();
+    ctx.fillStyle = 'rgba(255, 0, 0, 0.2)'; // Red Transparent
+    ctx.beginPath();
+    ctx.rect(0, 0, totalWidth, totalHeight); // Outer Rect (Bleed)
+    // Subtract Inner Rects (Trim) - Counter-clockwise to create holes
+    ctx.rect(xTrimBackLeft, yBleedTop, trimWidth, trimHeight);
+    if (spineWidth > 0) {
+        ctx.rect(xSpineLeft, yBleedTop, spineWidth, trimHeight);
+    }
+    ctx.rect(xSpineRight, yBleedTop, trimWidth, trimHeight);
+    ctx.fill("evenodd"); // Use evenodd rule for subtraction
+    ctx.restore();
+
+    // Bleed Line (Red Border)
+    ctx.strokeStyle = 'rgba(239, 68, 68, 0.8)'; // Red-500
     ctx.strokeRect(0, 0, totalWidth, totalHeight);
 
-    // 2. Trim Line (Blue) - The actual cut line
-    ctx.strokeStyle = 'rgba(59, 130, 246, 0.8)'; // Blue-500
+    // 2. Trim Line (Black) - The actual cut line
+    ctx.strokeStyle = '#000000'; // Black
     ctx.beginPath();
     // Back Trim
     ctx.rect(xTrimBackLeft, yBleedTop, trimWidth, trimHeight);
@@ -2082,8 +2245,8 @@ async function restoreBuilderState() {
 
 
 // --- Upload Handler ---
-uploadForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
+async function handleUpload(e) {
+    if (e) e.preventDefault();
 
     // Disable inputs
     submitButton.disabled = true;
@@ -2221,10 +2384,13 @@ uploadForm.addEventListener('submit', async (e) => {
         console.error("Upload failed:", err);
         alert("Upload failed: " + err.message);
         submitButton.disabled = false;
-        submitButton.textContent = 'Start Upload';
+        submitButton.textContent = 'Complete Upload';
         uploadProgress.classList.add('hidden');
     }
-});
+}
+
+// Attach to button click (since it's type="button")
+submitButton.addEventListener('click', handleUpload);
 
 // Initialize
 init();

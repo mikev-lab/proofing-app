@@ -155,15 +155,24 @@
                                 </div>
                             </div>
 
-                            <!-- Viewer Container -->
-                            <div id="book-viewer-wrapper" class="relative bg-slate-900/40 border border-dashed border-slate-700 rounded-xl p-6 min-h-[500px] overflow-y-auto max-h-[75vh] drop-zone transition-colors">
-                                <input type="file" id="file-interior-drop" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" accept=".pdf,.jpg,.png,.psd" multiple>
+                            <!-- Split Layout: Sidebar + Viewer -->
+                            <div class="flex h-[600px] gap-4">
 
-                                <div id="book-viewer-container" class="relative z-20 pointer-events-auto flex flex-col items-center">
-                                    <!-- Pages will be rendered here -->
-                                    <div class="flex flex-col items-center justify-center h-64 text-gray-500">
-                                        <svg class="w-12 h-12 text-gray-600 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
-                                        <p>Drag & Drop files here to start.</p>
+                                <!-- Sidebar (Minimap) -->
+                                <div id="minimap-container" class="w-32 flex-shrink-0 bg-slate-900/40 border-r border-slate-700/50 overflow-y-auto rounded-l-xl p-2 space-y-2 no-scrollbar hidden md:block">
+                                    <!-- Thumbnails rendered here -->
+                                </div>
+
+                                <!-- Main Viewer -->
+                                <div id="book-viewer-wrapper" class="flex-grow relative bg-slate-900/40 border border-dashed border-slate-700 rounded-xl p-6 overflow-y-auto drop-zone transition-colors">
+                                    <input type="file" id="file-interior-drop" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" accept=".pdf,.jpg,.png,.psd" multiple>
+
+                                    <div id="book-viewer-container" class="relative z-20 pointer-events-auto flex flex-col items-center">
+                                        <!-- Pages will be rendered here -->
+                                        <div class="flex flex-col items-center justify-center h-64 text-gray-500">
+                                            <svg class="w-12 h-12 text-gray-600 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
+                                            <p>Drag & Drop files here to start.</p>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
