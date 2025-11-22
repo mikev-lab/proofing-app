@@ -71,6 +71,7 @@ const addInteriorFileBtn = document.getElementById('add-interior-file-btn');
 const hiddenInteriorInput = document.getElementById('hidden-interior-input');
 const fileInteriorDrop = document.getElementById('file-interior-drop');
 const viewerZoom = document.getElementById('viewer-zoom');
+const coverZoomInput = document.getElementById('cover-zoom');
 const jumpToPageInput = document.getElementById('jump-to-page');
 const setAllFitBtn = document.getElementById('set-all-fit');
 const setAllFillBtn = document.getElementById('set-all-fill');
@@ -97,18 +98,32 @@ const toolbarActionsBooklet = document.getElementById('toolbar-actions-booklet')
 const toolbarSpreadUpload = document.getElementById('toolbar-spread-upload');
 const builderTabs = document.getElementById('builder-tabs');
 
+const pdfDocCache = new Map(); // Cache for loaded PDF documents
+
+const undoStack = [];
+const GRID_SIZE = 0.01;
+
+const coverSettings = {
+    'file-cover-front': { pageIndex: 1, scaleMode: 'fill' },
+    'file-cover-back':  { pageIndex: 1, scaleMode: 'fill' },
+    'file-spine':       { pageIndex: 1, scaleMode: 'fill' }
+};
+
 // State
 let projectId = null;
 let guestToken = null;
 let projectType = 'single'; // Default
 let selectedFiles = {}; // Keep for Legacy/Single logic
 let projectSpecs = {}; // Store loaded/saved specs here
-
+let builderInitialized = false;
+let coverZoom = 1.0;
 // New Data Model for Virtual Book
 let sourceFiles = {}; // Map: id -> File object
 let pages = []; // Array: { id, sourceFileId, pageIndex, settings: { scaleMode, alignment }, isSpread: boolean }
 let viewerScale = 0.5; // Zoom level for viewer
 const imageCache = new Map(); // Cache for rendered ImageBitmaps: key=pageId -> { bitmap, scale }
+let hasFitCover = false;
+let coverSources = {};
 
 // --- Helper: Parse URL Params ---
 function getUrlParams() {
@@ -210,26 +225,59 @@ if (specSizePreset) {
             customSizeContainer.classList.remove('hidden');
             specWidth.required = true;
             specHeight.required = true;
+            // Fix: Enable inputs so they can be validated/focused
+            specWidth.disabled = false;
+            specHeight.disabled = false;
         } else {
             customSizeContainer.classList.add('hidden');
             specWidth.required = false;
             specHeight.required = false;
+            // Fix: Disable inputs so browser ignores them during validation
+            specWidth.disabled = true;
+            specHeight.disabled = true;
 
-            // Auto-fill for preview/logic if needed, converting to selected unit
-            // But mostly we rely on the 'val' being the preset key.
+            // Auto-fill for preview/logic if needed...
         }
     });
 }
-
 // --- Handle Unit Toggle ---
 unitToggles.forEach(btn => {
     btn.addEventListener('click', () => {
-        const unit = btn.dataset.unit;
-        specUnit.value = unit;
+        const newUnit = btn.dataset.unit;
+        const oldUnit = specUnit.value;
+        
+        // If clicking the same unit, do nothing
+        if (newUnit === oldUnit) return;
 
-        // Update UI State
+        // 1. Convert Values
+        const w = parseFloat(specWidth.value);
+        const h = parseFloat(specHeight.value);
+
+        // Helper to remove trailing zeros after fixing to decimal
+        const format = (num) => parseFloat(num.toFixed(3));
+
+        if (!isNaN(w)) {
+            if (oldUnit === 'in' && newUnit === 'mm') {
+                specWidth.value = format(w * 25.4);
+            } else if (oldUnit === 'mm' && newUnit === 'in') {
+                specWidth.value = format(w / 25.4);
+            }
+        }
+
+        if (!isNaN(h)) {
+            if (oldUnit === 'in' && newUnit === 'mm') {
+                specHeight.value = format(h * 25.4);
+            } else if (oldUnit === 'mm' && newUnit === 'in') {
+                specHeight.value = format(h / 25.4);
+            }
+        }
+
+        // 2. Update State
+        specUnit.value = newUnit;
+
+        // 3. Update UI State
         unitToggles.forEach(b => {
-            if (b.dataset.unit === unit) {
+            if (b.dataset.unit === newUnit) {
                 b.classList.remove('text-gray-400', 'hover:text-white');
                 b.classList.add('bg-indigo-600', 'text-white', 'font-medium');
             } else {
@@ -238,11 +286,8 @@ unitToggles.forEach(btn => {
             }
         });
 
-        // Update Labels
-        unitLabels.forEach(l => l.textContent = unit);
-
-        // Optional: Convert existing values if not empty?
-        // Let's keep it simple for now.
+        // 4. Update Labels
+        unitLabels.forEach(l => l.textContent = newUnit);
     });
 });
 
@@ -340,32 +385,223 @@ if (navBackBtn) {
 }
 
 
-// --- Helper: Update File Name Display (Legacy/Cover) ---
+// --- Enhanced Cover Upload with Page Selection ---
 function updateFileName(inputId, displayId) {
     const input = document.getElementById(inputId);
     const display = document.getElementById(displayId);
-    // Ensure elements exist before adding listeners (crucial for booklet mode where some might not exist)
-    if(!input) return;
+    if (!input) return;
 
     input.addEventListener('change', async (e) => {
-        if (e.target.files.length > 0) {
-            const file = e.target.files[0];
-            if(display) display.textContent = file.name;
-            selectedFiles[inputId] = file;
+        const file = e.target.files[0];
 
-            // Trigger preview update if it's a cover file
-            if (inputId.includes('cover') || inputId.includes('spine')) {
-                await renderCoverPreview();
+        // Clear controls
+        const existingControls = input.parentElement.querySelectorAll('.custom-controls');
+        existingControls.forEach(el => el.remove());
+
+        if (file) {
+            if (display) display.textContent = file.name;
+            selectedFiles[inputId] = file; 
+
+            // --- FIX: Strict Check for Browser-Supported Types ---
+            // Only treat these as local. Everything else (PSD, AI, TIFF) goes to server.
+            const supportedImages = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp'];
+            const isPDF = file.type === 'application/pdf';
+            const isSupportedImage = supportedImages.includes(file.type);
+            
+            // Fallback: Check extension if mime type is generic or missing
+            const isPsd = file.name.toLowerCase().endsWith('.psd');
+            
+            const isLocal = (isPDF || isSupportedImage) && !isPsd;
+
+            if (!isLocal) {
+                // *** SERVER SIDE PROCESSING (PSD, AI, etc) ***
+                processCoverFile(file, inputId);
+            } else {
+                // *** LOCAL RENDERING ***
+                coverSources[inputId] = { 
+                    file: file, 
+                    status: 'ready', 
+                    isServer: false 
+                };
             }
+
+            // --- Create UI Controls ---
+            const controls = document.createElement('div');
+            controls.className = 'custom-controls mt-2 flex flex-col gap-2 z-20 relative';
+
+            // 1. Page Selector (Only for Local PDF)
+            const checkAndSetupPdfControls = async (urlOrBlob) => {
+                try {
+                    const pdf = await pdfjsLib.getDocument(urlOrBlob).promise;
+                    if (pdf.numPages > 1) {
+                        const pageCtrl = document.createElement('div');
+                        pageCtrl.className = "flex items-center justify-center gap-1 text-xs";
+                        pageCtrl.innerHTML = `
+                             <button type="button" class="bg-slate-700 px-2 py-1 rounded hover:bg-indigo-600 text-white" id="prev-${inputId}"><</button>
+                             <div class="flex items-center gap-1 bg-slate-800 rounded px-1 border border-slate-600">
+                                <span class="text-gray-400 text-[10px]">Pg</span>
+                                <input type="number" id="pg-input-${inputId}" value="1" min="1" max="${pdf.numPages}" 
+                                    class="w-8 bg-transparent text-center text-white font-mono focus:outline-none appearance-none text-xs py-1">
+                                <span class="text-gray-400 text-[10px]">/ ${pdf.numPages}</span>
+                             </div>
+                             <button type="button" class="bg-slate-700 px-2 py-1 rounded hover:bg-indigo-600 text-white" id="next-${inputId}">></button>
+                        `;
+                        controls.prepend(pageCtrl); 
+
+                        // Logic
+                        coverSettings[inputId].pageIndex = 1;
+                        
+                        setTimeout(() => {
+                            const setPage = (val) => {
+                                let newPg = parseInt(val);
+                                if (isNaN(newPg) || newPg < 1) newPg = 1;
+                                if (newPg > pdf.numPages) newPg = pdf.numPages;
+                                coverSettings[inputId].pageIndex = newPg;
+                                const el = document.getElementById(`pg-input-${inputId}`);
+                                if(el) el.value = newPg;
+                                renderCoverPreview();
+                            };
+                            
+                            const inputEl = document.getElementById(`pg-input-${inputId}`);
+                            if(inputEl) {
+                                inputEl.onclick = (ev) => ev.stopPropagation();
+                                inputEl.onchange = (ev) => setPage(ev.target.value);
+                            }
+                            document.getElementById(`prev-${inputId}`).onclick = (ev) => { ev.stopPropagation(); setPage(coverSettings[inputId].pageIndex - 1); };
+                            document.getElementById(`next-${inputId}`).onclick = (ev) => { ev.stopPropagation(); setPage(coverSettings[inputId].pageIndex + 1); };
+                        }, 0);
+                    }
+                } catch(e) {}
+            };
+
+            if (isPDF) {
+                checkAndSetupPdfControls(URL.createObjectURL(file));
+            }
+
+            // 2. Scale Buttons
+            const scaleCtrl = document.createElement('div');
+            scaleCtrl.className = "flex justify-center gap-1 mt-1";
+            ['fit', 'fill', 'stretch'].forEach(mode => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = `text-[10px] px-2 py-1 rounded border ${coverSettings[inputId].scaleMode === mode ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-600 text-gray-400 hover:text-white'}`;
+                btn.textContent = mode.charAt(0).toUpperCase() + mode.slice(1);
+                btn.onclick = (ev) => {
+                    ev.stopPropagation();
+                    ev.preventDefault();
+                    coverSettings[inputId].scaleMode = mode;
+                    Array.from(scaleCtrl.children).forEach(b => b.className = 'text-[10px] px-2 py-1 rounded border bg-slate-800 border-slate-600 text-gray-400 hover:text-white');
+                    btn.className = 'text-[10px] px-2 py-1 rounded border bg-indigo-600 border-indigo-500 text-white';
+                    renderCoverPreview();
+                };
+                scaleCtrl.appendChild(btn);
+            });
+            controls.appendChild(scaleCtrl);
+            input.parentElement.appendChild(controls);
+
+            // Only render immediately if it's local. If server, processCoverFile handles the render.
+            if (isLocal) renderCoverPreview();
+
         } else {
-            if(display) display.textContent = '';
+            if (display) display.textContent = '';
             delete selectedFiles[inputId];
-             if (inputId.includes('cover') || inputId.includes('spine')) {
-                await renderCoverPreview();
-            }
+            delete coverSources[inputId]; 
+            renderCoverPreview();
         }
         validateForm();
     });
+}
+
+async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pageIndex = 1) {
+    if (!sourceEntry) return;
+
+    // 1. Handle Status
+    if (sourceEntry.status === 'processing' || sourceEntry.status === 'uploading') {
+        // Optional: You could fill with a placeholder color here
+        return;
+    }
+    if (sourceEntry.status === 'error') {
+        ctx.fillStyle = '#fee2e2';
+        ctx.fillRect(targetZone.x, targetZone.y, targetZone.w, targetZone.h);
+        return;
+    }
+
+    const file = sourceEntry.file;
+    let imgBitmap;
+
+    // 2. Load Image (Server Preview or Local File)
+    try {
+        if (sourceEntry.isServer) {
+             // Server PDF Preview
+             const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
+             const pdf = await loadingTask.promise;
+             const page = await pdf.getPage(pageIndex);
+             const viewport = page.getViewport({ scale: 2 });
+             const cvs = document.createElement('canvas');
+             cvs.width = viewport.width; cvs.height = viewport.height;
+             await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+             imgBitmap = await createImageBitmap(cvs);
+
+        } else if (file.type === 'application/pdf') {
+             // Local PDF
+             const pdf = await pdfjsLib.getDocument(URL.createObjectURL(file)).promise;
+             const page = await pdf.getPage(pageIndex);
+             const viewport = page.getViewport({ scale: 2 });
+             const cvs = document.createElement('canvas');
+             cvs.width = viewport.width; cvs.height = viewport.height;
+             await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+             imgBitmap = await createImageBitmap(cvs);
+
+        } else if (file.type.startsWith('image/')) {
+            // Local Image
+            imgBitmap = await createImageBitmap(file);
+        } else {
+            return;
+        }
+    } catch (e) { 
+        console.error("Error loading image for stretch:", e);
+        return; 
+    }
+
+    // 3. Clip & Draw
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(targetZone.x, targetZone.y, targetZone.w, targetZone.h);
+    ctx.clip();
+
+    const imgW = imgBitmap.width;
+    const imgH = imgBitmap.height;
+
+    // Calculate Scale to fill the TOTAL Combined Zone (Cover + Spine)
+    // Start with height fit
+    let scale = totalZone.h / imgH; 
+    
+    // If scaling to height leaves gaps in width (for the total zone), switch to width fit
+    if (imgW * scale < totalZone.w) {
+        scale = totalZone.w / imgW;
+    }
+
+    const drawW = imgW * scale;
+    const drawH = imgH * scale;
+
+    // Center Vertically
+    const drawY = totalZone.y + (totalZone.h - drawH) / 2;
+
+    // Align Horizontally based on Anchor
+    let drawX;
+    if (anchor === 'right') {
+        // Anchor to Right edge of Total Zone (Front Cover Source)
+        // Image Right Edge = TotalZone Right Edge
+        const totalRight = totalZone.x + totalZone.w;
+        drawX = totalRight - drawW;
+    } else {
+        // Anchor to Left edge of Total Zone (Back Cover Source)
+        // Image Left Edge = TotalZone Left Edge
+        drawX = totalZone.x;
+    }
+
+    ctx.drawImage(imgBitmap, 0, 0, imgW, imgH, drawX, drawY, drawW, drawH);
+    ctx.restore();
 }
 
 // --- Helper: Setup Drag and Drop (Generic) ---
@@ -453,17 +689,26 @@ if (tabInterior && tabCover) {
     });
 
     tabCover.addEventListener('click', () => {
-        tabCover.classList.add('text-indigo-400', 'border-indigo-500');
-        tabCover.classList.remove('text-gray-400', 'hover:text-gray-200');
-        tabInterior.classList.add('text-gray-400', 'hover:text-gray-200');
-        tabInterior.classList.remove('text-indigo-400', 'border-indigo-500');
+            // ... (Existing UI toggles for classes) ...
+            tabCover.classList.add('text-indigo-400', 'border-indigo-500');
+            tabCover.classList.remove('text-gray-400', 'hover:text-gray-200');
+            tabInterior.classList.add('text-gray-400', 'hover:text-gray-200');
+            tabInterior.classList.remove('text-indigo-400', 'border-indigo-500');
 
-        contentCover.classList.remove('hidden');
-        contentInterior.classList.add('hidden');
+            contentCover.classList.remove('hidden');
+            contentInterior.classList.add('hidden');
 
-        // Render preview when tab opens (in case of window resize or init)
-        renderCoverPreview();
-    });
+            // --- NEW AUTO-FIT LOGIC ---
+            if (!hasFitCover) {
+                // Slight delay to let the DOM layout update (remove 'hidden') before measuring
+                setTimeout(() => {
+                    fitCoverToView();
+                    hasFitCover = true;
+                }, 10);
+            } else {
+                renderCoverPreview();
+            }
+        });
 }
 
 
@@ -556,6 +801,62 @@ function addPagesToModel(targetArray, sourceId, numPages, isSpreadUpload) {
                 isSpread: false
             });
         }
+    }
+}
+
+async function processCoverFile(file, slotId) {
+    try {
+        // 1. Update State to Processing
+        coverSources[slotId] = { 
+            file: file, 
+            status: 'processing', 
+            isServer: true 
+        };
+        renderCoverPreview(); // Will show placeholder
+
+        // 2. Upload to Temp Storage
+        const tempId = Date.now().toString();
+        const storageRef = ref(storage, `temp_uploads/${tempId}/${file.name}`);
+        
+        // Show progress in the UI if possible (optional), for now we rely on the canvas text
+        await uploadBytesResumable(storageRef, file);
+
+        // 3. Call Cloud Function
+        const generatePreviews = httpsCallable(functions, 'generatePreviews');
+        const result = await generatePreviews({
+            filePath: `temp_uploads/${tempId}/${file.name}`,
+            originalName: file.name
+        });
+
+        // 4. Handle Result
+        if (result.data && result.data.pages && result.data.pages.length > 0) {
+            const firstPage = result.data.pages[0];
+            const previewRef = ref(storage, firstPage.tempPreviewPath);
+            const previewUrl = await getDownloadURL(previewRef);
+
+            // Update State to Ready
+            coverSources[slotId] = {
+                file: file,
+                status: 'ready',
+                previewUrl: previewUrl,
+                isServer: true,
+                // Store temp path if needed for cleanup or persistence? 
+                // For guest upload, we usually just keep the URL active.
+            };
+            
+            // Force refresh of the file input UI to show page controls if it's a multi-page PDF result
+            // (Simulate a "fresh load" of the processed PDF)
+            // However, generatePreviews returns a PDF. We can just render it.
+            
+            renderCoverPreview();
+        } else {
+            throw new Error("No preview generated");
+        }
+
+    } catch (err) {
+        console.error("Cover processing failed", err);
+        coverSources[slotId] = { file: file, status: 'error', error: err.message };
+        renderCoverPreview();
     }
 }
 
@@ -1070,6 +1371,8 @@ document.addEventListener('pointerdown', (e) => {
 
     // Only allow panning if scaleMode is 'fill'
     if (page && page.settings.scaleMode === 'fill') {
+        saveState(); // <--- Add this line to enable Undo
+
         activePageId = clickedPageId;
         isDragging = true;
         startX = e.clientX;
@@ -1119,8 +1422,15 @@ document.addEventListener('pointermove', (e) => {
             const deltaX = (dx / rect.width) * sensitivity;
             const deltaY = (dy / rect.height) * sensitivity;
 
-            const newPanX = startPanX + deltaX;
-            const newPanY = startPanY + deltaY;
+            let newPanX = startPanX + deltaX;
+            let newPanY = startPanY + deltaY;
+
+            // --- GRID SNAP LOGIC ---
+            // Snap to nearest 5% (0.05)
+            if (GRID_SIZE) {
+                newPanX = Math.round(newPanX / GRID_SIZE) * GRID_SIZE;
+                newPanY = Math.round(newPanY / GRID_SIZE) * GRID_SIZE;
+            }
 
             // Update Active Page
             page.settings.panX = Number.isFinite(newPanX) ? newPanX : 0;
@@ -1659,13 +1969,12 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
         ctx.fillRect(targetX, targetY, targetW, targetH);
         ctx.fillStyle = '#ef4444';
         ctx.font = '0.2px sans-serif';
-        ctx.fillText("Processing Failed", targetX + 0.5, targetY + targetH/2);
+        ctx.fillText("Processing Failed", targetX + 0.5, targetY + targetH / 2);
         return;
     }
 
     if (isServer && sourceEntry.status !== 'ready') {
-         // Keep placeholder (spinner handled by DOM overlay)
-         return;
+        return;
     }
 
     // 2. Check Cache
@@ -1678,22 +1987,11 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
     } else {
         // Render New
         if (isServer) {
-            // Load from Preview URL
+            // Load from Preview URL (Server side processed)
             try {
-                // For now, assume previewUrl is a PDF (as returned by generatePreviews)
-                // But generatePreviews returns a path to a PDF.
-                // We need to load that PDF using PDF.js just like a local file, but from URL.
-
                 const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
                 const pdf = await loadingTask.promise;
-                // Preview PDFs are usually 1 page per file if split, OR multi-page.
-                // Our generatePreviews splits them. So pageIndex 1 is likely correct if it's a single page PDF.
-                // But if we kept them merged, we'd use pageIndex.
-                // Let's assume we use pageIndex relative to the *preview file*.
-                // If `generatePreviews` returns individual pages, we'd map them.
-                // In `processServerFile`, we only mapped the first page result.
-                // So let's try page 1.
-                const page = await pdf.getPage(1);
+                const page = await pdf.getPage(1); // Assuming preview is single page
 
                 const viewport = page.getViewport({ scale: 1.0 });
                 const tempCanvas = document.createElement('canvas');
@@ -1710,14 +2008,27 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
                 srcW = viewport.width;
                 srcH = viewport.height;
 
-            } catch(e) {
+            } catch (e) {
                 console.error("Server Preview Render Error", e);
             }
 
         } else if (file.type === 'application/pdf') {
+            // Load Local PDF with Caching
             try {
-                const fileUrl = URL.createObjectURL(file);
-                const pdf = await pdfjsLib.getDocument(fileUrl).promise;
+                let pdfDoc = pdfDocCache.get(file);
+
+                if (!pdfDoc) {
+                    // First time: Create URL and start loading
+                    const fileUrl = URL.createObjectURL(file);
+                    const loadingTask = pdfjsLib.getDocument(fileUrl);
+                    pdfDoc = loadingTask.promise;
+                    
+                    // Cache the PROMISE, not the result
+                    pdfDocCache.set(file, pdfDoc);
+                }
+
+                // Wait for the single shared document promise
+                const pdf = await pdfDoc;
                 const page = await pdf.getPage(pageIndex);
 
                 const viewport = page.getViewport({ scale: 1.0 });
@@ -1735,7 +2046,6 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
                 srcW = viewport.width;
                 srcH = viewport.height;
 
-                URL.revokeObjectURL(fileUrl);
             } catch (e) {
                 console.error("PDF Render Error", e);
             }
@@ -1745,12 +2055,11 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
                 imageCache.set(cacheKey, imgBitmap);
                 srcW = imgBitmap.width;
                 srcH = imgBitmap.height;
-            } catch(e) {}
+            } catch (e) {}
         }
     }
 
     if (!imgBitmap) {
-        // Grey Box
         ctx.fillStyle = '#f1f5f9';
         ctx.fillRect(targetX, targetY, targetW, targetH);
         return;
@@ -1783,22 +2092,10 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
     }
 
     // Center + Pan
-    // PanX/PanY are expected to be in "Inches" or "Normalized"?
-    // If we implement drag in pixels on the viewer, we need to convert those pixels to canvas scale here.
-    // Let's assume panX/panY are stored in *inches* relative to the paper size, to be resolution independent.
-    // In render logic: panPixels = panInches * pixelsPerInch (from renderPageCanvas scope, passed in? No)
-    // We need pixelsPerInch here or pass normalized coords.
-
-    // Actually, the simplest way for the interactive drag to work is if we store pan in *percentage* of the SHEET dimensions.
-    // Let's say panX = 0.1 means shift right by 10% of sheet width.
-    // Then drawX += targetW * 0.1.
-
-    // Let's assume panX, panY are ratios of Target Dimension (0.0 - 1.0).
-
     drawX = targetX + (targetW - drawW) / 2 + (panX * targetW);
     drawY = targetY + (targetH - drawH) / 2 + (panY * targetH);
 
-    // Clip
+    // Clip & Draw
     ctx.save();
     ctx.beginPath();
     ctx.rect(targetX, targetY, targetW, targetH);
@@ -1841,6 +2138,13 @@ if (viewerZoom) {
     });
 }
 
+if (coverZoomInput) {
+    coverZoomInput.addEventListener('input', (e) => {
+        coverZoom = parseFloat(e.target.value);
+        renderCoverPreview();
+    });
+}
+
 if (jumpToPageInput) {
     jumpToPageInput.addEventListener('change', (e) => {
         const pageNum = parseInt(e.target.value);
@@ -1880,154 +2184,292 @@ function calculateSpineWidth(specs) {
     return Math.max(0, width);
 }
 
+function fitCoverToView() {
+    const container = document.getElementById('cover-preview-canvas')?.parentElement;
+    if (!container || !projectSpecs.dimensions) return;
+
+    // 1. Calculate visual size of the book at 1.0 scale (40 PPI)
+    const trimWidth = projectSpecs.dimensions.width;
+    const trimHeight = projectSpecs.dimensions.height;
+    const bleed = 0.125;
+    const spineWidth = calculateSpineWidth(projectSpecs);
+    
+    const totalWidth = (trimWidth * 2) + spineWidth + (bleed * 2);
+    const totalHeight = trimHeight + (bleed * 2);
+    
+    const basePPI = 40;
+    const bookPixelW = totalWidth * basePPI;
+    const bookPixelH = totalHeight * basePPI;
+
+    // 2. Get Container Size (minus padding)
+    const viewW = container.clientWidth - 60; // 30px padding buffer on each side
+    const viewH = container.clientHeight - 60;
+
+    if (viewW <= 0 || viewH <= 0) return;
+
+    // 3. Calculate Zoom to Fit
+    const scaleX = viewW / bookPixelW;
+    const scaleY = viewH / bookPixelH;
+    
+    // Use the smaller scale to ensure both width and height fit
+    let optimalZoom = Math.min(scaleX, scaleY);
+    
+    // Clamp results (e.g., min 0.3, max 1.5)
+    optimalZoom = Math.min(Math.max(optimalZoom, 0.3), 1.5);
+    
+    // Round to 1 decimal place for the slider
+    optimalZoom = Math.floor(optimalZoom * 10) / 10;
+
+    // 4. Apply
+    coverZoom = optimalZoom;
+    const slider = document.getElementById('cover-zoom');
+    if (slider) slider.value = coverZoom;
+    
+    renderCoverPreview();
+}
+
 async function renderCoverPreview() {
     if (!coverCanvas || !projectSpecs || !projectSpecs.dimensions) return;
 
     const ctx = coverCanvas.getContext('2d');
-    const dpi = 96; // Screen DPI
-    const scale = 2; // Retain high res
+    const scale = 2; // Retain high res for Retina displays
 
     // 1. Calculate Dimensions
     const trimWidth = projectSpecs.dimensions.width;
     const trimHeight = projectSpecs.dimensions.height;
-    const bleed = 0.125; // Standard 1/8 inch bleed
+    const bleed = 0.125;
     const spineWidth = calculateSpineWidth(projectSpecs);
 
-    // Update display
     if (spineWidthDisplay) spineWidthDisplay.textContent = spineWidth.toFixed(3);
 
-    // Full Spread Dimensions (Back + Spine + Front)
-    // Width = Bleed + Back + Spine + Front + Bleed
-    // Height = Bleed + Height + Bleed
     const totalWidth = (trimWidth * 2) + spineWidth + (bleed * 2);
     const totalHeight = trimHeight + (bleed * 2);
 
-    // Set Canvas Size
-    // We limit visual height to 400px usually in CSS, but canvas pixels should match ratio
-    // Let's map 1 inch to X pixels.
-    const pixelsPerInch = 40; // Base scale for canvas drawing
+    // --- ZOOM LOGIC ---
+    const basePPI = 40; 
+    const pixelsPerInch = basePPI * coverZoom; // Scale PPI by zoom factor
+
+    // Set Internal Resolution (High Quality)
     coverCanvas.width = totalWidth * pixelsPerInch * scale;
     coverCanvas.height = totalHeight * pixelsPerInch * scale;
+
+    // Set Visible CSS Size (Allows Scrolling)
+    coverCanvas.style.width = `${totalWidth * pixelsPerInch}px`;
+    coverCanvas.style.height = `${totalHeight * pixelsPerInch}px`;
 
     // Reset Transform
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
     ctx.scale(pixelsPerInch, pixelsPerInch);
 
-    // Clear
+    // Clear Background
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, totalWidth, totalHeight);
 
-    // --- Draw Zones ---
+    // --- Define Zones (Full Bleed) ---
+    const zoneBack = { x: 0, y: 0, w: bleed + trimWidth, h: totalHeight };
+    const zoneSpine = { x: bleed + trimWidth, y: 0, w: spineWidth, h: totalHeight };
+    const zoneFront = { x: bleed + trimWidth + spineWidth, y: 0, w: trimWidth + bleed, h: totalHeight };
 
-    // Coordinates (origin is top-left of bleed box)
-    const y0 = 0;
-    const yBleedTop = bleed;
-    const yBleedBottom = totalHeight - bleed;
-    const hFull = totalHeight;
+    // Combined Zones for Stitching
+    const zoneBackPlusSpine = { x: 0, y: 0, w: zoneBack.w + zoneSpine.w, h: totalHeight };
+    const zoneFrontPlusSpine = { x: zoneSpine.x, y: 0, w: zoneSpine.w + zoneFront.w, h: totalHeight };
 
-    const x0 = 0;
-    const xBleedBackLeft = 0;
+    const spineMode = window.currentSpineMode || 'file';
+
+    // --- 1. Draw Back Cover ---
+    if (spineMode === 'wrap-back-stretch') {
+        await drawStretched(
+            ctx, 
+            selectedFiles['file-cover-back'], 
+            zoneBack,          
+            zoneBackPlusSpine, 
+            'left',            
+            coverSettings['file-cover-back'].pageIndex
+        );
+    } else {
+        await drawImageOnCanvas(
+            ctx, 
+            coverSources['file-cover-back'],
+            zoneBack.x, zoneBack.y, zoneBack.w, zoneBack.h, 
+            coverSettings['file-cover-back'].pageIndex,
+            coverSettings['file-cover-back'].scaleMode
+        );
+    }
+
+    // --- 2. Draw Spine ---
+    if (spineMode === 'file') {
+        await drawImageOnCanvas(
+            ctx, 
+            selectedFiles['file-spine'], 
+            zoneSpine.x, zoneSpine.y, zoneSpine.w, zoneSpine.h, 
+            coverSettings['file-spine'].pageIndex,
+            coverSettings['file-spine'].scaleMode
+        );
+    } else if (spineMode === 'wrap-front-stretch') {
+        await drawStretched(
+            ctx,
+            selectedFiles['file-cover-front'],
+            zoneSpine,          
+            zoneFrontPlusSpine, 
+            'right',            
+            coverSettings['file-cover-front'].pageIndex
+        );
+    } else if (spineMode === 'wrap-back-stretch') {
+        await drawStretched(
+            ctx,
+            selectedFiles['file-cover-back'],
+            zoneSpine,          
+            zoneBackPlusSpine,  
+            'left',             
+            coverSettings['file-cover-back'].pageIndex
+        );
+    } else if (spineMode.includes('wrap')) {
+        // Handle Mirrors
+        const isFrontSource = spineMode.includes('front');
+        const sourceFile = isFrontSource ? selectedFiles['file-cover-front'] : selectedFiles['file-cover-back'];
+        const settings = isFrontSource ? coverSettings['file-cover-front'] : coverSettings['file-cover-back'];
+        
+        await drawWrapper(
+            ctx, 
+            sourceFile, 
+            zoneSpine.x, zoneSpine.y, zoneSpine.w, zoneSpine.h, 
+            'mirror', 
+            isFrontSource, 
+            0, 
+            settings.pageIndex
+        );
+    }
+
+    // --- 3. Draw Front Cover ---
+    if (spineMode === 'wrap-front-stretch') {
+        await drawStretched(
+            ctx, 
+            selectedFiles['file-cover-front'], 
+            zoneFront,          
+            zoneFrontPlusSpine, 
+            'right',            
+            coverSettings['file-cover-front'].pageIndex
+        );
+    } else {
+        await drawImageOnCanvas(
+            ctx, 
+            selectedFiles['file-cover-front'], 
+            zoneFront.x, zoneFront.y, zoneFront.w, zoneFront.h, 
+            coverSettings['file-cover-front'].pageIndex,
+            coverSettings['file-cover-front'].scaleMode
+        );
+    }
+
+    // --- Draw Guides ---
+    ctx.lineWidth = 1 / pixelsPerInch; 
+    
     const xTrimBackLeft = bleed;
     const xSpineLeft = bleed + trimWidth;
     const xSpineRight = bleed + trimWidth + spineWidth;
     const xTrimFrontRight = bleed + trimWidth + spineWidth + trimWidth;
-    const xBleedFrontRight = totalWidth;
+    const yBleedTop = bleed;
 
-    // Draw Content (Placeholders or Images)
-    await drawImageOnCanvas(ctx, selectedFiles['file-cover-back'], xTrimBackLeft, yBleedTop, trimWidth, trimHeight);
-    await drawImageOnCanvas(ctx, selectedFiles['file-spine'], xSpineLeft, yBleedTop, spineWidth, trimHeight);
-    await drawImageOnCanvas(ctx, selectedFiles['file-cover-front'], xSpineRight, yBleedTop, trimWidth, trimHeight);
-
-    // --- Draw Guides ---
-    ctx.lineWidth = 1 / pixelsPerInch; // 1px line at this scale
-
-    // 1. Bleed Area Fill (Red Transparent)
-    // Fill the area between the canvas edge (bleed) and the trim line
+    // Bleed Fill
     ctx.save();
-    ctx.fillStyle = 'rgba(255, 0, 0, 0.2)'; // Red Transparent
+    ctx.fillStyle = 'rgba(255, 0, 0, 0.2)';
     ctx.beginPath();
-    ctx.rect(0, 0, totalWidth, totalHeight); // Outer Rect (Bleed)
-    // Subtract Inner Rects (Trim) - Counter-clockwise to create holes
-    ctx.rect(xTrimBackLeft, yBleedTop, trimWidth, trimHeight);
-    if (spineWidth > 0) {
-        ctx.rect(xSpineLeft, yBleedTop, spineWidth, trimHeight);
-    }
-    ctx.rect(xSpineRight, yBleedTop, trimWidth, trimHeight);
-    ctx.fill("evenodd"); // Use evenodd rule for subtraction
+    ctx.rect(0, 0, totalWidth, totalHeight);
+    ctx.rect(bleed, bleed, trimWidth, trimHeight); // Back Trim
+    if (spineWidth > 0) ctx.rect(bleed + trimWidth, bleed, spineWidth, trimHeight); // Spine Trim
+    ctx.rect(bleed + trimWidth + spineWidth, bleed, trimWidth, trimHeight); // Front Trim
+    ctx.fill("evenodd");
     ctx.restore();
 
-    // Bleed Line (Red Border)
-    ctx.strokeStyle = 'rgba(239, 68, 68, 0.8)'; // Red-500
-    ctx.strokeRect(0, 0, totalWidth, totalHeight);
-
-    // 2. Trim Line (Black) - The actual cut line
-    ctx.strokeStyle = '#000000'; // Black
-    ctx.beginPath();
-    // Back Trim
-    ctx.rect(xTrimBackLeft, yBleedTop, trimWidth, trimHeight);
-    // Spine Trim (Only if width > 0)
-    if (spineWidth > 0) {
-        ctx.rect(xSpineLeft, yBleedTop, spineWidth, trimHeight);
-    }
-    // Front Trim
-    ctx.rect(xSpineRight, yBleedTop, trimWidth, trimHeight);
+    // Lines
+    ctx.strokeStyle = '#000000';
+    ctx.beginPath(); 
+    ctx.rect(bleed, bleed, trimWidth, trimHeight);
+    if (spineWidth > 0) ctx.rect(bleed + trimWidth, bleed, spineWidth, trimHeight);
+    ctx.rect(bleed + trimWidth + spineWidth, bleed, trimWidth, trimHeight);
     ctx.stroke();
 
-    // 3. Safe Area (Green) - 0.125" inside Trim
+    ctx.strokeStyle = 'rgba(239, 68, 68, 0.8)'; // Bleed
+    ctx.strokeRect(0, 0, totalWidth, totalHeight);
+    
+    // Safe Area
     const safe = 0.125;
-    ctx.strokeStyle = 'rgba(34, 197, 94, 0.5)'; // Green-500
+    ctx.strokeStyle = 'rgba(34, 197, 94, 0.5)';
     ctx.beginPath();
-    // Back Safe
     ctx.rect(xTrimBackLeft + safe, yBleedTop + safe, trimWidth - (2*safe), trimHeight - (2*safe));
-    // Front Safe
     ctx.rect(xSpineRight + safe, yBleedTop + safe, trimWidth - (2*safe), trimHeight - (2*safe));
-    // Spine Safe (Usually smaller, maybe 0.0625?)
     if (spineWidth > 0.25) {
          ctx.rect(xSpineLeft + safe, yBleedTop + safe, spineWidth - (2*safe), trimHeight - (2*safe));
     }
     ctx.stroke();
 }
 
-async function drawImageOnCanvas(ctx, file, x, y, targetW, targetH) {
-    if (!file) return;
+async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageIndex = 1, scaleMode = 'fill') {
+    if (!sourceEntry) return;
+
+    // --- ROBUST INPUT HANDLING ---
+    let file, status, isServer, previewUrl;
+
+    // Check if sourceEntry is a raw File object (Legacy/Fallback)
+    if (sourceEntry instanceof File) {
+        file = sourceEntry;
+        status = 'ready';
+        isServer = false;
+    } else {
+        // It's a Wrapper Object
+        file = sourceEntry.file;
+        status = sourceEntry.status;
+        isServer = sourceEntry.isServer;
+        previewUrl = sourceEntry.previewUrl;
+    }
+
+    // Safety check: If we still don't have a file and it's not a server preview, abort
+    if (!file && !isServer) return;
+
+    // --- DRAWING LOGIC ---
+    if (status === 'processing') {
+        ctx.fillStyle = '#f1f5f9';
+        ctx.fillRect(x, y, targetW, targetH);
+        return;
+    }
+    if (status === 'error') {
+        ctx.fillStyle = '#fee2e2';
+        ctx.fillRect(x, y, targetW, targetH);
+        return;
+    }
+
+    let imgBitmap;
 
     try {
-        let imgBitmap;
+        if (isServer) {
+            // Server Preview
+            const loadingTask = pdfjsLib.getDocument(previewUrl);
+            const pdf = await loadingTask.promise;
+            const page = await pdf.getPage(pageIndex);
+            const viewport = page.getViewport({ scale: 2 });
+            const cvs = document.createElement('canvas');
+            cvs.width = viewport.width; cvs.height = viewport.height;
+            await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+            imgBitmap = await createImageBitmap(cvs);
 
-        if (file.type === 'application/pdf') {
-            // Render first page of PDF
+        } else if (file && file.type === 'application/pdf') {
+            // Local PDF
             const arrayBuffer = await file.arrayBuffer();
             const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
-            const page = await pdf.getPage(1);
-
-            // Get viewport at high scale
+            const page = await pdf.getPage(pageIndex);
             const viewport = page.getViewport({ scale: 2 });
-            const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = viewport.width;
-            tempCanvas.height = viewport.height;
+            const cvs = document.createElement('canvas');
+            cvs.width = viewport.width; cvs.height = viewport.height;
+            await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+            imgBitmap = await createImageBitmap(cvs);
 
-            await page.render({
-                canvasContext: tempCanvas.getContext('2d'),
-                viewport: viewport
-            }).promise;
-
-            imgBitmap = await createImageBitmap(tempCanvas);
-
-        } else if (file.type.startsWith('image/')) {
-            // Standard Image
+        } else if (file && file.type.startsWith('image/')) {
+            // Local Image
             imgBitmap = await createImageBitmap(file);
         } else {
-            // Unsupported for preview (e.g. PSD)
-            // Draw placeholder text
-            ctx.fillStyle = '#e2e8f0';
-            ctx.fillRect(x, y, targetW, targetH);
-            ctx.fillStyle = '#64748b';
-            ctx.font = '0.4px sans-serif';
-            ctx.fillText('Preview Unavailable', x + 0.5, y + (targetH/2));
             return;
         }
 
-        // Draw Image using "Aspect Fill" logic
+        // Standard Scale/Draw Logic
         const srcW = imgBitmap.width;
         const srcH = imgBitmap.height;
         const srcRatio = srcW / srcH;
@@ -2035,18 +2477,32 @@ async function drawImageOnCanvas(ctx, file, x, y, targetW, targetH) {
 
         let drawW, drawH, drawX, drawY;
 
-        if (srcRatio > targetRatio) {
-            // Image is wider than target: Crop width
-            drawH = targetH;
-            drawW = targetH * srcRatio;
-            drawY = y;
-            drawX = x - (drawW - targetW) / 2; // Center horizontally
-        } else {
-            // Image is taller than target: Crop height
+        if (scaleMode === 'stretch') {
             drawW = targetW;
-            drawH = targetW / srcRatio;
+            drawH = targetH;
             drawX = x;
-            drawY = y - (drawH - targetH) / 2; // Center vertically
+            drawY = y;
+        } else if (scaleMode === 'fit') {
+            if (srcRatio > targetRatio) {
+                drawW = targetW;
+                drawH = targetW / srcRatio;
+            } else {
+                drawH = targetH;
+                drawW = targetH * srcRatio;
+            }
+            drawX = x + (targetW - drawW) / 2;
+            drawY = y + (targetH - drawH) / 2;
+        } else {
+            // Fill
+            if (srcRatio > targetRatio) {
+                drawH = targetH;
+                drawW = targetH * srcRatio;
+            } else {
+                drawW = targetW;
+                drawH = targetW / srcRatio;
+            }
+            drawX = x + (targetW - drawW) / 2;
+            drawY = y + (targetH - drawH) / 2;
         }
 
         ctx.save();
@@ -2056,9 +2512,8 @@ async function drawImageOnCanvas(ctx, file, x, y, targetW, targetH) {
         ctx.drawImage(imgBitmap, drawX, drawY, drawW, drawH);
         ctx.restore();
 
-
     } catch (e) {
-        console.error("Error rendering preview image:", e);
+        console.error("Error rendering cover image:", e);
     }
 }
 
@@ -2143,6 +2598,8 @@ specsForm.addEventListener('submit', async (e) => {
         // Refresh UI logic
         refreshBuilderUI();
 
+        await initializeBuilder();
+
     } catch (err) {
         console.error("Error saving specs:", err);
         alert("Failed to save specifications: " + err.message);
@@ -2156,6 +2613,38 @@ function refreshBuilderUI() {
     // Update Header Nav
     if (navBackBtn) navBackBtn.classList.remove('hidden');
 
+    const spineGroup = document.getElementById('spine-upload-group');
+    if (spineGroup && !document.getElementById('spine-mode-select')) {
+        const wrapper = document.createElement('div');
+        wrapper.className = "mb-2 flex justify-between items-center";
+        wrapper.innerHTML = `
+            <label class="text-xs font-medium text-gray-400">Spine Mode</label>
+            <select id="spine-mode-select" class="text-xs bg-slate-900 border border-slate-600 rounded px-2 py-1 text-white focus:outline-none">
+                <option value="file">Upload File</option>
+                <option value="wrap-front">Mirror Front</option>
+                <option value="wrap-back">Mirror Back</option>
+                <option value="wrap-front-stretch">Stretch Front</option>
+                <option value="wrap-back-stretch">Stretch Back</option>
+            </select>
+        `;
+        // Insert before the upload box
+        spineGroup.insertBefore(wrapper, spineGroup.querySelector('.drop-zone'));
+
+        // Listener
+        document.getElementById('spine-mode-select').addEventListener('change', (e) => {
+            window.currentSpineMode = e.target.value;
+            const dropZone = spineGroup.querySelector('.drop-zone');
+            
+            // Hide/Show Dropzone based on mode
+            if (e.target.value === 'file') {
+                dropZone.classList.remove('hidden');
+            } else {
+                dropZone.classList.add('hidden');
+            }
+            renderCoverPreview();
+        });
+    }
+
     // Show/Hide Tabs based on project type
     if (projectType === 'single') {
         // For Loose Sheets
@@ -2168,7 +2657,6 @@ function refreshBuilderUI() {
         if (toolbarActionsBooklet) toolbarActionsBooklet.classList.add('hidden');
         if (toolbarSpreadUpload) toolbarSpreadUpload.classList.add('hidden');
 
-        // Force simple view if needed, but renderBookViewer handles it
     } else {
         // Booklet
         if (builderTabs) builderTabs.classList.remove('hidden');
@@ -2176,12 +2664,66 @@ function refreshBuilderUI() {
         if (toolbarActionsBooklet) toolbarActionsBooklet.classList.remove('hidden');
         if (toolbarSpreadUpload) toolbarSpreadUpload.classList.remove('hidden');
 
+        // --- IMPROVEMENT 1: INJECT UNDO BUTTON ---
+        // We check if it exists first to prevent duplicates if refresh is called multiple times
+        if (!document.getElementById('undo-btn')) {
+            const toolbar = document.getElementById('toolbar-actions-booklet');
+            if (toolbar) {
+                const undoBtn = document.createElement('button');
+                undoBtn.id = 'undo-btn';
+                undoBtn.type = 'button';
+                undoBtn.className = 'text-xs bg-slate-700 hover:bg-slate-600 text-gray-200 px-3 py-1.5 rounded border border-slate-600 transition-colors opacity-50 flex items-center gap-1';
+                undoBtn.innerHTML = '↶ Undo';
+                undoBtn.onclick = window.undo; // Calls the global undo function
+                undoBtn.disabled = true;
+                toolbar.prepend(undoBtn);
+            }
+        }
+
         // Configure Cover Builder
+        const spineGroup = document.getElementById('spine-upload-group');
+        
         if (projectSpecs.binding === 'saddleStitch') {
-            // Hide Spine Upload & Display
-            if(fileSpineInput) fileSpineInput.closest('.drop-zone').parentElement.classList.add('hidden');
+            // Hide Spine Upload & Display completely for Saddle Stitch
+            if (spineGroup) spineGroup.classList.add('hidden');
         } else {
-            if(fileSpineInput) fileSpineInput.closest('.drop-zone').parentElement.classList.remove('hidden');
+            if (spineGroup) spineGroup.classList.remove('hidden');
+
+            // --- IMPROVEMENT 2: INJECT SPINE MODE SELECTOR ---
+            // Only for Perfect Bound, and only if we haven't created it yet
+            if (spineGroup && !document.getElementById('spine-mode-select')) {
+                const wrapper = document.createElement('div');
+                wrapper.className = "mb-2 flex justify-between items-center";
+                wrapper.innerHTML = `
+                    <label class="text-xs font-medium text-gray-400">Spine Mode</label>
+                    <select id="spine-mode-select" class="text-xs bg-slate-900 border border-slate-600 rounded px-2 py-1 text-white focus:outline-none">
+                        <option value="file">Upload File</option>
+                        <option value="wrap-front">Wrap Front</option>
+                        <option value="wrap-back">Wrap Back</option>
+                    </select>
+                `;
+                
+                // Insert before the drop-zone container
+                const dropZone = spineGroup.querySelector('.drop-zone');
+                if (dropZone) {
+                    spineGroup.insertBefore(wrapper, dropZone);
+                }
+
+                // Add Change Listener
+                document.getElementById('spine-mode-select').addEventListener('change', (e) => {
+                    window.currentSpineMode = e.target.value;
+                    
+                    // Show/Hide Dropzone based on selection
+                    if (e.target.value === 'file') {
+                        dropZone.classList.remove('hidden');
+                    } else {
+                        dropZone.classList.add('hidden');
+                    }
+                    
+                    // Refresh Preview
+                    renderCoverPreview();
+                });
+            }
         }
 
         // Default to Interior Tab
@@ -2189,6 +2731,64 @@ function refreshBuilderUI() {
     }
 }
 
+async function initializeBuilder() {
+    if (builderInitialized) {
+        // If already initialized, just re-render with new specs
+        renderBookViewer();
+        validateForm();
+        return;
+    }
+
+    // Restore State from Persistence (only on first load)
+    if (projectId !== 'mock-project-id') {
+        await restoreBuilderState();
+    }
+
+    // Ensure viewer is rendered (initial state)
+    renderBookViewer();
+    validateForm();
+
+    builderInitialized = true;
+}
+
+async function drawWrapper(ctx, file, targetX, targetY, targetW, targetH, type, isFrontSource, neighborWidth, pageIndex = 1) {
+    if (!file) return;
+    
+    let imgBitmap;
+    try {
+        if (file.type === 'application/pdf') {
+             const pdf = await pdfjsLib.getDocument(URL.createObjectURL(file)).promise;
+             const page = await pdf.getPage(pageIndex); 
+             const viewport = page.getViewport({ scale: 2 });
+             const cvs = document.createElement('canvas');
+             cvs.width = viewport.width; cvs.height = viewport.height;
+             await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+             imgBitmap = await createImageBitmap(cvs);
+        } else {
+            imgBitmap = await createImageBitmap(file);
+        }
+    } catch(e) { return; }
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(targetX, targetY, targetW, targetH);
+    ctx.clip();
+
+    // Mirror Logic
+    const scale = targetH / imgBitmap.height;
+    const scaledW = imgBitmap.width * scale;
+    
+    if (isFrontSource) { // Mirror Front Left Edge
+        ctx.translate(targetX + targetW, targetY);
+        ctx.scale(-1, 1); 
+        ctx.drawImage(imgBitmap, 0, 0, imgBitmap.width, imgBitmap.height, 0, 0, scaledW, targetH);
+    } else { // Mirror Back Right Edge
+        ctx.translate(targetX, targetY);
+        ctx.scale(-1, 1);
+        ctx.drawImage(imgBitmap, 0, 0, imgBitmap.width, imgBitmap.height, -scaledW, 0, scaledW, targetH);
+    }
+    ctx.restore();
+}
 
 // --- Main Initialization ---
 async function init() {
@@ -2226,8 +2826,8 @@ async function init() {
 
         const projectData = projectSnap.data();
         projectNameEl.textContent = projectData.projectName;
-        projectType = projectData.projectType || 'single'; // Default to single if not set
-        projectSpecs = projectData.specs || {}; // Load specs
+        projectType = projectData.projectType || 'single'; 
+        projectSpecs = projectData.specs || {}; 
 
         // Ensure dimensions are resolved to object locally
         if (projectSpecs.dimensions) {
@@ -2241,47 +2841,36 @@ async function init() {
         const specs = projectSpecs;
 
         // Check Dimensions
-        // Logic update: dimensions can be string OR object
         let dimValid = false;
-        // Since we resolved it above, it should be an object if it exists and is valid
         if (typeof specs.dimensions === 'object' && specs.dimensions.width && specs.dimensions.height) dimValid = true;
-
         if (!dimValid) specsMissing = true;
 
-        // Check Binding if it's missing (Old projects might not have it)
+        // Check Binding
         if (!specs.binding) specsMissing = true;
 
-        if (specsMissing) {
-            // Show Modal
-            specsModal.classList.remove('hidden');
-            // Try to populate from existing specs if any
-            populateSpecsForm();
-        } else {
-            // Specs exist, show upload UI directly
-            uploadContainer.classList.remove('hidden');
-            refreshBuilderUI();
-        }
-
+        // --- REMOVED REDUNDANT BLOCK HERE ---
 
         // 5. Setup UI based on type
-        // Always show booklet section now as it contains the new unified builder
         bookletUploadSection.classList.remove('hidden');
-
-        // Note: Sortable is initialized in renderBookViewer now, not here.
 
         updateFileName('file-cover-front', 'file-name-cover-front');
         updateFileName('file-spine', 'file-name-spine');
         updateFileName('file-cover-back', 'file-name-cover-back');
 
-        // Restore State from Persistence
-        if (projectId !== 'mock-project-id') {
-            await restoreBuilderState();
+        // 6. Finalize State & Initialize
+        if (specsMissing) {
+            // Show Modal if specs are missing
+            specsModal.classList.remove('hidden');
+            populateSpecsForm();
+            // STOP HERE: Do not render viewer until specs are saved via the form
+        } else {
+            // Specs exist, show upload UI directly
+            uploadContainer.classList.remove('hidden');
+            refreshBuilderUI();
+            
+            // Safe to initialize builder (renders viewer)
+            await initializeBuilder();
         }
-
-        // Ensure viewer is rendered (initial state)
-        renderBookViewer();
-
-        validateForm();
 
     } catch (err) {
         console.error('Init Error:', err);
@@ -2361,48 +2950,55 @@ async function restoreBuilderState() {
         pages = state.pages;
 
         // Restore Sources
-        // We need to convert storagePaths back to something usable (Signed URLs)
-        // and populate `sourceFiles` map.
-
         for (const [id, meta] of Object.entries(state.sourceFiles)) {
             try {
-                // Check if it's a cover file (not in sourceFiles map usually, but handled by selectedFiles?)
+                // Check if it's a cover file
                 if (id.startsWith('cover_')) {
-                    // Handle cover restoration
-                    // We need to fetch the file blob to populate `selectedFiles` for the previewer to work?
-                    // Or modify `renderCoverPreview` to accept URLs.
-                    // `renderCoverPreview` uses `selectedFiles[inputId]`.
-                    // `drawImageOnCanvas` checks `file.type`.
-
-                    // Complex: converting URL to Blob for existing logic
+                    // 1. Fetch the file content (Legacy support requires a File object)
                     const url = await getDownloadURL(ref(storage, meta.storagePath));
                     const response = await fetch(url);
                     const blob = await response.blob();
-                    // Mock file object
                     const file = new File([blob], "Restored File", { type: blob.type });
 
-                    if (id === 'cover_front') selectedFiles['file-cover-front'] = file;
-                    if (id === 'cover_spine') selectedFiles['file-spine'] = file;
-                    if (id === 'cover_back') selectedFiles['file-cover-back'] = file;
+                    // 2. Determine which slot this belongs to
+                    let inputId;
+                    if (id === 'cover_front') inputId = 'file-cover-front';
+                    else if (id === 'cover_spine') inputId = 'file-spine';
+                    else if (id === 'cover_back') inputId = 'file-cover-back';
 
-                    // Update UI text
-                    const displayId = id === 'cover_front' ? 'file-name-cover-front' :
-                                      id === 'cover_spine' ? 'file-name-spine' : 'file-name-cover-back';
-                    const el = document.getElementById(displayId);
-                    if (el) el.textContent = "Restored File";
+                    if (inputId) {
+                        // Populate Legacy State
+                        selectedFiles[inputId] = file;
+
+                        // Populate New System State (Fixes "undefined" crash)
+                        coverSources[inputId] = {
+                            file: file,
+                            status: 'ready',
+                            isServer: false // Treat as local since we have the blob
+                        };
+
+                        // Update UI text
+                        const displayId = id === 'cover_front' ? 'file-name-cover-front' :
+                                          id === 'cover_spine' ? 'file-name-spine' : 'file-name-cover-back';
+                        const el = document.getElementById(displayId);
+                        if (el) el.textContent = "Restored File";
+                        
+                        // If it's a PDF, attempt to set up page controls (optional enhancement)
+                        if (file.type === 'application/pdf') {
+                             // Logic to re-init PDF controls could go here if needed
+                             // For now, the file name display is sufficient
+                        }
+                    }
 
                 } else {
-                    // Interior Source
-                    // Get URL
+                    // Restore Interior Source (Server-side logic)
                     const url = await getDownloadURL(ref(storage, meta.storagePath));
 
-                    // We treat it as a "Server" file
                     sourceFiles[id] = {
                         status: 'ready',
                         previewUrl: url,
                         isServer: true,
-                        // We also need original metadata if possible, but for now this is enough to render
-                        storagePath: meta.storagePath // Keep ref
+                        storagePath: meta.storagePath
                     };
                 }
             } catch (e) {
@@ -2415,7 +3011,7 @@ async function restoreBuilderState() {
         renderCoverPreview();
         validateForm();
 
-    } catch(e) {
+    } catch (e) {
         console.error("Error restoring state:", e);
     }
 }
@@ -2565,6 +3161,38 @@ async function handleUpload(e) {
         uploadProgress.classList.add('hidden');
     }
 }
+
+function saveState() {
+    // Deep copy pages to history
+    undoStack.push(JSON.stringify(pages));
+    // Limit stack size to 50 steps
+    if (undoStack.length > 50) undoStack.shift();
+    updateUndoUI();
+}
+
+window.undo = () => {
+    if (undoStack.length === 0) return;
+    const prevState = undoStack.pop();
+    pages = JSON.parse(prevState);
+    renderBookViewer();
+    updateUndoUI();
+};
+
+function updateUndoUI() {
+    const btn = document.getElementById('undo-btn');
+    if (btn) {
+        btn.disabled = undoStack.length === 0;
+        btn.classList.toggle('opacity-50', undoStack.length === 0);
+    }
+}
+
+// Listen for Ctrl+Z
+document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+        e.preventDefault();
+        window.undo();
+    }
+});
 
 // Attach to button click (since it's type="button")
 submitButton.addEventListener('click', handleUpload);
