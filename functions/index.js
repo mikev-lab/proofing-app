@@ -1599,13 +1599,19 @@ exports.generatePreviews = onCall({
             [multiPagePdfBuffer] = await originalFile.download();
             // tempPdfPathForSplit is already originalFilePath
         } else {
-            logger.log(`File is '${fileExtension}', calling LibreOffice convert...`);
-            // Download buffer to send to Gotenberg for conversion
-            const [sourceBuffer] = await originalFile.download();
+            logger.log(`File is '${fileExtension}', calling LibreOffice convert via Signed URL...`);
+            
+            // --- FIX 1: Use Signed URL + downloadFrom for Conversion ---
+            // This bypasses the 32MB Request Entity Too Large limit
+            
+            const [signedConvertUrl] = await originalFile.getSignedUrl({
+                action: 'read',
+                expires: Date.now() + 3600 * 1000 // 1 hour
+            });
 
-            // --- LibreOffice Conversion ---
             const convertFormData = new FormData();
-            convertFormData.append('files', sourceBuffer, originalFileName);
+            const downloadConfig = JSON.stringify([{ url: signedConvertUrl }]);
+            convertFormData.append('downloadFrom', downloadConfig);
             
             const convertResponse = await authAxios.post(`${GOTENBERG_URL}/forms/libreoffice/convert`, convertFormData, {
                 responseType: 'arraybuffer'
@@ -1645,7 +1651,6 @@ exports.generatePreviews = onCall({
 
         // --- 3. PDF Splitting (Runs ONLY if pageCount > 1) ---
 
-        // 🛑 CRITICAL FIX: Bypass 32MB limit by generating a signed URL for Gotenberg to fetch
         const fileToSplit = bucket.file(tempPdfPathForSplit);
         const [signedUrl] = await fileToSplit.getSignedUrl({
              action: 'read',
@@ -1654,16 +1659,11 @@ exports.generatePreviews = onCall({
         logger.log(`Generated signed URL for splitting: ${signedUrl}`);
 
         const splitFormData = new FormData();
-        // 🚨 FIX: Pass the signed URL with the full options object so Gotenberg's multipart parser 
-        // recognizes it as a remote file, not just a string.
-        const remoteFile = {
-            value: signedUrl,
-            options: {
-                filename: 'remote_file.pdf', // Gotenberg requires a filename to identify the type
-                contentType: 'application/pdf'
-            }
-        };
-        splitFormData.append('files', remoteFile.value, remoteFile.options); // Use the format FormData expects
+        
+        // --- FIX 2: Use downloadFrom for Splitting as well ---
+        // Standard 'files' upload fails for large files or doesn't accept URLs correctly
+        const splitDownloadConfig = JSON.stringify([{ url: signedUrl }]);
+        splitFormData.append('downloadFrom', splitDownloadConfig);
 
         splitFormData.append('splitMode', 'pages'); // Tell Gotenberg to split by page
         splitFormData.append('splitSpan', '1-');   // Tell Gotenberg to split all pages (1-to-end)
@@ -1674,7 +1674,7 @@ exports.generatePreviews = onCall({
         }).catch(err => { 
             const gotenbergError = err.response?.data ? Buffer.from(err.response.data).toString() : err.message;
             logger.error('Gotenberg PDF splitting failed with URL:', gotenbergError);
-            throw new HttpsError('internal', `PDF splitting failed: ${gotenbergError}. The file may be too large for the Gotenberg service to handle even via URL.`); 
+            throw new HttpsError('internal', `PDF splitting failed: ${gotenbergError}.`); 
         });
         logger.log('PDF splitting successful.');
 

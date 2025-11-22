@@ -515,24 +515,24 @@ function updateFileName(inputId, displayId) {
 async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pageIndex = 1) {
     if (!sourceEntry) return;
 
-    // 1. Handle Status
-    if (sourceEntry.status === 'processing' || sourceEntry.status === 'uploading') {
-        // Optional: You could fill with a placeholder color here
+    // --- Status Handling ---
+    const status = sourceEntry.status || 'ready';
+    if (status === 'processing' || status === 'uploading') {
+        drawProcessingState(ctx, targetZone.x, targetZone.y, targetZone.w, targetZone.h);
         return;
     }
-    if (sourceEntry.status === 'error') {
+    if (status === 'error') {
         ctx.fillStyle = '#fee2e2';
         ctx.fillRect(targetZone.x, targetZone.y, targetZone.w, targetZone.h);
         return;
     }
 
+    // --- Load Image ---
     const file = sourceEntry.file;
     let imgBitmap;
 
-    // 2. Load Image (Server Preview or Local File)
     try {
         if (sourceEntry.isServer) {
-             // Server PDF Preview
              const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
              const pdf = await loadingTask.promise;
              const page = await pdf.getPage(pageIndex);
@@ -542,8 +542,7 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
              await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
              imgBitmap = await createImageBitmap(cvs);
 
-        } else if (file.type === 'application/pdf') {
-             // Local PDF
+        } else if (file && file.type === 'application/pdf') {
              const pdf = await pdfjsLib.getDocument(URL.createObjectURL(file)).promise;
              const page = await pdf.getPage(pageIndex);
              const viewport = page.getViewport({ scale: 2 });
@@ -552,18 +551,14 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
              await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
              imgBitmap = await createImageBitmap(cvs);
 
-        } else if (file.type.startsWith('image/')) {
-            // Local Image
+        } else if (file && file.type.startsWith('image/')) {
             imgBitmap = await createImageBitmap(file);
         } else {
             return;
         }
-    } catch (e) { 
-        console.error("Error loading image for stretch:", e);
-        return; 
-    }
+    } catch (e) { return; }
 
-    // 3. Clip & Draw
+    // --- Draw Logic ---
     ctx.save();
     ctx.beginPath();
     ctx.rect(targetZone.x, targetZone.y, targetZone.w, targetZone.h);
@@ -572,31 +567,21 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
     const imgW = imgBitmap.width;
     const imgH = imgBitmap.height;
 
-    // Calculate Scale to fill the TOTAL Combined Zone (Cover + Spine)
-    // Start with height fit
+    // Scale to fill TOTAL zone
     let scale = totalZone.h / imgH; 
-    
-    // If scaling to height leaves gaps in width (for the total zone), switch to width fit
     if (imgW * scale < totalZone.w) {
         scale = totalZone.w / imgW;
     }
 
     const drawW = imgW * scale;
     const drawH = imgH * scale;
-
-    // Center Vertically
     const drawY = totalZone.y + (totalZone.h - drawH) / 2;
 
-    // Align Horizontally based on Anchor
     let drawX;
     if (anchor === 'right') {
-        // Anchor to Right edge of Total Zone (Front Cover Source)
-        // Image Right Edge = TotalZone Right Edge
         const totalRight = totalZone.x + totalZone.w;
         drawX = totalRight - drawW;
     } else {
-        // Anchor to Left edge of Total Zone (Back Cover Source)
-        // Image Left Edge = TotalZone Left Edge
         drawX = totalZone.x;
     }
 
@@ -720,8 +705,16 @@ async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = n
     for (const file of Array.from(files)) {
         const sourceId = Date.now() + Math.random().toString(16).slice(2);
 
-        // Check if file is supported locally (PDF, JPG, PNG) or requires server (PSD, AI)
-        const isLocal = file.type === 'application/pdf' || file.type.startsWith('image/');
+        // --- FIX: Strict Check for Browser-Supported Types ---
+        const supportedImages = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp'];
+        const isPDF = file.type === 'application/pdf';
+        const isSupportedImage = supportedImages.includes(file.type);
+        
+        // Fallback: Check extension if mime type is generic or missing
+        const isPsd = file.name.toLowerCase().endsWith('.psd');
+        
+        // Only treat as local if it's a PDF or a supported web image (and NOT a PSD)
+        const isLocal = (isPDF || isSupportedImage) && !isPsd;
 
         if (isLocal) {
             sourceFiles[sourceId] = file;
@@ -729,11 +722,10 @@ async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = n
             let numPages = 1;
             if (file.type === 'application/pdf') {
                  try {
-                    // Use Blob URL to avoid loading entire file into memory
                     const fileUrl = URL.createObjectURL(file);
                     const pdf = await pdfjsLib.getDocument(fileUrl).promise;
                     numPages = pdf.numPages;
-                    URL.revokeObjectURL(fileUrl); // Cleanup
+                    // For caching/performance, we don't revoke immediately here in the loop
                  } catch (e) {
                      console.warn("Could not parse PDF", e);
                  }
@@ -743,19 +735,16 @@ async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = n
 
         } else {
             // SERVER SIDE PROCESSING (PSD, AI)
-            // 1. Create Placeholder Pages immediately so UI updates
-            // We assume 1 page for now (Gotenberg splitting for PSD is complex to sync here immediately without waiting)
-            // Actually, we can show a "Processing" state on the card itself.
-
-            sourceFiles[sourceId] = { file: file, status: 'uploading', previewUrl: null }; // Placeholder
-
-            // We add 1 placeholder page for now. If the server returns more (e.g. multi-page PDF from AI),
-            // we would need to dynamically insert them. For now, let's assume single file = 1 page
-            // or we update later. To keep it simple, we'll treat complex files as 1 object for now unless we wait.
+            sourceFiles[sourceId] = { 
+                file: file, 
+                status: 'uploading', 
+                previewUrl: null,
+                isServer: true // Explicitly flag as server source
+            }; 
 
             addPagesToModel(newPages, sourceId, 1, isSpreadUpload);
 
-            // 2. Start Background Process
+            // Start Background Process
             processServerFile(file, sourceId);
         }
     }
@@ -806,47 +795,42 @@ function addPagesToModel(targetArray, sourceId, numPages, isSpreadUpload) {
 
 async function processCoverFile(file, slotId) {
     try {
-        // 1. Update State to Processing
+        // 1. Set Initial State (Uploading)
         coverSources[slotId] = { 
             file: file, 
-            status: 'processing', 
+            status: 'uploading', 
             isServer: true 
         };
-        renderCoverPreview(); // Will show placeholder
+        renderCoverPreview(); 
 
-        // 2. Upload to Temp Storage
+        const userId = auth.currentUser ? auth.currentUser.uid : 'guest';
         const tempId = Date.now().toString();
-        const storageRef = ref(storage, `temp_uploads/${tempId}/${file.name}`);
+        const storagePath = `temp_uploads/${userId}/${tempId}/${file.name}`;
+        const storageRef = ref(storage, storagePath);
         
-        // Show progress in the UI if possible (optional), for now we rely on the canvas text
         await uploadBytesResumable(storageRef, file);
 
-        // 3. Call Cloud Function
+        // 2. Update State (Processing)
+        coverSources[slotId].status = 'processing';
+        renderCoverPreview();
+
         const generatePreviews = httpsCallable(functions, 'generatePreviews');
         const result = await generatePreviews({
-            filePath: `temp_uploads/${tempId}/${file.name}`,
+            filePath: storagePath,
             originalName: file.name
         });
 
-        // 4. Handle Result
         if (result.data && result.data.pages && result.data.pages.length > 0) {
             const firstPage = result.data.pages[0];
             const previewRef = ref(storage, firstPage.tempPreviewPath);
             const previewUrl = await getDownloadURL(previewRef);
 
-            // Update State to Ready
             coverSources[slotId] = {
                 file: file,
                 status: 'ready',
                 previewUrl: previewUrl,
-                isServer: true,
-                // Store temp path if needed for cleanup or persistence? 
-                // For guest upload, we usually just keep the URL active.
+                isServer: true
             };
-            
-            // Force refresh of the file input UI to show page controls if it's a multi-page PDF result
-            // (Simulate a "fresh load" of the processed PDF)
-            // However, generatePreviews returns a PDF. We can just render it.
             
             renderCoverPreview();
         } else {
@@ -855,23 +839,39 @@ async function processCoverFile(file, slotId) {
 
     } catch (err) {
         console.error("Cover processing failed", err);
-        coverSources[slotId] = { file: file, status: 'error', error: err.message };
+        coverSources[slotId] = { 
+            file: file, 
+            status: 'error', 
+            error: err.message,
+            isServer: true 
+        };
         renderCoverPreview();
     }
 }
 
 async function processServerFile(file, sourceId) {
     try {
-        // 1. Upload to Temp Storage
+        const userId = auth.currentUser ? auth.currentUser.uid : 'guest';
         const tempId = Date.now().toString();
-        const storageRef = ref(storage, `temp_uploads/${tempId}/${file.name}`);
+        const storagePath = `temp_uploads/${userId}/${tempId}/${file.name}`;
+        const storageRef = ref(storage, storagePath);
 
-        // Find all cards for this source to update status
+        // --- FIX: Update UI with Spinner AND Text ---
         const updateStatus = (msg) => {
+            if(sourceFiles[sourceId]) sourceFiles[sourceId].status = 'processing';
+            
             const relatedPages = pages.filter(p => p.sourceFileId === sourceId);
             relatedPages.forEach(p => {
                 const placeholder = document.getElementById(`placeholder-${p.id}`);
-                if (placeholder) placeholder.innerHTML = `<p class="text-xs text-indigo-400 animate-pulse">${msg}</p>`;
+                if (placeholder) {
+                    // Re-inject the spinner with the new message
+                    placeholder.innerHTML = `
+                        <div class="flex flex-col items-center gap-3">
+                            <div class="w-8 h-8 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div>
+                            <p class="text-xs text-indigo-600 font-bold tracking-wide uppercase animate-pulse">${msg}</p>
+                        </div>
+                    `;
+                }
             });
         };
 
@@ -880,38 +880,25 @@ async function processServerFile(file, sourceId) {
 
         updateStatus("Processing...");
 
-        // 2. Call Generate Previews
         const generatePreviews = httpsCallable(functions, 'generatePreviews');
         const result = await generatePreviews({
-            filePath: `temp_uploads/${tempId}/${file.name}`,
+            filePath: storagePath,
             originalName: file.name
         });
 
-        // 3. Update Source File Data with Result
         if (result.data && result.data.pages && result.data.pages.length > 0) {
-            // We only support 1 page preview for complex files in this simplified flow for now,
-            // or strictly speaking, we map the first page of the result to our existing page entry.
-            // Ideally we'd expand if it turned out to be multi-page.
-
             const firstPage = result.data.pages[0];
-
-            // Get Signed URL for the preview path (tempPreviewPath)
-            // The function returns `tempPreviewPath` which is a storage path.
             const previewRef = ref(storage, firstPage.tempPreviewPath);
             const previewUrl = await getDownloadURL(previewRef);
 
-            // Update the source registry
             sourceFiles[sourceId] = {
                 file: file,
                 status: 'ready',
                 previewUrl: previewUrl,
                 isServer: true
             };
-
-            // Clear Image Cache if any (unlikely)
+            
             imageCache.delete(sourceId + '_1_' + file.lastModified);
-
-            // Trigger Re-render
             renderBookViewer();
         } else {
             throw new Error("No preview generated");
@@ -920,7 +907,7 @@ async function processServerFile(file, sourceId) {
     } catch (err) {
         console.error("Server file processing failed", err);
         sourceFiles[sourceId] = { file: file, status: 'error', error: err.message };
-        renderBookViewer(); // Will show error state
+        renderBookViewer();
     }
 }
 
@@ -1010,7 +997,7 @@ function renderBookViewer() {
                 const cardId = card.dataset.id;
 
                 if (cardId.startsWith('spread:')) {
-                    // Handle Spread Card
+                    // Handle Spread
                     const parts = cardId.split(':');
                     const id1 = parts[1];
                     const id2 = parts[2];
@@ -1019,8 +1006,23 @@ function renderBookViewer() {
                     const canvas1 = document.getElementById(`canvas-${id1}`);
                     const canvas2 = document.getElementById(`canvas-${id2}`);
 
-                    if (page1 && canvas1) renderPageCanvas(page1, canvas1).then(() => removePlaceholder(id1));
-                    if (page2 && canvas2) renderPageCanvas(page2, canvas2).then(() => removePlaceholder(id2));
+                    const processPage = (p, cvs, pid) => {
+                        if (p && cvs) {
+                            renderPageCanvas(p, cvs).then(() => {
+                                // FIX: Only remove placeholder if READY
+                                const src = sourceFiles[p.sourceFileId];
+                                if (!src || src.status === 'ready' || src.status === 'error') {
+                                    removePlaceholder(pid);
+                                }
+                            });
+                        }
+                    };
+
+                    processPage(page1, canvas1, id1);
+                    processPage(page2, canvas2, id2);
+                    
+                    // We don't unobserve immediately if processing, but usually we do 
+                    // because re-renders trigger new observers.
                     obs.unobserve(card);
 
                 } else {
@@ -1029,7 +1031,13 @@ function renderBookViewer() {
                     const page = pages.find(p => p.id === cardId);
 
                     if (canvas && page) {
-                        renderPageCanvas(page, canvas).then(() => removePlaceholder(cardId));
+                        renderPageCanvas(page, canvas).then(() => {
+                            // FIX: Only remove placeholder if READY
+                            const src = sourceFiles[page.sourceFileId];
+                            if (!src || src.status === 'ready' || src.status === 'error') {
+                                removePlaceholder(cardId);
+                            }
+                        });
                         obs.unobserve(card);
                     }
                 }
@@ -1045,6 +1053,9 @@ function renderBookViewer() {
         }
     };
 
+    // ... (Rest of the function logic for Single/Booklet layout remains exactly the same) ...
+    // ... Paste the rest of your existing renderBookViewer code here ...
+    
     // --- LOOSE SHEETS / SINGLE LAYOUT ---
     if (projectType === 'single') {
         container.className = "flex flex-wrap gap-8 items-start justify-center p-6";
@@ -1116,11 +1127,6 @@ function renderBookViewer() {
          container.appendChild(empty);
          return;
     }
-
-    // Pages: [0, 1, 2, 3]
-    // Spread 0: [null, 0]
-    // Spread 1: [1, 2]
-    // ...
 
     // Insert Bar at Top (Index 0)
     container.appendChild(createInsertBar(0));
@@ -1957,27 +1963,35 @@ function drawBlankPage(page, canvas) {
 }
 
 async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW, targetH, mode, align, pageIndex = 1, pageId = null, viewMode = 'full', panX = 0, panY = 0) {
+    // Handle blank pages (sourceEntry is null/undefined check usually handled by caller, but safe to keep)
+    if (!sourceEntry) return;
+
     let imgBitmap;
     let srcW, srcH;
 
     const isServer = sourceEntry.isServer;
     const file = isServer ? sourceEntry.file : sourceEntry;
+    const status = sourceEntry.status || 'ready';
 
-    // 1. Check Error/Status
-    if (isServer && sourceEntry.status === 'error') {
+    // --- 1. Check Status & Draw Throbber ---
+    if (status === 'error') {
         ctx.fillStyle = '#fee2e2';
         ctx.fillRect(targetX, targetY, targetW, targetH);
         ctx.fillStyle = '#ef4444';
-        ctx.font = '0.2px sans-serif';
-        ctx.fillText("Processing Failed", targetX + 0.5, targetY + targetH / 2);
+        ctx.font = '12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText("Processing Failed", targetX + targetW/2, targetY + targetH/2);
         return;
     }
 
-    if (isServer && sourceEntry.status !== 'ready') {
+    if (status === 'processing' || status === 'uploading') {
+        // Draw the visual throbber on the canvas
+        drawProcessingState(ctx, targetX, targetY, targetW, targetH);
         return;
     }
 
-    // 2. Check Cache
+    // --- 2. Check Cache & Render ---
     const cacheKey = (isServer ? sourceEntry.previewUrl : file.name) + '_' + pageIndex + '_' + (file.lastModified || 'server');
 
     if (imageCache.has(cacheKey)) {
@@ -1986,49 +2000,11 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
         srcH = imgBitmap.height;
     } else {
         // Render New
-        if (isServer) {
-            // Load from Preview URL (Server side processed)
-            try {
+        try {
+            if (isServer) {
+                // Load from Server Preview URL
                 const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
                 const pdf = await loadingTask.promise;
-                const page = await pdf.getPage(1); // Assuming preview is single page
-
-                const viewport = page.getViewport({ scale: 1.0 });
-                const tempCanvas = document.createElement('canvas');
-                tempCanvas.width = viewport.width;
-                tempCanvas.height = viewport.height;
-
-                await page.render({
-                    canvasContext: tempCanvas.getContext('2d'),
-                    viewport: viewport
-                }).promise;
-
-                imgBitmap = await createImageBitmap(tempCanvas);
-                imageCache.set(cacheKey, imgBitmap);
-                srcW = viewport.width;
-                srcH = viewport.height;
-
-            } catch (e) {
-                console.error("Server Preview Render Error", e);
-            }
-
-        } else if (file.type === 'application/pdf') {
-            // Load Local PDF with Caching
-            try {
-                let pdfDoc = pdfDocCache.get(file);
-
-                if (!pdfDoc) {
-                    // First time: Create URL and start loading
-                    const fileUrl = URL.createObjectURL(file);
-                    const loadingTask = pdfjsLib.getDocument(fileUrl);
-                    pdfDoc = loadingTask.promise;
-                    
-                    // Cache the PROMISE, not the result
-                    pdfDocCache.set(file, pdfDoc);
-                }
-
-                // Wait for the single shared document promise
-                const pdf = await pdfDoc;
                 const page = await pdf.getPage(pageIndex);
 
                 const viewport = page.getViewport({ scale: 1.0 });
@@ -2046,16 +2022,42 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
                 srcW = viewport.width;
                 srcH = viewport.height;
 
-            } catch (e) {
-                console.error("PDF Render Error", e);
-            }
-        } else if (file.type.startsWith('image/')) {
-            try {
+            } else if (file.type === 'application/pdf') {
+                // Load Local PDF
+                let pdfDoc = pdfDocCache.get(file);
+                if (!pdfDoc) {
+                    const fileUrl = URL.createObjectURL(file);
+                    pdfDoc = pdfjsLib.getDocument(fileUrl).promise;
+                    pdfDocCache.set(file, pdfDoc);
+                }
+
+                const pdf = await pdfDoc;
+                const page = await pdf.getPage(pageIndex);
+                const viewport = page.getViewport({ scale: 1.0 });
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = viewport.width;
+                tempCanvas.height = viewport.height;
+
+                await page.render({
+                    canvasContext: tempCanvas.getContext('2d'),
+                    viewport: viewport
+                }).promise;
+
+                imgBitmap = await createImageBitmap(tempCanvas);
+                imageCache.set(cacheKey, imgBitmap);
+                srcW = viewport.width;
+                srcH = viewport.height;
+
+            } else if (file.type.startsWith('image/')) {
+                // Load Local Image
                 imgBitmap = await createImageBitmap(file);
                 imageCache.set(cacheKey, imgBitmap);
                 srcW = imgBitmap.width;
                 srcH = imgBitmap.height;
-            } catch (e) {}
+            }
+        } catch (e) {
+            console.error("Render Error", e);
+            return; 
         }
     }
 
@@ -2065,7 +2067,7 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
         return;
     }
 
-    // Standard Transform Logic
+    // --- 3. Transform Logic ---
     const srcRatio = srcW / srcH;
     const targetRatio = targetW / targetH;
     let drawW, drawH, drawX, drawY;
@@ -2081,7 +2083,7 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
             drawH = targetH;
             drawW = targetH * srcRatio;
         }
-    } else if (mode === 'fill') {
+    } else { // fill
         if (srcRatio > targetRatio) {
             drawH = targetH;
             drawW = targetH * srcRatio;
@@ -2091,11 +2093,9 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
         }
     }
 
-    // Center + Pan
     drawX = targetX + (targetW - drawW) / 2 + (panX * targetW);
     drawY = targetY + (targetH - drawH) / 2 + (panY * targetH);
 
-    // Clip & Draw
     ctx.save();
     ctx.beginPath();
     ctx.rect(targetX, targetY, targetW, targetH);
@@ -2228,11 +2228,19 @@ function fitCoverToView() {
     renderCoverPreview();
 }
 
+function drawProcessingState(ctx, x, y, w, h) {
+    // Just fill white so the background is clean behind the DOM spinner
+    ctx.save();
+    ctx.fillStyle = '#ffffff'; 
+    ctx.fillRect(x, y, w, h);
+    ctx.restore();
+}
+
 async function renderCoverPreview() {
     if (!coverCanvas || !projectSpecs || !projectSpecs.dimensions) return;
 
     const ctx = coverCanvas.getContext('2d');
-    const scale = 2; // Retain high res for Retina displays
+    const scale = 2; 
 
     // 1. Calculate Dimensions
     const trimWidth = projectSpecs.dimensions.width;
@@ -2245,32 +2253,65 @@ async function renderCoverPreview() {
     const totalWidth = (trimWidth * 2) + spineWidth + (bleed * 2);
     const totalHeight = trimHeight + (bleed * 2);
 
-    // --- ZOOM LOGIC ---
+    // Zoom Logic
     const basePPI = 40; 
-    const pixelsPerInch = basePPI * coverZoom; // Scale PPI by zoom factor
+    const pixelsPerInch = basePPI * coverZoom; 
 
-    // Set Internal Resolution (High Quality)
     coverCanvas.width = totalWidth * pixelsPerInch * scale;
     coverCanvas.height = totalHeight * pixelsPerInch * scale;
-
-    // Set Visible CSS Size (Allows Scrolling)
     coverCanvas.style.width = `${totalWidth * pixelsPerInch}px`;
     coverCanvas.style.height = `${totalHeight * pixelsPerInch}px`;
 
-    // Reset Transform
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
     ctx.scale(pixelsPerInch, pixelsPerInch);
 
-    // Clear Background
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, totalWidth, totalHeight);
 
-    // --- Define Zones (Full Bleed) ---
+    // --- CHECK PROCESSING STATUS ---
+    const slots = ['file-cover-front', 'file-cover-back', 'file-spine'];
+    
+    let activeStatus = null;
+    const processingSlot = slots.find(slot => {
+        const src = coverSources[slot];
+        if (src && (src.status === 'processing' || src.status === 'uploading')) {
+            activeStatus = src.status;
+            return true;
+        }
+        return false;
+    });
+
+    const placeholderEl = document.getElementById('cover-preview-placeholder');
+    if (placeholderEl) {
+        if (processingSlot) {
+            // SHOW SPINNER + DYNAMIC TEXT
+            const text = activeStatus === 'uploading' ? 'Uploading File...' : 'Processing File...';
+            
+            placeholderEl.style.display = 'flex';
+            placeholderEl.innerHTML = `
+                <div class="flex flex-col items-center gap-3 bg-slate-900/90 p-6 rounded-xl backdrop-blur-md shadow-2xl border border-slate-700">
+                    <div class="w-10 h-10 border-4 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin"></div>
+                    <span class="text-indigo-200 text-sm font-semibold tracking-wide animate-pulse">${text}</span>
+                </div>
+            `;
+        } else {
+            // HIDE or Show Default
+            // Only hide if we actually have content, otherwise show default "Preview will update" text
+            const hasContent = slots.some(slot => coverSources[slot] || selectedFiles[slot]);
+            if (hasContent) {
+                placeholderEl.style.display = 'none';
+            } else {
+                placeholderEl.style.display = 'flex';
+                placeholderEl.innerHTML = '<div class="text-center"><p class="text-gray-500 text-sm">Preview will update automatically</p></div>';
+            }
+        }
+    }
+
+    // --- Define Zones ---
     const zoneBack = { x: 0, y: 0, w: bleed + trimWidth, h: totalHeight };
     const zoneSpine = { x: bleed + trimWidth, y: 0, w: spineWidth, h: totalHeight };
     const zoneFront = { x: bleed + trimWidth + spineWidth, y: 0, w: trimWidth + bleed, h: totalHeight };
 
-    // Combined Zones for Stitching
     const zoneBackPlusSpine = { x: 0, y: 0, w: zoneBack.w + zoneSpine.w, h: totalHeight };
     const zoneFrontPlusSpine = { x: zoneSpine.x, y: 0, w: zoneSpine.w + zoneFront.w, h: totalHeight };
 
@@ -2280,7 +2321,7 @@ async function renderCoverPreview() {
     if (spineMode === 'wrap-back-stretch') {
         await drawStretched(
             ctx, 
-            selectedFiles['file-cover-back'], 
+            coverSources['file-cover-back'], 
             zoneBack,          
             zoneBackPlusSpine, 
             'left',            
@@ -2289,7 +2330,7 @@ async function renderCoverPreview() {
     } else {
         await drawImageOnCanvas(
             ctx, 
-            coverSources['file-cover-back'],
+            coverSources['file-cover-back'], 
             zoneBack.x, zoneBack.y, zoneBack.w, zoneBack.h, 
             coverSettings['file-cover-back'].pageIndex,
             coverSettings['file-cover-back'].scaleMode
@@ -2300,7 +2341,7 @@ async function renderCoverPreview() {
     if (spineMode === 'file') {
         await drawImageOnCanvas(
             ctx, 
-            selectedFiles['file-spine'], 
+            coverSources['file-spine'], 
             zoneSpine.x, zoneSpine.y, zoneSpine.w, zoneSpine.h, 
             coverSettings['file-spine'].pageIndex,
             coverSettings['file-spine'].scaleMode
@@ -2308,7 +2349,7 @@ async function renderCoverPreview() {
     } else if (spineMode === 'wrap-front-stretch') {
         await drawStretched(
             ctx,
-            selectedFiles['file-cover-front'],
+            coverSources['file-cover-front'], 
             zoneSpine,          
             zoneFrontPlusSpine, 
             'right',            
@@ -2317,7 +2358,7 @@ async function renderCoverPreview() {
     } else if (spineMode === 'wrap-back-stretch') {
         await drawStretched(
             ctx,
-            selectedFiles['file-cover-back'],
+            coverSources['file-cover-back'], 
             zoneSpine,          
             zoneBackPlusSpine,  
             'left',             
@@ -2326,12 +2367,12 @@ async function renderCoverPreview() {
     } else if (spineMode.includes('wrap')) {
         // Handle Mirrors
         const isFrontSource = spineMode.includes('front');
-        const sourceFile = isFrontSource ? selectedFiles['file-cover-front'] : selectedFiles['file-cover-back'];
+        const sourceEntry = isFrontSource ? coverSources['file-cover-front'] : coverSources['file-cover-back'];
         const settings = isFrontSource ? coverSettings['file-cover-front'] : coverSettings['file-cover-back'];
         
         await drawWrapper(
             ctx, 
-            sourceFile, 
+            sourceEntry, 
             zoneSpine.x, zoneSpine.y, zoneSpine.w, zoneSpine.h, 
             'mirror', 
             isFrontSource, 
@@ -2344,7 +2385,7 @@ async function renderCoverPreview() {
     if (spineMode === 'wrap-front-stretch') {
         await drawStretched(
             ctx, 
-            selectedFiles['file-cover-front'], 
+            coverSources['file-cover-front'], 
             zoneFront,          
             zoneFrontPlusSpine, 
             'right',            
@@ -2353,7 +2394,7 @@ async function renderCoverPreview() {
     } else {
         await drawImageOnCanvas(
             ctx, 
-            selectedFiles['file-cover-front'], 
+            coverSources['file-cover-front'], 
             zoneFront.x, zoneFront.y, zoneFront.w, zoneFront.h, 
             coverSettings['file-cover-front'].pageIndex,
             coverSettings['file-cover-front'].scaleMode
@@ -2380,7 +2421,7 @@ async function renderCoverPreview() {
     ctx.fill("evenodd");
     ctx.restore();
 
-    // Lines
+    // Trim Lines
     ctx.strokeStyle = '#000000';
     ctx.beginPath(); 
     ctx.rect(bleed, bleed, trimWidth, trimHeight);
@@ -2388,7 +2429,8 @@ async function renderCoverPreview() {
     ctx.rect(bleed + trimWidth + spineWidth, bleed, trimWidth, trimHeight);
     ctx.stroke();
 
-    ctx.strokeStyle = 'rgba(239, 68, 68, 0.8)'; // Bleed
+    // Bleed Line
+    ctx.strokeStyle = 'rgba(239, 68, 68, 0.8)';
     ctx.strokeRect(0, 0, totalWidth, totalHeight);
     
     // Safe Area
@@ -2409,31 +2451,33 @@ async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageI
     // --- ROBUST INPUT HANDLING ---
     let file, status, isServer, previewUrl;
 
-    // Check if sourceEntry is a raw File object (Legacy/Fallback)
     if (sourceEntry instanceof File) {
         file = sourceEntry;
         status = 'ready';
         isServer = false;
     } else {
-        // It's a Wrapper Object
         file = sourceEntry.file;
         status = sourceEntry.status;
         isServer = sourceEntry.isServer;
         previewUrl = sourceEntry.previewUrl;
     }
 
-    // Safety check: If we still don't have a file and it's not a server preview, abort
     if (!file && !isServer) return;
 
-    // --- DRAWING LOGIC ---
-    if (status === 'processing') {
-        ctx.fillStyle = '#f1f5f9';
-        ctx.fillRect(x, y, targetW, targetH);
+    // --- STATUS HANDLING ---
+    if (status === 'processing' || status === 'uploading') {
+        drawProcessingState(ctx, x, y, targetW, targetH);
         return;
     }
+    
     if (status === 'error') {
-        ctx.fillStyle = '#fee2e2';
+        ctx.fillStyle = '#fee2e2'; // Light Red
         ctx.fillRect(x, y, targetW, targetH);
+        ctx.fillStyle = '#ef4444'; // Red Text
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = '12px sans-serif';
+        ctx.fillText("Processing Failed", x + targetW/2, y + targetH/2);
         return;
     }
 
@@ -2441,7 +2485,6 @@ async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageI
 
     try {
         if (isServer) {
-            // Server Preview
             const loadingTask = pdfjsLib.getDocument(previewUrl);
             const pdf = await loadingTask.promise;
             const page = await pdf.getPage(pageIndex);
@@ -2452,7 +2495,6 @@ async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageI
             imgBitmap = await createImageBitmap(cvs);
 
         } else if (file && file.type === 'application/pdf') {
-            // Local PDF
             const arrayBuffer = await file.arrayBuffer();
             const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
             const page = await pdf.getPage(pageIndex);
@@ -2463,13 +2505,17 @@ async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageI
             imgBitmap = await createImageBitmap(cvs);
 
         } else if (file && file.type.startsWith('image/')) {
-            // Local Image
-            imgBitmap = await createImageBitmap(file);
+            const supportedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp'];
+            if (supportedTypes.includes(file.type)) {
+                imgBitmap = await createImageBitmap(file);
+            } else {
+                return; 
+            }
         } else {
             return;
         }
 
-        // Standard Scale/Draw Logic
+        // --- DRAWING LOGIC ---
         const srcW = imgBitmap.width;
         const srcH = imgBitmap.height;
         const srcRatio = srcW / srcH;
@@ -2514,9 +2560,11 @@ async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageI
 
     } catch (e) {
         console.error("Error rendering cover image:", e);
+        // Fallback visual for error
+        ctx.fillStyle = '#fecaca'; 
+        ctx.fillRect(x, y, targetW, targetH);
     }
 }
-
 
 // --- Specs Form Submit Handler ---
 specsForm.addEventListener('submit', async (e) => {
@@ -2751,12 +2799,35 @@ async function initializeBuilder() {
     builderInitialized = true;
 }
 
-async function drawWrapper(ctx, file, targetX, targetY, targetW, targetH, type, isFrontSource, neighborWidth, pageIndex = 1) {
-    if (!file) return;
-    
+async function drawWrapper(ctx, sourceEntry, targetX, targetY, targetW, targetH, type, isFrontSource, neighborWidth, pageIndex = 1) {
+    if (!sourceEntry) return;
+
+    // --- Status Handling ---
+    const status = sourceEntry.status || 'ready';
+    if (status === 'processing' || status === 'uploading') {
+        drawProcessingState(ctx, targetX, targetY, targetW, targetH);
+        return;
+    }
+    if (status === 'error') {
+        ctx.fillStyle = '#fee2e2';
+        ctx.fillRect(targetX, targetY, targetW, targetH);
+        return;
+    }
+
+    // --- Load Image ---
+    const file = sourceEntry.file;
     let imgBitmap;
     try {
-        if (file.type === 'application/pdf') {
+        if (sourceEntry.isServer) {
+             const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
+             const pdf = await loadingTask.promise;
+             const page = await pdf.getPage(pageIndex); 
+             const viewport = page.getViewport({ scale: 2 });
+             const cvs = document.createElement('canvas');
+             cvs.width = viewport.width; cvs.height = viewport.height;
+             await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+             imgBitmap = await createImageBitmap(cvs);
+        } else if (file && file.type === 'application/pdf') {
              const pdf = await pdfjsLib.getDocument(URL.createObjectURL(file)).promise;
              const page = await pdf.getPage(pageIndex); 
              const viewport = page.getViewport({ scale: 2 });
@@ -2764,25 +2835,27 @@ async function drawWrapper(ctx, file, targetX, targetY, targetW, targetH, type, 
              cvs.width = viewport.width; cvs.height = viewport.height;
              await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
              imgBitmap = await createImageBitmap(cvs);
-        } else {
+        } else if (file && file.type.startsWith('image/')) {
             imgBitmap = await createImageBitmap(file);
+        } else {
+            return;
         }
     } catch(e) { return; }
 
+    // --- Draw Logic ---
     ctx.save();
     ctx.beginPath();
     ctx.rect(targetX, targetY, targetW, targetH);
     ctx.clip();
 
-    // Mirror Logic
     const scale = targetH / imgBitmap.height;
     const scaledW = imgBitmap.width * scale;
     
-    if (isFrontSource) { // Mirror Front Left Edge
+    if (isFrontSource) { 
         ctx.translate(targetX + targetW, targetY);
         ctx.scale(-1, 1); 
         ctx.drawImage(imgBitmap, 0, 0, imgBitmap.width, imgBitmap.height, 0, 0, scaledW, targetH);
-    } else { // Mirror Back Right Edge
+    } else { 
         ctx.translate(targetX, targetY);
         ctx.scale(-1, 1);
         ctx.drawImage(imgBitmap, 0, 0, imgBitmap.width, imgBitmap.height, -scaledW, 0, scaledW, targetH);
