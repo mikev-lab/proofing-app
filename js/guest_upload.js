@@ -1,6 +1,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-import { getFirestore, doc, getDoc, setDoc, onSnapshot, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-import { getAuth, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+import { getFirestore, doc, getDoc, setDoc, onSnapshot, updateDoc, runTransaction, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { getAuth, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 import { getStorage, ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
 import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js";
 import * as pdfjsLib from 'https://mozilla.github.io/pdf.js/build/pdf.mjs';
@@ -34,6 +34,12 @@ const uploadProgress = document.getElementById('upload-progress');
 const progressBar = document.getElementById('progress-bar');
 const progressText = document.getElementById('progress-text');
 const progressPercent = document.getElementById('progress-percent');
+
+// Locked UI Elements
+const lockedState = document.getElementById('locked-state');
+const lockedByUserSpan = document.getElementById('locked-by-user');
+const adminUnlockContainer = document.getElementById('admin-unlock-container');
+const forceUnlockBtn = document.getElementById('force-unlock-btn');
 
 // Navigation Elements
 const navBackBtn = document.getElementById('nav-back-btn');
@@ -115,6 +121,8 @@ const pendingLoadCache = new Map();
 // State
 let projectId = null;
 let guestToken = null;
+let currentUser = null; // Set via auth listener
+let isAdmin = false; // Derived from user role or URL param
 let projectType = 'single'; // Default
 let selectedFiles = {}; // Keep for Legacy/Single logic
 let projectSpecs = {}; // Store loaded/saved specs here
@@ -503,16 +511,18 @@ function populateSpecsForm() {
 
 // --- Back Button Logic ---
 if (navBackBtn) {
-    navBackBtn.addEventListener('click', () => {
-        // Hide Builder
-        uploadContainer.classList.add('hidden');
-        navBackBtn.classList.add('hidden');
+    navBackBtn.addEventListener('click', async () => {
+        // Release Lock before leaving logic context
+        await releaseLock();
 
-        // Populate Form with current data
-        populateSpecsForm();
-
-        // Show Modal
-        specsModal.classList.remove('hidden');
+        // Navigate back to proof or admin based on context
+        if (isAdmin) {
+            window.location.href = `admin_project.html?id=${projectId}`;
+        } else {
+            let url = `proof.html?id=${projectId}`;
+            if (guestToken) url += `&guestToken=${guestToken}`;
+            window.location.href = url;
+        }
     });
 }
 
@@ -2510,6 +2520,134 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
 }
 
 
+// --- Locking Logic ---
+
+async function acquireLock() {
+    const projectRef = doc(db, 'projects', projectId);
+    const LOCK_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
+
+    try {
+        return await runTransaction(db, async (transaction) => {
+            const sfDoc = await transaction.get(projectRef);
+            if (!sfDoc.exists()) throw "Project does not exist!";
+
+            const data = sfDoc.data();
+            const lock = data.editorLock;
+            const now = Date.now();
+
+            // Identification
+            const userId = currentUser.uid;
+            const userEmail = currentUser.email || (currentUser.isAnonymous ? "Guest User" : "Unknown");
+
+            // Check if locked by someone else
+            if (lock && lock.userId !== userId) {
+                // Check if expired
+                const lockTime = lock.timestamp ? lock.timestamp.toMillis() : 0;
+                if (now - lockTime < LOCK_TIMEOUT_MS) {
+                    // LOCKED and ACTIVE
+                    showLockedScreen(lock);
+                    return false; // Failed to acquire
+                }
+            }
+
+            // Acquire or Renew Lock
+            transaction.update(projectRef, {
+                editorLock: {
+                    userId: userId,
+                    userDisplay: userEmail,
+                    timestamp: serverTimestamp() // Use server time
+                }
+            });
+
+            return true; // Acquired
+        });
+    } catch (e) {
+        console.error("Transaction failed: ", e);
+        showError("Failed to acquire edit lock. Please try again.");
+        return false;
+    }
+}
+
+function startLockHeartbeat() {
+    // Update lock every 60 seconds
+    const intervalId = setInterval(async () => {
+        if (!projectId || !currentUser) return;
+        try {
+            const projectRef = doc(db, 'projects', projectId);
+
+            // Use transaction to safely renew ONLY if we still own the lock
+            await runTransaction(db, async (transaction) => {
+                const sfDoc = await transaction.get(projectRef);
+                if (!sfDoc.exists()) throw "Project does not exist!";
+
+                const data = sfDoc.data();
+                const lock = data.editorLock;
+
+                // If lock is gone or belongs to someone else, stop heartbeat
+                if (!lock || lock.userId !== currentUser.uid) {
+                    throw new Error("Lock lost");
+                }
+
+                transaction.update(projectRef, {
+                    "editorLock.timestamp": serverTimestamp()
+                });
+            });
+            console.log("Lock heartbeat sent.");
+        } catch (e) {
+            if (e.message === "Lock lost" || e === "Lock lost") {
+                console.warn("Lock lost (Force Unlock or Expiry). Stopping heartbeat.");
+                clearInterval(intervalId);
+                alert("Your editing session has been terminated by an administrator.");
+                window.location.reload();
+            } else {
+                console.warn("Failed to send heartbeat:", e);
+            }
+        }
+    }, 60 * 1000);
+}
+
+async function releaseLock() {
+    if (!projectId || !currentUser) return;
+    // navigator.sendBeacon is better for unload but Firestore needs active connection.
+    // We try our best.
+    try {
+        const projectRef = doc(db, 'projects', projectId);
+        // Only release if WE own it (though strict check might be overkill for simple cooperative lock)
+        // We just clear it.
+        await updateDoc(projectRef, {
+            editorLock: null
+        });
+    } catch (e) {
+        console.warn("Failed to release lock:", e);
+    }
+}
+
+function showLockedScreen(lock) {
+    loadingState.classList.add('hidden');
+    uploadContainer.classList.add('hidden');
+    lockedState.classList.remove('hidden');
+
+    const name = lock.userDisplay || "Another User";
+    lockedByUserSpan.textContent = name;
+
+    // If Admin, enable Force Unlock
+    if (isAdmin) {
+        adminUnlockContainer.classList.remove('hidden');
+        forceUnlockBtn.onclick = async () => {
+            if (confirm(`Are you sure you want to force unlock this project?\n\nUser "${name}" may lose unsaved work.`)) {
+                // Break lock
+                try {
+                    const projectRef = doc(db, 'projects', projectId);
+                    await updateDoc(projectRef, { editorLock: null });
+                    window.location.reload();
+                } catch (e) {
+                    alert("Failed to force unlock: " + e.message);
+                }
+            }
+        };
+    }
+}
+
 // --- Cover Preview Logic ---
 
 function calculateSpineWidth(specs) {
@@ -3154,27 +3292,74 @@ async function init() {
     // Store original text to revert later if needed, or just set it
     if(loadingText) loadingText.textContent = "Accessing secure upload portal...";
 
-    const { projectId: pId, guestToken: gToken } = getUrlParams();
-    projectId = pId;
-    guestToken = gToken;
+    const params = new URLSearchParams(window.location.search);
+    projectId = params.get('projectId') || params.get('id');
+    guestToken = params.get('guestToken');
 
-    if (!projectId || !guestToken) {
-        showError('Missing project ID or token.');
+    if (!projectId) {
+        showError('Missing project ID.');
         return;
     }
 
     try {
         // 2. Authenticate
-        const authenticateGuest = httpsCallable(functions, 'authenticateGuest');
-        const authResult = await authenticateGuest({ projectId, guestToken });
+        // If guest token is present, we must use it to sign in as guest.
+        // If no token, we assume the user is already logged in (Admin/Owner via dashboard).
+        if (guestToken) {
+            const authenticateGuest = httpsCallable(functions, 'authenticateGuest');
+            const authResult = await authenticateGuest({ projectId, guestToken });
 
-        if (!authResult.data || !authResult.data.token) {
-            throw new Error("Failed to obtain access token.");
+            if (!authResult.data || !authResult.data.token) {
+                throw new Error("Failed to obtain access token.");
+            }
+            await signInWithCustomToken(auth, authResult.data.token);
+        } else {
+            // Wait for auth state to settle
+            await new Promise((resolve, reject) => {
+                const unsubscribe = onAuthStateChanged(auth, (user) => {
+                    unsubscribe();
+                    if (user) {
+                        currentUser = user;
+                        resolve();
+                    } else {
+                        // Redirect to login if not signed in
+                        window.location.href = 'index.html';
+                        reject(new Error("User not signed in"));
+                    }
+                });
+            });
         }
 
-        await signInWithCustomToken(auth, authResult.data.token);
+        // Update current user ref after sign in
+        currentUser = auth.currentUser;
 
-        // 3. Fetch Project Data
+        // Check if Admin (for UI logic)
+        if (currentUser) {
+            try {
+                const userDoc = await getDoc(doc(db, "users", currentUser.uid));
+                if (userDoc.exists() && userDoc.data().role === 'admin') {
+                    isAdmin = true;
+                }
+            } catch (e) {
+                // Guests can't read user docs, so this error is expected for them. Ignore.
+            }
+        }
+
+        // 3. Locking Mechanism
+        const lockAcquired = await acquireLock();
+        if (!lockAcquired) {
+            // UI is already handled in acquireLock (showing Locked State)
+            loadingState.classList.add('hidden');
+            return; // STOP HERE
+        }
+
+        // Start Heartbeat
+        startLockHeartbeat();
+
+        // Setup Exit Handlers
+        window.addEventListener('beforeunload', releaseLock);
+
+        // 4. Fetch Project Data
         const projectRef = doc(db, 'projects', projectId);
         const projectSnap = await getDoc(projectRef);
 
@@ -3192,13 +3377,13 @@ async function init() {
             projectSpecs.dimensions = resolveDimensions(projectSpecs.dimensions);
         }
 
-        // 4. UI Setup
+        // 5. UI Setup
         bookletUploadSection.classList.remove('hidden');
         updateFileName('file-cover-front', 'file-name-cover-front');
         updateFileName('file-spine', 'file-name-spine');
         updateFileName('file-cover-back', 'file-name-cover-back');
 
-        // 5. Logic Check
+        // 6. Logic Check
         let specsMissing = false;
         let dimValid = false;
         if (typeof projectSpecs.dimensions === 'object' && projectSpecs.dimensions.width) dimValid = true;
@@ -3210,7 +3395,7 @@ async function init() {
             specsModal.classList.remove('hidden');
             populateSpecsForm();
         } else {
-            // 6. RESTORE STATE (Behind the curtain)
+            // 7. RESTORE STATE (Behind the curtain)
             if(loadingText) loadingText.textContent = "Restoring project files...";
             
             // Refresh UI elements (Tabs, buttons)
@@ -3222,14 +3407,14 @@ async function init() {
             // Initialize Builder (Creates the DOM elements for the viewer)
             await initializeBuilder();
 
-            // 7. CRITICAL: Force the first page to paint pixels
+            // 8. CRITICAL: Force the first page to paint pixels
             if (pages.length > 0) {
                 if(loadingText) loadingText.textContent = "Rendering preview...";
                 // This now ACTUALLY renders the pixels, it doesn't just wait
                 await waitForFirstPageRender(); 
             }
 
-            // 8. REVEAL (The Perfect Frame)
+            // 9. REVEAL (The Perfect Frame)
             loadingState.classList.add('hidden');
             uploadContainer.classList.remove('hidden');
             
