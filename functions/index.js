@@ -237,11 +237,29 @@ const optimizePdfLogic = onObjectFinalized({
   } catch (err) {
     logger.error("Fatal error processing PDF:", err);
     try {
-        await projectRef.update(isCover 
-            ? { 'cover.processingStatus': 'error', 'cover.processingError': err.message } 
-            : { 'versions': admin.firestore.FieldValue.arrayRemove() }
-        ); 
-    } catch(e) {}
+        await db.runTransaction(async (t) => {
+            const doc = await t.get(projectRef);
+            if (!doc.exists) return;
+
+            if (isCover) {
+                t.update(projectRef, {
+                    'cover.processingStatus': 'error',
+                    'cover.processingError': err.message
+                });
+            } else {
+                const data = doc.data();
+                const versions = data.versions || [];
+                const idx = versions.findIndex(v => v.filePath === filePath);
+                if (idx !== -1) {
+                    versions[idx].processingStatus = 'error';
+                    versions[idx].processingError = err.message;
+                    t.update(projectRef, { versions });
+                }
+            }
+        });
+    } catch(e) {
+        logger.error("Failed to write error status to Firestore:", e);
+    }
   } finally {
     // Cleanup
     [tempFilePath, tempPreviewPath, repairedFilePath].forEach(p => {
