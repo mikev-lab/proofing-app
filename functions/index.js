@@ -24,309 +24,211 @@ admin.initializeApp();
 const storage = new Storage();
 const db = admin.firestore();
 
-//
-
-// Gen 2 Function Definition:
-// Use the correct onObjectFinalized (with a 'd')
 const optimizePdfLogic = onObjectFinalized({
-  region: 'us-central1', // Specify your region
-  memory: '4GiB',      // *** INCREASED MEMORY TO 4GiB ***
-  cpu: 2,                // More CPU for Ghostscript
-  timeoutSeconds: 540,   // Longer timeout for processing
-  // NOTE: Gen 2 functions use the default Compute Engine service account.
-  // Ensure it has permissions for Storage (Storage Object Admin) and Firestore (Cloud Datastore User).
-  // Circuit Breaker Config:
+  region: 'us-central1',
+  memory: '8GiB',
+  cpu: 2,
+  timeoutSeconds: 540,
   minInstances: 0,
-  maxInstances: 10,      // Keep this safe to prevent cost explosion
-  retry: false,          // Disable infrastructure-level retries to stop death spirals
-  concurrency: 1         // Process 1 file per instance to prevent OOM crashes
+  maxInstances: 10,
+  retry: false,
+  concurrency: 1
 }, async (event) => {
 
-  // The 'object' is now 'event.data'
   const file = event.data;
-  const filePath = file.name; // This is the object path, e.g., proofs/projectId/timestamp_filename.pdf
+  const filePath = file.name;
   const contentType = file.contentType;
   const fileBucket = file.bucket;
 
-  logger.log('Function triggered for file:', filePath, 'Content-Type:', contentType);
-
-  // --- 1. CIRCUIT BREAKER: Ignore Builder & Temporary Files ---
-  // Stop the fan-out. We only want to process the user's final upload.
+  // --- Circuit Breakers ---
   if (filePath.includes('/sources/') || 
       filePath.includes('/temp_sources/') || 
       filePath.includes('guest_uploads/') || 
-      filePath.includes('/assets/')) {
-      return logger.log(`Skipping builder/temp file: ${filePath}`);
-  }
+      filePath.includes('/assets/') || 
+      filePath.endsWith('_preview.pdf')) return;
+      
+  if (!contentType || !contentType.startsWith('application/pdf')) return;
+  if (!filePath.startsWith('proofs/')) return;
 
-  // Exit if this is the preview file we generated
-  if (filePath.endsWith('_preview.pdf')) {
-    return logger.log('This is a preview file, skipping.');
-  }
-
-  // Exit if the file is not a PDF
-  if (!contentType || !contentType.startsWith('application/pdf')) {
-    return logger.log(`File is not a PDF (contentType: ${contentType}), skipping.`);
-  }
-
-  // Exit if the file is not in the 'proofs/' directory
-  if (!filePath.startsWith('proofs/')) {
-      return logger.log(`File is not in the proofs/ directory, skipping optimization.`);
-  }
-
-
-  // Extract projectId from the file path
   const parts = filePath.split('/');
-  if (parts.length < 2 || parts[0] !== 'proofs') {
-      return logger.log(`File path does not match expected structure proofs/{projectId}/{fileName}. Got: ${filePath}`);
-  }
+  if (parts.length < 2 || parts[0] !== 'proofs') return;
+  
   const projectId = parts[1];
-  const fullFileName = parts[parts.length - 1]; // Filename including timestamp prefix
-  // Case insensitive check for cover files
+  const fullFileName = parts[parts.length - 1];
   const isCover = fullFileName.toLowerCase().includes('_cover_');
 
-  logger.log(`Processing storage file: ${fullFileName} for project: ${projectId}. Is cover: ${isCover}`);
-
+  logger.log(`Processing: ${fullFileName} (Project: ${projectId})`);
 
   const bucket = storage.bucket(fileBucket);
-  const tempFilePath = path.join(os.tmpdir(), fullFileName);
   const previewFileName = `${path.basename(fullFileName, '.pdf')}_preview.pdf`;
-  const tempPreviewPath = path.join(os.tmpdir(), previewFileName);
+  const destination = filePath.replace(path.basename(filePath), previewFileName);
+  const previewFile = bucket.file(destination);
+
+  // --- IDEMPOTENCY CHECK: Stop Runaway Loops ---
+  try {
+      const [exists] = await previewFile.exists();
+      if (exists) {
+          const [metadata] = await previewFile.getMetadata();
+          const previewTime = new Date(metadata.timeCreated).getTime();
+          const sourceTime = new Date(file.timeCreated).getTime();
+
+          // If the preview was created AFTER the source file, we are done.
+          // This catches duplicate events and prevents re-processing.
+          if (previewTime > sourceTime) {
+              logger.log(`Idempotency Check: Preview ${previewFileName} is newer than source. Skipping.`);
+              return;
+          }
+      }
+  } catch (checkErr) {
+      logger.warn("Idempotency check failed, proceeding anyway:", checkErr);
+  }
+  // ----------------------------------------------
+
   const projectRef = db.collection('projects').doc(projectId);
+  const tempId = crypto.randomUUID(); 
+  const tempFilePath = path.join(os.tmpdir(), `${tempId}_source.pdf`);
+  const repairedFilePath = path.join(os.tmpdir(), `${tempId}_repaired.pdf`);
+  const tempPreviewPath = path.join(os.tmpdir(), `${tempId}_preview.pdf`);
 
   try {
-    // Download the file
+    // 1. Download Original
     await bucket.file(filePath).download({ destination: tempFilePath });
-    logger.log('File downloaded locally to', tempFilePath);
+    if (!fs.existsSync(tempFilePath)) throw new Error("Download failed: File not found locally.");
 
-    // --- STEP 1: Run Preflight Checks & Update Firestore ---
-    const { spawn } = require('child-process-promise');
-    const { preflightStatus, preflightResults, dimensions } = await runPreflightChecks(tempFilePath, logger);
-    logger.log('Preflight checks completed.', { preflightStatus, preflightResults, dimensions });
+    // 2. Repair (QPDF)
+    let useRepairedFile = false;
+    try {
+        const { spawn } = require('child-process-promise');
+        await spawn('qpdf', [tempFilePath, repairedFilePath]);
+        if (fs.existsSync(repairedFilePath)) {
+             useRepairedFile = true;
+             logger.log('QPDF repair completed.');
+        }
+    } catch (e) {
+        logger.warn('QPDF repair failed, will continue with original.', e);
+    }
 
+    const sourceForProcessing = useRepairedFile ? repairedFilePath : tempFilePath;
+
+    // 3. Preflight Checks
+    const { preflightStatus, preflightResults, dimensions } = await runPreflightChecks(sourceForProcessing, logger);
+    logger.log('Preflight checks completed.');
+
+    // Update Firestore
     await db.runTransaction(async (transaction) => {
         const projectDoc = await transaction.get(projectRef);
-        if (!projectDoc.exists) {
-            throw new Error(`Project ${projectId} not found in Firestore.`);
-        }
+        if (!projectDoc.exists) return;
 
         if (isCover) {
             const coverData = {
-                filePath: filePath, // Store the path to identify it later
-                preflightStatus: preflightStatus,
-                preflightResults: preflightResults,
-                processingStatus: 'processing',
+                filePath, preflightStatus, preflightResults, processingStatus: 'processing',
                 uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
-                specs: dimensions ? { dimensions: dimensions } : {} // Save dimensions in a specs object
+                specs: dimensions ? { dimensions } : {}
             };
             transaction.update(projectRef, { cover: coverData });
-            logger.log(`Successfully updated Firestore for project ${projectId} with COVER preflight results and dimensions.`);
         } else {
-            const projectData = projectDoc.data();
-            const versions = projectData.versions || [];
-            const versionIndex = versions.findIndex(v => v.filePath === filePath);
+            const data = projectDoc.data();
+            const versions = data.versions || [];
+            const idx = versions.findIndex(v => v.filePath === filePath);
 
-            if (versionIndex === -1) {
-                // --- NEW: Auto-Create Version for Unmatched File (e.g., Guest Upload) ---
-                const newVersionNumber = versions.length + 1;
-
-                // Use correct fileURL protocol
-                const fileURL = process.env.FUNCTIONS_EMULATOR === 'true'
-                    ? `http://${process.env.FIREBASE_STORAGE_EMULATOR_HOST}/v0/b/${fileBucket}/o/${encodeURIComponent(filePath)}?alt=media`
-                    : `gs://${fileBucket}/${filePath}`;
-
-                let type = 'upload';
-                if (fullFileName.toLowerCase().includes('interior_built')) {
-                    type = 'interior_build';
-                } else if (fullFileName.toLowerCase().includes('cover_built')) {
-                    type = 'cover_build';
-                }
-
-                const newVersion = {
-                    versionNumber: newVersionNumber,
-                    fileURL: fileURL,
-                    filePath: filePath, // Store raw path to match later
+            if (idx === -1) {
+                versions.push({
+                    versionNumber: versions.length + 1,
+                    fileURL: `gs://${fileBucket}/${filePath}`,
+                    filePath,
                     createdAt: admin.firestore.Timestamp.now(),
                     processingStatus: 'processing',
-                    preflightStatus: preflightStatus,
-                    preflightResults: preflightResults,
-                    type: type
-                    // If dimensions were found, store them in specs on the version itself if needed
-                };
-
-                // Add to versions array
-                versions.push(newVersion);
-
-                // Also update top-level project status if it's waiting for upload
-                const updates = { versions: versions };
-                if (projectData.status === 'Awaiting Client Upload') {
-                    updates.status = 'Pending Review';
-                    updates.lastUploadAt = admin.firestore.FieldValue.serverTimestamp();
-                }
-
-                transaction.update(projectRef, updates);
-                logger.log(`Auto-created Version ${newVersionNumber} for file ${filePath} in project ${projectId}. Proceeding to optimization.`);
-
-                // IMPORTANT: We do NOT return here anymore. We continue to optimize this new version.
+                    preflightStatus, preflightResults,
+                    type: fullFileName.includes('interior') ? 'interior_build' : 'upload'
+                });
+                transaction.update(projectRef, { versions });
             } else {
-                versions[versionIndex].preflightStatus = preflightStatus;
-                versions[versionIndex].preflightResults = preflightResults;
-                if (versions[versionIndex].processingStatus !== 'error') {
-                    versions[versionIndex].processingStatus = 'processing';
-                }
-
-                transaction.update(projectRef, { versions: versions });
-                logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with preflight results.`);
+                versions[idx].processingStatus = 'processing';
+                versions[idx].preflightStatus = preflightStatus;
+                versions[idx].preflightResults = preflightResults;
+                transaction.update(projectRef, { versions });
             }
         }
     });
 
-
-    // --- STEP 2: Optimize the PDF using Ghostscript ---
+    // 4. Optimize (Ghostscript)
+    let optimizationFailed = false;
     try {
+        const { spawn } = require('child-process-promise');
         await spawn('gs', [
             '-sDEVICE=pdfwrite',
             '-dCompatibilityLevel=1.4',
             '-dPDFSETTINGS=/screen',
-            '-dJPEGQ=75',
-            '-dColorImageResolution=72',
-            '-dGrayImageResolution=72',
-            '-dMonoImageResolution=72',
-            '-dDetectDuplicateImages=false',
-            '-dConvertCMYKImagesToRGB=true',
-            '-dNOPAUSE',
-            '-dQUIET',
-            '-dBATCH',
+            '-dNOPAUSE', '-dQUIET', '-dBATCH',
             `-sOutputFile=${tempPreviewPath}`,
-            tempFilePath
-        ]);
-        logger.log('PDF optimized and saved to', tempPreviewPath);
-    } catch (gsError) {
-        // --- CIRCUIT BREAKER ENABLED ---
-        // If Ghostscript crashes (e.g. corrupt file, OOM), we LOG it and RETURN NULL.
-        // Returning null tells Eventarc "Job Done", preventing the infinite retry loop.
-        logger.error('Ghostscript failed. Marking as handled to stop retries.', gsError);
+            sourceForProcessing
+        ], { timeout: 300000 }); 
         
-        // Optional: Update Firestore to say "Processing Failed" so user knows
-        // We use a separate non-transactional update here for safety
-        const verSnap = await projectRef.get();
-        if (verSnap.exists) {
-             const vData = verSnap.data();
-             const vList = vData.versions || [];
-             const vIdx = vList.findIndex(v => v.filePath === filePath);
-             if (vIdx !== -1) {
-                 vList[vIdx].processingStatus = 'error';
-                 vList[vIdx].processingError = 'Optimization failed: ' + gsError.message;
-                 await projectRef.update({ versions: vList });
-             }
-        }
-        return null; 
-    }
+        if (!fs.existsSync(tempPreviewPath)) throw new Error("Ghostscript produced no output.");
+        logger.log('Optimization successful.');
 
-    // Upload the optimized PDF
-    const destination = filePath.replace(path.basename(filePath), previewFileName);
-    await bucket.upload(tempPreviewPath, { destination: destination });
-    logger.log('Optimized PDF uploaded to', destination);
-
-    // Get a signed URL for the preview file
-    let signedUrl;
-    // When running in the emulator, getSignedUrl fails. We construct the URL manually instead.
-    if (process.env.FUNCTIONS_EMULATOR === 'true') {
-        const host = process.env.FIREBASE_STORAGE_EMULATOR_HOST || '127.0.0.1:9199';
-        const bucketName = bucket.name;
-        const encodedDestination = encodeURIComponent(destination);
-        signedUrl = `http://${host}/v0/b/${bucketName}/o/${encodedDestination}?alt=media`;
-        logger.log(`Generated emulator storage URL: ${signedUrl}`);
-    } else {
-        const previewFile = bucket.file(destination);
-        [signedUrl] = await previewFile.getSignedUrl({
-            action: 'read',
-            expires: '03-09-2491'
-        });
-    }
-
-    // --- STEP 3 (Success): Update Firestore with SUCCESS status ---
-    await db.runTransaction(async (transaction) => {
-        const projectDoc = await transaction.get(projectRef);
-        if (!projectDoc.exists) {
-            throw new Error(`Project ${projectId} not found in Firestore.`);
-        }
-
-        if (isCover) {
-            const coverData = projectDoc.data().cover || {};
-            coverData.previewURL = signedUrl;
-            coverData.processingStatus = 'complete';
-            coverData.processingError = null;
-            transaction.update(projectRef, { cover: coverData });
-            logger.log(`Successfully updated Firestore for project ${projectId} with COVER previewURL and status 'complete'.`);
+    } catch (error) {
+        logger.error('Optimization failed. Attempting fallbacks.', error);
+        optimizationFailed = true;
+        
+        if (useRepairedFile && fs.existsSync(repairedFilePath)) {
+            fs.copyFileSync(repairedFilePath, tempPreviewPath);
+        } else if (fs.existsSync(tempFilePath)) {
+            fs.copyFileSync(tempFilePath, tempPreviewPath);
         } else {
-            const projectData = projectDoc.data();
-            const versions = projectData.versions || [];
-            const versionIndex = versions.findIndex(v => v.filePath === filePath);
-
-            if (versionIndex === -1) {
-                // It should exist now because we added it in Step 1
-                logger.warn(`No version found matching filePath "${filePath}" in project ${projectId} to update with success status.`);
-                return;
-            }
-
-            versions[versionIndex].previewURL = signedUrl;
-            versions[versionIndex].processingStatus = 'complete';
-            versions[versionIndex].processingError = null;
-            transaction.update(projectRef, { versions: versions });
-            logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with previewURL and status 'complete'.`);
+            throw new Error("Fatal: All files (Original and Repaired) are missing.");
         }
-    });
-
-  } catch (error) {
-    logger.error('Error processing PDF:', error);
-    // --- STEP 3 (Failure): Update Firestore with ERROR status ---
-    try {
-      await db.runTransaction(async (transaction) => {
-        const projectDoc = await transaction.get(projectRef);
-        if (!projectDoc.exists) {
-            logger.error(`Project ${projectId} not found. Cannot update with error status.`);
-            return;
-        }
-
-        if (isCover) {
-            const coverData = projectDoc.data().cover || {};
-            coverData.processingStatus = 'error';
-            coverData.processingError = error.message || 'An unknown error occurred during processing.';
-            transaction.update(projectRef, { cover: coverData });
-            logger.log(`Successfully updated Firestore for project ${projectId} with COVER status 'error'.`);
-        } else {
-            const projectData = projectDoc.data();
-            const versions = projectData.versions || [];
-            const versionIndex = versions.findIndex(v => v.filePath === filePath);
-
-            if (versionIndex === -1) {
-                logger.warn(`No version found matching filePath "${filePath}" in project ${projectId} to update with error status.`);
-                return;
-            }
-
-            versions[versionIndex].processingStatus = 'error';
-            versions[versionIndex].processingError = error.message || 'An unknown error occurred during processing.';
-            transaction.update(projectRef, { versions: versions });
-            logger.log(`Successfully updated Firestore for project ${projectId}, version index ${versionIndex} with status 'error'.`);
-        }
-      });
-    } catch (dbError) {
-      // Do NOT throw here. Log and exit to stop retry loop.
-      logger.error('FATAL: Could not update Firestore with error state.', dbError);
     }
 
-  } finally {
-    // Clean up temporary files
-    if (fs.existsSync(tempFilePath)) {
-      try { fs.unlinkSync(tempFilePath); } catch (e) { logger.warn('Failed to delete temp file:', tempFilePath, e); }
-    }
+    // 5. Upload Preview
     if (fs.existsSync(tempPreviewPath)) {
-      try { fs.unlinkSync(tempPreviewPath); } catch (e) { logger.warn('Failed to delete temp preview file:', tempPreviewPath, e); }
-    }
-  }
+        await bucket.upload(tempPreviewPath, { destination: destination });
+        
+        const [signedUrl] = await bucket.file(destination).getSignedUrl({
+            action: 'read', expires: '03-09-2491'
+        });
 
-  return null;
+        // 6. Final Success Update
+        await db.runTransaction(async (transaction) => {
+            const pDoc = await transaction.get(projectRef);
+            if (!pDoc.exists) return;
+
+            const processingError = optimizationFailed ? 'Preview is unoptimized.' : null;
+
+            if (isCover) {
+                const cData = pDoc.data().cover || {};
+                cData.previewURL = signedUrl;
+                cData.processingStatus = 'complete';
+                cData.processingError = processingError;
+                transaction.update(projectRef, { cover: cData });
+            } else {
+                const vList = pDoc.data().versions || [];
+                const vIdx = vList.findIndex(v => v.filePath === filePath);
+                if (vIdx !== -1) {
+                    vList[vIdx].previewURL = signedUrl;
+                    vList[vIdx].processingStatus = 'complete';
+                    vList[vIdx].processingError = processingError;
+                    transaction.update(projectRef, { versions: vList });
+                }
+            }
+        });
+        logger.log(`Job complete for ${fullFileName}`);
+    }
+
+  } catch (err) {
+    logger.error("Fatal error processing PDF:", err);
+    try {
+        await projectRef.update(isCover 
+            ? { 'cover.processingStatus': 'error', 'cover.processingError': err.message } 
+            : { 'versions': admin.firestore.FieldValue.arrayRemove() }
+        ); 
+    } catch(e) {}
+  } finally {
+    // Cleanup
+    [tempFilePath, tempPreviewPath, repairedFilePath].forEach(p => {
+        if (fs.existsSync(p)) try { fs.unlinkSync(p); } catch(e) {}
+    });
+  }
 });
 
 if (process.env.FUNCTION_TARGET === 'optimizePdf' || process.env.FUNCTIONS_EMULATOR === 'true') {
