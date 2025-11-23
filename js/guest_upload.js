@@ -99,6 +99,7 @@ const toolbarSpreadUpload = document.getElementById('toolbar-spread-upload');
 const builderTabs = document.getElementById('builder-tabs');
 
 const pdfDocCache = new Map(); // Cache for loaded PDF documents
+const remotePdfDocCache = new Map();
 
 const undoStack = [];
 const GRID_SIZE = 0.01;
@@ -108,6 +109,8 @@ const coverSettings = {
     'file-cover-back':  { pageIndex: 1, scaleMode: 'fill' },
     'file-spine':       { pageIndex: 1, scaleMode: 'fill' }
 };
+
+const pendingLoadCache = new Map();
 
 // State
 let projectId = null;
@@ -127,6 +130,7 @@ let viewerScale = 0.5; // Zoom level for viewer
 const imageCache = new Map(); // Cache for rendered ImageBitmaps: key=pageId -> { bitmap, scale }
 let hasFitCover = false;
 let coverSources = {};
+let minimapRenderId = 0;
 
 // --- Helper: Parse URL Params ---
 function getUrlParams() {
@@ -144,6 +148,33 @@ function debounce(func, wait) {
         clearTimeout(timeout);
         timeout = setTimeout(() => func.apply(context, args), wait);
     };
+}
+
+// --- Helper function to deduplicate asynchronous work (Loading/Rendering) ---
+async function fetchBitmapWithCache(cacheKey, loadFn) {
+    if (imageCache.has(cacheKey)) {
+        // console.log(`[Bitmap Cache] Hit: ${cacheKey}`); // Optional: Uncomment for very verbose logs
+        return imageCache.get(cacheKey);
+    }
+    if (pendingLoadCache.has(cacheKey)) {
+        console.log(`[Bitmap Cache] Joining pending request: ${cacheKey}`);
+        return pendingLoadCache.get(cacheKey);
+    }
+
+    console.log(`[Bitmap Cache] Starting new request: ${cacheKey}`);
+    const promise = loadFn().then(bitmap => {
+        if (bitmap) imageCache.set(cacheKey, bitmap);
+        pendingLoadCache.delete(cacheKey); 
+        console.log(`[Bitmap Cache] Finished: ${cacheKey}`);
+        return bitmap;
+    }).catch(err => {
+        pendingLoadCache.delete(cacheKey);
+        console.error(`[Bitmap Cache] Failed: ${cacheKey}`, err);
+        throw err;
+    });
+
+    pendingLoadCache.set(cacheKey, promise);
+    return promise;
 }
 
 // Create a debounced version that waits 2 seconds after the last action
@@ -423,7 +454,7 @@ if (navBackBtn) {
 }
 
 // --- NEW: Reusable Control Builder ---
-async function createCoverControls(inputId, file) {
+async function createCoverControls(inputId, fileOrUrl) {
     const container = document.getElementById(inputId)?.parentElement;
     if (!container) return;
 
@@ -441,12 +472,35 @@ async function createCoverControls(inputId, file) {
     controls.className = 'custom-controls mt-2 flex flex-col gap-2 z-20 relative';
 
     // 1. Page Selector (Only for PDF)
-    const isPDF = file.type === 'application/pdf';
-    if (isPDF) {
+    let pdfSourceUrl;
+    let isPDF = false;
+    let localObjectURL; // For cleanup
+
+    if (typeof fileOrUrl === 'string') {
+        // Source is a remote URL (restored file)
+        pdfSourceUrl = fileOrUrl;
+        isPDF = pdfSourceUrl.toLowerCase().endsWith('.pdf') || true;
+    } else if (fileOrUrl && fileOrUrl.type === 'application/pdf') {
+        // Source is a local File object (new upload)
+        pdfSourceUrl = URL.createObjectURL(fileOrUrl);
+        localObjectURL = pdfSourceUrl;
+        isPDF = true;
+    }
+    
+    if (isPDF && pdfSourceUrl) {
+        let docPromise;
+        
         try {
-            const fileUrl = URL.createObjectURL(file);
-            const pdf = await pdfjsLib.getDocument(fileUrl).promise;
-            
+            if (typeof fileOrUrl === 'string' && fileOrUrl.startsWith('http')) {
+                // Remote PDF (Restored) - Use the Remote cache based on URL/Path
+                docPromise = remotePdfDocCache.get(fileOrUrl) || pdfjsLib.getDocument(fileOrUrl).promise;
+            } else {
+                // Local PDF (New Upload)
+                docPromise = pdfjsLib.getDocument(localObjectURL).promise;
+            }
+
+            const pdf = await docPromise;
+
             if (pdf.numPages > 1) {
                 const pageCtrl = document.createElement('div');
                 pageCtrl.className = "flex items-center justify-center gap-1 text-xs";
@@ -462,7 +516,7 @@ async function createCoverControls(inputId, file) {
                 `;
                 controls.appendChild(pageCtrl);
 
-                // Bind Events (Wrapped in timeout to ensure DOM insertion)
+                // Bind Events
                 setTimeout(() => {
                     const setPage = (val) => {
                         let newPg = parseInt(val);
@@ -473,7 +527,7 @@ async function createCoverControls(inputId, file) {
                         const el = document.getElementById(`pg-input-${inputId}`);
                         if(el) el.value = newPg;
                         renderCoverPreview();
-                        triggerAutosave(); // Save on change
+                        triggerAutosave();
                     };
                     
                     const inputEl = document.getElementById(`pg-input-${inputId}`);
@@ -488,16 +542,22 @@ async function createCoverControls(inputId, file) {
                     if(nextBtn) nextBtn.onclick = (ev) => { ev.stopPropagation(); setPage(coverSettings[inputId].pageIndex + 1); };
                 }, 0);
             }
-        } catch (e) { console.warn("Error loading PDF for controls", e); }
+            
+            // Cleanup the temporary local blob URL
+            if (localObjectURL) URL.revokeObjectURL(localObjectURL);
+            
+        } catch (e) { 
+            console.warn("Error loading PDF for controls", e);
+            if (localObjectURL) URL.revokeObjectURL(localObjectURL);
+        }
     }
 
-    // 2. Scale Buttons
+    // 2. Scale Buttons (Remains the same)
     const scaleCtrl = document.createElement('div');
     scaleCtrl.className = "flex justify-center gap-1 mt-1";
     ['fit', 'fill', 'stretch'].forEach(mode => {
         const btn = document.createElement('button');
         btn.type = 'button';
-        // Set active class based on current settings
         const isActive = currentSettings.scaleMode === mode;
         btn.className = `text-[10px] px-2 py-1 rounded border ${isActive ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-600 text-gray-400 hover:text-white'}`;
         btn.textContent = mode.charAt(0).toUpperCase() + mode.slice(1);
@@ -506,13 +566,10 @@ async function createCoverControls(inputId, file) {
             ev.stopPropagation();
             ev.preventDefault();
             coverSettings[inputId].scaleMode = mode;
-            
-            // Update visual state
             Array.from(scaleCtrl.children).forEach(b => b.className = 'text-[10px] px-2 py-1 rounded border bg-slate-800 border-slate-600 text-gray-400 hover:text-white');
             btn.className = 'text-[10px] px-2 py-1 rounded border bg-indigo-600 border-indigo-500 text-white';
-            
             renderCoverPreview();
-            triggerAutosave(); // Save on change
+            triggerAutosave();
         };
         scaleCtrl.appendChild(btn);
     });
@@ -588,47 +645,69 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
         return;
     }
 
-    const file = sourceEntry.file;
     const isServer = sourceEntry.isServer;
-    const previewUrl = sourceEntry.previewUrl;
+    // CRITICAL: File is null for server files to prevent accessing stale local properties
+    const file = isServer ? null : sourceEntry.file; 
+    
+    // Use stable path for caching
+    const fileKey = isServer ? (sourceEntry.storagePath || sourceEntry.previewUrl || 'server_url') : (file ? file.name : 'unknown_file');
+    const timestamp = (file && file.lastModified) ? file.lastModified : 'server_timestamp';
+    const cacheKey = `${fileKey}_${pageIndex}_${timestamp}_stretched`;
+
     let imgBitmap;
 
-    // FIX: Safely handle missing file
-    const fileKey = isServer ? (previewUrl || 'server_url') : (file ? file.name : 'unknown_file');
-    const timestamp = (file && file.lastModified) ? file.lastModified : 'server_timestamp';
-    const cacheKey = `${fileKey}_${pageIndex}_${timestamp}_cover`;
-
     try {
-        if (imageCache.has(cacheKey)) {
-            imgBitmap = imageCache.get(cacheKey);
-        } else {
+        imgBitmap = await fetchBitmapWithCache(cacheKey, async () => {
             if (isServer) {
-                 const loadingTask = pdfjsLib.getDocument(previewUrl);
-                 const pdf = await loadingTask.promise;
-                 const page = await pdf.getPage(pageIndex);
-                 const viewport = page.getViewport({ scale: 2 });
-                 const cvs = document.createElement('canvas');
-                 cvs.width = viewport.width; cvs.height = viewport.height;
-                 await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
-                 imgBitmap = await createImageBitmap(cvs);
+                if (!sourceEntry.previewUrl) return null;
+
+                // 1. Use Remote Document Caching
+                let pdfDocPromise = remotePdfDocCache.get(fileKey);
+                if (!pdfDocPromise) {
+                    const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
+                    pdfDocPromise = loadingTask.promise;
+                    remotePdfDocCache.set(fileKey, pdfDocPromise);
+                }
+                const pdf = await pdfDocPromise;
+
+                // 2. Render
+                const page = await pdf.getPage(pageIndex);
+                const viewport = page.getViewport({ scale: 1.5 }); // Good quality for covers
+                const cvs = document.createElement('canvas');
+                cvs.width = viewport.width;
+                cvs.height = viewport.height;
+                await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+                return createImageBitmap(cvs);
+
             } else if (file && file.type === 'application/pdf') {
-                 const pdf = await pdfjsLib.getDocument(URL.createObjectURL(file)).promise;
-                 const page = await pdf.getPage(pageIndex);
-                 const viewport = page.getViewport({ scale: 2 });
-                 const cvs = document.createElement('canvas');
-                 cvs.width = viewport.width; cvs.height = viewport.height;
-                 await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
-                 imgBitmap = await createImageBitmap(cvs);
+                // Local PDF: Use ArrayBuffer + pdfDocCache
+                let pdfDoc = pdfDocCache.get(file);
+                if (!pdfDoc) {
+                    const arrayBuffer = await file.arrayBuffer();
+                    pdfDoc = pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                    pdfDocCache.set(file, pdfDoc);
+                }
+                const pdf = await pdfDoc;
+                const page = await pdf.getPage(pageIndex);
+                const viewport = page.getViewport({ scale: 1.5 });
+                const cvs = document.createElement('canvas');
+                cvs.width = viewport.width; cvs.height = viewport.height;
+                await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+                return createImageBitmap(cvs);
+
             } else if (file && file.type.startsWith('image/')) {
-                imgBitmap = await createImageBitmap(file);
+                return createImageBitmap(file);
             }
-            
-            if (imgBitmap) imageCache.set(cacheKey, imgBitmap);
-        }
-    } catch (e) { return; }
+            return null;
+        });
+    } catch (e) { 
+        console.error("drawStretched load error:", e);
+        return; 
+    }
 
     if (!imgBitmap) return;
 
+    // --- Draw Logic ---
     ctx.save();
     ctx.beginPath();
     ctx.rect(targetZone.x, targetZone.y, targetZone.w, targetZone.h);
@@ -637,6 +716,7 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
     const imgW = imgBitmap.width;
     const imgH = imgBitmap.height;
 
+    // Scale to fill TOTAL zone (Spine + Front/Back)
     let scale = totalZone.h / imgH; 
     if (imgW * scale < totalZone.w) {
         scale = totalZone.w / imgW;
@@ -648,9 +728,11 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
 
     let drawX;
     if (anchor === 'right') {
+        // Align to the RIGHT edge of the total zone
         const totalRight = totalZone.x + totalZone.w;
         drawX = totalRight - drawW;
     } else {
+        // Align to the LEFT edge of the total zone
         drawX = totalZone.x;
     }
 
@@ -1054,8 +1136,7 @@ function renderBookViewer() {
 
     container.innerHTML = ''; // Clear
 
-    // Render Minimap
-    renderMinimap();
+    // FIX: renderMinimap is now called in initializeBuilder and removed from here.
 
     // Dimensions for layout
     const width = projectSpecs.dimensions.width;
@@ -1064,60 +1145,17 @@ function renderBookViewer() {
     const visualScale = (250 * viewerScale) / ((width + bleed*2) * 96);
     const pixelsPerInch = 96 * visualScale;
 
-    const observer = new IntersectionObserver((entries, obs) => {
-        entries.forEach(entry => {
-            if (entry.isIntersecting) {
-                const card = entry.target;
-                const cardId = card.dataset.id;
-
-                if (cardId.startsWith('spread:')) {
-                    // Handle Spread
-                    const parts = cardId.split(':');
-                    const id1 = parts[1];
-                    const id2 = parts[2];
-                    const page1 = pages.find(p => p.id === id1);
-                    const page2 = pages.find(p => p.id === id2);
-                    const canvas1 = document.getElementById(`canvas-${id1}`);
-                    const canvas2 = document.getElementById(`canvas-${id2}`);
-
-                    const processPage = (p, cvs, pid) => {
-                        if (p && cvs) {
-                            renderPageCanvas(p, cvs).then(() => {
-                                // FIX: Only remove placeholder if READY
-                                const src = sourceFiles[p.sourceFileId];
-                                if (!src || src instanceof File || src.status === 'ready' || src.status === 'error') {
-                                    removePlaceholder(pid);
-                                }
-                            });
-                        }
-                    };
-
-                    processPage(page1, canvas1, id1);
-                    processPage(page2, canvas2, id2);
-                    
-                    // We don't unobserve immediately if processing, but usually we do 
-                    // because re-renders trigger new observers.
-                    obs.unobserve(card);
-
-                } else {
-                    // Handle Single Card
-                    const canvas = document.getElementById(`canvas-${cardId}`);
-                    const page = pages.find(p => p.id === cardId);
-
-                    if (canvas && page) {
-                        renderPageCanvas(page, canvas).then(() => {
-                            // FIX: Only remove placeholder if READY
-                            const src = sourceFiles[page.sourceFileId];
-                            if (!src || src instanceof File || src.status === 'ready' || src.status === 'error') {
-                                removePlaceholder(cardId);
-                            }
-                        });
-                        obs.unobserve(card);
-                    }
-                }
-            }
-        });
-    }, { root: container.parentElement, rootMargin: '200px' });
+    // Helper to run the heavy render asynchronously
+    const runPageRender = (page, canvas) => {
+        // Returns the promise from the async render function (renderPageCanvas)
+        if (!page || !canvas) return Promise.resolve(true); 
+        
+        return renderPageCanvas(page, canvas) 
+            .catch(err => {
+                console.error(`Page ${page?.id} Render Failed:`, err);
+                return true; // Resolve true on error so Promise.all completes
+            });
+    };
 
     const removePlaceholder = (id) => {
         const ph = document.getElementById(`placeholder-${id}`);
@@ -1127,9 +1165,47 @@ function renderBookViewer() {
         }
     };
 
-    // ... (Rest of the function logic for Single/Booklet layout remains exactly the same) ...
-    // ... Paste the rest of your existing renderBookViewer code here ...
-    
+    const observer = new IntersectionObserver((entries, obs) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                const card = entry.target;
+                const cardId = card.dataset.id;
+                obs.unobserve(card); // Unobserve immediately
+
+                if (cardId.startsWith('spread:')) {
+                    // Spread pages (P2/P3, P4/P5, etc)
+                    const parts = cardId.split(':');
+                    const id1 = parts[1]; // Left Page ID
+                    const id2 = parts[2]; // Right Page ID
+                    const page1 = pages.find(p => p.id === id1);
+                    const page2 = pages.find(p => p.id === id2);
+                    const canvas1 = document.getElementById(`canvas-${id1}`);
+                    const canvas2 = document.getElementById(`canvas-${id2}`);
+
+                    // CRITICAL FIX: Wait for BOTH pages of a spread before removing placeholders
+                    Promise.all([
+                        runPageRender(page1, canvas1),
+                        runPageRender(page2, canvas2)
+                    ]).finally(() => {
+                        removePlaceholder(id1);
+                        removePlaceholder(id2);
+                    });
+
+                } else {
+                    // Single page (P1, or Loose Sheet)
+                    const canvas = document.getElementById(`canvas-${cardId}`);
+                    const page = pages.find(p => p.id === cardId);
+
+                    if (canvas && page) {
+                        runPageRender(page, canvas).finally(() => {
+                            removePlaceholder(cardId);
+                        });
+                    }
+                }
+            }
+        });
+    }, { root: container.parentElement, rootMargin: '200px' });
+
     // --- LOOSE SHEETS / SINGLE LAYOUT ---
     if (projectType === 'single') {
         container.className = "flex flex-wrap gap-8 items-start justify-center p-6";
@@ -1314,7 +1390,6 @@ function renderBookViewer() {
     });
 }
 
-// --- Minimap Logic ---
 async function renderMinimap() {
     const container = document.getElementById('minimap-container');
     if (!container || projectType === 'single') {
@@ -1322,26 +1397,110 @@ async function renderMinimap() {
         return;
     }
 
+    // 1. Reset Container
     container.classList.remove('hidden');
     container.innerHTML = '';
 
-    // Render simplified thumbnails list
+    // 2. Helper to spawn a thumbnail (Async, no await)
+    const spawnThumbnail = (pageList, index, label) => {
+        // Create wrapper immediately (synchronous)
+        const wrapper = document.createElement('div');
+        wrapper.className = "w-full aspect-[3/2] bg-slate-800 rounded cursor-pointer border border-transparent hover:border-indigo-500 transition-all relative overflow-hidden mb-2";
+        
+        // Setup Click Handler
+        const targetPageId = pageList[0]?.id;
+        if (targetPageId) {
+            wrapper.onclick = () => {
+                const el = document.querySelector(`[data-id="${targetPageId}"]`) || document.querySelector(`[data-id^="spread:${targetPageId}"]`);
+                if (el) {
+                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    el.classList.add('ring-2', 'ring-indigo-500');
+                    setTimeout(() => el.classList.remove('ring-2', 'ring-indigo-500'), 1500);
+                }
+            };
+        }
 
-    // Spread 0 (Page 1)
-    await addMinimapItem(container, [pages[0]], 0, "P1");
+        // Canvas
+        const canvas = document.createElement('canvas');
+        canvas.width = 150; canvas.height = 100;
+        canvas.className = "w-full h-full object-contain";
+        const ctx = canvas.getContext('2d');
+        
+        // Draw initial gray background
+        ctx.fillStyle = '#1e293b'; ctx.fillRect(0, 0, 150, 100);
 
-    // Spreads
+        // Label
+        const textDiv = document.createElement('div');
+        textDiv.className = "absolute bottom-1 right-1 bg-black/50 text-[10px] px-1 rounded text-white";
+        textDiv.textContent = label;
+
+        wrapper.appendChild(canvas);
+        wrapper.appendChild(textDiv);
+        container.appendChild(wrapper); // Append to DOM immediately
+
+        // 3. Trigger Heavy Render in Background (Low Priority)
+        // Use setTimeout to push this to end of event loop, letting UI update first
+        setTimeout(async () => {
+            await populateMinimapCanvas(ctx, pageList, 150, 100);
+        }, 0);
+    };
+
+    // 3. Loop and Spawn
+    if (pages.length > 0) {
+        spawnThumbnail([pages[0]], 0, "P1");
+    }
+
     let i = 1;
     while(i < pages.length) {
         const p1 = pages[i];
         const p2 = pages[i+1];
         const label = p2 ? `P${i+1}-${i+2}` : `P${i+1}`;
-        await addMinimapItem(container, [p1, p2], i, label);
+        spawnThumbnail([p1, p2], i, label);
         i += 2;
     }
 }
 
-async function addMinimapItem(container, pageList, mainIndex, label) {
+async function populateMinimapCanvas(ctx, pageList, w, h) {
+    const margin = 5;
+    const pageW = (w - (margin*3)) / 2;
+    const pageH = h - (margin*2);
+    const leftX = margin;
+    const rightX = margin + pageW + margin;
+    const topY = margin;
+
+    const drawPage = async (page, x, y) => {
+        ctx.fillStyle = '#ffffff'; ctx.fillRect(x, y, pageW, pageH); // White paper base
+
+        if (!page || !page.sourceFileId) return;
+        const sourceEntry = sourceFiles[page.sourceFileId];
+        
+        // FIX: Pass '0.25' as the last argument (forceScale) for thumbnails
+        // 0.25 scale is roughly 200-300px wide for a standard letter page
+        await drawFileWithTransform(
+            ctx, sourceEntry, x, y, pageW, pageH,
+            page.settings.scaleMode || 'fit',
+            page.settings.alignment || 'center',
+            page.pageIndex || 1,
+            page.id,
+            'full', 
+            page.settings.panX || 0, 
+            page.settings.panY || 0,
+            0.25 // <--- FAST RENDER SCALE
+        );
+    };
+
+    if (pageList.length === 1 && pageList[0].pageIndex === 1) {
+        // First page (Right)
+        await drawPage(pageList[0], rightX, topY);
+    } else {
+        // Spread
+        if (pageList[0]) await drawPage(pageList[0], leftX, topY);
+        if (pageList[1]) await drawPage(pageList[1], rightX, topY);
+    }
+}
+
+// Renamed from addMinimapItem to clearly signal it only creates the element.
+async function createMinimapItem(pageList, mainIndex, label) {
     const wrapper = document.createElement('div');
     wrapper.className = "w-full aspect-[3/2] bg-slate-800 rounded cursor-pointer border border-transparent hover:border-indigo-500 transition-all relative overflow-hidden";
 
@@ -1425,7 +1584,9 @@ async function addMinimapItem(container, pageList, mainIndex, label) {
 
     wrapper.appendChild(canvas);
     wrapper.appendChild(textDiv);
-    container.appendChild(wrapper);
+    
+    // CRITICAL FIX: Return the wrapper instead of appending it here
+    return wrapper; 
 }
 
 // Global Pointer Event Handlers for Panning
@@ -1845,123 +2006,100 @@ async function updatePageContent(pageId, file) {
 }
 
 async function renderPageCanvas(page, canvas) {
-    // Determine View based on index (Even = Right, Odd = Left)
-    // This ensures correct spread logic regardless of initial settings
+    // console.log(`[Page Render] Starting render for Page ID: ${page.id}`);
+
     const pageIndex = pages.indexOf(page);
     const isRightPage = pageIndex === 0 || pageIndex % 2 === 0;
-
-    // For Loose Sheets, view is 'full' (no clipping)
     let view = isRightPage ? 'right' : 'left';
     if (projectType === 'single') view = 'full';
 
-    // Handle Blank Page
+    // 1. Handle Blank Page
     if (page.sourceFileId === null) {
         drawBlankPage(page, canvas, view);
         return;
     }
 
+    // 2. Validate Source
     const sourceEntry = sourceFiles[page.sourceFileId];
-    if (!sourceEntry || !projectSpecs.dimensions) return;
+    
+    // --- DIAGNOSTIC LOG ---
+    if (!sourceEntry) {
+        console.error(`[Render Fail] Page ${page.id} skipped. Source '${page.sourceFileId}' not found in sourceFiles.`);
+        // Draw visual error on canvas
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#f3f4f6'; ctx.fillRect(0,0,canvas.width, canvas.height);
+        ctx.fillStyle = '#ef4444'; ctx.font = '10px sans-serif'; 
+        ctx.fillText('Missing Source', 10, 20);
+        return;
+    }
+    // ----------------------
 
-    // Unwrap Source (handle both raw File and server-processed object)
-    const isServer = sourceEntry.isServer;
-    const file = isServer ? sourceEntry.file : sourceEntry;
+    if (!projectSpecs || !projectSpecs.dimensions) return;
 
-    const ctx = canvas.getContext('2d', { alpha: false }); // Optimize alpha
+    // 3. Setup Canvas
     const width = projectSpecs.dimensions.width;
     const height = projectSpecs.dimensions.height;
     const bleed = 0.125;
-
-    // Visual Scale for Thumbnails
-    // Use lower resolution for thumbnails (1.5x density max for retina, down to 1.0 if fast scrolling needed)
+    
+    // Visual Scale
     const visualScale = (250 * viewerScale) / ((width + bleed*2) * 96);
     const pixelsPerInch = 96 * visualScale;
-    const pixelDensity = 1.5; // Lowered from 2 to improve performance
+    const pixelDensity = 1.5; 
 
     const totalW = width + (bleed*2);
     const totalH = height + (bleed*2);
 
     canvas.width = Math.ceil(totalW * pixelsPerInch * pixelDensity);
     canvas.height = Math.ceil(totalH * pixelsPerInch * pixelDensity);
-
-    // Style width/height is set by renderBookViewer container logic mostly,
-    // but we need to ensure the canvas element itself has the right size to be positioned.
-    // Use exact floats for CSS to let browser handle sub-pixels
+    
     canvas.style.width = `${totalW * pixelsPerInch}px`;
     canvas.style.height = `${totalH * pixelsPerInch}px`;
-
-    // Update position to ensure centering (in case scale changed)
-    // Vertical: Container includes bleed, Canvas includes bleed. Align Top.
     canvas.style.top = '0px';
+    
+    if (view === 'right') canvas.style.left = `-${bleed * pixelsPerInch}px`;
+    else canvas.style.left = '0px';
 
-    // Horizontal Alignment Logic
-    if (view === 'right') {
-        // Right Page: Canvas 0 is Left Bleed (Spine). Shift left to hide it.
-        canvas.style.left = `-${bleed * pixelsPerInch}px`;
-    } else if (view === 'left') {
-        // Left Page: Canvas 0 is Left Bleed (Outer Edge). Keep at 0.
-        canvas.style.left = '0px';
-    } else {
-        // Full View (Loose Sheets): Show everything.
-        canvas.style.left = '0px';
-    }
-
+    const ctx = canvas.getContext('2d', { alpha: false });
     ctx.setTransform(pixelDensity, 0, 0, pixelDensity, 0, 0);
     ctx.scale(pixelsPerInch, pixelsPerInch);
 
-    // Draw Sheet Background
+    // 4. Draw Background
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, totalW, totalH);
 
-    // Draw Content
-    // Pass additional Pan Settings
+    // 5. Draw File (Passed sourceEntry is now guaranteed to exist)
     await drawFileWithTransform(ctx, sourceEntry, 0, 0, totalW, totalH, page.settings.scaleMode, page.settings.alignment, page.pageIndex, page.id, view, page.settings.panX, page.settings.panY);
 
-    // Guides
+    // 6. Draw Guides
+    const guideScale = pixelsPerInch / 72;
     const mockSpecs = {
         dimensions: { width: width, height: height, units: 'in' },
         bleedInches: bleed,
         safetyInches: 0.125
     };
 
-    // Scale for Guides: guides.js expects points.
-    const guideScale = pixelsPerInch / 72;
-
-    // Adjust renderInfo based on View Mode
-    let renderInfo;
-
+    let renderInfo = {
+        x: view === 'right' ? bleed * pixelsPerInch : 0,
+        y: 0,
+        width: view === 'left' ? (width + bleed) * pixelsPerInch : totalW * pixelsPerInch,
+        height: totalH * pixelsPerInch,
+        scale: guideScale,
+        isSpread: true,
+        isLeftPage: view === 'left'
+    };
+    
     if (view === 'full') {
-        // Loose Sheets: Render Full Canvas, No Clipping
-        renderInfo = {
-            x: 0,
-            y: 0,
-            width: totalW * pixelsPerInch,
-            height: totalH * pixelsPerInch,
-            scale: guideScale,
-            isSpread: false, // Full Bleed on all sides
-            isLeftPage: false
-        };
-    } else {
-        // Spread Logic
-        renderInfo = {
-            x: view === 'right' ? bleed * pixelsPerInch : 0,
-            y: 0,
-            width: view === 'left' ? (width + bleed) * pixelsPerInch : totalW * pixelsPerInch,
-            height: totalH * pixelsPerInch,
-            scale: guideScale,
-            isSpread: true,
-            isLeftPage: view === 'left'
-        };
+        renderInfo = { ...renderInfo, isSpread: false, width: totalW * pixelsPerInch };
     }
 
-    // Ensure guides are drawn on TOP.
     ctx.save();
     ctx.setTransform(pixelDensity, 0, 0, pixelDensity, 0, 0);
     drawGuides(ctx, mockSpecs, [renderInfo], { trim: true, bleed: true, safety: true });
     ctx.restore();
 }
 
-function drawBlankPage(page, canvas) {
+// Updated signature to include 'view'
+function drawBlankPage(page, canvas, view) { 
     if (!projectSpecs.dimensions) return;
 
     const ctx = canvas.getContext('2d');
@@ -1983,8 +2121,10 @@ function drawBlankPage(page, canvas) {
     canvas.style.width = `${totalW * pixelsPerInch}px`;
     canvas.style.height = `${totalH * pixelsPerInch}px`;
 
-    // Position logic (match renderPageCanvas)
+    // Position logic
     canvas.style.top = '0px';
+    
+    // Now 'view' is defined and this works
     if (view === 'right') {
         canvas.style.left = `-${bleed * pixelsPerInch}px`;
     } else {
@@ -1994,15 +2134,15 @@ function drawBlankPage(page, canvas) {
     ctx.setTransform(pixelDensity, 0, 0, pixelDensity, 0, 0);
     ctx.scale(pixelsPerInch, pixelsPerInch);
 
-    // 1. Draw Background (Light Gray to indicate empty)
+    // 1. Draw Background
     ctx.fillStyle = '#f8fafc'; // Slate-50
     ctx.fillRect(0, 0, totalW, totalH);
 
-    // 2. Draw Dashed Border or Icon
+    // 2. Draw Dashed Border
     ctx.strokeStyle = '#cbd5e1'; // Slate-300
     ctx.lineWidth = 2 / pixelsPerInch;
     ctx.setLineDash([10 / pixelsPerInch, 10 / pixelsPerInch]);
-    ctx.strokeRect(bleed, bleed, width, height); // Trim area
+    ctx.strokeRect(bleed, bleed, width, height);
     ctx.setLineDash([]);
 
     // 3. Text
@@ -2013,15 +2153,14 @@ function drawBlankPage(page, canvas) {
     ctx.fillText("Drop File Here", totalW / 2, totalH / 2);
 
     // Draw Guides
-    const guideScale = pixelsPerInch / 72; // Correct for guides.js
+    const guideScale = pixelsPerInch / 72; 
     const mockSpecs = {
         dimensions: { width: width, height: height, units: 'in' },
         bleedInches: bleed,
         safetyInches: 0.125
     };
 
-    // Adjust renderInfo to align guides correctly within the partially cropped view
-    // Match logic from renderPageCanvas
+    // Adjust renderInfo to align guides correctly
     const renderInfo = {
         x: view === 'right' ? bleed * pixelsPerInch : 0,
         y: 0,
@@ -2038,154 +2177,116 @@ function drawBlankPage(page, canvas) {
     ctx.restore();
 }
 
-async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW, targetH, mode, align, pageIndex = 1, pageId = null, viewMode = 'full', panX = 0, panY = 0) {
-    // Handle blank pages
+async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW, targetH, mode, align, pageIndex = 1, pageId = null, viewMode = 'full', panX = 0, panY = 0, forceScale = null) {
     if (!sourceEntry) return;
 
-    let imgBitmap;
-    let srcW, srcH;
-
-    // Unwrap Source
     const isServer = sourceEntry.isServer;
-    const file = isServer ? sourceEntry.file : sourceEntry;
+    const file = isServer ? null : sourceEntry.file; 
     const status = sourceEntry.status || 'ready';
 
-    // --- 1. Check Status & Draw Throbber ---
     if (status === 'error') {
-        ctx.fillStyle = '#fee2e2';
-        ctx.fillRect(targetX, targetY, targetW, targetH);
-        ctx.fillStyle = '#ef4444';
-        ctx.font = '12px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText("Processing Failed", targetX + targetW/2, targetY + targetH/2);
-        return;
+        ctx.fillStyle = '#fee2e2'; ctx.fillRect(targetX, targetY, targetW, targetH); return;
     }
-
     if (status === 'processing' || status === 'uploading') {
-        drawProcessingState(ctx, targetX, targetY, targetW, targetH);
-        return;
+        drawProcessingState(ctx, targetX, targetY, targetW, targetH); return;
     }
 
-    // --- 2. Check Cache & Render ---
-    // FIX: Safely handle missing 'file' object for server sources
-    const fileKey = isServer ? (sourceEntry.previewUrl || 'server_url') : (file ? file.name : 'unknown_file');
+    const fileKey = isServer ? (sourceEntry.storagePath || sourceEntry.previewUrl || 'server_url') : (file ? file.name : 'unknown_file');
     const timestamp = (file && file.lastModified) ? file.lastModified : 'server_timestamp';
     
-    const cacheKey = `${fileKey}_${pageIndex}_${timestamp}`;
+    // FIX: Include scale in cache key so thumbnails don't overwrite main viewer cache (and vice versa)
+    const scaleKey = forceScale ? `_s${forceScale}` : '_full';
+    const cacheKey = `${fileKey}_${pageIndex}_${timestamp}${scaleKey}`;
+    
+    let imgBitmap;
 
-    if (imageCache.has(cacheKey)) {
-        imgBitmap = imageCache.get(cacheKey);
-        srcW = imgBitmap.width;
-        srcH = imgBitmap.height;
-    } else {
-        // Render New
-        try {
+    try {
+        imgBitmap = await fetchBitmapWithCache(cacheKey, async () => {
+            // Determine render scale (Low for thumbnails, High for Viewer)
+            const renderScale = forceScale || (isServer ? 1.5 : 1.0);
+
             if (isServer) {
-                // Load from Server Preview URL
-                if (!sourceEntry.previewUrl) return; 
+                if (!sourceEntry.previewUrl) return null; 
                 
-                const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
-                const pdf = await loadingTask.promise;
+                let pdfDocPromise = remotePdfDocCache.get(fileKey);
+                if (!pdfDocPromise) {
+                    const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
+                    pdfDocPromise = loadingTask.promise;
+                    remotePdfDocCache.set(fileKey, pdfDocPromise);
+                }
+                const pdf = await pdfDocPromise;
                 const page = await pdf.getPage(pageIndex);
-
-                const viewport = page.getViewport({ scale: 1.0 });
+                const viewport = page.getViewport({ scale: renderScale }); 
                 const tempCanvas = document.createElement('canvas');
                 tempCanvas.width = viewport.width;
                 tempCanvas.height = viewport.height;
 
-                await page.render({
-                    canvasContext: tempCanvas.getContext('2d'),
-                    viewport: viewport
-                }).promise;
-
-                imgBitmap = await createImageBitmap(tempCanvas);
-                imageCache.set(cacheKey, imgBitmap);
-                srcW = viewport.width;
-                srcH = viewport.height;
+                await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport: viewport }).promise;
+                return createImageBitmap(tempCanvas);
 
             } else if (file && file.type === 'application/pdf') {
-                // Load Local PDF
                 let pdfDoc = pdfDocCache.get(file);
                 if (!pdfDoc) {
-                    const fileUrl = URL.createObjectURL(file);
-                    pdfDoc = pdfjsLib.getDocument(fileUrl).promise;
+                    const arrayBuffer = await file.arrayBuffer(); 
+                    pdfDoc = pdfjsLib.getDocument({ data: arrayBuffer }).promise;
                     pdfDocCache.set(file, pdfDoc);
                 }
-
                 const pdf = await pdfDoc;
                 const page = await pdf.getPage(pageIndex);
-                const viewport = page.getViewport({ scale: 1.0 });
+                const viewport = page.getViewport({ scale: renderScale }); 
                 const tempCanvas = document.createElement('canvas');
                 tempCanvas.width = viewport.width;
                 tempCanvas.height = viewport.height;
 
-                await page.render({
-                    canvasContext: tempCanvas.getContext('2d'),
-                    viewport: viewport
-                }).promise;
-
-                imgBitmap = await createImageBitmap(tempCanvas);
-                imageCache.set(cacheKey, imgBitmap);
-                srcW = viewport.width;
-                srcH = viewport.height;
+                await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport: viewport }).promise;
+                return createImageBitmap(tempCanvas);
 
             } else if (file && file.type.startsWith('image/')) {
-                // Load Local Image
-                imgBitmap = await createImageBitmap(file);
-                imageCache.set(cacheKey, imgBitmap);
-                srcW = imgBitmap.width;
-                srcH = imgBitmap.height;
+                return createImageBitmap(file);
             }
-        } catch (e) {
-            console.error("Render Error", e);
-            return; 
+            return null;
+        });
+        
+        if (!imgBitmap) {
+            ctx.fillStyle = '#f1f5f9'; ctx.fillRect(targetX, targetY, targetW, targetH); return;
         }
-    }
 
-    if (!imgBitmap) {
-        ctx.fillStyle = '#f1f5f9';
+        const srcW = imgBitmap.width;
+        const srcH = imgBitmap.height;
+        const srcRatio = srcW / srcH;
+        const targetRatio = targetW / targetH;
+        let drawW, drawH, drawX, drawY;
+
+        if (mode === 'stretch') { drawW = targetW; drawH = targetH; } 
+        else if (mode === 'fit') {
+            if (srcRatio > targetRatio) { drawW = targetW; drawH = targetW / srcRatio; }
+            else { drawH = targetH; drawW = targetH * srcRatio; }
+        } else { 
+            if (srcRatio > targetRatio) { drawH = targetH; drawW = targetH * srcRatio; }
+            else { drawW = targetW; drawH = targetW / srcRatio; }
+        }
+
+        drawX = targetX + (targetW - drawW) / 2 + (panX * targetW);
+        drawY = targetY + (targetH - drawH) / 2 + (panY * targetH);
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(targetX, targetY, targetW, targetH);
+        ctx.clip();
+        ctx.drawImage(imgBitmap, drawX, drawY, drawW, drawH);
+        ctx.restore();
+
+    } catch (e) {
+        console.error("Draw Render Error:", e);
+        ctx.fillStyle = '#fee2e2';
         ctx.fillRect(targetX, targetY, targetW, targetH);
-        return;
     }
-
-    // --- 3. Transform Logic ---
-    const srcRatio = srcW / srcH;
-    const targetRatio = targetW / targetH;
-    let drawW, drawH, drawX, drawY;
-
-    if (mode === 'stretch') {
-        drawW = targetW;
-        drawH = targetH;
-    } else if (mode === 'fit') {
-        if (srcRatio > targetRatio) {
-            drawW = targetW;
-            drawH = targetW / srcRatio;
-        } else {
-            drawH = targetH;
-            drawW = targetH * srcRatio;
-        }
-    } else { // fill
-        if (srcRatio > targetRatio) {
-            drawH = targetH;
-            drawW = targetH * srcRatio;
-        } else {
-            drawW = targetW;
-            drawH = targetW / srcRatio;
-        }
-    }
-
-    drawX = targetX + (targetW - drawW) / 2 + (panX * targetW);
-    drawY = targetY + (targetH - drawH) / 2 + (panY * targetH);
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(targetX, targetY, targetW, targetH);
-    ctx.clip();
-    ctx.drawImage(imgBitmap, drawX, drawY, drawW, drawH);
-    ctx.restore();
 }
 
+function getRemoteFileKey(sourceEntry) {
+    // Priority: 1. Stable storage path (BEST) 2. Unstable URL (fallback)
+    return sourceEntry.storagePath || sourceEntry.previewUrl || 'server_url';
+}
 
 // --- Listeners for Interior Builder ---
 if (addInteriorFileBtn) {
@@ -2474,75 +2575,70 @@ async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageI
     if (!sourceEntry) return;
 
     let file, status, isServer, previewUrl;
-
     if (sourceEntry instanceof File) {
-        file = sourceEntry;
-        status = 'ready';
-        isServer = false;
+        file = sourceEntry; status = 'ready'; isServer = false;
     } else {
-        file = sourceEntry.file;
-        status = sourceEntry.status;
-        isServer = sourceEntry.isServer;
-        previewUrl = sourceEntry.previewUrl;
+        file = sourceEntry.file; status = sourceEntry.status; isServer = sourceEntry.isServer; previewUrl = sourceEntry.previewUrl;
     }
 
     if (!file && !isServer) return;
 
-    if (status === 'processing' || status === 'uploading') {
-        drawProcessingState(ctx, x, y, targetW, targetH);
-        return;
-    }
-    
-    if (status === 'error') {
-        ctx.fillStyle = '#fee2e2'; 
-        ctx.fillRect(x, y, targetW, targetH);
-        return;
-    }
+    if (status === 'processing' || status === 'uploading') { drawProcessingState(ctx, x, y, targetW, targetH); return; }
+    if (status === 'error') { ctx.fillStyle = '#fee2e2'; ctx.fillRect(x, y, targetW, targetH); return; }
 
-    let imgBitmap;
-    
-    // FIX: Safely handle missing file for restored covers
-    const fileKey = isServer ? (previewUrl || 'server_url') : (file ? file.name : 'unknown_file');
+    const fileKey = isServer ? (sourceEntry.storagePath || previewUrl || 'server_url') : (file ? file.name : 'unknown_file');
     const timestamp = (file && file.lastModified) ? file.lastModified : 'server_timestamp';
     const cacheKey = `${fileKey}_${pageIndex}_${timestamp}_cover`;
 
-    try {
-        if (imageCache.has(cacheKey)) {
-            imgBitmap = imageCache.get(cacheKey);
-        } else {
-            // Render New
-            if (isServer) {
-                const loadingTask = pdfjsLib.getDocument(previewUrl);
-                const pdf = await loadingTask.promise;
-                const page = await pdf.getPage(pageIndex);
-                const viewport = page.getViewport({ scale: 2 }); 
-                const cvs = document.createElement('canvas');
-                cvs.width = viewport.width; cvs.height = viewport.height;
-                await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
-                imgBitmap = await createImageBitmap(cvs);
+    let imgBitmap;
 
-            } else if (file && file.type === 'application/pdf') {
-                const arrayBuffer = await file.arrayBuffer();
-                const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
+    try {
+        imgBitmap = await fetchBitmapWithCache(cacheKey, async () => {
+            if (isServer) {
+                // --- FIX: Remote Document Caching ---
+                const docCacheKey = sourceEntry.storagePath || previewUrl;
+                let pdfDocPromise = remotePdfDocCache.get(docCacheKey);
+
+                if (!pdfDocPromise) {
+                    const loadingTask = pdfjsLib.getDocument(previewUrl);
+                    pdfDocPromise = loadingTask.promise;
+                    remotePdfDocCache.set(docCacheKey, pdfDocPromise);
+                }
+                const pdf = await pdfDocPromise;
+                // --- END FIX ---
+                
                 const page = await pdf.getPage(pageIndex);
                 const viewport = page.getViewport({ scale: 2 });
                 const cvs = document.createElement('canvas');
                 cvs.width = viewport.width; cvs.height = viewport.height;
                 await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
-                imgBitmap = await createImageBitmap(cvs);
+                return createImageBitmap(cvs);
+
+            } else if (file && file.type === 'application/pdf') {
+                // Local PDF logic (using ArrayBuffer and pdfDocCache)
+                let pdfDoc = pdfDocCache.get(file);
+                if (!pdfDoc) {
+                    const arrayBuffer = await file.arrayBuffer();
+                    pdfDoc = pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                    pdfDocCache.set(file, pdfDoc);
+                }
+                const pdf = await pdfDoc;
+                const page = await pdf.getPage(pageIndex);
+                const viewport = page.getViewport({ scale: 2 });
+                const cvs = document.createElement('canvas');
+                cvs.width = viewport.width; cvs.height = viewport.height;
+                await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+                return createImageBitmap(cvs);
 
             } else if (file && file.type.startsWith('image/')) {
-                imgBitmap = await createImageBitmap(file);
+                return createImageBitmap(file);
             }
-
-            if (imgBitmap) {
-                imageCache.set(cacheKey, imgBitmap);
-            }
-        }
+            return null;
+        });
 
         if (!imgBitmap) return;
 
-        // Drawing Logic
+        // Drawing Logic (remains the same)
         const srcW = imgBitmap.width;
         const srcH = imgBitmap.height;
         const srcRatio = srcW / srcH;
@@ -2550,32 +2646,15 @@ async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageI
 
         let drawW, drawH, drawX, drawY;
 
-        if (scaleMode === 'stretch') {
-            drawW = targetW;
-            drawH = targetH;
-            drawX = x;
-            drawY = y;
-        } else if (scaleMode === 'fit') {
-            if (srcRatio > targetRatio) {
-                drawW = targetW;
-                drawH = targetW / srcRatio;
-            } else {
-                drawH = targetH;
-                drawW = targetH * srcRatio;
-            }
-            drawX = x + (targetW - drawW) / 2;
-            drawY = y + (targetH - drawH) / 2;
+        if (scaleMode === 'stretch') { drawW = targetW; drawH = targetH; drawX = x; drawY = y; }
+        else if (scaleMode === 'fit') {
+            if (srcRatio > targetRatio) { drawW = targetW; drawH = targetW / srcRatio; }
+            else { drawH = targetH; drawW = targetH * srcRatio; }
+            drawX = x + (targetW - drawW) / 2; drawY = y + (targetH - drawH) / 2;
         } else {
-            // Fill
-            if (srcRatio > targetRatio) {
-                drawH = targetH;
-                drawW = targetH * srcRatio;
-            } else {
-                drawW = targetW;
-                drawH = targetW / srcRatio;
-            }
-            drawX = x + (targetW - drawW) / 2;
-            drawY = y + (targetH - drawH) / 2;
+            if (srcRatio > targetRatio) { drawH = targetH; drawW = targetH * srcRatio; }
+            else { drawW = targetW; drawH = targetW / srcRatio; }
+            drawX = x + (targetW - drawW) / 2; drawY = y + (targetH - drawH) / 2;
         }
 
         ctx.save();
@@ -2588,7 +2667,7 @@ async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageI
     } catch (e) {
         console.error("Error rendering cover image:", e);
     }
-}   
+}
 
 // --- Specs Form Submit Handler ---
 specsForm.addEventListener('submit', async (e) => {
@@ -2781,13 +2860,11 @@ function refreshBuilderUI() {
 
 async function initializeBuilder() {
     if (builderInitialized) {
-        // If already initialized, just re-render with new specs
         renderBookViewer();
         validateForm();
         return;
     }
 
-    // Restore State from Persistence (only on first load)
     if (projectId !== 'mock-project-id') {
         await restoreBuilderState();
     }
@@ -2796,13 +2873,17 @@ async function initializeBuilder() {
     renderBookViewer();
     validateForm();
 
+    // FIX: Defer Minimap rendering to allow main pages to start first and render concurrently in the background
+    setTimeout(() => {
+         renderMinimap(); 
+    }, 100); 
+    
     builderInitialized = true;
 }
 
 async function drawWrapper(ctx, sourceEntry, targetX, targetY, targetW, targetH, type, isFrontSource, neighborWidth, pageIndex = 1) {
     if (!sourceEntry) return;
 
-    // --- Status Handling ---
     const status = sourceEntry.status || 'ready';
     if (status === 'processing' || status === 'uploading') {
         drawProcessingState(ctx, targetX, targetY, targetW, targetH);
@@ -2814,33 +2895,60 @@ async function drawWrapper(ctx, sourceEntry, targetX, targetY, targetW, targetH,
         return;
     }
 
-    // --- Load Image ---
-    const file = sourceEntry.file;
+    const isServer = sourceEntry.isServer;
+    const file = isServer ? null : sourceEntry.file;
+    
+    const fileKey = isServer ? (sourceEntry.storagePath || sourceEntry.previewUrl || 'server_url') : (file ? file.name : 'unknown_file');
+    const timestamp = (file && file.lastModified) ? file.lastModified : 'server_timestamp';
+    const cacheKey = `${fileKey}_${pageIndex}_${timestamp}_wrapper`;
+
     let imgBitmap;
+
     try {
-        if (sourceEntry.isServer) {
-             const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
-             const pdf = await loadingTask.promise;
-             const page = await pdf.getPage(pageIndex); 
-             const viewport = page.getViewport({ scale: 2 });
-             const cvs = document.createElement('canvas');
-             cvs.width = viewport.width; cvs.height = viewport.height;
-             await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
-             imgBitmap = await createImageBitmap(cvs);
-        } else if (file && file.type === 'application/pdf') {
-             const pdf = await pdfjsLib.getDocument(URL.createObjectURL(file)).promise;
-             const page = await pdf.getPage(pageIndex); 
-             const viewport = page.getViewport({ scale: 2 });
-             const cvs = document.createElement('canvas');
-             cvs.width = viewport.width; cvs.height = viewport.height;
-             await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
-             imgBitmap = await createImageBitmap(cvs);
-        } else if (file && file.type.startsWith('image/')) {
-            imgBitmap = await createImageBitmap(file);
-        } else {
-            return;
-        }
-    } catch(e) { return; }
+        imgBitmap = await fetchBitmapWithCache(cacheKey, async () => {
+            if (isServer) {
+                if (!sourceEntry.previewUrl) return null;
+
+                let pdfDocPromise = remotePdfDocCache.get(fileKey);
+                if (!pdfDocPromise) {
+                    const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
+                    pdfDocPromise = loadingTask.promise;
+                    remotePdfDocCache.set(fileKey, pdfDocPromise);
+                }
+                const pdf = await pdfDocPromise;
+                const page = await pdf.getPage(pageIndex);
+                const viewport = page.getViewport({ scale: 2 });
+                const cvs = document.createElement('canvas');
+                cvs.width = viewport.width; cvs.height = viewport.height;
+                await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+                return createImageBitmap(cvs);
+
+            } else if (file && file.type === 'application/pdf') {
+                let pdfDoc = pdfDocCache.get(file);
+                if (!pdfDoc) {
+                    const arrayBuffer = await file.arrayBuffer();
+                    pdfDoc = pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                    pdfDocCache.set(file, pdfDoc);
+                }
+                const pdf = await pdfDoc;
+                const page = await pdf.getPage(pageIndex);
+                const viewport = page.getViewport({ scale: 2 });
+                const cvs = document.createElement('canvas');
+                cvs.width = viewport.width; cvs.height = viewport.height;
+                await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+                return createImageBitmap(cvs);
+
+            } else if (file && file.type.startsWith('image/')) {
+                return createImageBitmap(file);
+            }
+            return null;
+        });
+    } catch(e) { 
+        console.error("Wrapper render error:", e);
+        return; 
+    }
+
+    if (!imgBitmap) return;
 
     // --- Draw Logic ---
     ctx.save();
@@ -2852,12 +2960,17 @@ async function drawWrapper(ctx, sourceEntry, targetX, targetY, targetW, targetH,
     const scaledW = imgBitmap.width * scale;
     
     if (isFrontSource) { 
+        // Mirror Front: Flip horizontally, draw from right edge
         ctx.translate(targetX + targetW, targetY);
         ctx.scale(-1, 1); 
+        // Draw image so the "spine" part (left edge of front cover) meets the actual spine
         ctx.drawImage(imgBitmap, 0, 0, imgBitmap.width, imgBitmap.height, 0, 0, scaledW, targetH);
     } else { 
+        // Mirror Back: Flip horizontally, draw from left edge
         ctx.translate(targetX, targetY);
         ctx.scale(-1, 1);
+        // Draw image so the "spine" part (right edge of back cover) meets the actual spine
+        // We draw at negative width because we want the rightmost part of the image to be at x=0 (after flip)
         ctx.drawImage(imgBitmap, 0, 0, imgBitmap.width, imgBitmap.height, -scaledW, 0, scaledW, targetH);
     }
     ctx.restore();
@@ -2865,6 +2978,11 @@ async function drawWrapper(ctx, sourceEntry, targetX, targetY, targetW, targetH,
 
 // --- Main Initialization ---
 async function init() {
+    // FIX: Clear any lingering file inputs to prevent ghost uploads/pages on reload
+    if (insertFileInput) insertFileInput.value = '';
+    if (hiddenInteriorInput) hiddenInteriorInput.value = '';
+    if (fileInteriorDrop) fileInteriorDrop.value = '';
+    
     populateSelects();
 
     const { projectId: pId, guestToken: gToken } = getUrlParams();
@@ -2920,8 +3038,6 @@ async function init() {
 
         // Check Binding
         if (!specs.binding) specsMissing = true;
-
-        // --- REMOVED REDUNDANT BLOCK HERE ---
 
         // 5. Setup UI based on type
         bookletUploadSection.classList.remove('hidden');
@@ -3003,63 +3119,55 @@ async function restoreBuilderState() {
         const state = docSnap.data().guestBuilderState;
         if (!state) return;
 
-        // 1. Restore Global Variables
-        if (state.pages) pages = state.pages;
+        // 1. Restore Globals
+        pages = state.pages || [];
+        if (state.coverSettings) Object.assign(coverSettings, state.coverSettings);
         
-        // Restore Cover Settings (Deep merge or assignment)
-        if (state.coverSettings) {
-            Object.assign(coverSettings, state.coverSettings);
-        }
-
-        // Restore Spine Mode
+        // FIX: Restore Spine Mode MANUALLY to avoid triggering Autosave
         if (state.spineMode) {
             window.currentSpineMode = state.spineMode;
-            // Update the dropdown UI if it exists
             const spineSelect = document.getElementById('spine-mode-select');
             if (spineSelect) {
                 spineSelect.value = state.spineMode;
-                spineSelect.dispatchEvent(new Event('change')); // Trigger UI update (hide/show dropzone)
+                // Manually update UI visibility instead of dispatching 'change'
+                const dropZone = document.getElementById('spine-upload-group')?.querySelector('.drop-zone');
+                if (dropZone) {
+                    if (state.spineMode === 'file') dropZone.classList.remove('hidden');
+                    else dropZone.classList.add('hidden');
+                }
             }
         }
 
-        // 2. Restore Sources
+        // 2. Restore Sources (PARALLEL for Speed)
         if (state.sourceFiles) {
-            for (const [id, meta] of Object.entries(state.sourceFiles)) {
+            const entries = Object.entries(state.sourceFiles);
+            
+            // Fetch all URLs simultaneously
+            const restorePromises = entries.map(async ([id, meta]) => {
                 try {
+                    const url = await getDownloadURL(ref(storage, meta.storagePath));
+                    
                     if (id.startsWith('cover_')) {
-                        // Fetch Content
-                        const url = await getDownloadURL(ref(storage, meta.storagePath));
-                        const response = await fetch(url);
-                        const blob = await response.blob();
-                        const file = new File([blob], "Restored File", { type: blob.type });
-
-                        let inputId;
-                        if (id === 'cover_front') inputId = 'file-cover-front';
-                        else if (id === 'cover_spine') inputId = 'file-spine';
-                        else if (id === 'cover_back') inputId = 'file-cover-back';
-
+                        let inputId = (id === 'cover_front') ? 'file-cover-front' : 
+                                      (id === 'cover_spine') ? 'file-spine' : 'file-cover-back';
+                        
                         if (inputId) {
-                            selectedFiles[inputId] = file;
                             coverSources[inputId] = {
-                                file: file,
                                 status: 'ready',
-                                isServer: false,
-                                storagePath: meta.storagePath // Ensure path is kept to avoid re-upload
+                                isServer: true,
+                                previewUrl: url,
+                                storagePath: meta.storagePath 
                             };
-
-                            // Update UI Text
-                            const displayId = id === 'cover_front' ? 'file-name-cover-front' :
-                                              id === 'cover_spine' ? 'file-name-spine' : 'file-name-cover-back';
+                            
+                            const displayId = (id === 'cover_front') ? 'file-name-cover-front' :
+                                              (id === 'cover_spine') ? 'file-name-spine' : 'file-name-cover-back';
                             const el = document.getElementById(displayId);
                             if (el) el.textContent = "Restored File";
 
-                            // --- REBUILD CONTROLS ---
-                            // This restores the Page Selector and Scale Buttons
-                            await createCoverControls(inputId, file);
+                            await createCoverControls(inputId, url);
                         }
                     } else {
-                        // Interior Source
-                        const url = await getDownloadURL(ref(storage, meta.storagePath));
+                        // Restore Interior
                         sourceFiles[id] = {
                             status: 'ready',
                             previewUrl: url,
@@ -3070,10 +3178,12 @@ async function restoreBuilderState() {
                 } catch (e) {
                     console.warn(`Failed to restore source ${id}`, e);
                 }
-            }
+            });
+
+            await Promise.all(restorePromises);
         }
 
-        // Trigger Renders
+        console.log("[Restore] Done. Rendering viewer.");
         renderBookViewer();
         renderCoverPreview();
         validateForm();
