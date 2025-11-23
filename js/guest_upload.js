@@ -3020,13 +3020,13 @@ specsForm.addEventListener('submit', async (e) => {
                 height: height,
                 units: unit
             };
-            // Normalize for local viewer immediately
-            localDimensions = resolveDimensions(dimensionsVal);
         } else {
-            // Standard Size Key (e.g., 'A4')
-            dimensionsVal = sizePreset;
-            localDimensions = resolveDimensions(dimensionsVal);
+            // Standard Size Key (e.g., 'A4') - Resolve to Object immediately for Backend Consistency
+            dimensionsVal = resolveDimensions(sizePreset);
         }
+
+        // Local dimensions are now always the resolved object
+        localDimensions = resolveDimensions(dimensionsVal);
 
         const specsUpdate = {
             'projectType': typeValue === 'loose' ? 'single' : 'booklet',

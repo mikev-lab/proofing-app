@@ -373,15 +373,55 @@ onAuthStateChanged(auth, async (user) => {
 
                     renderImpositions(currentProjectData.impositions);
 
-                    // --- Real-time Update Logic ---
-                    // Check which version is currently selected in the dropdown
+                    // --- Real-time Update Logic (Smart Version Switching) ---
                     const versionSelector = document.getElementById('version-selector');
-                    const selectedVersion = versionSelector ? parseInt(versionSelector.value, 10) : null;
+                    const currentVersions = currentProjectData.versions || [];
 
-                    // Re-initialize the viewer. The logic inside viewer.js will now handle
-                    // the different processing states based on the fresh `currentProjectData`.
-                    // This ensures that if the status of the *currently viewed* version
-                    // changes (e.g., from 'processing' to 'complete'), the view will auto-update.
+                    // Find the max version number in the new data
+                    const maxVersion = currentVersions.length > 0
+                        ? Math.max(...currentVersions.map(v => v.version))
+                        : 0;
+
+                    // Check if we have a new latest version compared to what was previously known/selected
+                    // Note: We don't track 'previousMax' explicitly in a var, but we can infer if the user
+                    // was on an older version but a new one is now available (maxVersion > selectedVersion).
+                    // However, "Auto Update" implies: If I am viewing the LATEST, and a NEW LATEST comes in, switch to it.
+                    // If I am explicitly viewing an OLD version (history), don't switch.
+
+                    const selectedVersion = versionSelector ? parseInt(versionSelector.value, 10) : null;
+                    let targetVersion = selectedVersion;
+
+                    // HEURISTIC: If the user was viewing the *previous* latest version, auto-switch to the *new* latest.
+                    // Or simpler: If selectedVersion is null (initial load) OR we just want to force latest if new proof arrived.
+                    // Given the user request "viewer keeps trying to load an older version", we should prioritize the latest
+                    // if the update event was likely triggered by a new version creation.
+
+                    // Let's detect if the versions array grew.
+                    // Since we don't have `previousProjectData` easily available here without global state management beyond `currentProjectData`
+                    // (which is already updated), we can rely on the fact that `versionSelector.value` reflects the state *before* this update cycle
+                    // (because we haven't rebuilt it yet? No, viewer.js rebuilds it).
+
+                    // Actually, `initializeSharedViewer` rebuilds the dropdown.
+                    // So we need to decide the target version *before* calling it, pass it (if viewer supports), or manipulate after.
+                    // Viewer.js defaults to MAX version if no selector value.
+
+                    // STRATEGY:
+                    // 1. If `selectedVersion` (from DOM) < `maxVersion` (from Data), it implies a new version might have arrived.
+                    // 2. However, user might be browsing history.
+                    // 3. BUT, if the `processingStatus` of the *latest* version just changed (e.g. processing -> complete), we want to see it.
+
+                    // SIMPLIFIED FIX: Always default to the LATEST version when an update occurs,
+                    // UNLESS the user has explicitly interacted to select an older one?
+                    // The user complaint is that it *doesn't* update.
+                    // So let's force update to the latest version if the latest version number is higher than the currently selected one.
+
+                    if (selectedVersion && maxVersion > selectedVersion) {
+                        console.log(`[Auto-Update] New version detected (v${maxVersion}). Switching from v${selectedVersion}.`);
+                        targetVersion = null; // Setting to null forces viewer.js to pick the latest
+                        if (versionSelector) versionSelector.value = ""; // Clear DOM value to prevent "stickiness"
+                    }
+
+                    // Re-initialize the viewer.
                     initializeSharedViewer({
                         db,
                         auth,
@@ -392,13 +432,11 @@ onAuthStateChanged(auth, async (user) => {
 
                     initializeImpositionUI({ projectData: currentProjectData, db, projectId });
 
-                    // After initialization, ensure the dropdown reflects the correct version if it exists.
-                    // The viewer's internal logic selects the latest, but we might need to respect the dropdown.
-                    if (versionSelector && selectedVersion) {
-                        // Find if the selected version still exists in the new data
-                        const versionExists = currentProjectData.versions.some(v => v.version === selectedVersion);
+                    // Restore selection ONLY if we didn't decide to switch to latest
+                    if (targetVersion && versionSelector) {
+                        const versionExists = currentVersions.some(v => v.version === targetVersion);
                         if (versionExists) {
-                             versionSelector.value = selectedVersion;
+                             versionSelector.value = targetVersion;
                         }
                     }
 
