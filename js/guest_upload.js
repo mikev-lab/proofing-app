@@ -127,10 +127,73 @@ let _previewCtx = null;
 let sourceFiles = {}; // Map: id -> File object
 let pages = []; // Array: { id, sourceFileId, pageIndex, settings: { scaleMode, alignment }, isSpread: boolean }
 let viewerScale = 0.5; // Zoom level for viewer
-const imageCache = new Map(); // Cache for rendered ImageBitmaps: key=pageId -> { bitmap, scale }
+// --- LRU Cache Implementation ---
+class LRUCache {
+    constructor(limit = 50) {
+        this.limit = limit;
+        this.cache = new Map();
+    }
+
+    get(key) {
+        if (!this.cache.has(key)) return null;
+        const val = this.cache.get(key);
+        // Refresh: delete and set to make it "newest"
+        this.cache.delete(key);
+        this.cache.set(key, val);
+        return val;
+    }
+
+    set(key, val) {
+        if (this.cache.has(key)) this.cache.delete(key);
+        else if (this.cache.size >= this.limit) {
+            // Delete oldest (first item in Map)
+            // Don't delete thumbnails (keys ending in _s0.25) if possible? 
+            // For simplicity, just delete oldest. Thumbnails are cheap to recreate.
+            const firstKey = this.cache.keys().next().value;
+            this.cache.delete(firstKey);
+            // Optional: Explicitly close bitmap to free GPU memory
+            // if (val.close) val.close(); 
+        }
+        this.cache.set(key, val);
+    }
+
+    has(key) { return this.cache.has(key); }
+    delete(key) { return this.cache.delete(key); }
+    clear() { this.cache.clear(); }
+}
+
+// Initialize with a limit (e.g., 60 items: 30 pages + 30 thumbs)
+const imageCache = new LRUCache(60); // Cache for rendered ImageBitmaps: key=pageId -> { bitmap, scale }
 let hasFitCover = false;
 let coverSources = {};
 let minimapRenderId = 0;
+// --- NEW: Render Queue System ---
+let renderQueue = [];
+let activeRenders = 0;
+const MAX_CONCURRENT_RENDERS = 3; // <--- CHANGED TO 1 (Strict Serial Order)
+
+const processRenderQueue = () => {
+    if (activeRenders >= MAX_CONCURRENT_RENDERS || renderQueue.length === 0) return;
+
+    activeRenders++;
+    const { task, resolve, reject } = renderQueue.shift();
+
+    task().then(result => {
+        resolve(result);
+    }).catch(err => {
+        reject(err);
+    }).finally(() => {
+        activeRenders--;
+        processRenderQueue();
+    });
+};
+
+const enqueueRender = (renderFn) => {
+    return new Promise((resolve, reject) => {
+        renderQueue.push({ task: renderFn, resolve, reject });
+        processRenderQueue();
+    });
+};
 
 // --- Helper: Parse URL Params ---
 function getUrlParams() {
@@ -905,8 +968,10 @@ async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = n
     } else {
         pages.push(...newPages);
     }
-
+    saveState();
     renderBookViewer();
+    renderMinimap();
+    triggerAutosave();
 }
 
 function addPagesToModel(targetArray, sourceId, numPages, isSpreadUpload) {
@@ -1067,6 +1132,7 @@ async function processServerFile(file, sourceId) {
 window.updatePageSetting = (pageId, setting, value) => {
     const page = pages.find(p => p.id === pageId);
     if (page) {
+        if(setting === 'scaleMode' || setting === 'isSpread') saveState();
         page.settings[setting] = value;
 
         // If changing spread mode, we need to re-render the whole viewer to adjust grid
@@ -1122,9 +1188,11 @@ window.updatePageSetting = (pageId, setting, value) => {
 };
 
 window.deletePage = (pageId) => {
+    saveState();
     pages = pages.filter(p => p.id !== pageId);
-    imageCache.delete(pageId); // Cleanup
+    imageCache.delete(pageId); 
     renderBookViewer();
+    renderMinimap();
     triggerAutosave();
 };
 
@@ -1134,26 +1202,44 @@ function renderBookViewer() {
     const container = document.getElementById('book-viewer-container');
     if (!container) return;
 
-    container.innerHTML = ''; // Clear
+    // CLEAR QUEUE: Stop processing old pages if we are re-rendering
+    renderQueue.length = 0; 
 
-    // FIX: renderMinimap is now called in initializeBuilder and removed from here.
+    container.innerHTML = ''; // Clear DOM
 
     // Dimensions for layout
     const width = projectSpecs.dimensions.width;
     const height = projectSpecs.dimensions.height;
     const bleed = 0.125;
-    const visualScale = (250 * viewerScale) / ((width + bleed*2) * 96);
+    const visualScale = (250 * viewerScale) / ((width + bleed * 2) * 96);
     const pixelsPerInch = 96 * visualScale;
 
-    // Helper to run the heavy render asynchronously
+    // Helper to run the render via the Queue
     const runPageRender = (page, canvas) => {
-        // Returns the promise from the async render function (renderPageCanvas)
-        if (!page || !canvas) return Promise.resolve(true); 
-        
-        return renderPageCanvas(page, canvas) 
+        if (!page || !canvas) return Promise.resolve(true);
+
+        // Check if this specific render is already cached to skip the queue
+        // This makes scrolling back up instant
+        const sourceEntry = sourceFiles[page.sourceFileId];
+        if(sourceEntry) {
+             const isServer = sourceEntry.isServer;
+             const file = isServer ? null : sourceEntry.file; 
+             const fileKey = isServer ? (sourceEntry.storagePath || sourceEntry.previewUrl) : (file ? file.name : 'unknown');
+             const timestamp = (file && file.lastModified) ? file.lastModified : 'server';
+             // Match key format in drawFileWithTransform
+             const cacheKey = `${fileKey}_${page.pageIndex || 1}_${timestamp}_full`; 
+             
+             // If cached, run immediately (don't wait in queue)
+             if(imageCache.has(cacheKey)) {
+                 return renderPageCanvas(page, canvas).catch(e => true);
+             }
+        }
+
+        // Otherwise, add to queue
+        return enqueueRender(() => renderPageCanvas(page, canvas))
             .catch(err => {
                 console.error(`Page ${page?.id} Render Failed:`, err);
-                return true; // Resolve true on error so Promise.all completes
+                return true;
             });
     };
 
@@ -1166,14 +1252,19 @@ function renderBookViewer() {
     };
 
     const observer = new IntersectionObserver((entries, obs) => {
-        entries.forEach(entry => {
+        // Sort entries by DOM order to ensure Top-to-Bottom loading priority
+        const sortedEntries = entries.sort((a, b) => {
+            return a.target.compareDocumentPosition(b.target) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+        });
+
+        sortedEntries.forEach(entry => {
             if (entry.isIntersecting) {
                 const card = entry.target;
                 const cardId = card.dataset.id;
                 obs.unobserve(card); // Unobserve immediately
 
                 if (cardId.startsWith('spread:')) {
-                    // Spread pages (P2/P3, P4/P5, etc)
+                    // Spread pages
                     const parts = cardId.split(':');
                     const id1 = parts[1]; // Left Page ID
                     const id2 = parts[2]; // Right Page ID
@@ -1182,7 +1273,7 @@ function renderBookViewer() {
                     const canvas1 = document.getElementById(`canvas-${id1}`);
                     const canvas2 = document.getElementById(`canvas-${id2}`);
 
-                    // CRITICAL FIX: Wait for BOTH pages of a spread before removing placeholders
+                    // Render Left then Right, but queued
                     Promise.all([
                         runPageRender(page1, canvas1),
                         runPageRender(page2, canvas2)
@@ -1192,7 +1283,7 @@ function renderBookViewer() {
                     });
 
                 } else {
-                    // Single page (P1, or Loose Sheet)
+                    // Single page
                     const canvas = document.getElementById(`canvas-${cardId}`);
                     const page = pages.find(p => p.id === cardId);
 
@@ -1210,7 +1301,6 @@ function renderBookViewer() {
     if (projectType === 'single') {
         container.className = "flex flex-wrap gap-8 items-start justify-center p-6";
 
-        // We strictly show 2 slots: Front and Back.
         const slots = [
             { label: "Front Side", index: 0 },
             { label: "Back Side", index: 1 }
@@ -1227,10 +1317,8 @@ function renderBookViewer() {
             if (page) {
                 content = createPageCard(page, slot.index, false, false, width, height, bleed, pixelsPerInch, observer);
             } else {
-                // Create Empty Slot
                 content = document.createElement('div');
                 content.className = "relative border-2 border-dashed border-slate-600 rounded-lg bg-slate-800/30 hover:bg-slate-800/60 hover:border-indigo-500 transition-all cursor-pointer group flex flex-col items-center justify-center";
-                // Match visual size
                 const wPx = (width + (bleed * 2)) * pixelsPerInch;
                 const hPx = (height + (bleed * 2)) * pixelsPerInch;
                 content.style.width = `${wPx}px`;
@@ -1243,12 +1331,9 @@ function renderBookViewer() {
                     </div>
                 `;
                 content.onclick = () => {
-                    // Set insert index and trigger
                     window._insertIndex = slot.index;
                     hiddenInteriorInput.click();
                 };
-
-                // Enable Drop on empty slot
                 content.addEventListener('dragover', (e) => { e.preventDefault(); content.classList.add('border-indigo-400', 'bg-slate-700'); });
                 content.addEventListener('dragleave', (e) => { e.preventDefault(); content.classList.remove('border-indigo-400', 'bg-slate-700'); });
                 content.addEventListener('drop', (e) => {
@@ -1258,17 +1343,14 @@ function renderBookViewer() {
                     }
                 });
             }
-
             slotContainer.appendChild(content);
             container.appendChild(slotContainer);
         });
-
         validateForm();
         return;
     }
 
     // --- BOOKLET LAYOUT ---
-
     if (pages.length === 0) {
          container.appendChild(createInsertBar(0));
          const empty = document.createElement('div');
@@ -1278,13 +1360,10 @@ function renderBookViewer() {
          return;
     }
 
-    // Insert Bar at Top (Index 0)
     container.appendChild(createInsertBar(0));
 
-    // First Spread (Page 1 - Right Only)
     const firstSpread = document.createElement('div');
     firstSpread.className = "spread-row flex justify-center items-end gap-0 mb-4 min-h-[100px] p-2 border border-transparent hover:border-dashed hover:border-gray-600 rounded";
-
     const spacer = document.createElement('div');
     spacer.style.width = `${width * pixelsPerInch}px`;
     spacer.className = "pointer-events-none";
@@ -1295,17 +1374,14 @@ function renderBookViewer() {
     }
     container.appendChild(firstSpread);
 
-    // Rest of pages
     let i = 1;
     while (i < pages.length) {
         container.appendChild(createInsertBar(i));
-
         const spreadDiv = document.createElement('div');
         spreadDiv.className = "spread-row flex justify-center items-end gap-0 mb-4 min-h-[100px] p-2 border border-transparent hover:border-dashed hover:border-gray-600 rounded";
 
         const isLeft = pages[i];
         const isRight = pages[i+1];
-
         let isLinkedSpread = false;
         if (isLeft && isRight && isLeft.sourceFileId && isLeft.sourceFileId === isRight.sourceFileId) {
             if (isLeft.id.endsWith('_L') && isRight.id.endsWith('_R')) {
@@ -1323,33 +1399,27 @@ function renderBookViewer() {
                 leftCard = createPageCard(pages[i], i, false, false, width, height, bleed, pixelsPerInch, observer);
                 spreadDiv.appendChild(leftCard);
             }
-
             let rightCard = null;
             if (i + 1 < pages.length) {
                 rightCard = createPageCard(pages[i+1], i+1, true, false, width, height, bleed, pixelsPerInch, observer);
                 spreadDiv.appendChild(rightCard);
             }
-
             if (leftCard) leftCard.style.flexShrink = '0';
             if (rightCard) rightCard.style.flexShrink = '0';
-
             if (!rightCard) {
                  const endSpacer = document.createElement('div');
                  endSpacer.style.width = `${width * pixelsPerInch}px`;
                  endSpacer.className = "pointer-events-none";
                  spreadDiv.appendChild(endSpacer);
             }
-
             i += 2;
         }
         container.appendChild(spreadDiv);
     }
 
     container.appendChild(createInsertBar(pages.length));
-
     validateForm();
 
-    // Sortable for Booklets
     const spreadDivs = container.querySelectorAll('.spread-row');
     spreadDivs.forEach(spreadDiv => {
         new Sortable(spreadDiv, {
@@ -1363,6 +1433,7 @@ function renderBookViewer() {
             ghostClass: 'opacity-50',
             onEnd: (evt) => {
                 try {
+                    saveState();
                     const allCards = document.querySelectorAll('.page-card');
                     const newOrderIds = Array.from(allCards).map(c => c.dataset.id);
                     const newPages = [];
@@ -1382,8 +1453,8 @@ function renderBookViewer() {
                     });
                     pages = newPages;
                     setTimeout(() => { requestAnimationFrame(() => renderBookViewer()); }, 50);
+                    renderMinimap();
                 } catch (err) { console.error("Error during drag reorder:", err); }
-                // TRIGGER AUTOSAVE
                 triggerAutosave();
             }
         });
@@ -1397,65 +1468,89 @@ async function renderMinimap() {
         return;
     }
 
-    // 1. Reset Container
     container.classList.remove('hidden');
+    
+    // 1. Diffing Strategy: Only rebuild if page count changed to prevent flickering
+    // For now, we will clear to ensure correctness, but ideally we diff.
     container.innerHTML = '';
 
-    // 2. Helper to spawn a thumbnail (Async, no await)
-    const spawnThumbnail = (pageList, index, label) => {
-        // Create wrapper immediately (synchronous)
+    // 2. Observer Definition
+    const thumbObserver = new IntersectionObserver((entries, obs) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                const wrapper = entry.target;
+                const canvas = wrapper.querySelector('canvas');
+                
+                // Extract data from dataset
+                const indices = JSON.parse(wrapper.dataset.indices);
+                // Re-find pages (in case global 'pages' array shifted)
+                const pageList = indices.map(i => pages[i]).filter(p => p);
+
+                if (canvas && pageList.length > 0) {
+                    // Trigger Render
+                    populateMinimapCanvas(canvas.getContext('2d'), pageList, 150, 100)
+                        .catch(e => console.warn("Thumb render error", e));
+                }
+                
+                // Stop observing this element (it's loaded/loading)
+                obs.unobserve(wrapper);
+            }
+        });
+    }, { root: container, rootMargin: '50% 0px' }); // Preload 50% height ahead
+
+    // 3. Helper to create DOM elements
+    const createThumbDOM = (pageList, label) => {
         const wrapper = document.createElement('div');
         wrapper.className = "w-full aspect-[3/2] bg-slate-800 rounded cursor-pointer border border-transparent hover:border-indigo-500 transition-all relative overflow-hidden mb-2";
         
-        // Setup Click Handler
-        const targetPageId = pageList[0]?.id;
-        if (targetPageId) {
-            wrapper.onclick = () => {
-                const el = document.querySelector(`[data-id="${targetPageId}"]`) || document.querySelector(`[data-id^="spread:${targetPageId}"]`);
-                if (el) {
-                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    el.classList.add('ring-2', 'ring-indigo-500');
-                    setTimeout(() => el.classList.remove('ring-2', 'ring-indigo-500'), 1500);
-                }
-            };
-        }
+        // Store indices 
+        const indices = pageList.map(p => pages.indexOf(p));
+        wrapper.dataset.indices = JSON.stringify(indices);
 
-        // Canvas
+        // Click Handler
+        const targetPageId = pageList[0].id;
+        wrapper.onclick = () => {
+            let el = document.querySelector(`[data-id="${targetPageId}"]`);
+            if (!el) el = document.querySelector(`[data-id*=":${targetPageId}"]`);
+            if (el) {
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                el.classList.add('ring-2', 'ring-indigo-500');
+                setTimeout(() => el.classList.remove('ring-2', 'ring-indigo-500'), 1500);
+            }
+        };
+
         const canvas = document.createElement('canvas');
         canvas.width = 150; canvas.height = 100;
         canvas.className = "w-full h-full object-contain";
+        // Assign ID for the "Push" update from main viewer
+        const compositeId = pageList.map(p => p.id).join('_');
+        canvas.id = `thumb-canvas-${compositeId}`;
+
+        // Draw Base
         const ctx = canvas.getContext('2d');
-        
-        // Draw initial gray background
         ctx.fillStyle = '#1e293b'; ctx.fillRect(0, 0, 150, 100);
 
-        // Label
         const textDiv = document.createElement('div');
         textDiv.className = "absolute bottom-1 right-1 bg-black/50 text-[10px] px-1 rounded text-white";
         textDiv.textContent = label;
 
         wrapper.appendChild(canvas);
         wrapper.appendChild(textDiv);
-        container.appendChild(wrapper); // Append to DOM immediately
+        container.appendChild(wrapper);
 
-        // 3. Trigger Heavy Render in Background (Low Priority)
-        // Use setTimeout to push this to end of event loop, letting UI update first
-        setTimeout(async () => {
-            await populateMinimapCanvas(ctx, pageList, 150, 100);
-        }, 0);
+        thumbObserver.observe(wrapper);
     };
 
-    // 3. Loop and Spawn
-    if (pages.length > 0) {
-        spawnThumbnail([pages[0]], 0, "P1");
-    }
+    // 4. Spawn Loop
+    if (pages.length > 0) createThumbDOM([pages[0]], "P1");
 
     let i = 1;
     while(i < pages.length) {
         const p1 = pages[i];
         const p2 = pages[i+1];
         const label = p2 ? `P${i+1}-${i+2}` : `P${i+1}`;
-        spawnThumbnail([p1, p2], i, label);
+        const list = p2 ? [p1, p2] : [p1];
+        createThumbDOM(list, label);
         i += 2;
     }
 }
@@ -1468,14 +1563,18 @@ async function populateMinimapCanvas(ctx, pageList, w, h) {
     const rightX = margin + pageW + margin;
     const topY = margin;
 
+    // Helper
     const drawPage = async (page, x, y) => {
-        ctx.fillStyle = '#ffffff'; ctx.fillRect(x, y, pageW, pageH); // White paper base
+        ctx.fillStyle = '#ffffff'; 
+        ctx.fillRect(x, y, pageW, pageH);
 
         if (!page || !page.sourceFileId) return;
         const sourceEntry = sourceFiles[page.sourceFileId];
-        
-        // FIX: Pass '0.25' as the last argument (forceScale) for thumbnails
-        // 0.25 scale is roughly 200-300px wide for a standard letter page
+        if (!sourceEntry) return;
+
+        // Force low-res render (0.25) via the queue system
+        // We use enqueueRender to ensure we don't clog the main thread,
+        // but we rely on browser cache to make it fast.
         await drawFileWithTransform(
             ctx, sourceEntry, x, y, pageW, pageH,
             page.settings.scaleMode || 'fit',
@@ -1483,20 +1582,75 @@ async function populateMinimapCanvas(ctx, pageList, w, h) {
             page.pageIndex || 1,
             page.id,
             'full', 
-            page.settings.panX || 0, 
-            page.settings.panY || 0,
-            0.25 // <--- FAST RENDER SCALE
+            0, 0, // Pan X/Y
+            0.25 // Force Scale
         );
     };
 
-    if (pageList.length === 1 && pageList[0].pageIndex === 1) {
-        // First page (Right)
+    // Layout Logic
+    // Check if the first page in list is actually Page 1 (Right Only)
+    const isFirstPage = (pages.indexOf(pageList[0]) === 0);
+
+    if (isFirstPage) {
         await drawPage(pageList[0], rightX, topY);
     } else {
-        // Spread
         if (pageList[0]) await drawPage(pageList[0], leftX, topY);
-        if (pageList[1]) await drawPage(pageList[1], rightX, topY);
+        if (pageList.length > 1 && pageList[1]) await drawPage(pageList[1], rightX, topY);
     }
+}
+
+// --- NEW HELPER: Sync Main View to Thumbnail ---
+function updateThumbnailFromMain(page) {
+    // 1. Find the thumbnail canvas
+    // It might be a single ID or a composite spread ID.
+    // We search for any canvas ID containing the page ID.
+    const thumbCanvas = document.querySelector(`canvas[id*="thumb-canvas-"][id*="${page.id}"]`);
+    if (!thumbCanvas) return;
+
+    const ctx = thumbCanvas.getContext('2d');
+    const w = thumbCanvas.width;
+    const h = thumbCanvas.height;
+    
+    const margin = 5;
+    const pageW = (w - (margin*3)) / 2;
+    const pageH = h - (margin*2);
+    const leftX = margin;
+    const rightX = margin + pageW + margin;
+    const topY = margin;
+
+    // 2. Determine position on thumbnail
+    // If page index is 1 (first page), it's always on the Right
+    let x = leftX;
+    if (page.pageIndex === 1) {
+        x = rightX;
+    } else {
+        // Even index in array = Left, Odd = Right? 
+        // Actually, rely on the ID structure or page logic.
+        // Simplified: If it's the first ID in the spread string, it's Left.
+        if (thumbCanvas.id.includes(`${page.id}_`)) x = leftX; // Start of ID
+        else if (thumbCanvas.id.includes(`_${page.id}`)) x = rightX; // End of ID
+        
+        // Fallback for P1 which might be singular
+        if (pages.indexOf(page) === 0) x = rightX;
+    }
+
+    // 3. Draw the Full Res Cache onto the Thumbnail
+    const sourceEntry = sourceFiles[page.sourceFileId];
+    if (!sourceEntry) return;
+
+    drawFileWithTransform(
+        ctx, sourceEntry, x, topY, pageW, pageH,
+        page.settings.scaleMode || 'fit',
+        page.settings.alignment || 'center',
+        page.pageIndex || 1,
+        page.id,
+        'full', 
+        page.settings.panX || 0, 
+        page.settings.panY || 0,
+        0.25 // Request scale
+    ).then(() => {
+        // Optional: Flash/Highlight thumbnail to show it updated?
+    });
 }
 
 // Renamed from addMinimapItem to clearly signal it only creates the element.
@@ -1516,7 +1670,6 @@ async function createMinimapItem(pageList, mainIndex, label) {
         };
     }
 
-    // Canvas for thumbnail
     const canvas = document.createElement('canvas');
     const w = 150;
     const h = 100;
@@ -1525,59 +1678,56 @@ async function createMinimapItem(pageList, mainIndex, label) {
     canvas.className = "w-full h-full object-contain";
     const ctx = canvas.getContext('2d');
 
-    // Gray Background
     ctx.fillStyle = '#1e293b';
     ctx.fillRect(0, 0, w, h);
 
-    // Thumb Margin
     const margin = 5;
     const pageW = (w - (margin*3)) / 2;
     const pageH = h - (margin*2);
-
-    // Coordinates
     const leftX = margin;
     const rightX = margin + pageW + margin;
     const topY = margin;
 
-    // Helper to draw one page
     const drawThumbPage = async (page, x, y, w, h) => {
-        // Draw white paper base
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(x, y, w, h);
 
         if (!page || !page.sourceFileId) return;
-
         const sourceEntry = sourceFiles[page.sourceFileId];
         if (!sourceEntry) return;
 
-        // Reuse existing draw function but with specific target
         await drawFileWithTransform(
-            ctx,
-            sourceEntry,
-            x, y, w, h,
+            ctx, sourceEntry, x, y, w, h,
             page.settings.scaleMode || 'fit',
             page.settings.alignment || 'center',
             page.pageIndex || 1,
             page.id,
-            'full', // View mode full for thumbnail
+            'full',
             page.settings.panX || 0,
-            page.settings.panY || 0
+            page.settings.panY || 0,
+            0.25 // <--- NEW: Force low resolution for speed
         );
     };
 
+    // FIX: Use Promise.all to render both sides simultaneously
+    const renderPromises = [];
+
     if (pageList.length === 1 && mainIndex === 0) {
         // First page (Right)
-        await drawThumbPage(pageList[0], rightX, topY, pageW, pageH);
+        renderPromises.push(drawThumbPage(pageList[0], rightX, topY, pageW, pageH));
     } else if (pageList.length >= 1) {
         // Left Page
-        await drawThumbPage(pageList[0], leftX, topY, pageW, pageH);
-        // Right Page (if exists)
+        renderPromises.push(drawThumbPage(pageList[0], leftX, topY, pageW, pageH));
+        // Right Page
         if (pageList[1]) {
-            await drawThumbPage(pageList[1], rightX, topY, pageW, pageH);
+            renderPromises.push(drawThumbPage(pageList[1], rightX, topY, pageW, pageH));
         }
     }
 
-    // Label
+    // Wait for both to finish concurrently
+    await Promise.all(renderPromises);
+
+    // Add label
     const textDiv = document.createElement('div');
     textDiv.className = "absolute bottom-1 right-1 bg-black/50 text-[10px] px-1 rounded text-white";
     textDiv.textContent = label;
@@ -1585,7 +1735,6 @@ async function createMinimapItem(pageList, mainIndex, label) {
     wrapper.appendChild(canvas);
     wrapper.appendChild(textDiv);
     
-    // CRITICAL FIX: Return the wrapper instead of appending it here
     return wrapper; 
 }
 
@@ -1599,6 +1748,19 @@ let startPanX = 0;
 let startPanY = 0;
 let partnerStartPanX = 0;
 let partnerStartPanY = 0;
+let resizeTimeout;
+window.addEventListener('resize', () => {
+    clearTimeout(resizeTimeout);
+    resizeTimeout = setTimeout(() => {
+        // Only re-render if the logic requires dimension recalculations
+        // Usually, CSS handles fluid width, but we might need to recalc fitCoverToView
+        if (tabCover && !tabCover.classList.contains('text-gray-400')) {
+            fitCoverToView();
+        }
+        // If you want to re-render viewer on resize (e.g. to adjust resolution)
+        // renderBookViewer(); 
+    }, 200);
+});
 
 document.addEventListener('pointerdown', (e) => {
     const card = e.target.closest('[data-id]');
@@ -2006,8 +2168,6 @@ async function updatePageContent(pageId, file) {
 }
 
 async function renderPageCanvas(page, canvas) {
-    // console.log(`[Page Render] Starting render for Page ID: ${page.id}`);
-
     const pageIndex = pages.indexOf(page);
     const isRightPage = pageIndex === 0 || pageIndex % 2 === 0;
     let view = isRightPage ? 'right' : 'left';
@@ -2021,30 +2181,25 @@ async function renderPageCanvas(page, canvas) {
 
     // 2. Validate Source
     const sourceEntry = sourceFiles[page.sourceFileId];
-    
-    // --- DIAGNOSTIC LOG ---
     if (!sourceEntry) {
-        console.error(`[Render Fail] Page ${page.id} skipped. Source '${page.sourceFileId}' not found in sourceFiles.`);
-        // Draw visual error on canvas
+        // Draw visual error on canvas if source is missing
         const ctx = canvas.getContext('2d');
         ctx.fillStyle = '#f3f4f6'; ctx.fillRect(0,0,canvas.width, canvas.height);
         ctx.fillStyle = '#ef4444'; ctx.font = '10px sans-serif'; 
         ctx.fillText('Missing Source', 10, 20);
         return;
     }
-    // ----------------------
 
     if (!projectSpecs || !projectSpecs.dimensions) return;
 
-    // 3. Setup Canvas
+    // 3. Setup Canvas Dimensions & Scale
     const width = projectSpecs.dimensions.width;
     const height = projectSpecs.dimensions.height;
     const bleed = 0.125;
     
-    // Visual Scale
     const visualScale = (250 * viewerScale) / ((width + bleed*2) * 96);
     const pixelsPerInch = 96 * visualScale;
-    const pixelDensity = 1.5; 
+    const pixelDensity = 1.5; // Balance between sharpness and performance
 
     const totalW = width + (bleed*2);
     const totalH = height + (bleed*2);
@@ -2067,8 +2222,74 @@ async function renderPageCanvas(page, canvas) {
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, totalW, totalH);
 
-    // 5. Draw File (Passed sourceEntry is now guaranteed to exist)
-    await drawFileWithTransform(ctx, sourceEntry, 0, 0, totalW, totalH, page.settings.scaleMode, page.settings.alignment, page.pageIndex, page.id, view, page.settings.panX, page.settings.panY);
+    // --- OPTIMIZATION 1: Blurry Placeholder ---
+    // Check if we have the low-res thumbnail cached. If so, draw it immediately.
+    try {
+        const file = sourceEntry.isServer ? null : sourceEntry.file;
+        const fileKey = sourceEntry.isServer ? (sourceEntry.storagePath || sourceEntry.previewUrl) : (file ? file.name : 'unknown');
+        const timestamp = (file && file.lastModified) ? file.lastModified : 'server';
+        
+        // Look for the 0.25 scale key
+        const thumbCacheKey = `${fileKey}_${page.pageIndex || 1}_${timestamp}_s0.25`;
+
+        if (imageCache.has(thumbCacheKey)) {
+            const thumbBitmap = imageCache.get(thumbCacheKey);
+            if (thumbBitmap) {
+                // Calculate positioning for the placeholder (Match drawFileWithTransform logic)
+                const srcW = thumbBitmap.width;
+                const srcH = thumbBitmap.height;
+                const srcRatio = srcW / srcH;
+                const targetRatio = totalW / totalH;
+                
+                let drawW, drawH, drawX, drawY;
+                const mode = page.settings.scaleMode || 'fit';
+                const panX = page.settings.panX || 0;
+                const panY = page.settings.panY || 0;
+                
+                if (mode === 'stretch') { 
+                    drawW = totalW; drawH = totalH; 
+                } else if (mode === 'fit') {
+                    if (srcRatio > targetRatio) { drawW = totalW; drawH = totalW / srcRatio; }
+                    else { drawH = totalH; drawW = totalH * srcRatio; }
+                } else { // fill
+                    if (srcRatio > targetRatio) { drawH = totalH; drawW = totalH * srcRatio; }
+                    else { drawW = totalW; drawH = totalW / srcRatio; }
+                }
+                
+                drawX = (totalW - drawW) / 2 + (panX * totalW);
+                drawY = (totalH - drawH) / 2 + (panY * totalH);
+
+                ctx.save();
+                ctx.beginPath(); ctx.rect(0, 0, totalW, totalH); ctx.clip();
+                // Optional: ctx.filter = 'blur(2px)'; // Add blur if you want a "loading" effect
+                ctx.drawImage(thumbBitmap, drawX, drawY, drawW, drawH);
+                ctx.restore();
+            }
+        }
+    } catch (e) {
+        // Ignore placeholder errors, proceeding to main render
+    }
+    // ------------------------------------------
+
+    // 5. Draw File (High Res)
+    // This overwrites the placeholder with the sharp version
+    await drawFileWithTransform(
+        ctx, sourceEntry, 0, 0, totalW, totalH, 
+        page.settings.scaleMode, 
+        page.settings.alignment, 
+        page.pageIndex, 
+        page.id, 
+        view, 
+        page.settings.panX, 
+        page.settings.panY
+    );
+
+    // --- OPTIMIZATION 2: Sync to Thumbnail ---
+    // Push the loaded image to the sidebar so it doesn't have to load again
+    if (typeof updateThumbnailFromMain === 'function') {
+        updateThumbnailFromMain(page);
+    }
+    // ------------------------------------------
 
     // 6. Draw Guides
     const guideScale = pixelsPerInch / 72;
@@ -2098,7 +2319,7 @@ async function renderPageCanvas(page, canvas) {
     ctx.restore();
 }
 
-// Updated signature to include 'view'
+// Updated signature: Added 'view' parameter
 function drawBlankPage(page, canvas, view) { 
     if (!projectSpecs.dimensions) return;
 
@@ -2124,7 +2345,7 @@ function drawBlankPage(page, canvas, view) {
     // Position logic
     canvas.style.top = '0px';
     
-    // Now 'view' is defined and this works
+    // 'view' is now available here
     if (view === 'right') {
         canvas.style.left = `-${bleed * pixelsPerInch}px`;
     } else {
@@ -2135,18 +2356,18 @@ function drawBlankPage(page, canvas, view) {
     ctx.scale(pixelsPerInch, pixelsPerInch);
 
     // 1. Draw Background
-    ctx.fillStyle = '#f8fafc'; // Slate-50
+    ctx.fillStyle = '#f8fafc'; 
     ctx.fillRect(0, 0, totalW, totalH);
 
     // 2. Draw Dashed Border
-    ctx.strokeStyle = '#cbd5e1'; // Slate-300
+    ctx.strokeStyle = '#cbd5e1'; 
     ctx.lineWidth = 2 / pixelsPerInch;
     ctx.setLineDash([10 / pixelsPerInch, 10 / pixelsPerInch]);
     ctx.strokeRect(bleed, bleed, width, height);
     ctx.setLineDash([]);
 
     // 3. Text
-    ctx.fillStyle = '#94a3b8'; // Slate-400
+    ctx.fillStyle = '#94a3b8'; 
     ctx.font = 'italic 0.4px sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -2160,7 +2381,6 @@ function drawBlankPage(page, canvas, view) {
         safetyInches: 0.125
     };
 
-    // Adjust renderInfo to align guides correctly
     const renderInfo = {
         x: view === 'right' ? bleed * pixelsPerInch : 0,
         y: 0,
@@ -2177,6 +2397,7 @@ function drawBlankPage(page, canvas, view) {
     ctx.restore();
 }
 
+// Add 'forceScale' to the arguments (defaults to null)
 async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW, targetH, mode, align, pageIndex = 1, pageId = null, viewMode = 'full', panX = 0, panY = 0, forceScale = null) {
     if (!sourceEntry) return;
 
@@ -2194,63 +2415,69 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
     const fileKey = isServer ? (sourceEntry.storagePath || sourceEntry.previewUrl || 'server_url') : (file ? file.name : 'unknown_file');
     const timestamp = (file && file.lastModified) ? file.lastModified : 'server_timestamp';
     
-    // FIX: Include scale in cache key so thumbnails don't overwrite main viewer cache (and vice versa)
+    // Generate unique keys for the requested scale AND the full scale version
     const scaleKey = forceScale ? `_s${forceScale}` : '_full';
     const cacheKey = `${fileKey}_${pageIndex}_${timestamp}${scaleKey}`;
-    
+    const fullCacheKey = `${fileKey}_${pageIndex}_${timestamp}_full`; 
+
     let imgBitmap;
 
     try {
-        imgBitmap = await fetchBitmapWithCache(cacheKey, async () => {
-            // Determine render scale (Low for thumbnails, High for Viewer)
-            const renderScale = forceScale || (isServer ? 1.5 : 1.0);
+        // OPTIMIZATION: If requesting a thumbnail (forceScale), check if Full Version is already available/loading
+        // This prevents "double downloading" the PDF logic.
+        if (forceScale && (imageCache.has(fullCacheKey) || pendingLoadCache.has(fullCacheKey))) {
+            imgBitmap = await fetchBitmapWithCache(fullCacheKey, async () => null); 
+        } else {
+            // Normal Load
+            imgBitmap = await fetchBitmapWithCache(cacheKey, async () => {
+                // Use 0.25 for thumbnails, 1.5 for server viewer, 1.0 for local viewer
+                const renderScale = forceScale || (isServer ? 1.5 : 1.0); 
 
-            if (isServer) {
-                if (!sourceEntry.previewUrl) return null; 
-                
-                let pdfDocPromise = remotePdfDocCache.get(fileKey);
-                if (!pdfDocPromise) {
-                    const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
-                    pdfDocPromise = loadingTask.promise;
-                    remotePdfDocCache.set(fileKey, pdfDocPromise);
+                if (isServer) {
+                    if (!sourceEntry.previewUrl) return null; 
+                    let pdfDocPromise = remotePdfDocCache.get(fileKey);
+                    if (!pdfDocPromise) {
+                        const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
+                        pdfDocPromise = loadingTask.promise;
+                        remotePdfDocCache.set(fileKey, pdfDocPromise);
+                    }
+                    const pdf = await pdfDocPromise;
+                    const page = await pdf.getPage(pageIndex);
+                    const viewport = page.getViewport({ scale: renderScale }); 
+                    const tempCanvas = document.createElement('canvas');
+                    tempCanvas.width = viewport.width;
+                    tempCanvas.height = viewport.height;
+                    await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport: viewport }).promise;
+                    return createImageBitmap(tempCanvas);
+
+                } else if (file && file.type === 'application/pdf') {
+                    let pdfDoc = pdfDocCache.get(file);
+                    if (!pdfDoc) {
+                        const arrayBuffer = await file.arrayBuffer(); 
+                        pdfDoc = pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                        pdfDocCache.set(file, pdfDoc);
+                    }
+                    const pdf = await pdfDoc;
+                    const page = await pdf.getPage(pageIndex);
+                    const viewport = page.getViewport({ scale: renderScale }); 
+                    const tempCanvas = document.createElement('canvas');
+                    tempCanvas.width = viewport.width;
+                    tempCanvas.height = viewport.height;
+                    await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport: viewport }).promise;
+                    return createImageBitmap(tempCanvas);
+
+                } else if (file && file.type.startsWith('image/')) {
+                    return createImageBitmap(file);
                 }
-                const pdf = await pdfDocPromise;
-                const page = await pdf.getPage(pageIndex);
-                const viewport = page.getViewport({ scale: renderScale }); 
-                const tempCanvas = document.createElement('canvas');
-                tempCanvas.width = viewport.width;
-                tempCanvas.height = viewport.height;
-
-                await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport: viewport }).promise;
-                return createImageBitmap(tempCanvas);
-
-            } else if (file && file.type === 'application/pdf') {
-                let pdfDoc = pdfDocCache.get(file);
-                if (!pdfDoc) {
-                    const arrayBuffer = await file.arrayBuffer(); 
-                    pdfDoc = pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-                    pdfDocCache.set(file, pdfDoc);
-                }
-                const pdf = await pdfDoc;
-                const page = await pdf.getPage(pageIndex);
-                const viewport = page.getViewport({ scale: renderScale }); 
-                const tempCanvas = document.createElement('canvas');
-                tempCanvas.width = viewport.width;
-                tempCanvas.height = viewport.height;
-
-                await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport: viewport }).promise;
-                return createImageBitmap(tempCanvas);
-
-            } else if (file && file.type.startsWith('image/')) {
-                return createImageBitmap(file);
-            }
-            return null;
-        });
+                return null;
+            });
+        }
         
         if (!imgBitmap) {
             ctx.fillStyle = '#f1f5f9'; ctx.fillRect(targetX, targetY, targetW, targetH); return;
         }
 
+        // --- Draw Logic ---
         const srcW = imgBitmap.width;
         const srcH = imgBitmap.height;
         const srcRatio = srcW / srcH;
@@ -2278,75 +2505,8 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
 
     } catch (e) {
         console.error("Draw Render Error:", e);
-        ctx.fillStyle = '#fee2e2';
-        ctx.fillRect(targetX, targetY, targetW, targetH);
+        ctx.fillStyle = '#fee2e2'; ctx.fillRect(targetX, targetY, targetW, targetH);
     }
-}
-
-function getRemoteFileKey(sourceEntry) {
-    // Priority: 1. Stable storage path (BEST) 2. Unstable URL (fallback)
-    return sourceEntry.storagePath || sourceEntry.previewUrl || 'server_url';
-}
-
-// --- Listeners for Interior Builder ---
-if (addInteriorFileBtn) {
-    addInteriorFileBtn.addEventListener('click', () => hiddenInteriorInput.click());
-    hiddenInteriorInput.addEventListener('change', (e) => addInteriorFiles(e.target.files));
-}
-
-if (fileInteriorDrop) {
-    fileInteriorDrop.addEventListener('change', (e) => addInteriorFiles(e.target.files));
-    setupDropZone('file-interior-drop'); // Enable drag/drop styles
-}
-
-
-// Defined at top level so it's accessible
-function setAllScaleMode(mode) {
-    if (confirm(`Set all pages to ${mode}?`)) {
-        pages.forEach(p => {
-            p.settings.scaleMode = mode;
-        });
-        renderBookViewer();
-    }
-}
-
-if (setAllFitBtn) setAllFitBtn.onclick = () => setAllScaleMode('fit');
-if (setAllFillBtn) setAllFillBtn.onclick = () => setAllScaleMode('fill');
-if (setAllStretchBtn) setAllStretchBtn.onclick = () => setAllScaleMode('stretch');
-
-if (viewerZoom) {
-    viewerZoom.addEventListener('input', (e) => {
-        viewerScale = parseFloat(e.target.value);
-        renderBookViewer();
-    });
-}
-
-if (coverZoomInput) {
-    coverZoomInput.addEventListener('input', (e) => {
-        coverZoom = parseFloat(e.target.value);
-        renderCoverPreview();
-    });
-}
-
-if (jumpToPageInput) {
-    jumpToPageInput.addEventListener('change', (e) => {
-        const pageNum = parseInt(e.target.value);
-        if (isNaN(pageNum) || pageNum < 1) return;
-
-        const pageIndex = pageNum - 1;
-        if (pageIndex >= 0 && pageIndex < pages.length) {
-            const pageId = pages[pageIndex].id;
-            const card = document.querySelector(`[data-id="${pageId}"]`);
-            if (card) {
-                card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                // Highlight momentarily
-                card.classList.add('ring-2', 'ring-indigo-500');
-                setTimeout(() => card.classList.remove('ring-2', 'ring-indigo-500'), 1500);
-            }
-        } else {
-            alert("Page number out of range.");
-        }
-    });
 }
 
 
@@ -2976,14 +3136,23 @@ async function drawWrapper(ctx, sourceEntry, targetX, targetY, targetW, targetH,
     ctx.restore();
 }
 
-// --- Main Initialization ---
+// --- Main Initialization (Trust-Optimized) ---
 async function init() {
-    // FIX: Clear any lingering file inputs to prevent ghost uploads/pages on reload
+    // FIX: Clear lingering inputs
     if (insertFileInput) insertFileInput.value = '';
     if (hiddenInteriorInput) hiddenInteriorInput.value = '';
     if (fileInteriorDrop) fileInteriorDrop.value = '';
     
     populateSelects();
+
+    // 1. Show Loading State immediately with specific text
+    loadingState.classList.remove('hidden');
+    uploadContainer.classList.add('hidden');
+    
+    // Optional: Update loading text to be more descriptive
+    const loadingText = loadingState.querySelector('p') || loadingState;
+    // Store original text to revert later if needed, or just set it
+    if(loadingText) loadingText.textContent = "Accessing secure upload portal...";
 
     const { projectId: pId, guestToken: gToken } = getUrlParams();
     projectId = pId;
@@ -2995,7 +3164,7 @@ async function init() {
     }
 
     try {
-        // 1. Authenticate via Backend (Custom Token)
+        // 2. Authenticate
         const authenticateGuest = httpsCallable(functions, 'authenticateGuest');
         const authResult = await authenticateGuest({ projectId, guestToken });
 
@@ -3003,10 +3172,9 @@ async function init() {
             throw new Error("Failed to obtain access token.");
         }
 
-        // Sign in with the custom token
         await signInWithCustomToken(auth, authResult.data.token);
 
-        // 2. Fetch Project Details
+        // 3. Fetch Project Data
         const projectRef = doc(db, 'projects', projectId);
         const projectSnap = await getDoc(projectRef);
 
@@ -3020,53 +3188,61 @@ async function init() {
         projectType = projectData.projectType || 'single'; 
         projectSpecs = projectData.specs || {}; 
 
-        // Ensure dimensions are resolved to object locally
         if (projectSpecs.dimensions) {
             projectSpecs.dimensions = resolveDimensions(projectSpecs.dimensions);
         }
 
-        loadingState.classList.add('hidden');
-
-        // --- Check Specs ---
-        let specsMissing = false;
-        const specs = projectSpecs;
-
-        // Check Dimensions
-        let dimValid = false;
-        if (typeof specs.dimensions === 'object' && specs.dimensions.width && specs.dimensions.height) dimValid = true;
-        if (!dimValid) specsMissing = true;
-
-        // Check Binding
-        if (!specs.binding) specsMissing = true;
-
-        // 5. Setup UI based on type
+        // 4. UI Setup
         bookletUploadSection.classList.remove('hidden');
-
         updateFileName('file-cover-front', 'file-name-cover-front');
         updateFileName('file-spine', 'file-name-spine');
         updateFileName('file-cover-back', 'file-name-cover-back');
 
-        // 6. Finalize State & Initialize
+        // 5. Logic Check
+        let specsMissing = false;
+        let dimValid = false;
+        if (typeof projectSpecs.dimensions === 'object' && projectSpecs.dimensions.width) dimValid = true;
+        if (!dimValid || !projectSpecs.binding) specsMissing = true;
+
         if (specsMissing) {
-            // Show Modal if specs are missing
+            // If specs are missing, we can lift the curtain immediately to show the form
+            loadingState.classList.add('hidden');
             specsModal.classList.remove('hidden');
             populateSpecsForm();
-            // STOP HERE: Do not render viewer until specs are saved via the form
         } else {
-            // Specs exist, show upload UI directly
-            uploadContainer.classList.remove('hidden');
-            refreshBuilderUI();
+            // 6. RESTORE STATE (Behind the curtain)
+            if(loadingText) loadingText.textContent = "Restoring project files...";
             
-            // Safe to initialize builder (renders viewer)
+            // Refresh UI elements (Tabs, buttons)
+            refreshBuilderUI();
+
+            // Await the FULL restoration (downloading URLs)
+            await restoreBuilderState(); 
+
+            // Initialize Builder (Creates the DOM elements for the viewer)
             await initializeBuilder();
+
+            // 7. CRITICAL: Force the first page to paint pixels
+            if (pages.length > 0) {
+                if(loadingText) loadingText.textContent = "Rendering preview...";
+                // This now ACTUALLY renders the pixels, it doesn't just wait
+                await waitForFirstPageRender(); 
+            }
+
+            // 8. REVEAL (The Perfect Frame)
+            loadingState.classList.add('hidden');
+            uploadContainer.classList.remove('hidden');
+            
+            // Recalculate layout now that elements have dimension
+            setTimeout(() => {
+                fitCoverToView();
+                renderMinimap();
+            }, 50);
         }
 
     } catch (err) {
         console.error('Init Error:', err);
-        let msg = 'An error occurred while loading the page. Please try again.';
-        if (err.message.includes('expired')) msg = 'This link has expired.';
-        if (err.message.includes('Invalid')) msg = 'Invalid guest link.';
-        showError(msg);
+        showError('An error occurred: ' + err.message);
     }
 }
 
@@ -3119,17 +3295,16 @@ async function restoreBuilderState() {
         const state = docSnap.data().guestBuilderState;
         if (!state) return;
 
-        // 1. Restore Globals
+        // Restore Data Models
         pages = state.pages || [];
         if (state.coverSettings) Object.assign(coverSettings, state.coverSettings);
         
-        // FIX: Restore Spine Mode MANUALLY to avoid triggering Autosave
+        // Restore Spine UI
         if (state.spineMode) {
             window.currentSpineMode = state.spineMode;
             const spineSelect = document.getElementById('spine-mode-select');
             if (spineSelect) {
                 spineSelect.value = state.spineMode;
-                // Manually update UI visibility instead of dispatching 'change'
                 const dropZone = document.getElementById('spine-upload-group')?.querySelector('.drop-zone');
                 if (dropZone) {
                     if (state.spineMode === 'file') dropZone.classList.remove('hidden');
@@ -3138,16 +3313,18 @@ async function restoreBuilderState() {
             }
         }
 
-        // 2. Restore Sources (PARALLEL for Speed)
+        // Restore Source Files (Parallelized for Speed)
         if (state.sourceFiles) {
             const entries = Object.entries(state.sourceFiles);
             
-            // Fetch all URLs simultaneously
+            // Create an array of promises
             const restorePromises = entries.map(async ([id, meta]) => {
                 try {
+                    // We await individual URL fetches here
                     const url = await getDownloadURL(ref(storage, meta.storagePath));
                     
                     if (id.startsWith('cover_')) {
+                        // Handle Cover Logic
                         let inputId = (id === 'cover_front') ? 'file-cover-front' : 
                                       (id === 'cover_spine') ? 'file-spine' : 'file-cover-back';
                         
@@ -3158,16 +3335,17 @@ async function restoreBuilderState() {
                                 previewUrl: url,
                                 storagePath: meta.storagePath 
                             };
-                            
+                            // Update UI Text immediately
                             const displayId = (id === 'cover_front') ? 'file-name-cover-front' :
                                               (id === 'cover_spine') ? 'file-name-spine' : 'file-name-cover-back';
                             const el = document.getElementById(displayId);
                             if (el) el.textContent = "Restored File";
 
-                            await createCoverControls(inputId, url);
+                            // Setup controls (async, don't block)
+                            createCoverControls(inputId, url);
                         }
                     } else {
-                        // Restore Interior
+                        // Handle Interior Logic
                         sourceFiles[id] = {
                             status: 'ready',
                             previewUrl: url,
@@ -3180,13 +3358,10 @@ async function restoreBuilderState() {
                 }
             });
 
+            // BLOCK until all URLs are retrieved.
+            // This ensures when the UI reveals, we have every URL needed to render.
             await Promise.all(restorePromises);
         }
-
-        console.log("[Restore] Done. Rendering viewer.");
-        renderBookViewer();
-        renderCoverPreview();
-        validateForm();
 
     } catch (e) {
         console.error("Error restoring state:", e);
@@ -3432,6 +3607,88 @@ document.addEventListener('keydown', (e) => {
 
 // Attach to button click (since it's type="button")
 submitButton.addEventListener('click', handleUpload);
+
+// --- RESTORED FUNCTIONALITY ---
+
+// 1. Restore "Set All" Buttons
+window.setAllScaleMode = (mode) => {
+    saveState(); // Save before changing
+    if (confirm(`Set all pages to ${mode}?`)) {
+        pages.forEach(p => {
+            p.settings.scaleMode = mode;
+        });
+        renderBookViewer();
+        triggerAutosave();
+    }
+};
+
+if (setAllFitBtn) setAllFitBtn.onclick = () => window.setAllScaleMode('fit');
+if (setAllFillBtn) setAllFillBtn.onclick = () => window.setAllScaleMode('fill');
+if (setAllStretchBtn) setAllStretchBtn.onclick = () => window.setAllScaleMode('stretch');
+
+// 2. Restore Viewer Zoom
+if (viewerZoom) {
+    viewerZoom.addEventListener('input', (e) => {
+        viewerScale = parseFloat(e.target.value);
+        renderBookViewer();
+    });
+}
+
+// 3. Restore Cover Zoom
+if (coverZoomInput) {
+    coverZoomInput.addEventListener('input', (e) => {
+        coverZoom = parseFloat(e.target.value);
+        renderCoverPreview();
+    });
+}
+
+// 4. Restore Jump To Page
+if (jumpToPageInput) {
+    jumpToPageInput.addEventListener('change', (e) => {
+        const pageNum = parseInt(e.target.value);
+        if (isNaN(pageNum) || pageNum < 1) return;
+
+        const pageIndex = pageNum - 1;
+        if (pageIndex >= 0 && pageIndex < pages.length) {
+            const pageId = pages[pageIndex].id;
+            // Try to find the single card or the spread card
+            let card = document.querySelector(`[data-id="${pageId}"]`);
+            if(!card) {
+                // If inside a spread, find the container
+                card = document.querySelector(`[data-id*=":${pageId}"]`); 
+            }
+            
+            if (card) {
+                card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                card.classList.add('ring-2', 'ring-indigo-500');
+                setTimeout(() => card.classList.remove('ring-2', 'ring-indigo-500'), 1500);
+            }
+        } else {
+            alert("Page number out of range.");
+        }
+    });
+}
+
+async function waitForFirstPageRender() {
+    // 1. Safety Checks
+    if (!pages || pages.length === 0) return;
+    const firstPage = pages[0];
+    
+    // Find the canvas element (it exists in DOM now, even if hidden)
+    const canvasId = `canvas-${firstPage.id}`;
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+
+    // 2. Force Render Immediately
+    // We call the low-level render function directly, bypassing the queue and the observer.
+    // This ensures it runs even if the container is display: none.
+    console.log("Forcing initial render of Page 1...");
+    try {
+        await renderPageCanvas(firstPage, canvas);
+    } catch (e) {
+        console.warn("Initial render warning:", e);
+    }
+}
 
 // Initialize
 init();
