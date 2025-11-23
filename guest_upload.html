@@ -66,6 +66,29 @@
                 <p id="error-message" class="text-gray-300">Invalid or expired link.</p>
             </div>
 
+            <!-- Locked State -->
+            <div id="locked-state" class="hidden max-w-lg mx-auto bg-slate-800/90 border border-slate-600 rounded-xl p-8 text-center backdrop-blur-sm shadow-2xl">
+                <div class="mx-auto flex items-center justify-center h-16 w-16 rounded-full bg-slate-700 mb-6">
+                    <svg class="w-8 h-8 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path>
+                    </svg>
+                </div>
+                <h3 class="text-2xl font-bold text-white mb-3">Project Locked</h3>
+                <p class="text-gray-300 mb-2">This project is currently being edited by:</p>
+                <div class="bg-slate-900/50 rounded-lg p-3 mb-6 inline-block min-w-[200px]">
+                    <span id="locked-by-user" class="text-indigo-300 font-medium font-mono text-sm">...</span>
+                </div>
+                <p class="text-gray-400 text-sm mb-6">Please wait for them to finish or contact an administrator.</p>
+
+                <div id="admin-unlock-container" class="hidden border-t border-slate-700 pt-6 mt-6">
+                    <p class="text-xs text-slate-500 uppercase tracking-widest mb-3 font-bold">Admin Controls</p>
+                    <button id="force-unlock-btn" type="button" class="bg-red-600/80 hover:bg-red-600 text-white text-sm font-semibold py-2 px-4 rounded-lg transition-colors flex items-center justify-center gap-2 mx-auto w-full sm:w-auto">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"></path></svg>
+                        Force Unlock
+                    </button>
+                </div>
+            </div>
+
             <!-- Upload Form -->
             <div id="upload-container" class="hidden flex flex-col gap-6">
 

@@ -11,6 +11,7 @@ import * as pdfjsLib from 'https://mozilla.github.io/pdf.js/build/pdf.mjs';
 
 // Share Modal Elements
 const headerShareButton = document.getElementById('header-share-button'); // This is the new one in the header
+const guestBuilderButton = document.getElementById('guest-builder-button');
 const shareModal = document.getElementById('share-modal');
 const shareModalCloseButton = document.getElementById('share-modal-close-button');
 const shareModalCancelButton = document.getElementById('share-modal-cancel-button');
@@ -641,6 +642,15 @@ function closeShareModal() {
 if (headerShareButton) {
     headerShareButton.addEventListener('click', openShareModal);
 }
+
+if (guestBuilderButton) {
+    guestBuilderButton.addEventListener('click', () => {
+        if (!projectId) return;
+        // Navigate to guest upload with admin flag
+        window.location.href = `guest_upload.html?projectId=${projectId}&admin=true`;
+    });
+}
+
 shareModalCloseButton.addEventListener('click', closeShareModal);
 shareModalCancelButton.addEventListener('click', closeShareModal);
 

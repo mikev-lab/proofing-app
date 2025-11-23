@@ -36,6 +36,7 @@ const approvalCheckboxes = document.querySelectorAll('#approval-modal-form input
 const approvedStatuses = ['Approved', 'approved', 'In Production', 'Imposition Complete'];
 
 const headerShareButton = document.getElementById('header-share-button');
+const navEditBuilderButton = document.getElementById('nav-edit-builder-button');
 const shareModal = document.getElementById('share-modal');
 const shareModalCloseBtn = document.getElementById('share-modal-close-button');
 const shareModalCancelBtn = document.getElementById('share-modal-cancel-button');
@@ -411,6 +412,18 @@ async function updateProjectStatus(status) {
                     });
                  }
 
+                // Determine if current user is an Editor/Owner
+                let isEditor = false;
+
+                if (isGuest) {
+                    // Guest permissions dictate access
+                    if (guestPermissions.isOwner) isEditor = true;
+                } else {
+                    // Authenticated user viewing their project is an editor
+                    // (Admins viewing via proof page also fall here)
+                    isEditor = true;
+                }
+
                 // Apply Guest Permissions
                 if (isGuest) {
                     actionPanel.style.display = guestPermissions.canApprove ? 'block' : 'none';
@@ -423,6 +436,25 @@ async function updateProjectStatus(status) {
                 } else {
                     actionPanel.style.display = 'block';
                     commentTool.style.display = 'block';
+                }
+
+                // Show/Hide Builder Button
+                if (isEditor && navEditBuilderButton) {
+                    navEditBuilderButton.classList.remove('hidden');
+
+                    // Setup Listener (Remove old to prevent duplicates if snapshot re-runs)
+                    const newBtn = navEditBuilderButton.cloneNode(true);
+                    navEditBuilderButton.parentNode.replaceChild(newBtn, navEditBuilderButton);
+
+                    newBtn.addEventListener('click', () => {
+                        let url = `guest_upload.html?projectId=${currentProjectId}`;
+                        if (isGuest && initialGuestToken) {
+                            url += `&guestToken=${initialGuestToken}`;
+                        }
+                        window.location.href = url;
+                    });
+                } else if (navEditBuilderButton) {
+                    navEditBuilderButton.classList.add('hidden');
                 }
 
                 // Check Project Status (AFTER resetting HTML)

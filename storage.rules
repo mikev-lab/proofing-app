@@ -22,7 +22,7 @@ service firebase.storage {
     function hasGuestUploadAccess(projectId) {
       return request.auth != null &&
              request.auth.token.guestProjectId == projectId &&
-             request.auth.token.guestPermissions.canUpload == true;
+             (request.auth.token.guestPermissions.canUpload == true || request.auth.token.guestPermissions.isOwner == true);
     }
 
     // --- START: Add these rules for Temporary Guided Setup ---
