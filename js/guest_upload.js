@@ -99,6 +99,7 @@ const toolbarSpreadUpload = document.getElementById('toolbar-spread-upload');
 const builderTabs = document.getElementById('builder-tabs');
 
 const pdfDocCache = new Map(); // Cache for loaded PDF documents
+const remotePdfDocCache = new Map();
 
 const undoStack = [];
 const GRID_SIZE = 0.01;
@@ -108,6 +109,8 @@ const coverSettings = {
     'file-cover-back':  { pageIndex: 1, scaleMode: 'fill' },
     'file-spine':       { pageIndex: 1, scaleMode: 'fill' }
 };
+
+const pendingLoadCache = new Map();
 
 // State
 let projectId = null;
@@ -124,9 +127,73 @@ let _previewCtx = null;
 let sourceFiles = {}; // Map: id -> File object
 let pages = []; // Array: { id, sourceFileId, pageIndex, settings: { scaleMode, alignment }, isSpread: boolean }
 let viewerScale = 0.5; // Zoom level for viewer
-const imageCache = new Map(); // Cache for rendered ImageBitmaps: key=pageId -> { bitmap, scale }
+// --- LRU Cache Implementation ---
+class LRUCache {
+    constructor(limit = 50) {
+        this.limit = limit;
+        this.cache = new Map();
+    }
+
+    get(key) {
+        if (!this.cache.has(key)) return null;
+        const val = this.cache.get(key);
+        // Refresh: delete and set to make it "newest"
+        this.cache.delete(key);
+        this.cache.set(key, val);
+        return val;
+    }
+
+    set(key, val) {
+        if (this.cache.has(key)) this.cache.delete(key);
+        else if (this.cache.size >= this.limit) {
+            // Delete oldest (first item in Map)
+            // Don't delete thumbnails (keys ending in _s0.25) if possible? 
+            // For simplicity, just delete oldest. Thumbnails are cheap to recreate.
+            const firstKey = this.cache.keys().next().value;
+            this.cache.delete(firstKey);
+            // Optional: Explicitly close bitmap to free GPU memory
+            // if (val.close) val.close(); 
+        }
+        this.cache.set(key, val);
+    }
+
+    has(key) { return this.cache.has(key); }
+    delete(key) { return this.cache.delete(key); }
+    clear() { this.cache.clear(); }
+}
+
+// Initialize with a limit (e.g., 60 items: 30 pages + 30 thumbs)
+const imageCache = new LRUCache(60); // Cache for rendered ImageBitmaps: key=pageId -> { bitmap, scale }
 let hasFitCover = false;
 let coverSources = {};
+let minimapRenderId = 0;
+// --- NEW: Render Queue System ---
+let renderQueue = [];
+let activeRenders = 0;
+const MAX_CONCURRENT_RENDERS = 3; // <--- CHANGED TO 1 (Strict Serial Order)
+
+const processRenderQueue = () => {
+    if (activeRenders >= MAX_CONCURRENT_RENDERS || renderQueue.length === 0) return;
+
+    activeRenders++;
+    const { task, resolve, reject } = renderQueue.shift();
+
+    task().then(result => {
+        resolve(result);
+    }).catch(err => {
+        reject(err);
+    }).finally(() => {
+        activeRenders--;
+        processRenderQueue();
+    });
+};
+
+const enqueueRender = (renderFn) => {
+    return new Promise((resolve, reject) => {
+        renderQueue.push({ task: renderFn, resolve, reject });
+        processRenderQueue();
+    });
+};
 
 // --- Helper: Parse URL Params ---
 function getUrlParams() {
@@ -136,6 +203,68 @@ function getUrlParams() {
         guestToken: params.get('guestToken')
     };
 }
+
+function debounce(func, wait) {
+    let timeout;
+    return function(...args) {
+        const context = this;
+        clearTimeout(timeout);
+        timeout = setTimeout(() => func.apply(context, args), wait);
+    };
+}
+
+// --- Helper function to deduplicate asynchronous work (Loading/Rendering) ---
+async function fetchBitmapWithCache(cacheKey, loadFn) {
+    if (imageCache.has(cacheKey)) {
+        // console.log(`[Bitmap Cache] Hit: ${cacheKey}`); // Optional: Uncomment for very verbose logs
+        return imageCache.get(cacheKey);
+    }
+    if (pendingLoadCache.has(cacheKey)) {
+        console.log(`[Bitmap Cache] Joining pending request: ${cacheKey}`);
+        return pendingLoadCache.get(cacheKey);
+    }
+
+    console.log(`[Bitmap Cache] Starting new request: ${cacheKey}`);
+    const promise = loadFn().then(bitmap => {
+        if (bitmap) imageCache.set(cacheKey, bitmap);
+        pendingLoadCache.delete(cacheKey); 
+        console.log(`[Bitmap Cache] Finished: ${cacheKey}`);
+        return bitmap;
+    }).catch(err => {
+        pendingLoadCache.delete(cacheKey);
+        console.error(`[Bitmap Cache] Failed: ${cacheKey}`, err);
+        throw err;
+    });
+
+    pendingLoadCache.set(cacheKey, promise);
+    return promise;
+}
+
+// Create a debounced version that waits 2 seconds after the last action
+const triggerAutosave = debounce(async () => {
+    const saveBtn = document.getElementById('save-progress-btn');
+    if (saveBtn) {
+        saveBtn.innerHTML = `
+            <div class="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin mr-2"></div>
+            <span class="text-gray-400">Saving...</span>
+        `;
+    }
+
+    try {
+        // Reuse your existing sync logic
+        await syncProjectState('draft'); 
+        
+        if (saveBtn) {
+            saveBtn.innerHTML = `
+                <svg class="w-4 h-4 text-green-500 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                <span class="text-gray-300">All changes saved</span>
+            `;
+        }
+    } catch (e) {
+        console.error("Autosave failed", e);
+        if (saveBtn) saveBtn.innerHTML = `<span class="text-red-400">Save Failed</span>`;
+    }
+}, 2000); // 2000ms = 2 seconds
 
 // --- Helper: Resolve Dimensions ---
 function resolveDimensions(specDimensions) {
@@ -387,8 +516,132 @@ if (navBackBtn) {
     });
 }
 
+// --- NEW: Reusable Control Builder ---
+async function createCoverControls(inputId, fileOrUrl) {
+    const container = document.getElementById(inputId)?.parentElement;
+    if (!container) return;
 
-// --- Enhanced Cover Upload with Page Selection ---
+    // Remove existing controls to prevent duplicates
+    const existing = container.querySelectorAll('.custom-controls');
+    existing.forEach(el => el.remove());
+
+    // Default settings if missing
+    if (!coverSettings[inputId]) {
+        coverSettings[inputId] = { pageIndex: 1, scaleMode: 'fill' };
+    }
+    const currentSettings = coverSettings[inputId];
+
+    const controls = document.createElement('div');
+    controls.className = 'custom-controls mt-2 flex flex-col gap-2 z-20 relative';
+
+    // 1. Page Selector (Only for PDF)
+    let pdfSourceUrl;
+    let isPDF = false;
+    let localObjectURL; // For cleanup
+
+    if (typeof fileOrUrl === 'string') {
+        // Source is a remote URL (restored file)
+        pdfSourceUrl = fileOrUrl;
+        isPDF = pdfSourceUrl.toLowerCase().endsWith('.pdf') || true;
+    } else if (fileOrUrl && fileOrUrl.type === 'application/pdf') {
+        // Source is a local File object (new upload)
+        pdfSourceUrl = URL.createObjectURL(fileOrUrl);
+        localObjectURL = pdfSourceUrl;
+        isPDF = true;
+    }
+    
+    if (isPDF && pdfSourceUrl) {
+        let docPromise;
+        
+        try {
+            if (typeof fileOrUrl === 'string' && fileOrUrl.startsWith('http')) {
+                // Remote PDF (Restored) - Use the Remote cache based on URL/Path
+                docPromise = remotePdfDocCache.get(fileOrUrl) || pdfjsLib.getDocument(fileOrUrl).promise;
+            } else {
+                // Local PDF (New Upload)
+                docPromise = pdfjsLib.getDocument(localObjectURL).promise;
+            }
+
+            const pdf = await docPromise;
+
+            if (pdf.numPages > 1) {
+                const pageCtrl = document.createElement('div');
+                pageCtrl.className = "flex items-center justify-center gap-1 text-xs";
+                pageCtrl.innerHTML = `
+                     <button type="button" class="bg-slate-700 px-2 py-1 rounded hover:bg-indigo-600 text-white" id="prev-${inputId}"><</button>
+                     <div class="flex items-center gap-1 bg-slate-800 rounded px-1 border border-slate-600">
+                        <span class="text-gray-400 text-[10px]">Pg</span>
+                        <input type="number" id="pg-input-${inputId}" value="${currentSettings.pageIndex}" min="1" max="${pdf.numPages}" 
+                            class="w-8 bg-transparent text-center text-white font-mono focus:outline-none appearance-none text-xs py-1">
+                        <span class="text-gray-400 text-[10px]">/ ${pdf.numPages}</span>
+                     </div>
+                     <button type="button" class="bg-slate-700 px-2 py-1 rounded hover:bg-indigo-600 text-white" id="next-${inputId}">></button>
+                `;
+                controls.appendChild(pageCtrl);
+
+                // Bind Events
+                setTimeout(() => {
+                    const setPage = (val) => {
+                        let newPg = parseInt(val);
+                        if (isNaN(newPg) || newPg < 1) newPg = 1;
+                        if (newPg > pdf.numPages) newPg = pdf.numPages;
+                        
+                        coverSettings[inputId].pageIndex = newPg;
+                        const el = document.getElementById(`pg-input-${inputId}`);
+                        if(el) el.value = newPg;
+                        renderCoverPreview();
+                        triggerAutosave();
+                    };
+                    
+                    const inputEl = document.getElementById(`pg-input-${inputId}`);
+                    if(inputEl) {
+                        inputEl.onclick = (ev) => ev.stopPropagation();
+                        inputEl.onchange = (ev) => setPage(ev.target.value);
+                    }
+                    const prevBtn = document.getElementById(`prev-${inputId}`);
+                    if(prevBtn) prevBtn.onclick = (ev) => { ev.stopPropagation(); setPage(coverSettings[inputId].pageIndex - 1); };
+                    
+                    const nextBtn = document.getElementById(`next-${inputId}`);
+                    if(nextBtn) nextBtn.onclick = (ev) => { ev.stopPropagation(); setPage(coverSettings[inputId].pageIndex + 1); };
+                }, 0);
+            }
+            
+            // Cleanup the temporary local blob URL
+            if (localObjectURL) URL.revokeObjectURL(localObjectURL);
+            
+        } catch (e) { 
+            console.warn("Error loading PDF for controls", e);
+            if (localObjectURL) URL.revokeObjectURL(localObjectURL);
+        }
+    }
+
+    // 2. Scale Buttons (Remains the same)
+    const scaleCtrl = document.createElement('div');
+    scaleCtrl.className = "flex justify-center gap-1 mt-1";
+    ['fit', 'fill', 'stretch'].forEach(mode => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        const isActive = currentSettings.scaleMode === mode;
+        btn.className = `text-[10px] px-2 py-1 rounded border ${isActive ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-600 text-gray-400 hover:text-white'}`;
+        btn.textContent = mode.charAt(0).toUpperCase() + mode.slice(1);
+        
+        btn.onclick = (ev) => {
+            ev.stopPropagation();
+            ev.preventDefault();
+            coverSettings[inputId].scaleMode = mode;
+            Array.from(scaleCtrl.children).forEach(b => b.className = 'text-[10px] px-2 py-1 rounded border bg-slate-800 border-slate-600 text-gray-400 hover:text-white');
+            btn.className = 'text-[10px] px-2 py-1 rounded border bg-indigo-600 border-indigo-500 text-white';
+            renderCoverPreview();
+            triggerAutosave();
+        };
+        scaleCtrl.appendChild(btn);
+    });
+    controls.appendChild(scaleCtrl);
+    
+    container.appendChild(controls);
+}
+
+// --- UPDATED: updateFileName ---
 function updateFileName(inputId, displayId) {
     const input = document.getElementById(inputId);
     const display = document.getElementById(displayId);
@@ -397,7 +650,7 @@ function updateFileName(inputId, displayId) {
     input.addEventListener('change', async (e) => {
         const file = e.target.files[0];
 
-        // Clear controls
+        // Clear existing controls
         const existingControls = input.parentElement.querySelectorAll('.custom-controls');
         existingControls.forEach(el => el.remove());
 
@@ -405,22 +658,18 @@ function updateFileName(inputId, displayId) {
             if (display) display.textContent = file.name;
             selectedFiles[inputId] = file; 
 
-            // --- FIX: Strict Check for Browser-Supported Types ---
-            // Only treat these as local. Everything else (PSD, AI, TIFF) goes to server.
             const supportedImages = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp'];
             const isPDF = file.type === 'application/pdf';
             const isSupportedImage = supportedImages.includes(file.type);
-            
-            // Fallback: Check extension if mime type is generic or missing
             const isPsd = file.name.toLowerCase().endsWith('.psd');
-            
             const isLocal = (isPDF || isSupportedImage) && !isPsd;
 
+            // Reset settings for new file
+            coverSettings[inputId] = { pageIndex: 1, scaleMode: 'fill' };
+
             if (!isLocal) {
-                // *** SERVER SIDE PROCESSING (PSD, AI, etc) ***
                 processCoverFile(file, inputId);
             } else {
-                // *** LOCAL RENDERING ***
                 coverSources[inputId] = { 
                     file: file, 
                     status: 'ready', 
@@ -428,88 +677,18 @@ function updateFileName(inputId, displayId) {
                 };
             }
 
-            // --- Create UI Controls ---
-            const controls = document.createElement('div');
-            controls.className = 'custom-controls mt-2 flex flex-col gap-2 z-20 relative';
+            // Generate Controls (using the new reusable function)
+            await createCoverControls(inputId, file);
 
-            // 1. Page Selector (Only for Local PDF)
-            const checkAndSetupPdfControls = async (urlOrBlob) => {
-                try {
-                    const pdf = await pdfjsLib.getDocument(urlOrBlob).promise;
-                    if (pdf.numPages > 1) {
-                        const pageCtrl = document.createElement('div');
-                        pageCtrl.className = "flex items-center justify-center gap-1 text-xs";
-                        pageCtrl.innerHTML = `
-                             <button type="button" class="bg-slate-700 px-2 py-1 rounded hover:bg-indigo-600 text-white" id="prev-${inputId}"><</button>
-                             <div class="flex items-center gap-1 bg-slate-800 rounded px-1 border border-slate-600">
-                                <span class="text-gray-400 text-[10px]">Pg</span>
-                                <input type="number" id="pg-input-${inputId}" value="1" min="1" max="${pdf.numPages}" 
-                                    class="w-8 bg-transparent text-center text-white font-mono focus:outline-none appearance-none text-xs py-1">
-                                <span class="text-gray-400 text-[10px]">/ ${pdf.numPages}</span>
-                             </div>
-                             <button type="button" class="bg-slate-700 px-2 py-1 rounded hover:bg-indigo-600 text-white" id="next-${inputId}">></button>
-                        `;
-                        controls.prepend(pageCtrl); 
-
-                        // Logic
-                        coverSettings[inputId].pageIndex = 1;
-                        
-                        setTimeout(() => {
-                            const setPage = (val) => {
-                                let newPg = parseInt(val);
-                                if (isNaN(newPg) || newPg < 1) newPg = 1;
-                                if (newPg > pdf.numPages) newPg = pdf.numPages;
-                                coverSettings[inputId].pageIndex = newPg;
-                                const el = document.getElementById(`pg-input-${inputId}`);
-                                if(el) el.value = newPg;
-                                renderCoverPreview();
-                            };
-                            
-                            const inputEl = document.getElementById(`pg-input-${inputId}`);
-                            if(inputEl) {
-                                inputEl.onclick = (ev) => ev.stopPropagation();
-                                inputEl.onchange = (ev) => setPage(ev.target.value);
-                            }
-                            document.getElementById(`prev-${inputId}`).onclick = (ev) => { ev.stopPropagation(); setPage(coverSettings[inputId].pageIndex - 1); };
-                            document.getElementById(`next-${inputId}`).onclick = (ev) => { ev.stopPropagation(); setPage(coverSettings[inputId].pageIndex + 1); };
-                        }, 0);
-                    }
-                } catch(e) {}
-            };
-
-            if (isPDF) {
-                checkAndSetupPdfControls(URL.createObjectURL(file));
-            }
-
-            // 2. Scale Buttons
-            const scaleCtrl = document.createElement('div');
-            scaleCtrl.className = "flex justify-center gap-1 mt-1";
-            ['fit', 'fill', 'stretch'].forEach(mode => {
-                const btn = document.createElement('button');
-                btn.type = 'button';
-                btn.className = `text-[10px] px-2 py-1 rounded border ${coverSettings[inputId].scaleMode === mode ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-600 text-gray-400 hover:text-white'}`;
-                btn.textContent = mode.charAt(0).toUpperCase() + mode.slice(1);
-                btn.onclick = (ev) => {
-                    ev.stopPropagation();
-                    ev.preventDefault();
-                    coverSettings[inputId].scaleMode = mode;
-                    Array.from(scaleCtrl.children).forEach(b => b.className = 'text-[10px] px-2 py-1 rounded border bg-slate-800 border-slate-600 text-gray-400 hover:text-white');
-                    btn.className = 'text-[10px] px-2 py-1 rounded border bg-indigo-600 border-indigo-500 text-white';
-                    renderCoverPreview();
-                };
-                scaleCtrl.appendChild(btn);
-            });
-            controls.appendChild(scaleCtrl);
-            input.parentElement.appendChild(controls);
-
-            // Only render immediately if it's local. If server, processCoverFile handles the render.
             if (isLocal) renderCoverPreview();
+            triggerAutosave(); // Trigger save on new file
 
         } else {
             if (display) display.textContent = '';
             delete selectedFiles[inputId];
             delete coverSources[inputId]; 
             renderCoverPreview();
+            triggerAutosave();
         }
         validateForm();
     });
@@ -529,44 +708,69 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
         return;
     }
 
-    const file = sourceEntry.file;
     const isServer = sourceEntry.isServer;
-    const previewUrl = sourceEntry.previewUrl;
+    // CRITICAL: File is null for server files to prevent accessing stale local properties
+    const file = isServer ? null : sourceEntry.file; 
+    
+    // Use stable path for caching
+    const fileKey = isServer ? (sourceEntry.storagePath || sourceEntry.previewUrl || 'server_url') : (file ? file.name : 'unknown_file');
+    const timestamp = (file && file.lastModified) ? file.lastModified : 'server_timestamp';
+    const cacheKey = `${fileKey}_${pageIndex}_${timestamp}_stretched`;
+
     let imgBitmap;
 
-    const cacheKey = (isServer ? previewUrl : file.name) + '_' + pageIndex + '_' + (file.lastModified || 'server') + '_cover';
-
     try {
-        if (imageCache.has(cacheKey)) {
-            imgBitmap = imageCache.get(cacheKey);
-        } else {
+        imgBitmap = await fetchBitmapWithCache(cacheKey, async () => {
             if (isServer) {
-                 const loadingTask = pdfjsLib.getDocument(previewUrl);
-                 const pdf = await loadingTask.promise;
-                 const page = await pdf.getPage(pageIndex);
-                 const viewport = page.getViewport({ scale: 2 });
-                 const cvs = document.createElement('canvas');
-                 cvs.width = viewport.width; cvs.height = viewport.height;
-                 await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
-                 imgBitmap = await createImageBitmap(cvs);
+                if (!sourceEntry.previewUrl) return null;
+
+                // 1. Use Remote Document Caching
+                let pdfDocPromise = remotePdfDocCache.get(fileKey);
+                if (!pdfDocPromise) {
+                    const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
+                    pdfDocPromise = loadingTask.promise;
+                    remotePdfDocCache.set(fileKey, pdfDocPromise);
+                }
+                const pdf = await pdfDocPromise;
+
+                // 2. Render
+                const page = await pdf.getPage(pageIndex);
+                const viewport = page.getViewport({ scale: 1.5 }); // Good quality for covers
+                const cvs = document.createElement('canvas');
+                cvs.width = viewport.width;
+                cvs.height = viewport.height;
+                await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+                return createImageBitmap(cvs);
+
             } else if (file && file.type === 'application/pdf') {
-                 const pdf = await pdfjsLib.getDocument(URL.createObjectURL(file)).promise;
-                 const page = await pdf.getPage(pageIndex);
-                 const viewport = page.getViewport({ scale: 2 });
-                 const cvs = document.createElement('canvas');
-                 cvs.width = viewport.width; cvs.height = viewport.height;
-                 await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
-                 imgBitmap = await createImageBitmap(cvs);
+                // Local PDF: Use ArrayBuffer + pdfDocCache
+                let pdfDoc = pdfDocCache.get(file);
+                if (!pdfDoc) {
+                    const arrayBuffer = await file.arrayBuffer();
+                    pdfDoc = pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                    pdfDocCache.set(file, pdfDoc);
+                }
+                const pdf = await pdfDoc;
+                const page = await pdf.getPage(pageIndex);
+                const viewport = page.getViewport({ scale: 1.5 });
+                const cvs = document.createElement('canvas');
+                cvs.width = viewport.width; cvs.height = viewport.height;
+                await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+                return createImageBitmap(cvs);
+
             } else if (file && file.type.startsWith('image/')) {
-                imgBitmap = await createImageBitmap(file);
+                return createImageBitmap(file);
             }
-            
-            if (imgBitmap) imageCache.set(cacheKey, imgBitmap);
-        }
-    } catch (e) { return; }
+            return null;
+        });
+    } catch (e) { 
+        console.error("drawStretched load error:", e);
+        return; 
+    }
 
     if (!imgBitmap) return;
 
+    // --- Draw Logic ---
     ctx.save();
     ctx.beginPath();
     ctx.rect(targetZone.x, targetZone.y, targetZone.w, targetZone.h);
@@ -575,6 +779,7 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
     const imgW = imgBitmap.width;
     const imgH = imgBitmap.height;
 
+    // Scale to fill TOTAL zone (Spine + Front/Back)
     let scale = totalZone.h / imgH; 
     if (imgW * scale < totalZone.w) {
         scale = totalZone.w / imgW;
@@ -586,9 +791,11 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
 
     let drawX;
     if (anchor === 'right') {
+        // Align to the RIGHT edge of the total zone
         const totalRight = totalZone.x + totalZone.w;
         drawX = totalRight - drawW;
     } else {
+        // Align to the LEFT edge of the total zone
         drawX = totalZone.x;
     }
 
@@ -761,8 +968,10 @@ async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = n
     } else {
         pages.push(...newPages);
     }
-
+    saveState();
     renderBookViewer();
+    renderMinimap();
+    triggerAutosave();
 }
 
 function addPagesToModel(targetArray, sourceId, numPages, isSpreadUpload) {
@@ -798,6 +1007,8 @@ function addPagesToModel(targetArray, sourceId, numPages, isSpreadUpload) {
             });
         }
     }
+    renderBookViewer();
+    triggerAutosave();
 }
 
 async function processCoverFile(file, slotId) {
@@ -921,6 +1132,7 @@ async function processServerFile(file, sourceId) {
 window.updatePageSetting = (pageId, setting, value) => {
     const page = pages.find(p => p.id === pageId);
     if (page) {
+        if(setting === 'scaleMode' || setting === 'isSpread') saveState();
         page.settings[setting] = value;
 
         // If changing spread mode, we need to re-render the whole viewer to adjust grid
@@ -971,12 +1183,17 @@ window.updatePageSetting = (pageId, setting, value) => {
         const canvas = document.getElementById(`canvas-${pageId}`);
         if (canvas) renderPageCanvas(page, canvas);
     }
+    // TRIGGER AUTOSAVE
+    triggerAutosave();
 };
 
 window.deletePage = (pageId) => {
+    saveState();
     pages = pages.filter(p => p.id !== pageId);
-    imageCache.delete(pageId); // Cleanup
+    imageCache.delete(pageId); 
     renderBookViewer();
+    renderMinimap();
+    triggerAutosave();
 };
 
 // --- Book Viewer Rendering ---
@@ -985,72 +1202,46 @@ function renderBookViewer() {
     const container = document.getElementById('book-viewer-container');
     if (!container) return;
 
-    container.innerHTML = ''; // Clear
+    // CLEAR QUEUE: Stop processing old pages if we are re-rendering
+    renderQueue.length = 0; 
 
-    // Render Minimap
-    renderMinimap();
+    container.innerHTML = ''; // Clear DOM
 
     // Dimensions for layout
     const width = projectSpecs.dimensions.width;
     const height = projectSpecs.dimensions.height;
     const bleed = 0.125;
-    const visualScale = (250 * viewerScale) / ((width + bleed*2) * 96);
+    const visualScale = (250 * viewerScale) / ((width + bleed * 2) * 96);
     const pixelsPerInch = 96 * visualScale;
 
-    const observer = new IntersectionObserver((entries, obs) => {
-        entries.forEach(entry => {
-            if (entry.isIntersecting) {
-                const card = entry.target;
-                const cardId = card.dataset.id;
+    // Helper to run the render via the Queue
+    const runPageRender = (page, canvas) => {
+        if (!page || !canvas) return Promise.resolve(true);
 
-                if (cardId.startsWith('spread:')) {
-                    // Handle Spread
-                    const parts = cardId.split(':');
-                    const id1 = parts[1];
-                    const id2 = parts[2];
-                    const page1 = pages.find(p => p.id === id1);
-                    const page2 = pages.find(p => p.id === id2);
-                    const canvas1 = document.getElementById(`canvas-${id1}`);
-                    const canvas2 = document.getElementById(`canvas-${id2}`);
+        // Check if this specific render is already cached to skip the queue
+        // This makes scrolling back up instant
+        const sourceEntry = sourceFiles[page.sourceFileId];
+        if(sourceEntry) {
+             const isServer = sourceEntry.isServer;
+             const file = isServer ? null : sourceEntry.file; 
+             const fileKey = isServer ? (sourceEntry.storagePath || sourceEntry.previewUrl) : (file ? file.name : 'unknown');
+             const timestamp = (file && file.lastModified) ? file.lastModified : 'server';
+             // Match key format in drawFileWithTransform
+             const cacheKey = `${fileKey}_${page.pageIndex || 1}_${timestamp}_full`; 
+             
+             // If cached, run immediately (don't wait in queue)
+             if(imageCache.has(cacheKey)) {
+                 return renderPageCanvas(page, canvas).catch(e => true);
+             }
+        }
 
-                    const processPage = (p, cvs, pid) => {
-                        if (p && cvs) {
-                            renderPageCanvas(p, cvs).then(() => {
-                                // FIX: Only remove placeholder if READY
-                                const src = sourceFiles[p.sourceFileId];
-                                if (!src || src instanceof File || src.status === 'ready' || src.status === 'error') {
-                                    removePlaceholder(pid);
-                                }
-                            });
-                        }
-                    };
-
-                    processPage(page1, canvas1, id1);
-                    processPage(page2, canvas2, id2);
-                    
-                    // We don't unobserve immediately if processing, but usually we do 
-                    // because re-renders trigger new observers.
-                    obs.unobserve(card);
-
-                } else {
-                    // Handle Single Card
-                    const canvas = document.getElementById(`canvas-${cardId}`);
-                    const page = pages.find(p => p.id === cardId);
-
-                    if (canvas && page) {
-                        renderPageCanvas(page, canvas).then(() => {
-                            // FIX: Only remove placeholder if READY
-                            const src = sourceFiles[page.sourceFileId];
-                            if (!src || src instanceof File || src.status === 'ready' || src.status === 'error') {
-                                removePlaceholder(cardId);
-                            }
-                        });
-                        obs.unobserve(card);
-                    }
-                }
-            }
-        });
-    }, { root: container.parentElement, rootMargin: '200px' });
+        // Otherwise, add to queue
+        return enqueueRender(() => renderPageCanvas(page, canvas))
+            .catch(err => {
+                console.error(`Page ${page?.id} Render Failed:`, err);
+                return true;
+            });
+    };
 
     const removePlaceholder = (id) => {
         const ph = document.getElementById(`placeholder-${id}`);
@@ -1060,14 +1251,56 @@ function renderBookViewer() {
         }
     };
 
-    // ... (Rest of the function logic for Single/Booklet layout remains exactly the same) ...
-    // ... Paste the rest of your existing renderBookViewer code here ...
-    
+    const observer = new IntersectionObserver((entries, obs) => {
+        // Sort entries by DOM order to ensure Top-to-Bottom loading priority
+        const sortedEntries = entries.sort((a, b) => {
+            return a.target.compareDocumentPosition(b.target) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+        });
+
+        sortedEntries.forEach(entry => {
+            if (entry.isIntersecting) {
+                const card = entry.target;
+                const cardId = card.dataset.id;
+                obs.unobserve(card); // Unobserve immediately
+
+                if (cardId.startsWith('spread:')) {
+                    // Spread pages
+                    const parts = cardId.split(':');
+                    const id1 = parts[1]; // Left Page ID
+                    const id2 = parts[2]; // Right Page ID
+                    const page1 = pages.find(p => p.id === id1);
+                    const page2 = pages.find(p => p.id === id2);
+                    const canvas1 = document.getElementById(`canvas-${id1}`);
+                    const canvas2 = document.getElementById(`canvas-${id2}`);
+
+                    // Render Left then Right, but queued
+                    Promise.all([
+                        runPageRender(page1, canvas1),
+                        runPageRender(page2, canvas2)
+                    ]).finally(() => {
+                        removePlaceholder(id1);
+                        removePlaceholder(id2);
+                    });
+
+                } else {
+                    // Single page
+                    const canvas = document.getElementById(`canvas-${cardId}`);
+                    const page = pages.find(p => p.id === cardId);
+
+                    if (canvas && page) {
+                        runPageRender(page, canvas).finally(() => {
+                            removePlaceholder(cardId);
+                        });
+                    }
+                }
+            }
+        });
+    }, { root: container.parentElement, rootMargin: '200px' });
+
     // --- LOOSE SHEETS / SINGLE LAYOUT ---
     if (projectType === 'single') {
         container.className = "flex flex-wrap gap-8 items-start justify-center p-6";
 
-        // We strictly show 2 slots: Front and Back.
         const slots = [
             { label: "Front Side", index: 0 },
             { label: "Back Side", index: 1 }
@@ -1084,10 +1317,8 @@ function renderBookViewer() {
             if (page) {
                 content = createPageCard(page, slot.index, false, false, width, height, bleed, pixelsPerInch, observer);
             } else {
-                // Create Empty Slot
                 content = document.createElement('div');
                 content.className = "relative border-2 border-dashed border-slate-600 rounded-lg bg-slate-800/30 hover:bg-slate-800/60 hover:border-indigo-500 transition-all cursor-pointer group flex flex-col items-center justify-center";
-                // Match visual size
                 const wPx = (width + (bleed * 2)) * pixelsPerInch;
                 const hPx = (height + (bleed * 2)) * pixelsPerInch;
                 content.style.width = `${wPx}px`;
@@ -1100,12 +1331,9 @@ function renderBookViewer() {
                     </div>
                 `;
                 content.onclick = () => {
-                    // Set insert index and trigger
                     window._insertIndex = slot.index;
                     hiddenInteriorInput.click();
                 };
-
-                // Enable Drop on empty slot
                 content.addEventListener('dragover', (e) => { e.preventDefault(); content.classList.add('border-indigo-400', 'bg-slate-700'); });
                 content.addEventListener('dragleave', (e) => { e.preventDefault(); content.classList.remove('border-indigo-400', 'bg-slate-700'); });
                 content.addEventListener('drop', (e) => {
@@ -1115,17 +1343,14 @@ function renderBookViewer() {
                     }
                 });
             }
-
             slotContainer.appendChild(content);
             container.appendChild(slotContainer);
         });
-
         validateForm();
         return;
     }
 
     // --- BOOKLET LAYOUT ---
-
     if (pages.length === 0) {
          container.appendChild(createInsertBar(0));
          const empty = document.createElement('div');
@@ -1135,13 +1360,10 @@ function renderBookViewer() {
          return;
     }
 
-    // Insert Bar at Top (Index 0)
     container.appendChild(createInsertBar(0));
 
-    // First Spread (Page 1 - Right Only)
     const firstSpread = document.createElement('div');
     firstSpread.className = "spread-row flex justify-center items-end gap-0 mb-4 min-h-[100px] p-2 border border-transparent hover:border-dashed hover:border-gray-600 rounded";
-
     const spacer = document.createElement('div');
     spacer.style.width = `${width * pixelsPerInch}px`;
     spacer.className = "pointer-events-none";
@@ -1152,17 +1374,14 @@ function renderBookViewer() {
     }
     container.appendChild(firstSpread);
 
-    // Rest of pages
     let i = 1;
     while (i < pages.length) {
         container.appendChild(createInsertBar(i));
-
         const spreadDiv = document.createElement('div');
         spreadDiv.className = "spread-row flex justify-center items-end gap-0 mb-4 min-h-[100px] p-2 border border-transparent hover:border-dashed hover:border-gray-600 rounded";
 
         const isLeft = pages[i];
         const isRight = pages[i+1];
-
         let isLinkedSpread = false;
         if (isLeft && isRight && isLeft.sourceFileId && isLeft.sourceFileId === isRight.sourceFileId) {
             if (isLeft.id.endsWith('_L') && isRight.id.endsWith('_R')) {
@@ -1180,33 +1399,27 @@ function renderBookViewer() {
                 leftCard = createPageCard(pages[i], i, false, false, width, height, bleed, pixelsPerInch, observer);
                 spreadDiv.appendChild(leftCard);
             }
-
             let rightCard = null;
             if (i + 1 < pages.length) {
                 rightCard = createPageCard(pages[i+1], i+1, true, false, width, height, bleed, pixelsPerInch, observer);
                 spreadDiv.appendChild(rightCard);
             }
-
             if (leftCard) leftCard.style.flexShrink = '0';
             if (rightCard) rightCard.style.flexShrink = '0';
-
             if (!rightCard) {
                  const endSpacer = document.createElement('div');
                  endSpacer.style.width = `${width * pixelsPerInch}px`;
                  endSpacer.className = "pointer-events-none";
                  spreadDiv.appendChild(endSpacer);
             }
-
             i += 2;
         }
         container.appendChild(spreadDiv);
     }
 
     container.appendChild(createInsertBar(pages.length));
-
     validateForm();
 
-    // Sortable for Booklets
     const spreadDivs = container.querySelectorAll('.spread-row');
     spreadDivs.forEach(spreadDiv => {
         new Sortable(spreadDiv, {
@@ -1220,6 +1433,7 @@ function renderBookViewer() {
             ghostClass: 'opacity-50',
             onEnd: (evt) => {
                 try {
+                    saveState();
                     const allCards = document.querySelectorAll('.page-card');
                     const newOrderIds = Array.from(allCards).map(c => c.dataset.id);
                     const newPages = [];
@@ -1239,13 +1453,14 @@ function renderBookViewer() {
                     });
                     pages = newPages;
                     setTimeout(() => { requestAnimationFrame(() => renderBookViewer()); }, 50);
+                    renderMinimap();
                 } catch (err) { console.error("Error during drag reorder:", err); }
+                triggerAutosave();
             }
         });
     });
 }
 
-// --- Minimap Logic ---
 async function renderMinimap() {
     const container = document.getElementById('minimap-container');
     if (!container || projectType === 'single') {
@@ -1254,25 +1469,192 @@ async function renderMinimap() {
     }
 
     container.classList.remove('hidden');
+    
+    // 1. Diffing Strategy: Only rebuild if page count changed to prevent flickering
+    // For now, we will clear to ensure correctness, but ideally we diff.
     container.innerHTML = '';
 
-    // Render simplified thumbnails list
+    // 2. Observer Definition
+    const thumbObserver = new IntersectionObserver((entries, obs) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                const wrapper = entry.target;
+                const canvas = wrapper.querySelector('canvas');
+                
+                // Extract data from dataset
+                const indices = JSON.parse(wrapper.dataset.indices);
+                // Re-find pages (in case global 'pages' array shifted)
+                const pageList = indices.map(i => pages[i]).filter(p => p);
 
-    // Spread 0 (Page 1)
-    await addMinimapItem(container, [pages[0]], 0, "P1");
+                if (canvas && pageList.length > 0) {
+                    // Trigger Render
+                    populateMinimapCanvas(canvas.getContext('2d'), pageList, 150, 100)
+                        .catch(e => console.warn("Thumb render error", e));
+                }
+                
+                // Stop observing this element (it's loaded/loading)
+                obs.unobserve(wrapper);
+            }
+        });
+    }, { root: container, rootMargin: '50% 0px' }); // Preload 50% height ahead
 
-    // Spreads
+    // 3. Helper to create DOM elements
+    const createThumbDOM = (pageList, label) => {
+        const wrapper = document.createElement('div');
+        wrapper.className = "w-full aspect-[3/2] bg-slate-800 rounded cursor-pointer border border-transparent hover:border-indigo-500 transition-all relative overflow-hidden mb-2";
+        
+        // Store indices 
+        const indices = pageList.map(p => pages.indexOf(p));
+        wrapper.dataset.indices = JSON.stringify(indices);
+
+        // Click Handler
+        const targetPageId = pageList[0].id;
+        wrapper.onclick = () => {
+            let el = document.querySelector(`[data-id="${targetPageId}"]`);
+            if (!el) el = document.querySelector(`[data-id*=":${targetPageId}"]`);
+            if (el) {
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                el.classList.add('ring-2', 'ring-indigo-500');
+                setTimeout(() => el.classList.remove('ring-2', 'ring-indigo-500'), 1500);
+            }
+        };
+
+        const canvas = document.createElement('canvas');
+        canvas.width = 150; canvas.height = 100;
+        canvas.className = "w-full h-full object-contain";
+        // Assign ID for the "Push" update from main viewer
+        const compositeId = pageList.map(p => p.id).join('_');
+        canvas.id = `thumb-canvas-${compositeId}`;
+
+        // Draw Base
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#1e293b'; ctx.fillRect(0, 0, 150, 100);
+
+        const textDiv = document.createElement('div');
+        textDiv.className = "absolute bottom-1 right-1 bg-black/50 text-[10px] px-1 rounded text-white";
+        textDiv.textContent = label;
+
+        wrapper.appendChild(canvas);
+        wrapper.appendChild(textDiv);
+        container.appendChild(wrapper);
+
+        thumbObserver.observe(wrapper);
+    };
+
+    // 4. Spawn Loop
+    if (pages.length > 0) createThumbDOM([pages[0]], "P1");
+
     let i = 1;
     while(i < pages.length) {
         const p1 = pages[i];
         const p2 = pages[i+1];
         const label = p2 ? `P${i+1}-${i+2}` : `P${i+1}`;
-        await addMinimapItem(container, [p1, p2], i, label);
+        const list = p2 ? [p1, p2] : [p1];
+        createThumbDOM(list, label);
         i += 2;
     }
 }
 
-async function addMinimapItem(container, pageList, mainIndex, label) {
+async function populateMinimapCanvas(ctx, pageList, w, h) {
+    const margin = 5;
+    const pageW = (w - (margin*3)) / 2;
+    const pageH = h - (margin*2);
+    const leftX = margin;
+    const rightX = margin + pageW + margin;
+    const topY = margin;
+
+    // Helper
+    const drawPage = async (page, x, y) => {
+        ctx.fillStyle = '#ffffff'; 
+        ctx.fillRect(x, y, pageW, pageH);
+
+        if (!page || !page.sourceFileId) return;
+        const sourceEntry = sourceFiles[page.sourceFileId];
+        if (!sourceEntry) return;
+
+        // Force low-res render (0.25) via the queue system
+        // We use enqueueRender to ensure we don't clog the main thread,
+        // but we rely on browser cache to make it fast.
+        await drawFileWithTransform(
+            ctx, sourceEntry, x, y, pageW, pageH,
+            page.settings.scaleMode || 'fit',
+            page.settings.alignment || 'center',
+            page.pageIndex || 1,
+            page.id,
+            'full', 
+            0, 0, // Pan X/Y
+            0.25 // Force Scale
+        );
+    };
+
+    // Layout Logic
+    // Check if the first page in list is actually Page 1 (Right Only)
+    const isFirstPage = (pages.indexOf(pageList[0]) === 0);
+
+    if (isFirstPage) {
+        await drawPage(pageList[0], rightX, topY);
+    } else {
+        if (pageList[0]) await drawPage(pageList[0], leftX, topY);
+        if (pageList.length > 1 && pageList[1]) await drawPage(pageList[1], rightX, topY);
+    }
+}
+
+// --- NEW HELPER: Sync Main View to Thumbnail ---
+function updateThumbnailFromMain(page) {
+    // 1. Find the thumbnail canvas
+    // It might be a single ID or a composite spread ID.
+    // We search for any canvas ID containing the page ID.
+    const thumbCanvas = document.querySelector(`canvas[id*="thumb-canvas-"][id*="${page.id}"]`);
+    if (!thumbCanvas) return;
+
+    const ctx = thumbCanvas.getContext('2d');
+    const w = thumbCanvas.width;
+    const h = thumbCanvas.height;
+    
+    const margin = 5;
+    const pageW = (w - (margin*3)) / 2;
+    const pageH = h - (margin*2);
+    const leftX = margin;
+    const rightX = margin + pageW + margin;
+    const topY = margin;
+
+    // 2. Determine position on thumbnail
+    // If page index is 1 (first page), it's always on the Right
+    let x = leftX;
+    if (page.pageIndex === 1) {
+        x = rightX;
+    } else {
+        // Even index in array = Left, Odd = Right? 
+        // Actually, rely on the ID structure or page logic.
+        // Simplified: If it's the first ID in the spread string, it's Left.
+        if (thumbCanvas.id.includes(`${page.id}_`)) x = leftX; // Start of ID
+        else if (thumbCanvas.id.includes(`_${page.id}`)) x = rightX; // End of ID
+        
+        // Fallback for P1 which might be singular
+        if (pages.indexOf(page) === 0) x = rightX;
+    }
+
+    // 3. Draw the Full Res Cache onto the Thumbnail
+    const sourceEntry = sourceFiles[page.sourceFileId];
+    if (!sourceEntry) return;
+
+    drawFileWithTransform(
+        ctx, sourceEntry, x, topY, pageW, pageH,
+        page.settings.scaleMode || 'fit',
+        page.settings.alignment || 'center',
+        page.pageIndex || 1,
+        page.id,
+        'full', 
+        page.settings.panX || 0, 
+        page.settings.panY || 0,
+        0.25 // Request scale
+    ).then(() => {
+        // Optional: Flash/Highlight thumbnail to show it updated?
+    });
+}
+
+// Renamed from addMinimapItem to clearly signal it only creates the element.
+async function createMinimapItem(pageList, mainIndex, label) {
     const wrapper = document.createElement('div');
     wrapper.className = "w-full aspect-[3/2] bg-slate-800 rounded cursor-pointer border border-transparent hover:border-indigo-500 transition-all relative overflow-hidden";
 
@@ -1288,7 +1670,6 @@ async function addMinimapItem(container, pageList, mainIndex, label) {
         };
     }
 
-    // Canvas for thumbnail
     const canvas = document.createElement('canvas');
     const w = 150;
     const h = 100;
@@ -1297,66 +1678,64 @@ async function addMinimapItem(container, pageList, mainIndex, label) {
     canvas.className = "w-full h-full object-contain";
     const ctx = canvas.getContext('2d');
 
-    // Gray Background
     ctx.fillStyle = '#1e293b';
     ctx.fillRect(0, 0, w, h);
 
-    // Thumb Margin
     const margin = 5;
     const pageW = (w - (margin*3)) / 2;
     const pageH = h - (margin*2);
-
-    // Coordinates
     const leftX = margin;
     const rightX = margin + pageW + margin;
     const topY = margin;
 
-    // Helper to draw one page
     const drawThumbPage = async (page, x, y, w, h) => {
-        // Draw white paper base
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(x, y, w, h);
 
         if (!page || !page.sourceFileId) return;
-
         const sourceEntry = sourceFiles[page.sourceFileId];
         if (!sourceEntry) return;
 
-        // Reuse existing draw function but with specific target
         await drawFileWithTransform(
-            ctx,
-            sourceEntry,
-            x, y, w, h,
+            ctx, sourceEntry, x, y, w, h,
             page.settings.scaleMode || 'fit',
             page.settings.alignment || 'center',
             page.pageIndex || 1,
             page.id,
-            'full', // View mode full for thumbnail
+            'full',
             page.settings.panX || 0,
-            page.settings.panY || 0
+            page.settings.panY || 0,
+            0.25 // <--- NEW: Force low resolution for speed
         );
     };
 
+    // FIX: Use Promise.all to render both sides simultaneously
+    const renderPromises = [];
+
     if (pageList.length === 1 && mainIndex === 0) {
         // First page (Right)
-        await drawThumbPage(pageList[0], rightX, topY, pageW, pageH);
+        renderPromises.push(drawThumbPage(pageList[0], rightX, topY, pageW, pageH));
     } else if (pageList.length >= 1) {
         // Left Page
-        await drawThumbPage(pageList[0], leftX, topY, pageW, pageH);
-        // Right Page (if exists)
+        renderPromises.push(drawThumbPage(pageList[0], leftX, topY, pageW, pageH));
+        // Right Page
         if (pageList[1]) {
-            await drawThumbPage(pageList[1], rightX, topY, pageW, pageH);
+            renderPromises.push(drawThumbPage(pageList[1], rightX, topY, pageW, pageH));
         }
     }
 
-    // Label
+    // Wait for both to finish concurrently
+    await Promise.all(renderPromises);
+
+    // Add label
     const textDiv = document.createElement('div');
     textDiv.className = "absolute bottom-1 right-1 bg-black/50 text-[10px] px-1 rounded text-white";
     textDiv.textContent = label;
 
     wrapper.appendChild(canvas);
     wrapper.appendChild(textDiv);
-    container.appendChild(wrapper);
+    
+    return wrapper; 
 }
 
 // Global Pointer Event Handlers for Panning
@@ -1369,6 +1748,19 @@ let startPanX = 0;
 let startPanY = 0;
 let partnerStartPanX = 0;
 let partnerStartPanY = 0;
+let resizeTimeout;
+window.addEventListener('resize', () => {
+    clearTimeout(resizeTimeout);
+    resizeTimeout = setTimeout(() => {
+        // Only re-render if the logic requires dimension recalculations
+        // Usually, CSS handles fluid width, but we might need to recalc fitCoverToView
+        if (tabCover && !tabCover.classList.contains('text-gray-400')) {
+            fitCoverToView();
+        }
+        // If you want to re-render viewer on resize (e.g. to adjust resolution)
+        // renderBookViewer(); 
+    }, 200);
+});
 
 document.addEventListener('pointerdown', (e) => {
     const card = e.target.closest('[data-id]');
@@ -1776,123 +2168,159 @@ async function updatePageContent(pageId, file) {
 }
 
 async function renderPageCanvas(page, canvas) {
-    // Determine View based on index (Even = Right, Odd = Left)
-    // This ensures correct spread logic regardless of initial settings
     const pageIndex = pages.indexOf(page);
     const isRightPage = pageIndex === 0 || pageIndex % 2 === 0;
-
-    // For Loose Sheets, view is 'full' (no clipping)
     let view = isRightPage ? 'right' : 'left';
     if (projectType === 'single') view = 'full';
 
-    // Handle Blank Page
+    // 1. Handle Blank Page
     if (page.sourceFileId === null) {
         drawBlankPage(page, canvas, view);
         return;
     }
 
+    // 2. Validate Source
     const sourceEntry = sourceFiles[page.sourceFileId];
-    if (!sourceEntry || !projectSpecs.dimensions) return;
+    if (!sourceEntry) {
+        // Draw visual error on canvas if source is missing
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#f3f4f6'; ctx.fillRect(0,0,canvas.width, canvas.height);
+        ctx.fillStyle = '#ef4444'; ctx.font = '10px sans-serif'; 
+        ctx.fillText('Missing Source', 10, 20);
+        return;
+    }
 
-    // Unwrap Source (handle both raw File and server-processed object)
-    const isServer = sourceEntry.isServer;
-    const file = isServer ? sourceEntry.file : sourceEntry;
+    if (!projectSpecs || !projectSpecs.dimensions) return;
 
-    const ctx = canvas.getContext('2d', { alpha: false }); // Optimize alpha
+    // 3. Setup Canvas Dimensions & Scale
     const width = projectSpecs.dimensions.width;
     const height = projectSpecs.dimensions.height;
     const bleed = 0.125;
-
-    // Visual Scale for Thumbnails
-    // Use lower resolution for thumbnails (1.5x density max for retina, down to 1.0 if fast scrolling needed)
+    
     const visualScale = (250 * viewerScale) / ((width + bleed*2) * 96);
     const pixelsPerInch = 96 * visualScale;
-    const pixelDensity = 1.5; // Lowered from 2 to improve performance
+    const pixelDensity = 1.5; // Balance between sharpness and performance
 
     const totalW = width + (bleed*2);
     const totalH = height + (bleed*2);
 
     canvas.width = Math.ceil(totalW * pixelsPerInch * pixelDensity);
     canvas.height = Math.ceil(totalH * pixelsPerInch * pixelDensity);
-
-    // Style width/height is set by renderBookViewer container logic mostly,
-    // but we need to ensure the canvas element itself has the right size to be positioned.
-    // Use exact floats for CSS to let browser handle sub-pixels
+    
     canvas.style.width = `${totalW * pixelsPerInch}px`;
     canvas.style.height = `${totalH * pixelsPerInch}px`;
-
-    // Update position to ensure centering (in case scale changed)
-    // Vertical: Container includes bleed, Canvas includes bleed. Align Top.
     canvas.style.top = '0px';
+    
+    if (view === 'right') canvas.style.left = `-${bleed * pixelsPerInch}px`;
+    else canvas.style.left = '0px';
 
-    // Horizontal Alignment Logic
-    if (view === 'right') {
-        // Right Page: Canvas 0 is Left Bleed (Spine). Shift left to hide it.
-        canvas.style.left = `-${bleed * pixelsPerInch}px`;
-    } else if (view === 'left') {
-        // Left Page: Canvas 0 is Left Bleed (Outer Edge). Keep at 0.
-        canvas.style.left = '0px';
-    } else {
-        // Full View (Loose Sheets): Show everything.
-        canvas.style.left = '0px';
-    }
-
+    const ctx = canvas.getContext('2d', { alpha: false });
     ctx.setTransform(pixelDensity, 0, 0, pixelDensity, 0, 0);
     ctx.scale(pixelsPerInch, pixelsPerInch);
 
-    // Draw Sheet Background
+    // 4. Draw Background
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, totalW, totalH);
 
-    // Draw Content
-    // Pass additional Pan Settings
-    await drawFileWithTransform(ctx, sourceEntry, 0, 0, totalW, totalH, page.settings.scaleMode, page.settings.alignment, page.pageIndex, page.id, view, page.settings.panX, page.settings.panY);
+    // --- OPTIMIZATION 1: Blurry Placeholder ---
+    // Check if we have the low-res thumbnail cached. If so, draw it immediately.
+    try {
+        const file = sourceEntry.isServer ? null : sourceEntry.file;
+        const fileKey = sourceEntry.isServer ? (sourceEntry.storagePath || sourceEntry.previewUrl) : (file ? file.name : 'unknown');
+        const timestamp = (file && file.lastModified) ? file.lastModified : 'server';
+        
+        // Look for the 0.25 scale key
+        const thumbCacheKey = `${fileKey}_${page.pageIndex || 1}_${timestamp}_s0.25`;
 
-    // Guides
+        if (imageCache.has(thumbCacheKey)) {
+            const thumbBitmap = imageCache.get(thumbCacheKey);
+            if (thumbBitmap) {
+                // Calculate positioning for the placeholder (Match drawFileWithTransform logic)
+                const srcW = thumbBitmap.width;
+                const srcH = thumbBitmap.height;
+                const srcRatio = srcW / srcH;
+                const targetRatio = totalW / totalH;
+                
+                let drawW, drawH, drawX, drawY;
+                const mode = page.settings.scaleMode || 'fit';
+                const panX = page.settings.panX || 0;
+                const panY = page.settings.panY || 0;
+                
+                if (mode === 'stretch') { 
+                    drawW = totalW; drawH = totalH; 
+                } else if (mode === 'fit') {
+                    if (srcRatio > targetRatio) { drawW = totalW; drawH = totalW / srcRatio; }
+                    else { drawH = totalH; drawW = totalH * srcRatio; }
+                } else { // fill
+                    if (srcRatio > targetRatio) { drawH = totalH; drawW = totalH * srcRatio; }
+                    else { drawW = totalW; drawH = totalW / srcRatio; }
+                }
+                
+                drawX = (totalW - drawW) / 2 + (panX * totalW);
+                drawY = (totalH - drawH) / 2 + (panY * totalH);
+
+                ctx.save();
+                ctx.beginPath(); ctx.rect(0, 0, totalW, totalH); ctx.clip();
+                // Optional: ctx.filter = 'blur(2px)'; // Add blur if you want a "loading" effect
+                ctx.drawImage(thumbBitmap, drawX, drawY, drawW, drawH);
+                ctx.restore();
+            }
+        }
+    } catch (e) {
+        // Ignore placeholder errors, proceeding to main render
+    }
+    // ------------------------------------------
+
+    // 5. Draw File (High Res)
+    // This overwrites the placeholder with the sharp version
+    await drawFileWithTransform(
+        ctx, sourceEntry, 0, 0, totalW, totalH, 
+        page.settings.scaleMode, 
+        page.settings.alignment, 
+        page.pageIndex, 
+        page.id, 
+        view, 
+        page.settings.panX, 
+        page.settings.panY
+    );
+
+    // --- OPTIMIZATION 2: Sync to Thumbnail ---
+    // Push the loaded image to the sidebar so it doesn't have to load again
+    if (typeof updateThumbnailFromMain === 'function') {
+        updateThumbnailFromMain(page);
+    }
+    // ------------------------------------------
+
+    // 6. Draw Guides
+    const guideScale = pixelsPerInch / 72;
     const mockSpecs = {
         dimensions: { width: width, height: height, units: 'in' },
         bleedInches: bleed,
         safetyInches: 0.125
     };
 
-    // Scale for Guides: guides.js expects points.
-    const guideScale = pixelsPerInch / 72;
-
-    // Adjust renderInfo based on View Mode
-    let renderInfo;
-
+    let renderInfo = {
+        x: view === 'right' ? bleed * pixelsPerInch : 0,
+        y: 0,
+        width: view === 'left' ? (width + bleed) * pixelsPerInch : totalW * pixelsPerInch,
+        height: totalH * pixelsPerInch,
+        scale: guideScale,
+        isSpread: true,
+        isLeftPage: view === 'left'
+    };
+    
     if (view === 'full') {
-        // Loose Sheets: Render Full Canvas, No Clipping
-        renderInfo = {
-            x: 0,
-            y: 0,
-            width: totalW * pixelsPerInch,
-            height: totalH * pixelsPerInch,
-            scale: guideScale,
-            isSpread: false, // Full Bleed on all sides
-            isLeftPage: false
-        };
-    } else {
-        // Spread Logic
-        renderInfo = {
-            x: view === 'right' ? bleed * pixelsPerInch : 0,
-            y: 0,
-            width: view === 'left' ? (width + bleed) * pixelsPerInch : totalW * pixelsPerInch,
-            height: totalH * pixelsPerInch,
-            scale: guideScale,
-            isSpread: true,
-            isLeftPage: view === 'left'
-        };
+        renderInfo = { ...renderInfo, isSpread: false, width: totalW * pixelsPerInch };
     }
 
-    // Ensure guides are drawn on TOP.
     ctx.save();
     ctx.setTransform(pixelDensity, 0, 0, pixelDensity, 0, 0);
     drawGuides(ctx, mockSpecs, [renderInfo], { trim: true, bleed: true, safety: true });
     ctx.restore();
 }
 
-function drawBlankPage(page, canvas) {
+// Updated signature: Added 'view' parameter
+function drawBlankPage(page, canvas, view) { 
     if (!projectSpecs.dimensions) return;
 
     const ctx = canvas.getContext('2d');
@@ -1914,8 +2342,10 @@ function drawBlankPage(page, canvas) {
     canvas.style.width = `${totalW * pixelsPerInch}px`;
     canvas.style.height = `${totalH * pixelsPerInch}px`;
 
-    // Position logic (match renderPageCanvas)
+    // Position logic
     canvas.style.top = '0px';
+    
+    // 'view' is now available here
     if (view === 'right') {
         canvas.style.left = `-${bleed * pixelsPerInch}px`;
     } else {
@@ -1925,34 +2355,32 @@ function drawBlankPage(page, canvas) {
     ctx.setTransform(pixelDensity, 0, 0, pixelDensity, 0, 0);
     ctx.scale(pixelsPerInch, pixelsPerInch);
 
-    // 1. Draw Background (Light Gray to indicate empty)
-    ctx.fillStyle = '#f8fafc'; // Slate-50
+    // 1. Draw Background
+    ctx.fillStyle = '#f8fafc'; 
     ctx.fillRect(0, 0, totalW, totalH);
 
-    // 2. Draw Dashed Border or Icon
-    ctx.strokeStyle = '#cbd5e1'; // Slate-300
+    // 2. Draw Dashed Border
+    ctx.strokeStyle = '#cbd5e1'; 
     ctx.lineWidth = 2 / pixelsPerInch;
     ctx.setLineDash([10 / pixelsPerInch, 10 / pixelsPerInch]);
-    ctx.strokeRect(bleed, bleed, width, height); // Trim area
+    ctx.strokeRect(bleed, bleed, width, height);
     ctx.setLineDash([]);
 
     // 3. Text
-    ctx.fillStyle = '#94a3b8'; // Slate-400
+    ctx.fillStyle = '#94a3b8'; 
     ctx.font = 'italic 0.4px sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText("Drop File Here", totalW / 2, totalH / 2);
 
     // Draw Guides
-    const guideScale = pixelsPerInch / 72; // Correct for guides.js
+    const guideScale = pixelsPerInch / 72; 
     const mockSpecs = {
         dimensions: { width: width, height: height, units: 'in' },
         bleedInches: bleed,
         safetyInches: 0.125
     };
 
-    // Adjust renderInfo to align guides correctly within the partially cropped view
-    // Match logic from renderPageCanvas
     const renderInfo = {
         x: view === 'right' ? bleed * pixelsPerInch : 0,
         y: 0,
@@ -1969,208 +2397,116 @@ function drawBlankPage(page, canvas) {
     ctx.restore();
 }
 
-async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW, targetH, mode, align, pageIndex = 1, pageId = null, viewMode = 'full', panX = 0, panY = 0) {
-    // Handle blank pages (sourceEntry is null/undefined check usually handled by caller, but safe to keep)
+// Add 'forceScale' to the arguments (defaults to null)
+async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW, targetH, mode, align, pageIndex = 1, pageId = null, viewMode = 'full', panX = 0, panY = 0, forceScale = null) {
     if (!sourceEntry) return;
 
-    let imgBitmap;
-    let srcW, srcH;
-
     const isServer = sourceEntry.isServer;
-    const file = isServer ? sourceEntry.file : sourceEntry;
+    const file = isServer ? null : sourceEntry.file; 
     const status = sourceEntry.status || 'ready';
 
-    // --- 1. Check Status & Draw Throbber ---
     if (status === 'error') {
-        ctx.fillStyle = '#fee2e2';
-        ctx.fillRect(targetX, targetY, targetW, targetH);
-        ctx.fillStyle = '#ef4444';
-        ctx.font = '12px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText("Processing Failed", targetX + targetW/2, targetY + targetH/2);
-        return;
+        ctx.fillStyle = '#fee2e2'; ctx.fillRect(targetX, targetY, targetW, targetH); return;
     }
-
     if (status === 'processing' || status === 'uploading') {
-        // Draw the visual throbber on the canvas
-        drawProcessingState(ctx, targetX, targetY, targetW, targetH);
-        return;
+        drawProcessingState(ctx, targetX, targetY, targetW, targetH); return;
     }
 
-    // --- 2. Check Cache & Render ---
-    const cacheKey = (isServer ? sourceEntry.previewUrl : file.name) + '_' + pageIndex + '_' + (file.lastModified || 'server');
+    const fileKey = isServer ? (sourceEntry.storagePath || sourceEntry.previewUrl || 'server_url') : (file ? file.name : 'unknown_file');
+    const timestamp = (file && file.lastModified) ? file.lastModified : 'server_timestamp';
+    
+    // Generate unique keys for the requested scale AND the full scale version
+    const scaleKey = forceScale ? `_s${forceScale}` : '_full';
+    const cacheKey = `${fileKey}_${pageIndex}_${timestamp}${scaleKey}`;
+    const fullCacheKey = `${fileKey}_${pageIndex}_${timestamp}_full`; 
 
-    if (imageCache.has(cacheKey)) {
-        imgBitmap = imageCache.get(cacheKey);
-        srcW = imgBitmap.width;
-        srcH = imgBitmap.height;
-    } else {
-        // Render New
-        try {
-            if (isServer) {
-                // Load from Server Preview URL
-                const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
-                const pdf = await loadingTask.promise;
-                const page = await pdf.getPage(pageIndex);
+    let imgBitmap;
 
-                const viewport = page.getViewport({ scale: 1.0 });
-                const tempCanvas = document.createElement('canvas');
-                tempCanvas.width = viewport.width;
-                tempCanvas.height = viewport.height;
+    try {
+        // OPTIMIZATION: If requesting a thumbnail (forceScale), check if Full Version is already available/loading
+        // This prevents "double downloading" the PDF logic.
+        if (forceScale && (imageCache.has(fullCacheKey) || pendingLoadCache.has(fullCacheKey))) {
+            imgBitmap = await fetchBitmapWithCache(fullCacheKey, async () => null); 
+        } else {
+            // Normal Load
+            imgBitmap = await fetchBitmapWithCache(cacheKey, async () => {
+                // Use 0.25 for thumbnails, 1.5 for server viewer, 1.0 for local viewer
+                const renderScale = forceScale || (isServer ? 1.5 : 1.0); 
 
-                await page.render({
-                    canvasContext: tempCanvas.getContext('2d'),
-                    viewport: viewport
-                }).promise;
+                if (isServer) {
+                    if (!sourceEntry.previewUrl) return null; 
+                    let pdfDocPromise = remotePdfDocCache.get(fileKey);
+                    if (!pdfDocPromise) {
+                        const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
+                        pdfDocPromise = loadingTask.promise;
+                        remotePdfDocCache.set(fileKey, pdfDocPromise);
+                    }
+                    const pdf = await pdfDocPromise;
+                    const page = await pdf.getPage(pageIndex);
+                    const viewport = page.getViewport({ scale: renderScale }); 
+                    const tempCanvas = document.createElement('canvas');
+                    tempCanvas.width = viewport.width;
+                    tempCanvas.height = viewport.height;
+                    await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport: viewport }).promise;
+                    return createImageBitmap(tempCanvas);
 
-                imgBitmap = await createImageBitmap(tempCanvas);
-                imageCache.set(cacheKey, imgBitmap);
-                srcW = viewport.width;
-                srcH = viewport.height;
+                } else if (file && file.type === 'application/pdf') {
+                    let pdfDoc = pdfDocCache.get(file);
+                    if (!pdfDoc) {
+                        const arrayBuffer = await file.arrayBuffer(); 
+                        pdfDoc = pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                        pdfDocCache.set(file, pdfDoc);
+                    }
+                    const pdf = await pdfDoc;
+                    const page = await pdf.getPage(pageIndex);
+                    const viewport = page.getViewport({ scale: renderScale }); 
+                    const tempCanvas = document.createElement('canvas');
+                    tempCanvas.width = viewport.width;
+                    tempCanvas.height = viewport.height;
+                    await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport: viewport }).promise;
+                    return createImageBitmap(tempCanvas);
 
-            } else if (file.type === 'application/pdf') {
-                // Load Local PDF
-                let pdfDoc = pdfDocCache.get(file);
-                if (!pdfDoc) {
-                    const fileUrl = URL.createObjectURL(file);
-                    pdfDoc = pdfjsLib.getDocument(fileUrl).promise;
-                    pdfDocCache.set(file, pdfDoc);
+                } else if (file && file.type.startsWith('image/')) {
+                    return createImageBitmap(file);
                 }
-
-                const pdf = await pdfDoc;
-                const page = await pdf.getPage(pageIndex);
-                const viewport = page.getViewport({ scale: 1.0 });
-                const tempCanvas = document.createElement('canvas');
-                tempCanvas.width = viewport.width;
-                tempCanvas.height = viewport.height;
-
-                await page.render({
-                    canvasContext: tempCanvas.getContext('2d'),
-                    viewport: viewport
-                }).promise;
-
-                imgBitmap = await createImageBitmap(tempCanvas);
-                imageCache.set(cacheKey, imgBitmap);
-                srcW = viewport.width;
-                srcH = viewport.height;
-
-            } else if (file.type.startsWith('image/')) {
-                // Load Local Image
-                imgBitmap = await createImageBitmap(file);
-                imageCache.set(cacheKey, imgBitmap);
-                srcW = imgBitmap.width;
-                srcH = imgBitmap.height;
-            }
-        } catch (e) {
-            console.error("Render Error", e);
-            return; 
+                return null;
+            });
         }
-    }
-
-    if (!imgBitmap) {
-        ctx.fillStyle = '#f1f5f9';
-        ctx.fillRect(targetX, targetY, targetW, targetH);
-        return;
-    }
-
-    // --- 3. Transform Logic ---
-    const srcRatio = srcW / srcH;
-    const targetRatio = targetW / targetH;
-    let drawW, drawH, drawX, drawY;
-
-    if (mode === 'stretch') {
-        drawW = targetW;
-        drawH = targetH;
-    } else if (mode === 'fit') {
-        if (srcRatio > targetRatio) {
-            drawW = targetW;
-            drawH = targetW / srcRatio;
-        } else {
-            drawH = targetH;
-            drawW = targetH * srcRatio;
+        
+        if (!imgBitmap) {
+            ctx.fillStyle = '#f1f5f9'; ctx.fillRect(targetX, targetY, targetW, targetH); return;
         }
-    } else { // fill
-        if (srcRatio > targetRatio) {
-            drawH = targetH;
-            drawW = targetH * srcRatio;
-        } else {
-            drawW = targetW;
-            drawH = targetW / srcRatio;
+
+        // --- Draw Logic ---
+        const srcW = imgBitmap.width;
+        const srcH = imgBitmap.height;
+        const srcRatio = srcW / srcH;
+        const targetRatio = targetW / targetH;
+        let drawW, drawH, drawX, drawY;
+
+        if (mode === 'stretch') { drawW = targetW; drawH = targetH; } 
+        else if (mode === 'fit') {
+            if (srcRatio > targetRatio) { drawW = targetW; drawH = targetW / srcRatio; }
+            else { drawH = targetH; drawW = targetH * srcRatio; }
+        } else { 
+            if (srcRatio > targetRatio) { drawH = targetH; drawW = targetH * srcRatio; }
+            else { drawW = targetW; drawH = targetW / srcRatio; }
         }
+
+        drawX = targetX + (targetW - drawW) / 2 + (panX * targetW);
+        drawY = targetY + (targetH - drawH) / 2 + (panY * targetH);
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(targetX, targetY, targetW, targetH);
+        ctx.clip();
+        ctx.drawImage(imgBitmap, drawX, drawY, drawW, drawH);
+        ctx.restore();
+
+    } catch (e) {
+        console.error("Draw Render Error:", e);
+        ctx.fillStyle = '#fee2e2'; ctx.fillRect(targetX, targetY, targetW, targetH);
     }
-
-    drawX = targetX + (targetW - drawW) / 2 + (panX * targetW);
-    drawY = targetY + (targetH - drawH) / 2 + (panY * targetH);
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(targetX, targetY, targetW, targetH);
-    ctx.clip();
-    ctx.drawImage(imgBitmap, drawX, drawY, drawW, drawH);
-    ctx.restore();
-}
-
-
-// --- Listeners for Interior Builder ---
-if (addInteriorFileBtn) {
-    addInteriorFileBtn.addEventListener('click', () => hiddenInteriorInput.click());
-    hiddenInteriorInput.addEventListener('change', (e) => addInteriorFiles(e.target.files));
-}
-
-if (fileInteriorDrop) {
-    fileInteriorDrop.addEventListener('change', (e) => addInteriorFiles(e.target.files));
-    setupDropZone('file-interior-drop'); // Enable drag/drop styles
-}
-
-
-// Defined at top level so it's accessible
-function setAllScaleMode(mode) {
-    if (confirm(`Set all pages to ${mode}?`)) {
-        pages.forEach(p => {
-            p.settings.scaleMode = mode;
-        });
-        renderBookViewer();
-    }
-}
-
-if (setAllFitBtn) setAllFitBtn.onclick = () => setAllScaleMode('fit');
-if (setAllFillBtn) setAllFillBtn.onclick = () => setAllScaleMode('fill');
-if (setAllStretchBtn) setAllStretchBtn.onclick = () => setAllScaleMode('stretch');
-
-if (viewerZoom) {
-    viewerZoom.addEventListener('input', (e) => {
-        viewerScale = parseFloat(e.target.value);
-        renderBookViewer();
-    });
-}
-
-if (coverZoomInput) {
-    coverZoomInput.addEventListener('input', (e) => {
-        coverZoom = parseFloat(e.target.value);
-        renderCoverPreview();
-    });
-}
-
-if (jumpToPageInput) {
-    jumpToPageInput.addEventListener('change', (e) => {
-        const pageNum = parseInt(e.target.value);
-        if (isNaN(pageNum) || pageNum < 1) return;
-
-        const pageIndex = pageNum - 1;
-        if (pageIndex >= 0 && pageIndex < pages.length) {
-            const pageId = pages[pageIndex].id;
-            const card = document.querySelector(`[data-id="${pageId}"]`);
-            if (card) {
-                card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                // Highlight momentarily
-                card.classList.add('ring-2', 'ring-indigo-500');
-                setTimeout(() => card.classList.remove('ring-2', 'ring-indigo-500'), 1500);
-            }
-        } else {
-            alert("Page number out of range.");
-        }
-    });
 }
 
 
@@ -2181,13 +2517,17 @@ function calculateSpineWidth(specs) {
 
     const paper = HARDCODED_PAPER_TYPES.find(p => p.name === specs.paperType);
     const caliper = paper ? paper.caliper : 0.004; // Fallback default
-    const pageCount = specs.pageCount || 0;
+    
+    // Use actual page count from builder if available
+    // 'pages' is the global array storing the internal book pages
+    let count = (typeof pages !== 'undefined' && pages.length > 0) ? pages.length : (specs.pageCount || 0);
 
-    // Simple calculation: (Pages / 2) * Caliper
-    // (Assuming caliper is per sheet, i.e., 2 pages)
-    let width = (pageCount / 2) * caliper;
+    // Calculate sheets (2 pages = 1 sheet)
+    // We use Math.ceil because an odd number of pages (e.g., 3) still uses 2 physical sheets of paper
+    const sheets = Math.ceil(count / 2);
+    
+    let width = sheets * caliper;
 
-    // Ensure minimum spine for glue if needed (optional logic)
     return Math.max(0, width);
 }
 
@@ -2395,72 +2735,70 @@ async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageI
     if (!sourceEntry) return;
 
     let file, status, isServer, previewUrl;
-
     if (sourceEntry instanceof File) {
-        file = sourceEntry;
-        status = 'ready';
-        isServer = false;
+        file = sourceEntry; status = 'ready'; isServer = false;
     } else {
-        file = sourceEntry.file;
-        status = sourceEntry.status;
-        isServer = sourceEntry.isServer;
-        previewUrl = sourceEntry.previewUrl;
+        file = sourceEntry.file; status = sourceEntry.status; isServer = sourceEntry.isServer; previewUrl = sourceEntry.previewUrl;
     }
 
     if (!file && !isServer) return;
 
-    if (status === 'processing' || status === 'uploading') {
-        drawProcessingState(ctx, x, y, targetW, targetH);
-        return;
-    }
-    
-    if (status === 'error') {
-        ctx.fillStyle = '#fee2e2'; 
-        ctx.fillRect(x, y, targetW, targetH);
-        return;
-    }
+    if (status === 'processing' || status === 'uploading') { drawProcessingState(ctx, x, y, targetW, targetH); return; }
+    if (status === 'error') { ctx.fillStyle = '#fee2e2'; ctx.fillRect(x, y, targetW, targetH); return; }
+
+    const fileKey = isServer ? (sourceEntry.storagePath || previewUrl || 'server_url') : (file ? file.name : 'unknown_file');
+    const timestamp = (file && file.lastModified) ? file.lastModified : 'server_timestamp';
+    const cacheKey = `${fileKey}_${pageIndex}_${timestamp}_cover`;
 
     let imgBitmap;
-    // Use a distinct cache key for cover (scale 2) vs interior (scale 1)
-    const cacheKey = (isServer ? previewUrl : file.name) + '_' + pageIndex + '_' + (file.lastModified || 'server') + '_cover';
 
     try {
-        if (imageCache.has(cacheKey)) {
-            imgBitmap = imageCache.get(cacheKey);
-        } else {
-            // Render New
+        imgBitmap = await fetchBitmapWithCache(cacheKey, async () => {
             if (isServer) {
-                const loadingTask = pdfjsLib.getDocument(previewUrl);
-                const pdf = await loadingTask.promise;
-                const page = await pdf.getPage(pageIndex);
-                const viewport = page.getViewport({ scale: 2 }); // High res for cover
-                const cvs = document.createElement('canvas');
-                cvs.width = viewport.width; cvs.height = viewport.height;
-                await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
-                imgBitmap = await createImageBitmap(cvs);
+                // --- FIX: Remote Document Caching ---
+                const docCacheKey = sourceEntry.storagePath || previewUrl;
+                let pdfDocPromise = remotePdfDocCache.get(docCacheKey);
 
-            } else if (file && file.type === 'application/pdf') {
-                const arrayBuffer = await file.arrayBuffer();
-                const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
+                if (!pdfDocPromise) {
+                    const loadingTask = pdfjsLib.getDocument(previewUrl);
+                    pdfDocPromise = loadingTask.promise;
+                    remotePdfDocCache.set(docCacheKey, pdfDocPromise);
+                }
+                const pdf = await pdfDocPromise;
+                // --- END FIX ---
+                
                 const page = await pdf.getPage(pageIndex);
                 const viewport = page.getViewport({ scale: 2 });
                 const cvs = document.createElement('canvas');
                 cvs.width = viewport.width; cvs.height = viewport.height;
                 await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
-                imgBitmap = await createImageBitmap(cvs);
+                return createImageBitmap(cvs);
+
+            } else if (file && file.type === 'application/pdf') {
+                // Local PDF logic (using ArrayBuffer and pdfDocCache)
+                let pdfDoc = pdfDocCache.get(file);
+                if (!pdfDoc) {
+                    const arrayBuffer = await file.arrayBuffer();
+                    pdfDoc = pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                    pdfDocCache.set(file, pdfDoc);
+                }
+                const pdf = await pdfDoc;
+                const page = await pdf.getPage(pageIndex);
+                const viewport = page.getViewport({ scale: 2 });
+                const cvs = document.createElement('canvas');
+                cvs.width = viewport.width; cvs.height = viewport.height;
+                await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+                return createImageBitmap(cvs);
 
             } else if (file && file.type.startsWith('image/')) {
-                imgBitmap = await createImageBitmap(file);
+                return createImageBitmap(file);
             }
-
-            if (imgBitmap) {
-                imageCache.set(cacheKey, imgBitmap);
-            }
-        }
+            return null;
+        });
 
         if (!imgBitmap) return;
 
-        // Drawing Logic
+        // Drawing Logic (remains the same)
         const srcW = imgBitmap.width;
         const srcH = imgBitmap.height;
         const srcRatio = srcW / srcH;
@@ -2468,32 +2806,15 @@ async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageI
 
         let drawW, drawH, drawX, drawY;
 
-        if (scaleMode === 'stretch') {
-            drawW = targetW;
-            drawH = targetH;
-            drawX = x;
-            drawY = y;
-        } else if (scaleMode === 'fit') {
-            if (srcRatio > targetRatio) {
-                drawW = targetW;
-                drawH = targetW / srcRatio;
-            } else {
-                drawH = targetH;
-                drawW = targetH * srcRatio;
-            }
-            drawX = x + (targetW - drawW) / 2;
-            drawY = y + (targetH - drawH) / 2;
+        if (scaleMode === 'stretch') { drawW = targetW; drawH = targetH; drawX = x; drawY = y; }
+        else if (scaleMode === 'fit') {
+            if (srcRatio > targetRatio) { drawW = targetW; drawH = targetW / srcRatio; }
+            else { drawH = targetH; drawW = targetH * srcRatio; }
+            drawX = x + (targetW - drawW) / 2; drawY = y + (targetH - drawH) / 2;
         } else {
-            // Fill
-            if (srcRatio > targetRatio) {
-                drawH = targetH;
-                drawW = targetH * srcRatio;
-            } else {
-                drawW = targetW;
-                drawH = targetW / srcRatio;
-            }
-            drawX = x + (targetW - drawW) / 2;
-            drawY = y + (targetH - drawH) / 2;
+            if (srcRatio > targetRatio) { drawH = targetH; drawW = targetH * srcRatio; }
+            else { drawW = targetW; drawH = targetW / srcRatio; }
+            drawX = x + (targetW - drawW) / 2; drawY = y + (targetH - drawH) / 2;
         }
 
         ctx.save();
@@ -2603,6 +2924,22 @@ function refreshBuilderUI() {
     // Update Header Nav
     if (navBackBtn) navBackBtn.classList.remove('hidden');
 
+    // --- 1. INJECT AUTOSAVE STATUS INDICATOR ---
+    const headerActions = document.getElementById('submit-button')?.parentElement;
+    if (headerActions && !document.getElementById('save-progress-btn')) {
+        const statusIndicator = document.createElement('button'); 
+        statusIndicator.id = 'save-progress-btn';
+        statusIndicator.type = 'button';
+        statusIndicator.className = 'mr-4 text-xs font-medium text-gray-400 flex items-center transition-colors hover:text-white cursor-pointer';
+        statusIndicator.innerHTML = `
+            <svg class="w-4 h-4 text-green-500 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+            <span>All changes saved</span>
+        `;
+        statusIndicator.addEventListener('click', () => triggerAutosave()); 
+        headerActions.insertBefore(statusIndicator, document.getElementById('submit-button'));
+    }
+
+    // --- 2. INJECT SPINE MODE SELECTOR ---
     const spineGroup = document.getElementById('spine-upload-group');
     if (spineGroup && !document.getElementById('spine-mode-select')) {
         const wrapper = document.createElement('div');
@@ -2617,45 +2954,43 @@ function refreshBuilderUI() {
                 <option value="wrap-back-stretch">Stretch Back</option>
             </select>
         `;
-        // Insert before the upload box
         spineGroup.insertBefore(wrapper, spineGroup.querySelector('.drop-zone'));
 
-        // Listener
-        document.getElementById('spine-mode-select').addEventListener('change', (e) => {
+        const selectEl = document.getElementById('spine-mode-select');
+
+        // --- RESTORE VALUE IF EXISTS ---
+        if (window.currentSpineMode) {
+            selectEl.value = window.currentSpineMode;
+            const dropZone = spineGroup.querySelector('.drop-zone');
+            if (window.currentSpineMode === 'file') dropZone.classList.remove('hidden');
+            else dropZone.classList.add('hidden');
+        }
+
+        selectEl.addEventListener('change', (e) => {
             window.currentSpineMode = e.target.value;
             const dropZone = spineGroup.querySelector('.drop-zone');
-            
-            // Hide/Show Dropzone based on mode
-            if (e.target.value === 'file') {
-                dropZone.classList.remove('hidden');
-            } else {
-                dropZone.classList.add('hidden');
-            }
+            if (e.target.value === 'file') dropZone.classList.remove('hidden');
+            else dropZone.classList.add('hidden');
             renderCoverPreview();
+            triggerAutosave(); 
         });
     }
 
-    // Show/Hide Tabs based on project type
+    // --- 3. CONFIGURE TABS & TOOLBARS ---
+    // ... (Same as your existing code) ...
     if (projectType === 'single') {
-        // For Loose Sheets
         if (builderTabs) builderTabs.classList.add('hidden');
         if (contentCover) contentCover.classList.add('hidden');
         if (contentInterior) contentInterior.classList.remove('hidden');
-
-        // Toolbar Adjustments
         if (toolbarJump) toolbarJump.classList.add('hidden');
         if (toolbarActionsBooklet) toolbarActionsBooklet.classList.add('hidden');
         if (toolbarSpreadUpload) toolbarSpreadUpload.classList.add('hidden');
-
     } else {
-        // Booklet
         if (builderTabs) builderTabs.classList.remove('hidden');
         if (toolbarJump) toolbarJump.classList.remove('hidden');
         if (toolbarActionsBooklet) toolbarActionsBooklet.classList.remove('hidden');
         if (toolbarSpreadUpload) toolbarSpreadUpload.classList.remove('hidden');
 
-        // --- IMPROVEMENT 1: INJECT UNDO BUTTON ---
-        // We check if it exists first to prevent duplicates if refresh is called multiple times
         if (!document.getElementById('undo-btn')) {
             const toolbar = document.getElementById('toolbar-actions-booklet');
             if (toolbar) {
@@ -2664,72 +2999,32 @@ function refreshBuilderUI() {
                 undoBtn.type = 'button';
                 undoBtn.className = 'text-xs bg-slate-700 hover:bg-slate-600 text-gray-200 px-3 py-1.5 rounded border border-slate-600 transition-colors opacity-50 flex items-center gap-1';
                 undoBtn.innerHTML = '↶ Undo';
-                undoBtn.onclick = window.undo; // Calls the global undo function
+                undoBtn.onclick = () => {
+                    window.undo();
+                    triggerAutosave(); 
+                };
                 undoBtn.disabled = true;
                 toolbar.prepend(undoBtn);
             }
         }
 
-        // Configure Cover Builder
-        const spineGroup = document.getElementById('spine-upload-group');
-        
         if (projectSpecs.binding === 'saddleStitch') {
-            // Hide Spine Upload & Display completely for Saddle Stitch
             if (spineGroup) spineGroup.classList.add('hidden');
         } else {
             if (spineGroup) spineGroup.classList.remove('hidden');
-
-            // --- IMPROVEMENT 2: INJECT SPINE MODE SELECTOR ---
-            // Only for Perfect Bound, and only if we haven't created it yet
-            if (spineGroup && !document.getElementById('spine-mode-select')) {
-                const wrapper = document.createElement('div');
-                wrapper.className = "mb-2 flex justify-between items-center";
-                wrapper.innerHTML = `
-                    <label class="text-xs font-medium text-gray-400">Spine Mode</label>
-                    <select id="spine-mode-select" class="text-xs bg-slate-900 border border-slate-600 rounded px-2 py-1 text-white focus:outline-none">
-                        <option value="file">Upload File</option>
-                        <option value="wrap-front">Wrap Front</option>
-                        <option value="wrap-back">Wrap Back</option>
-                    </select>
-                `;
-                
-                // Insert before the drop-zone container
-                const dropZone = spineGroup.querySelector('.drop-zone');
-                if (dropZone) {
-                    spineGroup.insertBefore(wrapper, dropZone);
-                }
-
-                // Add Change Listener
-                document.getElementById('spine-mode-select').addEventListener('change', (e) => {
-                    window.currentSpineMode = e.target.value;
-                    
-                    // Show/Hide Dropzone based on selection
-                    if (e.target.value === 'file') {
-                        dropZone.classList.remove('hidden');
-                    } else {
-                        dropZone.classList.add('hidden');
-                    }
-                    
-                    // Refresh Preview
-                    renderCoverPreview();
-                });
-            }
         }
 
-        // Default to Interior Tab
         if (tabInterior) tabInterior.click();
     }
 }
 
 async function initializeBuilder() {
     if (builderInitialized) {
-        // If already initialized, just re-render with new specs
         renderBookViewer();
         validateForm();
         return;
     }
 
-    // Restore State from Persistence (only on first load)
     if (projectId !== 'mock-project-id') {
         await restoreBuilderState();
     }
@@ -2738,13 +3033,17 @@ async function initializeBuilder() {
     renderBookViewer();
     validateForm();
 
+    // FIX: Defer Minimap rendering to allow main pages to start first and render concurrently in the background
+    setTimeout(() => {
+         renderMinimap(); 
+    }, 100); 
+    
     builderInitialized = true;
 }
 
 async function drawWrapper(ctx, sourceEntry, targetX, targetY, targetW, targetH, type, isFrontSource, neighborWidth, pageIndex = 1) {
     if (!sourceEntry) return;
 
-    // --- Status Handling ---
     const status = sourceEntry.status || 'ready';
     if (status === 'processing' || status === 'uploading') {
         drawProcessingState(ctx, targetX, targetY, targetW, targetH);
@@ -2756,33 +3055,60 @@ async function drawWrapper(ctx, sourceEntry, targetX, targetY, targetW, targetH,
         return;
     }
 
-    // --- Load Image ---
-    const file = sourceEntry.file;
+    const isServer = sourceEntry.isServer;
+    const file = isServer ? null : sourceEntry.file;
+    
+    const fileKey = isServer ? (sourceEntry.storagePath || sourceEntry.previewUrl || 'server_url') : (file ? file.name : 'unknown_file');
+    const timestamp = (file && file.lastModified) ? file.lastModified : 'server_timestamp';
+    const cacheKey = `${fileKey}_${pageIndex}_${timestamp}_wrapper`;
+
     let imgBitmap;
+
     try {
-        if (sourceEntry.isServer) {
-             const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
-             const pdf = await loadingTask.promise;
-             const page = await pdf.getPage(pageIndex); 
-             const viewport = page.getViewport({ scale: 2 });
-             const cvs = document.createElement('canvas');
-             cvs.width = viewport.width; cvs.height = viewport.height;
-             await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
-             imgBitmap = await createImageBitmap(cvs);
-        } else if (file && file.type === 'application/pdf') {
-             const pdf = await pdfjsLib.getDocument(URL.createObjectURL(file)).promise;
-             const page = await pdf.getPage(pageIndex); 
-             const viewport = page.getViewport({ scale: 2 });
-             const cvs = document.createElement('canvas');
-             cvs.width = viewport.width; cvs.height = viewport.height;
-             await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
-             imgBitmap = await createImageBitmap(cvs);
-        } else if (file && file.type.startsWith('image/')) {
-            imgBitmap = await createImageBitmap(file);
-        } else {
-            return;
-        }
-    } catch(e) { return; }
+        imgBitmap = await fetchBitmapWithCache(cacheKey, async () => {
+            if (isServer) {
+                if (!sourceEntry.previewUrl) return null;
+
+                let pdfDocPromise = remotePdfDocCache.get(fileKey);
+                if (!pdfDocPromise) {
+                    const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
+                    pdfDocPromise = loadingTask.promise;
+                    remotePdfDocCache.set(fileKey, pdfDocPromise);
+                }
+                const pdf = await pdfDocPromise;
+                const page = await pdf.getPage(pageIndex);
+                const viewport = page.getViewport({ scale: 2 });
+                const cvs = document.createElement('canvas');
+                cvs.width = viewport.width; cvs.height = viewport.height;
+                await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+                return createImageBitmap(cvs);
+
+            } else if (file && file.type === 'application/pdf') {
+                let pdfDoc = pdfDocCache.get(file);
+                if (!pdfDoc) {
+                    const arrayBuffer = await file.arrayBuffer();
+                    pdfDoc = pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                    pdfDocCache.set(file, pdfDoc);
+                }
+                const pdf = await pdfDoc;
+                const page = await pdf.getPage(pageIndex);
+                const viewport = page.getViewport({ scale: 2 });
+                const cvs = document.createElement('canvas');
+                cvs.width = viewport.width; cvs.height = viewport.height;
+                await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+                return createImageBitmap(cvs);
+
+            } else if (file && file.type.startsWith('image/')) {
+                return createImageBitmap(file);
+            }
+            return null;
+        });
+    } catch(e) { 
+        console.error("Wrapper render error:", e);
+        return; 
+    }
+
+    if (!imgBitmap) return;
 
     // --- Draw Logic ---
     ctx.save();
@@ -2794,20 +3120,39 @@ async function drawWrapper(ctx, sourceEntry, targetX, targetY, targetW, targetH,
     const scaledW = imgBitmap.width * scale;
     
     if (isFrontSource) { 
+        // Mirror Front: Flip horizontally, draw from right edge
         ctx.translate(targetX + targetW, targetY);
         ctx.scale(-1, 1); 
+        // Draw image so the "spine" part (left edge of front cover) meets the actual spine
         ctx.drawImage(imgBitmap, 0, 0, imgBitmap.width, imgBitmap.height, 0, 0, scaledW, targetH);
     } else { 
+        // Mirror Back: Flip horizontally, draw from left edge
         ctx.translate(targetX, targetY);
         ctx.scale(-1, 1);
+        // Draw image so the "spine" part (right edge of back cover) meets the actual spine
+        // We draw at negative width because we want the rightmost part of the image to be at x=0 (after flip)
         ctx.drawImage(imgBitmap, 0, 0, imgBitmap.width, imgBitmap.height, -scaledW, 0, scaledW, targetH);
     }
     ctx.restore();
 }
 
-// --- Main Initialization ---
+// --- Main Initialization (Trust-Optimized) ---
 async function init() {
+    // FIX: Clear lingering inputs
+    if (insertFileInput) insertFileInput.value = '';
+    if (hiddenInteriorInput) hiddenInteriorInput.value = '';
+    if (fileInteriorDrop) fileInteriorDrop.value = '';
+    
     populateSelects();
+
+    // 1. Show Loading State immediately with specific text
+    loadingState.classList.remove('hidden');
+    uploadContainer.classList.add('hidden');
+    
+    // Optional: Update loading text to be more descriptive
+    const loadingText = loadingState.querySelector('p') || loadingState;
+    // Store original text to revert later if needed, or just set it
+    if(loadingText) loadingText.textContent = "Accessing secure upload portal...";
 
     const { projectId: pId, guestToken: gToken } = getUrlParams();
     projectId = pId;
@@ -2819,7 +3164,7 @@ async function init() {
     }
 
     try {
-        // 1. Authenticate via Backend (Custom Token)
+        // 2. Authenticate
         const authenticateGuest = httpsCallable(functions, 'authenticateGuest');
         const authResult = await authenticateGuest({ projectId, guestToken });
 
@@ -2827,10 +3172,9 @@ async function init() {
             throw new Error("Failed to obtain access token.");
         }
 
-        // Sign in with the custom token
         await signInWithCustomToken(auth, authResult.data.token);
 
-        // 2. Fetch Project Details
+        // 3. Fetch Project Data
         const projectRef = doc(db, 'projects', projectId);
         const projectSnap = await getDoc(projectRef);
 
@@ -2844,55 +3188,61 @@ async function init() {
         projectType = projectData.projectType || 'single'; 
         projectSpecs = projectData.specs || {}; 
 
-        // Ensure dimensions are resolved to object locally
         if (projectSpecs.dimensions) {
             projectSpecs.dimensions = resolveDimensions(projectSpecs.dimensions);
         }
 
-        loadingState.classList.add('hidden');
-
-        // --- Check Specs ---
-        let specsMissing = false;
-        const specs = projectSpecs;
-
-        // Check Dimensions
-        let dimValid = false;
-        if (typeof specs.dimensions === 'object' && specs.dimensions.width && specs.dimensions.height) dimValid = true;
-        if (!dimValid) specsMissing = true;
-
-        // Check Binding
-        if (!specs.binding) specsMissing = true;
-
-        // --- REMOVED REDUNDANT BLOCK HERE ---
-
-        // 5. Setup UI based on type
+        // 4. UI Setup
         bookletUploadSection.classList.remove('hidden');
-
         updateFileName('file-cover-front', 'file-name-cover-front');
         updateFileName('file-spine', 'file-name-spine');
         updateFileName('file-cover-back', 'file-name-cover-back');
 
-        // 6. Finalize State & Initialize
+        // 5. Logic Check
+        let specsMissing = false;
+        let dimValid = false;
+        if (typeof projectSpecs.dimensions === 'object' && projectSpecs.dimensions.width) dimValid = true;
+        if (!dimValid || !projectSpecs.binding) specsMissing = true;
+
         if (specsMissing) {
-            // Show Modal if specs are missing
+            // If specs are missing, we can lift the curtain immediately to show the form
+            loadingState.classList.add('hidden');
             specsModal.classList.remove('hidden');
             populateSpecsForm();
-            // STOP HERE: Do not render viewer until specs are saved via the form
         } else {
-            // Specs exist, show upload UI directly
-            uploadContainer.classList.remove('hidden');
-            refreshBuilderUI();
+            // 6. RESTORE STATE (Behind the curtain)
+            if(loadingText) loadingText.textContent = "Restoring project files...";
             
-            // Safe to initialize builder (renders viewer)
+            // Refresh UI elements (Tabs, buttons)
+            refreshBuilderUI();
+
+            // Await the FULL restoration (downloading URLs)
+            await restoreBuilderState(); 
+
+            // Initialize Builder (Creates the DOM elements for the viewer)
             await initializeBuilder();
+
+            // 7. CRITICAL: Force the first page to paint pixels
+            if (pages.length > 0) {
+                if(loadingText) loadingText.textContent = "Rendering preview...";
+                // This now ACTUALLY renders the pixels, it doesn't just wait
+                await waitForFirstPageRender(); 
+            }
+
+            // 8. REVEAL (The Perfect Frame)
+            loadingState.classList.add('hidden');
+            uploadContainer.classList.remove('hidden');
+            
+            // Recalculate layout now that elements have dimension
+            setTimeout(() => {
+                fitCoverToView();
+                renderMinimap();
+            }, 50);
         }
 
     } catch (err) {
         console.error('Init Error:', err);
-        let msg = 'An error occurred while loading the page. Please try again.';
-        if (err.message.includes('expired')) msg = 'This link has expired.';
-        if (err.message.includes('Invalid')) msg = 'Invalid guest link.';
-        showError(msg);
+        showError('An error occurred: ' + err.message);
     }
 }
 
@@ -2901,49 +3251,33 @@ async function init() {
 // (Removed unused saveBuilderState function)
 
 // We'll modify the submit handler to call this with the paths.
-async function persistStateAfterSubmit(uploadedPaths) {
+async function persistStateAfterSubmit(allSourcePaths, status = 'draft') {
     if (!projectId) return;
 
     try {
-        // Update sourceFiles with new storage paths so they can be restored
-        // We need a persistent map of sourceId -> storagePath
-        const persistentSources = {};
-
-        // Merge existing sources with new uploads
-        // We need to look at `pages` to see what sources are used.
-        // And we need to see if we have a storage path for them.
-
-        // Current `sourceFiles` key is the sourceId.
-        // `uploadedPaths` maps sourceId -> storagePath.
-
-        // We also need to keep track of sources that were ALREADY uploaded (from previous session).
-        // So we need to load existing persistentSources first?
-        // Or we just store the map in Firestore.
-
         const projectRef = doc(db, 'projects', projectId);
-        const projectDoc = await getDoc(projectRef);
-        const existingState = projectDoc.data().guestBuilderState || {};
-        const existingSources = existingState.sourceFiles || {};
-
-        // Merge
-        for (const [id, path] of Object.entries(uploadedPaths)) {
-            existingSources[id] = { storagePath: path, type: 'interior_source' };
+        const sourceFilesState = {};
+        
+        for (const [id, path] of Object.entries(allSourcePaths)) {
+            let type = 'interior_source';
+            if (id.startsWith('cover_')) type = id; 
+            sourceFilesState[id] = { storagePath: path, type: type };
         }
 
-        // Also handle cover files
-        if (uploadedPaths['cover_front']) existingSources['cover_front'] = { storagePath: uploadedPaths['cover_front'], type: 'cover_front' };
-        if (uploadedPaths['cover_spine']) existingSources['cover_spine'] = { storagePath: uploadedPaths['cover_spine'], type: 'cover_spine' };
-        if (uploadedPaths['cover_back']) existingSources['cover_back'] = { storagePath: uploadedPaths['cover_back'], type: 'cover_back' };
-
-        // Save
+        // Save to Firestore
         await updateDoc(projectRef, {
             guestBuilderState: {
                 pages: pages,
-                sourceFiles: existingSources,
+                sourceFiles: sourceFilesState,
+                // --- NEW SAVED FIELDS ---
+                coverSettings: coverSettings, 
+                spineMode: window.currentSpineMode || 'file',
+                // ------------------------
+                status: status,
                 updatedAt: new Date()
             }
         });
-
+        console.log("State persisted with status:", status);
     } catch(e) {
         console.error("Failed to persist state:", e);
     }
@@ -2959,72 +3293,75 @@ async function restoreBuilderState() {
         if (!docSnap.exists()) return;
 
         const state = docSnap.data().guestBuilderState;
-        if (!state || !state.pages || !state.sourceFiles) return;
+        if (!state) return;
 
-        // Restore Pages
-        pages = state.pages;
-
-        // Restore Sources
-        for (const [id, meta] of Object.entries(state.sourceFiles)) {
-            try {
-                // Check if it's a cover file
-                if (id.startsWith('cover_')) {
-                    // 1. Fetch the file content (Legacy support requires a File object)
-                    const url = await getDownloadURL(ref(storage, meta.storagePath));
-                    const response = await fetch(url);
-                    const blob = await response.blob();
-                    const file = new File([blob], "Restored File", { type: blob.type });
-
-                    // 2. Determine which slot this belongs to
-                    let inputId;
-                    if (id === 'cover_front') inputId = 'file-cover-front';
-                    else if (id === 'cover_spine') inputId = 'file-spine';
-                    else if (id === 'cover_back') inputId = 'file-cover-back';
-
-                    if (inputId) {
-                        // Populate Legacy State
-                        selectedFiles[inputId] = file;
-
-                        // Populate New System State (Fixes "undefined" crash)
-                        coverSources[inputId] = {
-                            file: file,
-                            status: 'ready',
-                            isServer: false // Treat as local since we have the blob
-                        };
-
-                        // Update UI text
-                        const displayId = id === 'cover_front' ? 'file-name-cover-front' :
-                                          id === 'cover_spine' ? 'file-name-spine' : 'file-name-cover-back';
-                        const el = document.getElementById(displayId);
-                        if (el) el.textContent = "Restored File";
-                        
-                        // If it's a PDF, attempt to set up page controls (optional enhancement)
-                        if (file.type === 'application/pdf') {
-                             // Logic to re-init PDF controls could go here if needed
-                             // For now, the file name display is sufficient
-                        }
-                    }
-
-                } else {
-                    // Restore Interior Source (Server-side logic)
-                    const url = await getDownloadURL(ref(storage, meta.storagePath));
-
-                    sourceFiles[id] = {
-                        status: 'ready',
-                        previewUrl: url,
-                        isServer: true,
-                        storagePath: meta.storagePath
-                    };
+        // Restore Data Models
+        pages = state.pages || [];
+        if (state.coverSettings) Object.assign(coverSettings, state.coverSettings);
+        
+        // Restore Spine UI
+        if (state.spineMode) {
+            window.currentSpineMode = state.spineMode;
+            const spineSelect = document.getElementById('spine-mode-select');
+            if (spineSelect) {
+                spineSelect.value = state.spineMode;
+                const dropZone = document.getElementById('spine-upload-group')?.querySelector('.drop-zone');
+                if (dropZone) {
+                    if (state.spineMode === 'file') dropZone.classList.remove('hidden');
+                    else dropZone.classList.add('hidden');
                 }
-            } catch (e) {
-                console.warn(`Failed to restore source ${id}`, e);
             }
         }
 
-        // Trigger Renders
-        renderBookViewer();
-        renderCoverPreview();
-        validateForm();
+        // Restore Source Files (Parallelized for Speed)
+        if (state.sourceFiles) {
+            const entries = Object.entries(state.sourceFiles);
+            
+            // Create an array of promises
+            const restorePromises = entries.map(async ([id, meta]) => {
+                try {
+                    // We await individual URL fetches here
+                    const url = await getDownloadURL(ref(storage, meta.storagePath));
+                    
+                    if (id.startsWith('cover_')) {
+                        // Handle Cover Logic
+                        let inputId = (id === 'cover_front') ? 'file-cover-front' : 
+                                      (id === 'cover_spine') ? 'file-spine' : 'file-cover-back';
+                        
+                        if (inputId) {
+                            coverSources[inputId] = {
+                                status: 'ready',
+                                isServer: true,
+                                previewUrl: url,
+                                storagePath: meta.storagePath 
+                            };
+                            // Update UI Text immediately
+                            const displayId = (id === 'cover_front') ? 'file-name-cover-front' :
+                                              (id === 'cover_spine') ? 'file-name-spine' : 'file-name-cover-back';
+                            const el = document.getElementById(displayId);
+                            if (el) el.textContent = "Restored File";
+
+                            // Setup controls (async, don't block)
+                            createCoverControls(inputId, url);
+                        }
+                    } else {
+                        // Handle Interior Logic
+                        sourceFiles[id] = {
+                            status: 'ready',
+                            previewUrl: url,
+                            isServer: true,
+                            storagePath: meta.storagePath
+                        };
+                    }
+                } catch (e) {
+                    console.warn(`Failed to restore source ${id}`, e);
+                }
+            });
+
+            // BLOCK until all URLs are retrieved.
+            // This ensures when the UI reveals, we have every URL needed to render.
+            await Promise.all(restorePromises);
+        }
 
     } catch (e) {
         console.error("Error restoring state:", e);
@@ -3033,138 +3370,197 @@ async function restoreBuilderState() {
 
 
 // --- Upload Handler ---
-async function handleUpload(e) {
-    if (e) e.preventDefault();
+// --- NEW: Helper to Upload Files & Save State ---
+async function syncProjectState(statusLabel) {
+    const progressBar = document.getElementById('progress-bar');
+    const progressText = document.getElementById('progress-text');
+    const progressPercent = document.getElementById('progress-percent');
+    const uploadProgress = document.getElementById('upload-progress');
 
-    // Disable inputs
-    submitButton.disabled = true;
-    submitButton.textContent = 'Uploading...';
     uploadProgress.classList.remove('hidden');
+    progressText.textContent = 'Preparing files...';
 
-    // 1. Identify Unique Source Files from Pages + Cover
-    const uniqueSourceIds = new Set();
-    pages.forEach(p => uniqueSourceIds.add(p.sourceFileId));
-
-    const filesToUploadMap = {}; // id -> { file, storagePath }
-
-    // Add Interior Files
-    uniqueSourceIds.forEach(id => {
-        if (sourceFiles[id]) {
-            filesToUploadMap[id] = { file: sourceFiles[id], type: 'interior_source' };
-        }
+    // 1. Identify Active Source IDs (Pages + Covers)
+    const activeSourceIds = new Set();
+    pages.forEach(p => {
+        if (p.sourceFileId) activeSourceIds.add(p.sourceFileId);
     });
 
-    // Add Cover Files (Only if Booklet)
+    // 2. Categorize Sources (New vs Existing)
+    const filesToUpload = []; // { id, file, type }
+    const allSourcePaths = {}; // id -> storagePath (Final Map)
+
+    // Helper to check source
+    const checkSource = (id, src, type) => {
+        if (!src) return;
+        
+        // If we already have a storage path recorded in memory, use it (skip upload)
+        if (src.storagePath) {
+            allSourcePaths[id] = src.storagePath;
+            return;
+        }
+
+        // Otherwise, check if we have a file to upload
+        if (src instanceof File) {
+            filesToUpload.push({ id, file: src, type });
+        } else if (src.file instanceof File) {
+            filesToUpload.push({ id, file: src.file, type });
+        } else if (selectedFiles[id]) {
+            // Legacy fallback
+            filesToUpload.push({ id, file: selectedFiles[id], type });
+        }
+    };
+
+    // Check Interior Files
+    activeSourceIds.forEach(id => checkSource(id, sourceFiles[id], 'interior_source'));
+
+    // Check Cover Files (Booklet Only)
     if (projectType === 'booklet') {
-        if (selectedFiles['file-cover-front']) filesToUploadMap['cover_front'] = { file: selectedFiles['file-cover-front'], type: 'cover_front' };
-        if (selectedFiles['file-spine']) filesToUploadMap['cover_spine'] = { file: selectedFiles['file-spine'], type: 'cover_spine' };
-        if (selectedFiles['file-cover-back']) filesToUploadMap['cover_back'] = { file: selectedFiles['file-cover-back'], type: 'cover_back' };
+        checkSource('cover_front', coverSources['file-cover-front'], 'cover_front');
+        checkSource('cover_spine', coverSources['file-spine'], 'cover_spine');
+        checkSource('cover_back', coverSources['file-cover-back'], 'cover_back');
     }
 
-    const filesToUpload = Object.values(filesToUploadMap);
-    if (filesToUpload.length === 0 && pages.length === 0) return;
-
-    // 2. Upload Files
+    // 3. Upload New Files
     let completed = 0;
     const total = filesToUpload.length;
 
-    // Map for mapping local ID to remote path
-    const uploadedPaths = {}; // localId -> storagePath
-
-    try {
-        for (const localId in filesToUploadMap) {
-            const item = filesToUploadMap[localId];
-            const file = item.file;
+    if (total > 0) {
+        for (const item of filesToUpload) {
             const timestamp = Date.now();
-            const ext = file.name.split('.').pop();
-
-            // Use a 'guest_uploads/' folder to prevent triggering the 'optimizePdf' function (which listens to proofs/)
-            const storagePath = `guest_uploads/${projectId}/${timestamp}_${item.type}_${file.name}`;
+            const cleanName = item.file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+            const storagePath = `guest_uploads/${projectId}/${timestamp}_${item.type}_${cleanName}`;
             const storageRef = ref(storage, storagePath);
 
-            progressText.textContent = `Uploading ${file.name}...`;
-
-            await uploadBytesResumable(storageRef, file);
-
-            uploadedPaths[localId] = storagePath;
+            progressText.textContent = `Uploading ${item.file.name}...`;
+            
+            await uploadBytesResumable(storageRef, item.file);
+            
+            // Update Master Map
+            allSourcePaths[item.id] = storagePath;
+            
+            // UPDATE MEMORY: Store the path so we don't re-upload next time
+            if (item.type === 'interior_source' && sourceFiles[item.id]) {
+                sourceFiles[item.id].storagePath = storagePath;
+            } else if (item.type.startsWith('cover_')) {
+                // Map remote ID back to local slot ID for updating memory
+                const localSlot = item.type === 'cover_front' ? 'file-cover-front' : 
+                                  item.type === 'cover_spine' ? 'file-spine' : 'file-cover-back';
+                if (coverSources[localSlot]) {
+                    coverSources[localSlot].storagePath = storagePath;
+                }
+            }
 
             completed++;
             const percent = (completed / total) * 100;
             progressBar.style.width = `${percent}%`;
             progressPercent.textContent = `${Math.round(percent)}%`;
         }
+    }
 
-        // 3. Construct Metadata (Page List)
+    // 4. Save State to Firestore
+    progressText.textContent = 'Saving Project State...';
+    await persistStateAfterSubmit(allSourcePaths, statusLabel);
+    
+    return allSourcePaths;
+}
+
+// --- NEW: Save Draft Handler ---
+async function handleSaveDraft() {
+    const saveBtn = document.getElementById('save-progress-btn');
+    if (saveBtn) {
+        saveBtn.disabled = true;
+        saveBtn.textContent = 'Saving...';
+    }
+    
+    try {
+        await syncProjectState('draft');
+        
+        // UI Feedback
+        const uploadProgress = document.getElementById('upload-progress');
+        uploadProgress.classList.add('hidden');
+        
+        if (saveBtn) {
+            saveBtn.innerHTML = `<svg class="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> Saved`;
+            setTimeout(() => {
+                saveBtn.disabled = false;
+                saveBtn.innerHTML = `<svg class="w-4 h-4 text-indigo-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"></path></svg> Save Progress`;
+            }, 2000);
+        }
+    } catch (err) {
+        console.error("Save draft failed:", err);
+        alert("Failed to save progress: " + err.message);
+        if (saveBtn) {
+            saveBtn.disabled = false;
+            saveBtn.textContent = 'Save Progress';
+        }
+    }
+}
+
+// --- UPDATED: Final Submit Handler ---
+async function handleUpload(e) {
+    if (e) e.preventDefault();
+
+    submitButton.disabled = true;
+    submitButton.textContent = 'Processing...';
+
+    try {
+        // 1. Upload & Save State (Mark as processing)
+        const allSourcePaths = await syncProjectState('submitted_processing');
+        const progressText = document.getElementById('progress-text');
+
+        // 2. Construct Metadata for Backend
         const bookletMetadata = [];
 
-        // Add Pages (Interior)
+        // Pages
         pages.forEach(p => {
-            // Sanitize settings to ensure numbers are passed as numbers
             const safeSettings = {
                 scaleMode: p.settings.scaleMode || 'fit',
                 alignment: p.settings.alignment || 'center',
-                panX: typeof p.settings.panX === 'number' ? p.settings.panX : parseFloat(p.settings.panX) || 0,
-                panY: typeof p.settings.panY === 'number' ? p.settings.panY : parseFloat(p.settings.panY) || 0
+                panX: Number(p.settings.panX) || 0,
+                panY: Number(p.settings.panY) || 0,
+                view: p.settings.view || 'full'
             };
 
             if (p.sourceFileId === null) {
-                 // Blank Page
                  bookletMetadata.push({
-                    storagePath: null, // Signal blank to backend
+                    storagePath: null, 
                     sourcePageIndex: 0,
                     settings: safeSettings,
-                    type: 'interior_page' // Keep type as interior_page so it's processed in the interior loop
+                    type: 'interior_page'
                  });
             } else {
-                 // Logic Change: We must look up path in `sourceFiles` if not in `uploadedPaths` (i.e. restored file)
-                 // `uploadedPaths` contains ONLY files uploaded in THIS session.
-                 // `sourceFiles[id].storagePath` contains path for restored files.
-
-                 let finalStoragePath = uploadedPaths[p.sourceFileId];
-                 if (!finalStoragePath && sourceFiles[p.sourceFileId] && sourceFiles[p.sourceFileId].storagePath) {
-                     finalStoragePath = sourceFiles[p.sourceFileId].storagePath;
-                 }
-
-                 if (finalStoragePath) {
+                 const path = allSourcePaths[p.sourceFileId];
+                 if (path) {
                      bookletMetadata.push({
-                        storagePath: finalStoragePath,
-                        sourcePageIndex: p.pageIndex - 1, // Convert to 0-based for backend
+                        storagePath: path,
+                        sourcePageIndex: (p.pageIndex || 1) - 1,
                         settings: safeSettings,
                         type: 'interior_page'
                     });
-                 } else {
-                     console.warn("Skipping page with missing file:", p);
                  }
             }
         });
 
-        // Add Cover Parts (if uploaded)
-        if (uploadedPaths['cover_front']) bookletMetadata.push({ storagePath: uploadedPaths['cover_front'], type: 'cover_front' });
-        if (uploadedPaths['cover_spine']) bookletMetadata.push({ storagePath: uploadedPaths['cover_spine'], type: 'cover_spine' });
-        if (uploadedPaths['cover_back']) bookletMetadata.push({ storagePath: uploadedPaths['cover_back'], type: 'cover_back' });
+        // Covers
+        if (allSourcePaths['cover_front']) bookletMetadata.push({ storagePath: allSourcePaths['cover_front'], type: 'cover_front' });
+        if (allSourcePaths['cover_spine']) bookletMetadata.push({ storagePath: allSourcePaths['cover_spine'], type: 'cover_spine' });
+        if (allSourcePaths['cover_back']) bookletMetadata.push({ storagePath: allSourcePaths['cover_back'], type: 'cover_back' });
 
-        // Use variable name expected by next block
-        const uploadMetadata = bookletMetadata;
-
-        // DEBUG LOGGING
-        console.log("Sending Metadata to generateBooklet:", JSON.stringify(uploadMetadata));
-        // END DEBUG LOGGING
-
-        // Persist State (so users can return later)
-        await persistStateAfterSubmit(uploadedPaths);
-
-        // Call Backend to Finalize
-        progressText.textContent = 'Finalizing...';
-
-        // Trigger Build
+        // 3. Call Backend to Generate Proof
+        progressText.textContent = 'Generating Proof...';
+        
         const generateBooklet = httpsCallable(functions, 'generateBooklet');
-        await generateBooklet({ projectId: projectId, files: uploadMetadata });
+        await generateBooklet({ projectId: projectId, files: bookletMetadata });
 
-        // Then call the notification one
+        progressText.textContent = 'Finalizing...';
         const submitGuestUpload = httpsCallable(functions, 'submitGuestUpload');
         await submitGuestUpload({ projectId: projectId });
 
-        // Show Success
+        // 4. Update State to Complete
+        await persistStateAfterSubmit(allSourcePaths, 'submitted_complete');
+
+        // 5. Show Success
         uploadContainer.classList.add('hidden');
         successState.classList.remove('hidden');
 
@@ -3173,7 +3569,7 @@ async function handleUpload(e) {
         alert("Upload failed: " + err.message);
         submitButton.disabled = false;
         submitButton.textContent = 'Complete Upload';
-        uploadProgress.classList.add('hidden');
+        document.getElementById('upload-progress').classList.add('hidden');
     }
 }
 
@@ -3211,6 +3607,88 @@ document.addEventListener('keydown', (e) => {
 
 // Attach to button click (since it's type="button")
 submitButton.addEventListener('click', handleUpload);
+
+// --- RESTORED FUNCTIONALITY ---
+
+// 1. Restore "Set All" Buttons
+window.setAllScaleMode = (mode) => {
+    saveState(); // Save before changing
+    if (confirm(`Set all pages to ${mode}?`)) {
+        pages.forEach(p => {
+            p.settings.scaleMode = mode;
+        });
+        renderBookViewer();
+        triggerAutosave();
+    }
+};
+
+if (setAllFitBtn) setAllFitBtn.onclick = () => window.setAllScaleMode('fit');
+if (setAllFillBtn) setAllFillBtn.onclick = () => window.setAllScaleMode('fill');
+if (setAllStretchBtn) setAllStretchBtn.onclick = () => window.setAllScaleMode('stretch');
+
+// 2. Restore Viewer Zoom
+if (viewerZoom) {
+    viewerZoom.addEventListener('input', (e) => {
+        viewerScale = parseFloat(e.target.value);
+        renderBookViewer();
+    });
+}
+
+// 3. Restore Cover Zoom
+if (coverZoomInput) {
+    coverZoomInput.addEventListener('input', (e) => {
+        coverZoom = parseFloat(e.target.value);
+        renderCoverPreview();
+    });
+}
+
+// 4. Restore Jump To Page
+if (jumpToPageInput) {
+    jumpToPageInput.addEventListener('change', (e) => {
+        const pageNum = parseInt(e.target.value);
+        if (isNaN(pageNum) || pageNum < 1) return;
+
+        const pageIndex = pageNum - 1;
+        if (pageIndex >= 0 && pageIndex < pages.length) {
+            const pageId = pages[pageIndex].id;
+            // Try to find the single card or the spread card
+            let card = document.querySelector(`[data-id="${pageId}"]`);
+            if(!card) {
+                // If inside a spread, find the container
+                card = document.querySelector(`[data-id*=":${pageId}"]`); 
+            }
+            
+            if (card) {
+                card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                card.classList.add('ring-2', 'ring-indigo-500');
+                setTimeout(() => card.classList.remove('ring-2', 'ring-indigo-500'), 1500);
+            }
+        } else {
+            alert("Page number out of range.");
+        }
+    });
+}
+
+async function waitForFirstPageRender() {
+    // 1. Safety Checks
+    if (!pages || pages.length === 0) return;
+    const firstPage = pages[0];
+    
+    // Find the canvas element (it exists in DOM now, even if hidden)
+    const canvasId = `canvas-${firstPage.id}`;
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+
+    // 2. Force Render Immediately
+    // We call the low-level render function directly, bypassing the queue and the observer.
+    // This ensures it runs even if the container is display: none.
+    console.log("Forcing initial render of Page 1...");
+    try {
+        await renderPageCanvas(firstPage, canvas);
+    } catch (e) {
+        console.warn("Initial render warning:", e);
+    }
+}
 
 // Initialize
 init();
