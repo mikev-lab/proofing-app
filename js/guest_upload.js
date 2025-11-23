@@ -123,6 +123,7 @@ let projectId = null;
 let guestToken = null;
 let currentUser = null; // Set via auth listener
 let isAdmin = false; // Derived from user role or URL param
+let hasActiveLock = false; // Track if we own the lock
 let projectType = 'single'; // Default
 let selectedFiles = {}; // Keep for Legacy/Single logic
 let projectSpecs = {}; // Store loaded/saved specs here
@@ -2527,7 +2528,7 @@ async function acquireLock() {
     const LOCK_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
 
     try {
-        return await runTransaction(db, async (transaction) => {
+        const acquired = await runTransaction(db, async (transaction) => {
             const sfDoc = await transaction.get(projectRef);
             if (!sfDoc.exists()) throw "Project does not exist!";
 
@@ -2561,6 +2562,12 @@ async function acquireLock() {
 
             return true; // Acquired
         });
+
+        if (acquired) {
+            hasActiveLock = true;
+        }
+        return acquired;
+
     } catch (e) {
         console.error("Transaction failed: ", e);
         showError("Failed to acquire edit lock. Please try again.");
@@ -2607,16 +2614,28 @@ function startLockHeartbeat() {
 }
 
 async function releaseLock() {
-    if (!projectId || !currentUser) return;
-    // navigator.sendBeacon is better for unload but Firestore needs active connection.
-    // We try our best.
+    // Only release if we actively hold the lock
+    if (!projectId || !currentUser || !hasActiveLock) return;
+
     try {
         const projectRef = doc(db, 'projects', projectId);
-        // Only release if WE own it (though strict check might be overkill for simple cooperative lock)
-        // We just clear it.
-        await updateDoc(projectRef, {
-            editorLock: null
+
+        // Use a transaction to ensure we only delete OUR lock
+        await runTransaction(db, async (transaction) => {
+            const sfDoc = await transaction.get(projectRef);
+            if (!sfDoc.exists()) return;
+
+            const data = sfDoc.data();
+            const lock = data.editorLock;
+
+            // If lock matches our user ID, clear it
+            if (lock && lock.userId === currentUser.uid) {
+                transaction.update(projectRef, {
+                    editorLock: null
+                });
+            }
         });
+        hasActiveLock = false; // Clear local flag
     } catch (e) {
         console.warn("Failed to release lock:", e);
     }

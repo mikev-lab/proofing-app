@@ -154,7 +154,8 @@ service cloud.firestore {
           (
             (hasValidGuestDataAccess(projectId, 'canUpload') || hasValidGuestDataAccess(projectId, 'isOwner')) &&
             // FIX: Added 'guestBuilderState' and 'projectType' to the allowed list so saving drafts works
-            request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'lastUploadAt', 'specs', 'guestBuilderState', 'projectType'])
+            // ADDED: 'editorLock' for concurrent editing protection
+            request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'lastUploadAt', 'specs', 'guestBuilderState', 'projectType', 'editorLock'])
           );
 
       // --- Rules for 'guestLinks' Sub-collection ---
