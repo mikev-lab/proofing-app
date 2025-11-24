@@ -33,7 +33,6 @@
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div class="flex justify-between items-center h-16">
                 <div class="flex items-center gap-4">
-                    <!-- Back Button (Hidden by default) -->
                     <button id="nav-back-btn" class="hidden text-gray-400 hover:text-white transition-colors flex items-center gap-2 pr-4 border-r border-slate-600">
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
                         <span class="text-sm font-medium">Back</span>
@@ -48,16 +47,13 @@
     </nav>
 
     <main class="flex-grow flex items-start justify-center p-4 sm:p-6">
-        <!-- Widened Container -->
         <div class="w-full max-w-7xl transition-all duration-300">
 
-            <!-- Loading State -->
             <div id="loading-state" class="text-center py-20">
                 <div class="h-12 w-12 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900 mx-auto" role="status"></div>
                 <p class="mt-4 text-gray-300 font-medium">Accessing secure upload portal...</p>
             </div>
 
-            <!-- Error State -->
             <div id="error-state" class="hidden max-w-lg mx-auto bg-red-900/20 border border-red-500/50 rounded-xl p-8 text-center backdrop-blur-sm">
                 <div class="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-red-900/50 mb-4">
                     <svg class="w-6 h-6 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
@@ -66,7 +62,6 @@
                 <p id="error-message" class="text-gray-300">Invalid or expired link.</p>
             </div>
 
-            <!-- Locked State -->
             <div id="locked-state" class="hidden max-w-lg mx-auto bg-slate-800/90 border border-slate-600 rounded-xl p-8 text-center backdrop-blur-sm shadow-2xl">
                 <div class="mx-auto flex items-center justify-center h-16 w-16 rounded-full bg-slate-700 mb-6">
                     <svg class="w-8 h-8 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -89,10 +84,8 @@
                 </div>
             </div>
 
-            <!-- Upload Form -->
             <div id="upload-container" class="hidden flex flex-col gap-6">
 
-                <!-- Header Area inside container -->
                 <div class="bg-slate-800/60 backdrop-blur-sm shadow-lg rounded-xl p-6 border border-slate-700/50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                     <div>
                         <h2 class="text-2xl font-bold text-white">Upload Files</h2>
@@ -119,7 +112,6 @@
 
                     <div id="booklet-upload-section" class="hidden">
 
-                        <!-- Tabs (Only for Booklet Mode) -->
                         <div id="builder-tabs" class="flex border-b border-slate-700 mb-6 bg-slate-800/40 rounded-t-xl px-4 pt-2">
                             <button type="button" id="tab-interior" class="px-6 py-3 text-sm font-medium text-indigo-400 border-b-2 border-indigo-500 focus:outline-none flex items-center gap-2">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>
@@ -131,21 +123,17 @@
                             </button>
                         </div>
 
-                        <!-- Interior Tab Content -->
                         <div id="content-interior" class="min-h-[500px]">
 
-                            <!-- Toolbar -->
                             <div class="flex flex-wrap justify-between items-center mb-4 bg-slate-800/60 backdrop-blur-sm p-3 rounded-xl border border-slate-700/50 gap-4 shadow-sm">
                                 <div class="flex items-center gap-4">
                                     <h3 class="text-sm font-semibold text-white uppercase tracking-wider ml-2 hidden sm:block">Builder</h3>
 
-                                    <!-- Zoom -->
                                     <div class="flex items-center gap-3 bg-slate-900/50 px-3 py-1.5 rounded-lg border border-slate-700/50">
                                         <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7"></path></svg>
                                         <input type="range" id="viewer-zoom" min="0.2" max="1.5" step="0.1" value="0.5" class="w-24 h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-indigo-500">
                                     </div>
 
-                                    <!-- Jump to Page (Booklet Only) -->
                                     <div id="toolbar-jump" class="flex items-center gap-2 pl-4 border-l border-slate-700 hidden">
                                         <span class="text-xs text-gray-400">Jump:</span>
                                         <input type="number" id="jump-to-page" min="1" class="w-14 bg-slate-900 border border-slate-600 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-indigo-500 text-center">
@@ -153,7 +141,6 @@
                                 </div>
 
                                 <div class="flex items-center gap-3">
-                                    <!-- Loose Sheets Specific Add Button -->
                                     <input type="file" id="hidden-interior-input" class="hidden" accept=".pdf,.jpg,.png,.psd" multiple>
 
                                     <div id="toolbar-actions-booklet" class="flex gap-2">
@@ -161,13 +148,11 @@
                                         <button type="button" id="set-all-fill" class="text-xs bg-slate-700 hover:bg-slate-600 text-gray-200 px-3 py-1.5 rounded border border-slate-600 transition-colors">Fill All</button>
                                     </div>
 
-                                    <!-- Add File Button -->
                                     <button type="button" id="add-interior-file-btn" class="text-xs bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg shadow-md transition-all hover:shadow-indigo-500/20 flex items-center gap-2 font-medium">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
                                         Add Pages
                                     </button>
 
-                                     <!-- Spread Upload (Booklet Only) -->
                                      <div id="toolbar-spread-upload" class="relative">
                                         <button type="button" class="text-xs bg-slate-700 hover:bg-slate-600 text-indigo-200 px-4 py-2 rounded-lg border border-slate-600 transition-colors flex items-center gap-2 font-medium">
                                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
@@ -178,20 +163,15 @@
                                 </div>
                             </div>
 
-                            <!-- Split Layout: Sidebar + Viewer -->
                             <div class="flex h-[600px] gap-4">
 
-                                <!-- Sidebar (Minimap) -->
                                 <div id="minimap-container" class="w-32 flex-shrink-0 bg-slate-900/40 border-r border-slate-700/50 overflow-y-auto rounded-l-xl p-2 space-y-2 no-scrollbar hidden md:block">
-                                    <!-- Thumbnails rendered here -->
-                                </div>
+                                    </div>
 
-                                <!-- Main Viewer -->
                                 <div id="book-viewer-wrapper" class="flex-grow relative bg-slate-900/40 border border-dashed border-slate-700 rounded-xl p-6 overflow-y-auto drop-zone transition-colors">
                                     <input type="file" id="file-interior-drop" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" accept=".pdf,.jpg,.png,.psd" multiple>
 
                                     <div id="book-viewer-container" class="relative z-20 pointer-events-auto flex flex-col items-center">
-                                        <!-- Pages will be rendered here -->
                                         <div class="flex flex-col items-center justify-center h-64 text-gray-500">
                                             <svg class="w-12 h-12 text-gray-600 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
                                             <p>Drag & Drop files here to start.</p>
@@ -201,10 +181,8 @@
                             </div>
                         </div>
 
-                        <!-- Cover Builder Tab Content -->
                         <div id="content-cover" class="hidden grid grid-cols-1 lg:grid-cols-3 gap-8 mt-6">
 
-                            <!-- Left: Upload Controls -->
                             <div class="lg:col-span-1 space-y-6">
                                 <div class="bg-slate-800/60 rounded-xl p-5 border border-slate-700/50 shadow-sm">
                                     <h3 class="text-sm font-bold text-white uppercase tracking-wider mb-4 flex items-center gap-2">
@@ -213,7 +191,6 @@
                                     </h3>
 
                                     <div class="space-y-4">
-                                        <!-- Front Cover -->
                                         <div>
                                             <label class="block text-xs font-medium text-gray-400 mb-1">Front Cover</label>
                                             <div class="drop-zone rounded-lg p-4 text-center cursor-pointer bg-slate-900/50 hover:bg-slate-900 hover:border-indigo-500 relative group border border-slate-600 transition-all">
@@ -222,24 +199,33 @@
                                                     <span class="text-sm text-indigo-300 font-medium">Upload Front</span>
                                                     <span class="text-[10px] text-gray-500">PDF, JPG, PNG</span>
                                                 </div>
-                                                <p id="file-name-cover-front" class="mt-2 text-white text-xs truncate bg-slate-800 rounded px-2 py-1 hidden"></p>
+                                                <div class="mt-2 flex items-center justify-center gap-2">
+                                                    <p id="file-name-cover-front" class="peer text-white text-xs truncate bg-slate-800 rounded px-2 py-1 hidden"></p>
+                                                    <button type="button" class="peer-[.hidden]:hidden text-gray-400 hover:text-red-400 z-20 relative" title="Remove File" onclick="const i=document.getElementById('file-cover-front'); i.value=''; i.dispatchEvent(new Event('change'));">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                                    </button>
+                                                </div>
                                             </div>
                                         </div>
 
-                                        <!-- Spine -->
                                         <div id="spine-upload-group">
                                             <label class="block text-xs font-medium text-gray-400 mb-1">Spine</label>
+                                            <p class="text-[10px] text-indigo-300 mb-2">Spine width is calculated dynamically based on your page count.</p>
                                             <div class="drop-zone rounded-lg p-4 text-center cursor-pointer bg-slate-900/50 hover:bg-slate-900 hover:border-indigo-500 relative group border border-slate-600 transition-all">
                                                 <input type="file" id="file-spine" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" accept=".pdf,.jpg,.png,.psd">
                                                 <div class="flex flex-col items-center justify-center space-y-1">
                                                     <span class="text-sm text-indigo-300 font-medium">Upload Spine</span>
                                                 </div>
-                                                <p id="file-name-spine" class="mt-2 text-white text-xs truncate bg-slate-800 rounded px-2 py-1 hidden"></p>
+                                                <div class="mt-2 flex items-center justify-center gap-2">
+                                                    <p id="file-name-spine" class="peer text-white text-xs truncate bg-slate-800 rounded px-2 py-1 hidden"></p>
+                                                    <button type="button" class="peer-[.hidden]:hidden text-gray-400 hover:text-red-400 z-20 relative" title="Remove File" onclick="const i=document.getElementById('file-spine'); i.value=''; i.dispatchEvent(new Event('change'));">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                                    </button>
+                                                </div>
                                             </div>
                                             <p class="text-[10px] text-gray-500 mt-1 text-right">Calc. Width: <span id="spine-width-display" class="text-white font-mono">0.00</span>"</p>
                                         </div>
 
-                                        <!-- Back Cover -->
                                         <div>
                                             <label class="block text-xs font-medium text-gray-400 mb-1">Back Cover</label>
                                             <div class="drop-zone rounded-lg p-4 text-center cursor-pointer bg-slate-900/50 hover:bg-slate-900 hover:border-indigo-500 relative group border border-slate-600 transition-all">
@@ -247,14 +233,18 @@
                                                 <div class="flex flex-col items-center justify-center space-y-1">
                                                     <span class="text-sm text-indigo-300 font-medium">Upload Back</span>
                                                 </div>
-                                                <p id="file-name-cover-back" class="mt-2 text-white text-xs truncate bg-slate-800 rounded px-2 py-1 hidden"></p>
+                                                <div class="mt-2 flex items-center justify-center gap-2">
+                                                    <p id="file-name-cover-back" class="peer text-white text-xs truncate bg-slate-800 rounded px-2 py-1 hidden"></p>
+                                                    <button type="button" class="peer-[.hidden]:hidden text-gray-400 hover:text-red-400 z-20 relative" title="Remove File" onclick="const i=document.getElementById('file-cover-back'); i.value=''; i.dispatchEvent(new Event('change'));">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                                    </button>
+                                                </div>
                                             </div>
                                         </div>
                                     </div>
                                 </div>
                             </div>
 
-                            <!-- Right: Canvas Preview -->
                             <div class="lg:col-span-2">
                                 <div class="bg-slate-800/60 rounded-xl p-5 border border-slate-700/50 shadow-sm h-full flex flex-col">
                                     
@@ -289,7 +279,6 @@
                 </form>
             </div>
 
-            <!-- Success State -->
             <div id="success-state" class="hidden max-w-2xl mx-auto bg-slate-800/60 backdrop-blur-sm shadow-2xl rounded-2xl p-12 border border-slate-700/50 text-center mt-10">
                 <div class="mx-auto flex items-center justify-center h-20 w-20 rounded-full bg-green-500/10 border border-green-500/50 mb-8 shadow-[0_0_20px_rgba(34,197,94,0.2)]">
                     <svg class="h-10 w-10 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -306,7 +295,6 @@
         </div>
     </main>
 
-    <!-- Specs Modal -->
     <div id="specs-modal" class="fixed inset-0 z-50 hidden bg-slate-950/80 overflow-y-auto h-full w-full backdrop-blur-md transition-opacity">
         <div class="relative top-10 sm:top-20 mx-auto p-8 border w-full max-w-2xl shadow-2xl rounded-2xl bg-slate-900 border-slate-700">
             <div class="mt-2">
@@ -315,15 +303,12 @@
 
                 <form id="specs-form" class="space-y-8">
 
-                    <!-- Project Type Selection -->
                     <div>
                         <label class="block text-sm font-medium text-indigo-300 mb-4 uppercase tracking-wider">Select Binding Type</label>
                         <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                            <!-- Loose Sheets -->
                             <label class="cursor-pointer relative group">
                                 <input type="radio" name="projectType" value="loose" class="peer sr-only">
                                 <div class="p-5 rounded-xl border-2 border-slate-700 bg-slate-800/50 hover:bg-slate-800 peer-checked:border-indigo-500 peer-checked:bg-indigo-900/20 peer-checked:ring-1 peer-checked:ring-indigo-500 transition-all text-center h-full flex flex-col items-center justify-center gap-3">
-                                    <!-- Icon: Document -->
                                     <svg class="w-8 h-8 text-gray-400 peer-checked:text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
                                     <div>
                                         <span class="block text-base font-semibold text-white">Loose Sheets</span>
@@ -331,11 +316,9 @@
                                     </div>
                                 </div>
                             </label>
-                            <!-- Saddle Stitch -->
                             <label class="cursor-pointer relative group">
                                 <input type="radio" name="projectType" value="saddleStitch" class="peer sr-only">
                                 <div class="p-5 rounded-xl border-2 border-slate-700 bg-slate-800/50 hover:bg-slate-800 peer-checked:border-indigo-500 peer-checked:bg-indigo-900/20 peer-checked:ring-1 peer-checked:ring-indigo-500 transition-all text-center h-full flex flex-col items-center justify-center gap-3">
-                                    <!-- Icon: Book Open -->
                                     <svg class="w-8 h-8 text-gray-400 peer-checked:text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>
                                     <div>
                                         <span class="block text-base font-semibold text-white">Saddle Stitch</span>
@@ -343,11 +326,9 @@
                                     </div>
                                 </div>
                             </label>
-                            <!-- Perfect Bound -->
                             <label class="cursor-pointer relative group">
                                 <input type="radio" name="projectType" value="perfectBound" class="peer sr-only">
                                 <div class="p-5 rounded-xl border-2 border-slate-700 bg-slate-800/50 hover:bg-slate-800 peer-checked:border-indigo-500 peer-checked:bg-indigo-900/20 peer-checked:ring-1 peer-checked:ring-indigo-500 transition-all text-center h-full flex flex-col items-center justify-center gap-3">
-                                    <!-- Icon: Book Closed/Thick -->
                                     <svg class="w-8 h-8 text-gray-400 peer-checked:text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z"></path></svg>
                                     <div>
                                         <span class="block text-base font-semibold text-white">Perfect Bound</span>
@@ -358,18 +339,15 @@
                         </div>
                     </div>
 
-                    <!-- Dimensions -->
                     <div class="bg-slate-800/50 p-5 rounded-xl border border-slate-700/50 space-y-4">
                         <div>
                             <label class="block text-sm font-medium text-indigo-300 mb-2 uppercase tracking-wider">Finished Size</label>
                             <select id="spec-size-preset" class="w-full bg-slate-900 border border-slate-600 rounded-lg py-2.5 px-4 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 appearance-none">
                                 <option value="" disabled selected>Select a Size</option>
-                                <!-- Populated by JS -->
                                 <option value="custom">Custom Size</option>
                             </select>
                         </div>
 
-                        <!-- Custom Dimensions (Hidden by default) -->
                         <div id="custom-size-container" class="hidden pt-2 border-t border-slate-700 mt-2">
                             <div class="flex justify-between items-center mb-3">
                                 <label class="text-xs text-gray-400">Custom Dimensions</label>
@@ -398,30 +376,20 @@
                         </div>
                     </div>
 
-                    <!-- Hidden Binding Input -->
                     <input type="hidden" id="spec-binding">
 
-                    <!-- Paper Types (For Perfect Bound) -->
                     <div id="paper-section" class="hidden bg-slate-800/50 p-5 rounded-xl border border-slate-700/50 space-y-4">
                         <div>
                             <label class="block text-sm font-medium text-gray-300 mb-2">Interior Paper Type</label>
                             <p class="text-xs text-gray-500 mb-2">Required to calculate spine width.</p>
                             <select id="spec-paper" class="w-full bg-slate-900 border border-slate-600 rounded-lg py-2.5 px-4 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 appearance-none">
-                                 <!-- Populated by JS -->
-                            </select>
+                                 </select>
                         </div>
                         <div>
                             <label class="block text-sm font-medium text-gray-300 mb-2">Cover Paper Type</label>
                             <select id="spec-cover-paper" class="w-full bg-slate-900 border border-slate-600 rounded-lg py-2.5 px-4 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 appearance-none">
-                                 <!-- Populated by JS -->
-                            </select>
+                                 </select>
                         </div>
-                    </div>
-
-                    <!-- Page Count -->
-                    <div id="page-count-section" class="hidden bg-slate-800/50 p-5 rounded-xl border border-slate-700/50">
-                        <label class="block text-sm font-medium text-gray-300 mb-2">Estimated Page Count</label>
-                         <input type="number" id="spec-page-count" class="w-full bg-slate-900 border border-slate-600 rounded-lg py-2.5 px-4 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono" placeholder="e.g. 100">
                     </div>
 
                     <div class="pt-4">
@@ -434,7 +402,6 @@
         </div>
     </div>
 
-    <!-- Page Settings Modal -->
     <div id="page-settings-modal" class="fixed inset-0 z-50 hidden bg-slate-950/80 overflow-y-auto h-full w-full backdrop-blur-sm">
         <div class="relative top-20 mx-auto p-6 border w-full max-w-2xl shadow-2xl rounded-2xl bg-slate-900 border-slate-700">
             <div class="flex justify-between items-center mb-6">
@@ -445,7 +412,6 @@
             </div>
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-                <!-- Controls -->
                 <div class="space-y-6">
                     <div>
                         <label class="block text-sm font-medium text-gray-300 mb-3">Scaling Mode</label>
@@ -467,7 +433,6 @@
                     </div>
                 </div>
 
-                <!-- Preview -->
                 <div>
                      <label class="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">Preview</label>
                      <div class="relative bg-slate-950 rounded-xl border border-slate-800 p-6 flex items-center justify-center h-[300px] overflow-hidden">

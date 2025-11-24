@@ -462,6 +462,32 @@ Array.from(projectTypeRadios).forEach(radio => {
     });
 });
 
+// [NEW] Helper to find standard size key from dimensions object
+function findMatchingStandardSize(dims) {
+    if (!dims || !dims.width || !dims.height) return null;
+
+    // Convert input dims to points for comparison (1 inch = 72 pts, 1 mm = 2.83465 pts)
+    // Use 2.83465 (72/25.4) for mm conversion
+    const wPoints = dims.units === 'mm' ? dims.width * 2.83465 : dims.width * 72;
+    const hPoints = dims.units === 'mm' ? dims.height * 2.83465 : dims.height * 72;
+
+    // Tolerance for floating point errors (approx 1mm ~ 3 points)
+    const tolerance = 3; 
+
+    for (const [key, std] of Object.entries(STANDARD_PAPER_SIZES)) {
+        // Standard sizes in the config are likely stored in mm or have mm/in properties
+        // Assuming STANDARD_PAPER_SIZES items have width_mm and height_mm
+        const stdW = std.width_mm * 2.83465;
+        const stdH = std.height_mm * 2.83465;
+
+        // Check exact match (Portrait)
+        if (Math.abs(wPoints - stdW) < tolerance && Math.abs(hPoints - stdH) < tolerance) return key;
+        // Check rotated match (Landscape)
+        if (Math.abs(wPoints - stdH) < tolerance && Math.abs(hPoints - stdW) < tolerance) return key;
+    }
+    return null;
+}
+
 // --- Helper: Populate Specs Form ---
 function populateSpecsForm() {
     // 1. Project Type / Binding
@@ -484,10 +510,15 @@ function populateSpecsForm() {
 
     // 2. Dimensions
     if (projectSpecs.dimensions) {
-        if (typeof projectSpecs.dimensions === 'object') {
-            // Check if it matches a preset? Hard to check exact float matches.
-            // Default to Custom for safety unless we want to reverse-lookup.
-            // Or just set values.
+        // [FIX] Try to reverse-lookup the standard size key (e.g., "A4")
+        const standardKey = findMatchingStandardSize(projectSpecs.dimensions);
+        
+        if (standardKey) {
+            // Found a standard size! Select it to show "A4" instead of "Custom"
+            specSizePreset.value = standardKey;
+            specSizePreset.dispatchEvent(new Event('change'));
+        } else {
+            // No match, set to Custom
             specSizePreset.value = 'custom';
             specSizePreset.dispatchEvent(new Event('change'));
 
@@ -498,18 +529,14 @@ function populateSpecsForm() {
                 const btn = document.querySelector(`.unit-toggle[data-unit="${projectSpecs.dimensions.units}"]`);
                 if (btn) btn.click();
             }
-        } else if (typeof projectSpecs.dimensions === 'string') {
-             specSizePreset.value = projectSpecs.dimensions;
-             specSizePreset.dispatchEvent(new Event('change'));
         }
     }
 
     // 3. Other Fields
-    if (specPageCount) specPageCount.value = projectSpecs.pageCount || '';
+    // [FIX] Removed specPageCount population since the element was removed from HTML
     if (specPaper) specPaper.value = projectSpecs.paperType || '';
     if (specCoverPaper) specCoverPaper.value = projectSpecs.coverPaperType || '';
 }
-
 // --- Back Button Logic ---
 if (navBackBtn) {
     navBackBtn.addEventListener('click', async () => {
@@ -3040,7 +3067,10 @@ specsForm.addEventListener('submit', async (e) => {
             specsUpdate['specs.binding'] = 'loose';
         } else {
             specsUpdate['specs.binding'] = typeValue; // 'saddleStitch' or 'perfectBound'
-            specsUpdate['specs.pageCount'] = parseInt(specPageCount.value) || 0;
+            
+            // [FIX] Removed parseInt(specPageCount.value) because the input was removed.
+            // The builder now calculates pages dynamically.
+            specsUpdate['specs.pageCount'] = 0; 
 
             if (typeValue === 'perfectBound') {
                 specsUpdate['specs.paperType'] = specPaper.value;
@@ -3061,7 +3091,7 @@ specsForm.addEventListener('submit', async (e) => {
         };
         projectType = specsUpdate['projectType'];
 
-        // Hide modal and show upload UI (Logic handled in init mostly, but we trigger refresh)
+        // Hide modal and show upload UI
         specsModal.classList.add('hidden');
         uploadContainer.classList.remove('hidden');
 
@@ -3570,7 +3600,11 @@ async function restoreBuilderState() {
                             const displayId = (id === 'cover_front') ? 'file-name-cover-front' :
                                               (id === 'cover_spine') ? 'file-name-spine' : 'file-name-cover-back';
                             const el = document.getElementById(displayId);
-                            if (el) el.textContent = "Restored File";
+                            if (el) {
+                                el.textContent = "Restored File";
+                                // [FIX] Unhide the text so the adjacent Delete Button (peer) appears
+                                el.classList.remove('hidden');
+                            }
 
                             // Setup controls (async, don't block)
                             createCoverControls(inputId, url);
@@ -3590,7 +3624,6 @@ async function restoreBuilderState() {
             });
 
             // BLOCK until all URLs are retrieved.
-            // This ensures when the UI reveals, we have every URL needed to render.
             await Promise.all(restorePromises);
         }
 
