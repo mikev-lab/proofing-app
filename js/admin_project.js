@@ -202,131 +202,244 @@ dimensionsSelect.addEventListener('change', () => {
      customHeightInput.required = dimensionsSelect.value === 'custom';
 });
 
-// --- Populate Form from Data ---
-function populateSpecsForm(specs) {
-    if (!specs) return;
+// --- Helper: Find Standard Size ---
+function findMatchingStandardSize(dims) {
+    if (!dims || !dims.width || !dims.height) return null;
 
-    // Dimensions
+    // Convert to points for comparison (1 in = 72 pts, 1 mm = 2.83465 pts)
+    const wPoints = dims.units === 'mm' ? dims.width * 2.83465 : dims.width * 72;
+    const hPoints = dims.units === 'mm' ? dims.height * 2.83465 : dims.height * 72;
+    const tolerance = 3; // ~1mm tolerance
+
+    for (const [key, std] of Object.entries(STANDARD_PAPER_SIZES)) {
+        const stdW = std.width_mm * 2.83465;
+        const stdH = std.height_mm * 2.83465;
+
+        // Exact Match (Portrait)
+        if (Math.abs(wPoints - stdW) < tolerance && Math.abs(hPoints - stdH) < tolerance) return key;
+        // Rotated Match (Landscape)
+        if (Math.abs(wPoints - stdH) < tolerance && Math.abs(hPoints - stdW) < tolerance) return key;
+    }
+    return null;
+}
+
+// --- Populate Form from Data ---
+function populateSpecsForm(projectData) {
+    if (!projectData) return;
+    const specs = projectData.specs || {};
+    const guestState = projectData.guestBuilderState || {};
+
+    // 1. Dimensions Logic
     if (typeof specs.dimensions === 'object' && specs.dimensions !== null) {
-        dimensionsSelect.value = 'custom';
-        customDimensionInputs.classList.remove('hidden');
-        customWidthInput.value = specs.dimensions.width || '';
-        customHeightInput.value = specs.dimensions.height || '';
-        customUnitsSelect.value = specs.dimensions.units || 'in';
-        customWidthInput.required = true;
-        customHeightInput.required = true;
+        // Try to match a standard preset first
+        const standardKey = findMatchingStandardSize(specs.dimensions);
+        
+        if (standardKey && dimensionsSelect.querySelector(`option[value="${standardKey}"]`)) {
+            dimensionsSelect.value = standardKey;
+            customDimensionInputs.classList.add('hidden');
+            customWidthInput.required = false;
+            customHeightInput.required = false;
+        } else {
+            // Fallback to Custom
+            dimensionsSelect.value = 'custom';
+            customDimensionInputs.classList.remove('hidden');
+            customWidthInput.value = specs.dimensions.width || '';
+            customHeightInput.value = specs.dimensions.height || '';
+            customUnitsSelect.value = specs.dimensions.units || 'in';
+            customWidthInput.required = true;
+            customHeightInput.required = true;
+        }
     } else if (typeof specs.dimensions === 'string') {
          if (dimensionsSelect.querySelector(`option[value="${specs.dimensions}"]`)) {
             dimensionsSelect.value = specs.dimensions;
          } else {
-             // Handle legacy string format (e.g., "5x7") - Assume inches, set to custom
              dimensionsSelect.value = 'custom';
+             // Handle legacy string format "WxH"
              const parts = specs.dimensions.split('x');
              if (parts.length === 2) {
                  customWidthInput.value = parseFloat(parts[0]) || '';
                  customHeightInput.value = parseFloat(parts[1]) || '';
              }
-             customUnitsSelect.value = 'in'; // Assume inches
+             customUnitsSelect.value = 'in';
              customDimensionInputs.classList.remove('hidden');
-             customWidthInput.required = true;
-             customHeightInput.required = true;
          }
     } else {
-         dimensionsSelect.value = 'US_Letter'; // Default if missing/invalid
+         dimensionsSelect.value = 'US_Letter'; 
          customDimensionInputs.classList.add('hidden');
-         customWidthInput.required = false;
-         customHeightInput.required = false;
     }
 
+    // 2. Page Count Logic
+    // Use specs.pageCount if valid, otherwise calculate from guest state (auto-calculated)
+    let count = specs.pageCount;
+    if ((!count || count === 0) && guestState.pages) {
+        count = guestState.pages.length;
+        // Add cover pages if booklet (Guest builder separates them)
+        // Note: Guest builder "pages" array are usually interior. 
+        // Covers are separate. But typically "Page Count" implies interior + cover pages.
+        // Adjust logic based on your shop's convention. 
+        // Assuming count = interior pages here.
+    }
+    pageCountInput.value = count || '';
+
+    // 3. Binding Logic
+    // Map Guest Builder values to Admin values
+    let bindingVal = specs.binding || 'Perfect Bound';
+    const bindingMap = {
+        'perfectBound': 'Perfect Bound',
+        'saddleStitch': 'Saddle-Stitch', // Ensure this matches your <option> value in HTML
+        'loose': 'Coil Bound' // Map loose to a default or keep as is
+    };
+    
+    // Normalize value
+    if (bindingMap[bindingVal]) bindingVal = bindingMap[bindingVal];
+    
+    // Check if value exists in dropdown, else default
+    if (bindingSelect.querySelector(`option[value="${bindingVal}"]`)) {
+        bindingSelect.value = bindingVal;
+    } else if (bindingSelect.querySelector(`option[value="${bindingVal.replace('-', ' ')}"]`)) {
+         bindingSelect.value = bindingVal.replace('-', ' ');
+    }
+
+    // 4. Paper Type Logic (Interior)
+    paperTypeSelect.value = specs.paperType || 'Gloss';
+
+    // 5. Cover Paper Logic (Dynamic Injection)
+    // Check if we need to show cover paper
+    const coverPaperVal = specs.coverPaperType;
+    let coverPaperGroup = document.getElementById('cover-paper-group');
+
+    if (coverPaperVal) {
+        // If the group doesn't exist, create it dynamically
+        if (!coverPaperGroup) {
+            const parent = paperTypeSelect.closest('.bg-slate-700') || paperTypeSelect.parentElement; // Fallback parent
+            
+            // Create container
+            coverPaperGroup = document.createElement('div');
+            coverPaperGroup.id = 'cover-paper-group';
+            coverPaperGroup.className = "mt-4";
+            
+            const label = document.createElement('label');
+            label.className = "block text-sm font-medium text-gray-300 mb-2";
+            label.textContent = "Cover Paper Type";
+            
+            const select = document.createElement('select');
+            select.id = 'cover-paper-type';
+            select.className = "w-full bg-slate-800 border border-slate-600 rounded-md py-2 px-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500";
+            
+            // Clone options from main paper select
+            Array.from(paperTypeSelect.options).forEach(opt => {
+                select.appendChild(opt.cloneNode(true));
+            });
+
+            coverPaperGroup.appendChild(label);
+            coverPaperGroup.appendChild(select);
+            
+            // Insert after main paper select
+            if(paperTypeSelect.parentNode) paperTypeSelect.parentNode.insertBefore(coverPaperGroup, paperTypeSelect.nextSibling);
+        }
+
+        // Set Value
+        const coverSelect = document.getElementById('cover-paper-type');
+        if (coverSelect) coverSelect.value = coverPaperVal;
+    }
+
+    // Other Fields
     bleedInchesInput.value = specs.bleedInches ?? 0.125;
     safetyInchesInput.value = specs.safetyInches ?? 0.125;
-    pageCountInput.value = specs.pageCount || '';
-    bindingSelect.value = specs.binding || 'Perfect Bound';
     readingDirectionSelect.value = specs.readingDirection || 'ltr';
-    paperTypeSelect.value = specs.paperType || 'Gloss';
 }
 
-// --- Save Spec Changes Handler ---
+// --- Specs Form Submit Handler ---
 specsForm.addEventListener('submit', async (e) => {
     e.preventDefault();
-    saveSpecsButton.disabled = true;
-    specsStatusMessage.textContent = 'Saving...';
-    specsStatusMessage.className = 'mt-2 text-center text-sm text-yellow-400';
+    saveSpecsBtn.disabled = true;
+    saveSpecsBtn.textContent = 'Saving...';
 
     try {
-        const updatedSpecs = {
-            pageCount: parseInt(pageCountInput.value, 10) || null,
-            binding: bindingSelect.value,
-            readingDirection: readingDirectionSelect.value,
-            paperType: paperTypeSelect.value,
-            bleedInches: parseFloat(bleedInchesInput.value) || 0,
-            safetyInches: parseFloat(safetyInchesInput.value) || 0,
+        // Get selected Project Type
+        const selectedType = document.querySelector('input[name="projectType"]:checked');
+        if (!selectedType) {
+            throw new Error('Please select a project type.');
+        }
+        const typeValue = selectedType.value; // 'loose', 'saddleStitch', 'perfectBound'
+
+        const sizePreset = specSizePreset.value;
+        let dimensionsVal; // For Firestore
+        let localDimensions; // For local state
+
+        if (!sizePreset) throw new Error("Please select a finished size.");
+
+        if (sizePreset === 'custom') {
+            const width = parseFloat(specWidth.value);
+            const height = parseFloat(specHeight.value);
+            const unit = specUnit.value;
+
+            if (isNaN(width) || width <= 0 || isNaN(height) || height <= 0) {
+                throw new Error('Invalid custom dimensions');
+            }
+
+            dimensionsVal = {
+                width: width,
+                height: height,
+                units: unit
+            };
+        } else {
+            // Standard Size Key (e.g., 'A4') - Resolve to Object immediately for Backend Consistency
+            dimensionsVal = resolveDimensions(sizePreset);
+        }
+
+        // Local dimensions are now always the resolved object
+        localDimensions = resolveDimensions(dimensionsVal);
+
+        const specsUpdate = {
+            'projectType': typeValue === 'loose' ? 'single' : 'booklet',
+            'specs.dimensions': dimensionsVal,
+            'specs.binding': typeValue === 'loose' ? 'loose' : typeValue,
+            // [FIX] Page count is dynamic/calculated in builder, so we set to 0
+            'specs.pageCount': 0,
+            // [FIX] Save Interior Paper Type for ALL project types
+            'specs.paperType': specPaper.value 
         };
 
-        if (dimensionsSelect.value === 'custom') {
-             const width = parseFloat(customWidthInput.value);
-             const height = parseFloat(customHeightInput.value);
-             if (isNaN(width) || isNaN(height) || width <= 0 || height <= 0) {
-                 throw new Error('Please enter valid, positive numbers for custom width and height.');
-             }
-              // Basic check for safety margin vs custom dimensions
-             if (customUnitsSelect.value === 'in' && (updatedSpecs.safetyInches * 2 >= width || updatedSpecs.safetyInches * 2 >= height)) {
-                 throw new Error('Safety margin cannot be larger than half the page dimension.');
-             } // Add similar check for mm if needed
-
-             updatedSpecs.dimensions = {
-                 width: width,
-                 height: height,
-                 units: customUnitsSelect.value
-             };
+        // [FIX] Handle Cover Paper Type logic
+        if (typeValue === 'loose') {
+            specsUpdate['specs.coverPaperType'] = null;
         } else {
-            updatedSpecs.dimensions = dimensionsSelect.value;
+            // Required for Saddle Stitch and Perfect Bound
+            if (!specCoverPaper.value) throw new Error("Please select a cover paper type.");
+            specsUpdate['specs.coverPaperType'] = specCoverPaper.value;
         }
 
-         // Validate page count
-         if (!updatedSpecs.pageCount || updatedSpecs.pageCount <= 0) {
-             throw new Error('Please enter a valid, positive page count.');
-         }
+        const projectRef = doc(db, 'projects', projectId);
+        await updateDoc(projectRef, specsUpdate);
 
-        // Update Firestore
-        const projectRef = doc(db, "projects", projectId);
-        await updateDoc(projectRef, { specs: updatedSpecs });
+        // Update State locally to avoid reload
+        projectSpecs = {
+            dimensions: localDimensions,
+            binding: specsUpdate['specs.binding'],
+            pageCount: 0,
+            paperType: specsUpdate['specs.paperType'],
+            coverPaperType: specsUpdate['specs.coverPaperType']
+        };
+        projectType = specsUpdate['projectType'];
 
-        specsStatusMessage.textContent = 'Specifications saved successfully!';
-        specsStatusMessage.className = 'mt-2 text-center text-sm text-green-400';
+        // Hide modal and show upload UI
+        specsModal.classList.add('hidden');
+        uploadContainer.classList.remove('hidden');
 
-         // --- Trigger viewer update AFTER saving ---
-         // Find the currently selected version to reload
-        const currentVersionNum = parseInt(document.getElementById('version-selector')?.value, 10);
-        if (!isNaN(currentVersionNum)) {
-             // Temporarily update local data for immediate guide redraw
-             if (currentProjectData) {
-                 currentProjectData.specs = updatedSpecs;
-                 initializeSharedViewer({ // Re-initialize with updated specs
-                     db,
-                     auth,
-                     projectId,
-                     projectData: currentProjectData, // Pass updated data
-                     isAdmin: true
-                 });
-                 // Reloading the same version should now re-render with new guides
-                 // loadProofByVersion(currentVersionNum); // You might not need this if initializeSharedViewer handles it
-             }
-        }
-        // --- End trigger viewer update ---
+        // Refresh UI logic (Buttons, Tabs, etc.)
+        refreshBuilderUI();
 
+        await initializeBuilder();
 
-    } catch (error) {
-        console.error("Error saving specifications:", error);
-        specsStatusMessage.textContent = `Error: ${error.message || 'Could not save.'}`;
-        specsStatusMessage.className = 'mt-2 text-center text-sm text-red-400';
+    } catch (err) {
+        console.error("Error saving specs:", err);
+        alert("Failed to save specifications: " + err.message);
     } finally {
-        saveSpecsButton.disabled = false;
-        // Clear status message after a few seconds
-         setTimeout(() => { specsStatusMessage.textContent = ''; }, 4000);
+        saveSpecsBtn.disabled = false;
+        saveSpecsBtn.textContent = 'Save & Continue';
     }
 });
-
 
 // --- Firestore Listener ---
 onAuthStateChanged(auth, async (user) => {
@@ -365,7 +478,7 @@ onAuthStateChanged(auth, async (user) => {
                     }
 
                     // Populate the specs form
-                    populateSpecsForm(currentProjectData.specs);
+                    populateSpecsForm(currentProjectData);
 
                     // --- ADD THIS LINE ---
                     // Populate the manual cover specs form
@@ -859,7 +972,6 @@ if (rerunPreflightButton) {
         if (!currentProjectData || !projectId) return;
 
         // A. Get the latest version to check
-        // We assume we are checking the latest version available in the array
         const versions = currentProjectData.versions || [];
         if (versions.length === 0) {
             alert("No file versions found to check.");
@@ -883,7 +995,6 @@ if (rerunPreflightButton) {
 
         try {
             // C. Call the Cloud Function
-            // Note: Ensure 'analyzePdfToolbox' is deployed and available
             const analyzePdfToolbox = httpsCallable(functions, 'analyzePdfToolbox');
             
             console.log(`Running preflight on: ${latestVersion.filePath}`);
@@ -894,21 +1005,27 @@ if (rerunPreflightButton) {
 
             const analysis = result.data; // { preflightStatus, preflightResults, dimensions }
 
-            // D. Update Firestore
-            // We must update the specific version in the versions array
+            // D. Update Firestore Safely
             const updatedVersions = [...versions];
-            updatedVersions[latestVersionIndex] = {
+            
+            // [FIX] Construct the object step-by-step to avoid "undefined" values
+            const updatedVersionEntry = {
                 ...latestVersion,
                 preflightStatus: analysis.preflightStatus,
-                preflightResults: analysis.preflightResults,
-                // Update dimensions if they were found
-                specs: analysis.dimensions ? { 
-                    ...latestVersion.specs, // preserve existing specs if any
-                    dimensions: analysis.dimensions 
-                } : latestVersion.specs
+                preflightResults: analysis.preflightResults
             };
+
+            // Only update specs if we actually received dimensions. 
+            // If not, we leave 'specs' alone (it stays as it was in ...latestVersion)
+            if (analysis.dimensions) {
+                updatedVersionEntry.specs = {
+                    ...(latestVersion.specs || {}), // Handle case where specs didn't exist yet
+                    dimensions: analysis.dimensions
+                };
+            }
+
+            updatedVersions[latestVersionIndex] = updatedVersionEntry;
             
-            // Also update the top-level status if needed, or just the versions
             const projectRef = doc(db, "projects", projectId);
             await updateDoc(projectRef, { 
                 versions: updatedVersions 

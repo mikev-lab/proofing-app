@@ -2342,8 +2342,6 @@ async function renderPageCanvas(page, canvas) {
         if (imageCache.has(thumbCacheKey)) {
             const thumbBitmap = imageCache.get(thumbCacheKey);
             if (thumbBitmap) {
-                // ... (Logic to draw thumb placeholder same as before) ...
-                // Simplified for brevity: We assume this draws underneath if main render is slow
                 const srcW = thumbBitmap.width; const srcH = thumbBitmap.height;
                 const srcRatio = srcW / srcH; const targetRatio = totalW / totalH;
                 let drawW, drawH, drawX, drawY;
@@ -2363,7 +2361,7 @@ async function renderPageCanvas(page, canvas) {
         }
     } catch (e) {}
 
-    // 5. Draw File (High Res) - [UPDATED] Capture Stats
+    // 5. Draw File (High Res) & Capture Stats
     const renderStats = await drawFileWithTransform(
         ctx, sourceEntry, 0, 0, totalW, totalH, 
         page.settings.scaleMode, 
@@ -2375,27 +2373,32 @@ async function renderPageCanvas(page, canvas) {
         page.settings.panY
     );
 
-    // --- [NEW] DPI CHECK LOGIC ---
+    // --- [UPDATED] DPI CHECK LOGIC ---
     const warningEl = document.getElementById(`dpi-warning-${page.id}`);
     const valEl = document.getElementById(`dpi-val-${page.id}`);
 
     if (renderStats && renderStats.isImage && warningEl && valEl) {
-        // canvasPageWidthPx / physicalPageWidthInches = Current Context PPI
-        // NOTE: 'pixelsPerInch' variable is the display scaling factor.
-        // 'ctx' was scaled by 'pixelsPerInch'. 
-        // So 'drawW' returned by drawFileWithTransform is in *logical inches* on the context.
-        // Wait, let's re-verify drawFileWithTransform:
-        // "drawW = targetW" (where targetW was totalW, which is INCHES).
-        // Yes! drawFileWithTransform works in the coordinate space of the context.
-        // The context was scaled by `pixelsPerInch`.
-        // So `renderStats.drawW` is in INCHES.
-        
         // Effective DPI = Source Pixels / Printed Inches
         const effectiveDPI = renderStats.srcW / renderStats.drawW;
         
-        if (effectiveDPI < 300) {
+        // Tolerance set to 290 to ignore standard bleed stretching (which drops 300 -> ~294)
+        const DPI_THRESHOLD = 290; 
+
+        if (effectiveDPI < DPI_THRESHOLD) {
             valEl.textContent = Math.round(effectiveDPI);
             warningEl.classList.remove('hidden');
+            
+            // Make it red if really low (< 200), yellow if just slightly low
+            const icon = warningEl.querySelector('div');
+            if (icon) {
+                if (effectiveDPI < 200) {
+                    // Severe
+                    icon.className = "text-red-400 bg-slate-900/80 p-1.5 rounded-md backdrop-blur-md border border-red-500/30 shadow-md cursor-help transition-colors hover:text-red-300 hover:border-red-400";
+                } else {
+                    // Warning
+                    icon.className = "text-yellow-400 bg-slate-900/80 p-1.5 rounded-md backdrop-blur-md border border-yellow-500/30 shadow-md cursor-help transition-colors hover:text-yellow-300 hover:border-yellow-400";
+                }
+            }
         } else {
             warningEl.classList.add('hidden');
         }
@@ -2403,7 +2406,6 @@ async function renderPageCanvas(page, canvas) {
         // Hide if PDF or render failed or not applicable
         warningEl.classList.add('hidden');
     }
-    // ------------------------------
 
     if (typeof updateThumbnailFromMain === 'function') {
         updateThumbnailFromMain(page);

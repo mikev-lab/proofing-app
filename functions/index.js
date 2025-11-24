@@ -2661,6 +2661,7 @@ exports.getNotifications = onCall({ region: 'us-central1' }, async (request) => 
 });
 
 // --- Helper Function for Preflight Checks (Corrected Tool) ---
+// --- Helper Function for Preflight Checks ---
 async function runPreflightChecks(filePath, logger) {
     const { spawn } = require('child-process-promise');
     
@@ -2677,7 +2678,6 @@ async function runPreflightChecks(filePath, logger) {
         const pdfInfoResult = await spawn('pdfinfo', [filePath], { capture: ['stdout', 'stderr'] });
         const pdfInfoOutput = pdfInfoResult.stdout.toString();
         
-        // Fail loudly if no output
         if (!pdfInfoOutput) throw new Error('No output from pdfinfo');
 
         const sizeMatch = pdfInfoOutput.match(/Page size:\s*([\d\.]+) x ([\d\.]+) pts/);
@@ -2692,7 +2692,6 @@ async function runPreflightChecks(filePath, logger) {
         }
     } catch (error) {
         logger.warn('Dimensions check failed:', error);
-        // Don't mark the whole job as failed just for dimensions, but log it.
     }
 
     // --- 2. Font Check (pdffonts) ---
@@ -2700,7 +2699,7 @@ async function runPreflightChecks(filePath, logger) {
         const result = await spawn('pdffonts', [filePath], { capture: ['stdout', 'stderr'] });
         const fontOutput = result.stdout ? result.stdout.toString() : '';
 
-        if (!fontOutput) throw new Error('No output from pdffonts (tool may be missing)');
+        if (!fontOutput) throw new Error('No output from pdffonts');
 
         const lines = fontOutput.split('\n');
         const unembeddedFonts = [];
@@ -2726,7 +2725,6 @@ async function runPreflightChecks(filePath, logger) {
         }
 
     } catch (error) {
-        // CATCHES ENOENT NOW
         logger.error('Font check failed:', error);
         preflightResults.fontCheck.status = 'warning';
         preflightResults.fontCheck.details = `Check failed: ${error.message}`;
@@ -2737,7 +2735,7 @@ async function runPreflightChecks(filePath, logger) {
         const result = await spawn('pdfinfo', [filePath], { capture: ['stdout', 'stderr'] });
         const colorOutput = result.stdout ? result.stdout.toString() : '';
 
-        if (!colorOutput) throw new Error('No output from pdfinfo (tool may be missing)');
+        if (!colorOutput) throw new Error('No output from pdfinfo');
 
         const issues = [];
         if (colorOutput.includes('DeviceRGB') || colorOutput.includes('ICCBased')) issues.push('RGB');
@@ -2752,7 +2750,6 @@ async function runPreflightChecks(filePath, logger) {
             preflightResults.colorSpaceCheck.details = 'No RGB/Spot colors detected.';
         }
     } catch (e) {
-        // CATCHES ENOENT NOW
         preflightResults.colorSpaceCheck.status = 'warning';
         preflightResults.colorSpaceCheck.details = `Check failed: ${e.message}`;
     }
@@ -2762,11 +2759,12 @@ async function runPreflightChecks(filePath, logger) {
         const result = await spawn('pdfimages', ['-list', filePath], { capture: ['stdout', 'stderr'] });
         const dpiOutput = result.stdout ? result.stdout.toString() : '';
 
-        if (!dpiOutput) throw new Error('No output from pdfimages (tool may be missing)');
+        if (!dpiOutput) throw new Error('No output from pdfimages');
 
         const lines = dpiOutput.split('\n');
         const lowDpiImages = [];
-        const MIN_DPI = 300; 
+        // [FIX] Threshold set to 290 to handle minor scaling for bleed
+        const MIN_DPI = 290; 
 
         for (let i = 2; i < lines.length; i++) {
             const line = lines[i].trim();
@@ -2776,6 +2774,7 @@ async function runPreflightChecks(filePath, logger) {
                 const xPpi = parseInt(parts[parts.length - 4], 10);
                 const yPpi = parseInt(parts[parts.length - 3], 10);
                 const pageNum = parts[0];
+                
                 if (!isNaN(xPpi) && !isNaN(yPpi)) {
                     if (xPpi < MIN_DPI || yPpi < MIN_DPI) {
                         lowDpiImages.push(`Page ${pageNum} (${xPpi} dpi)`);
@@ -2786,15 +2785,14 @@ async function runPreflightChecks(filePath, logger) {
 
         if (lowDpiImages.length > 0) {
             preflightResults.dpiCheck.status = 'warning';
-            preflightResults.dpiCheck.details = `${lowDpiImages.length} low-res images: ${lowDpiImages.slice(0, 3).join(', ')}`;
+            preflightResults.dpiCheck.details = `${lowDpiImages.length} low-res images (< ${MIN_DPI} DPI): ${lowDpiImages.slice(0, 3).join(', ')}`;
             if (preflightStatus !== 'failed') preflightStatus = 'warning';
         } else {
             preflightResults.dpiCheck.status = 'passed';
-            preflightResults.dpiCheck.details = `All images at or above ${MIN_DPI} DPI.`;
+            preflightResults.dpiCheck.details = `All images safe (>= ${MIN_DPI} DPI).`;
         }
 
     } catch (error) {
-        // CATCHES ENOENT NOW
         logger.error('DPI check failed:', error);
         preflightResults.dpiCheck.status = 'warning';
         preflightResults.dpiCheck.details = `Check failed: ${error.message}`;
@@ -2804,25 +2802,28 @@ async function runPreflightChecks(filePath, logger) {
 }
 
 // --- Worker Function (Runs in Cloud Run Container) ---
-exports.analyzePdfToolbox = onCall({
-    region: 'us-central1',
-    memory: '2GiB',
-    timeoutSeconds: 300,
-}, async (request) => {
-    if (!request.auth) throw new HttpsError('unauthenticated', 'Auth required.');
+if (process.env.FUNCTION_TARGET === 'analyzePdfToolbox' || process.env.FUNCTIONS_EMULATOR === 'true') {
+    exports.analyzePdfToolbox = onCall({
+        region: 'us-central1',
+        memory: '2GiB',
+        timeoutSeconds: 300,
+    }, async (request) => {
+        if (!request.auth) throw new HttpsError('unauthenticated', 'Auth required.');
 
-    const { gcsPath } = request.data; 
-    const bucket = admin.storage().bucket();
-    const path = require('path'); // Ensure path is available
-    const os = require('os');     // Ensure os is available
-    const tempFilePath = path.join(os.tmpdir(), `analyze_${Date.now()}.pdf`);
-    
-    await bucket.file(gcsPath).download({ destination: tempFilePath });
+        const { gcsPath } = request.data; 
+        const bucket = admin.storage().bucket();
+        const path = require('path'); 
+        const os = require('os');     
+        const tempFilePath = path.join(os.tmpdir(), `analyze_${Date.now()}.pdf`);
+        
+        await bucket.file(gcsPath).download({ destination: tempFilePath });
 
-    try {
-        const result = await runPreflightChecks(tempFilePath, logger);
-        return result;
-    } finally {
-        try { require('fs').unlinkSync(tempFilePath); } catch(e) {}
-    }
-});
+        try {
+            // Pass the global logger to the helper
+            const result = await runPreflightChecks(tempFilePath, logger);
+            return result;
+        } finally {
+            try { require('fs').unlinkSync(tempFilePath); } catch(e) {}
+        }
+    });
+}
