@@ -24,6 +24,7 @@ const generatedLinkUrlInput = document.getElementById('generated-link-url');
 const copyLinkButton = document.getElementById('copy-link-button');
 const copyStatusMessage = document.getElementById('copy-status-message');
 const guestLinksList = document.getElementById('guest-links-list');
+const sendProofButton = document.getElementById('send-proof-button');
 
 const loadingSpinner = document.getElementById('loading-spinner');
 const proofContent = document.getElementById('proof-content');
@@ -504,9 +505,15 @@ onAuthStateChanged(auth, async (user) => {
                    currentProjectData.status === 'In Production' || 
                    currentProjectData.status === 'Imposition Complete';
 
+                   const isWaitingReview = currentProjectData.status === 'Waiting Admin Review';
+
                     // Toggle approve/unapprove buttons
                     approveButton.classList.toggle('hidden', isApproved);
                     unapproveButton.classList.toggle('hidden', !isApproved);
+
+                    if (sendProofButton) {
+                        sendProofButton.classList.toggle('hidden', !isWaitingReview);
+                    }
 
                     // Disable upload forms if project is approved
                     if (isApproved) {
@@ -1349,5 +1356,38 @@ function renderImpositions(impositions) {
             </a>
         `;
         container.appendChild(item);
+    });
+}
+
+if (sendProofButton) {
+    sendProofButton.addEventListener('click', async () => {
+        if (!projectId) return;
+        
+        const confirmSend = confirm("Are you sure the files are ready? This will unlock the proof for the client to approve.");
+        if (!confirmSend) return;
+
+        sendProofButton.disabled = true;
+        sendProofButton.textContent = "Sending...";
+
+        try {
+            const projectRef = doc(db, "projects", projectId);
+            // Change status to 'Pending Approval' to unlock client UI
+            await updateDoc(projectRef, { status: 'Pending Approval' });
+
+            const recordHistory = httpsCallable(functions, 'recordHistory');
+            await recordHistory({
+                projectId: projectId,
+                action: 'admin_sent_proof'
+            });
+            
+            alert("Proof sent to client successfully.");
+
+        } catch (error) {
+            console.error("Error sending proof:", error);
+            alert("Failed to update status: " + error.message);
+        } finally {
+            sendProofButton.disabled = false;
+            sendProofButton.textContent = "Send Proof to Client";
+        }
     });
 }

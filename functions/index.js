@@ -1375,19 +1375,11 @@ exports.createFileRequest = onCall({ region: 'us-central1' }, async (request) =>
 
 // --- NEW Callable Function for Submitting Guest Upload ---
 exports.submitGuestUpload = onCall({ region: 'us-central1' }, async (request) => {
-    // This function is called by the guest after they finish uploading files.
-    // It validates the token (via context or explicit check) and updates the status.
-
-    // 1. Auth Check (Guests are anonymous but have a token claim, or we check token manually)
-    // Since the guest is signed in anonymously and has a claim, request.auth should be populated.
     if (!request.auth) {
         throw new HttpsError('unauthenticated', 'User must be authenticated.');
     }
 
     const { projectId } = request.data;
-
-    // In a real world scenario, we should double check the guest's permissions against the projectId
-    // However, Firestore rules handle the write security. This function is mainly for NOTIFICATIONS.
 
     if (!projectId) {
         throw new HttpsError('invalid-argument', 'Missing projectId.');
@@ -1396,9 +1388,9 @@ exports.submitGuestUpload = onCall({ region: 'us-central1' }, async (request) =>
     try {
         const projectRef = db.collection('projects').doc(projectId);
 
-        // Update status
+        // [FIX] Set status to 'Waiting Admin Review' so client page hides buttons
         await projectRef.update({
-            status: 'Pending Review', // or simply 'Pending'
+            status: 'Waiting Admin Review', 
             lastUploadAt: admin.firestore.FieldValue.serverTimestamp()
         });
 

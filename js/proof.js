@@ -538,8 +538,18 @@ function loadProjectForUser(user) {
 
                  if (approvedStatuses.includes(projectData.status)) {
                      approvalBanner.classList.remove('hidden');
+                     approvalBanner.className = "mb-6 bg-green-800/50 border border-green-500 text-green-200 px-4 py-3 rounded-lg relative";
+                     approvalBanner.innerHTML = '<strong class="font-bold">Proof Approved!</strong> <span class="block sm:inline">This project is locked for printing and cannot be modified.</span>';
+                     
                      actionPanel.innerHTML = `<p class="text-center text-lg font-semibold text-green-400">Proof Approved</p>`;
                      commentTool.style.display = 'none';
+                 } else if (projectData.status === 'Waiting Admin Review') {
+                     approvalBanner.classList.remove('hidden');
+                     approvalBanner.className = "mb-6 bg-blue-900/50 border border-blue-500 text-blue-200 px-4 py-3 rounded-lg relative";
+                     approvalBanner.innerHTML = '<strong class="font-bold">Under Review.</strong> <span class="block sm:inline">An administrator is reviewing your submission. You will be notified when the proof is ready for approval.</span>';
+                     
+                     actionPanel.innerHTML = `<p class="text-center text-lg font-semibold text-blue-400">Waiting for Review</p>`;
+                     commentTool.style.display = 'none'; 
                  } else if (projectData.status === 'changes_requested') {
                      approvalBanner.classList.add('hidden');
                      actionPanel.innerHTML = `<p class="text-center text-lg font-semibold text-red-400">Changes Requested</p>`;
