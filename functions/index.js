@@ -2358,8 +2358,30 @@ exports.onProjectApprove = onDocumentUpdated({
       }
 
       const bucket = admin.storage().bucket();
-      const filePath = new URL(latestVersion.fileURL).pathname.split('/o/')[1].replace(/%2F/g, '/');
+      
+      // --- FIX START: Robust URL Parsing ---
+      let filePath;
+      const urlObj = new URL(latestVersion.fileURL);
+
+      if (urlObj.protocol === 'gs:') {
+          // Handle gs://bucket/path/to/file
+          // pathname comes out as "/path/to/file", so we remove the leading slash
+          filePath = urlObj.pathname.startsWith('/') ? urlObj.pathname.slice(1) : urlObj.pathname;
+      } else {
+          // Handle standard Firebase HTTP URLs which typically contain /o/
+          const parts = urlObj.pathname.split('/o/');
+          if (parts.length > 1) {
+              filePath = parts[1].replace(/%2F/g, '/');
+          } else {
+              // Fallback: If it's a direct link or different format, try using pathname directly
+              // stripping leading slash if necessary
+              filePath = urlObj.pathname.startsWith('/') ? urlObj.pathname.slice(1) : urlObj.pathname;
+              logger.warn(`Unusual URL format: ${latestVersion.fileURL}. Attempting to use path: ${filePath}`);
+          }
+      }
+      
       const file = bucket.file(decodeURIComponent(filePath));
+      // --- FIX END ---
 
       // 2. Download to temp file
       const os = require('os');
@@ -2426,12 +2448,11 @@ exports.onProjectApprove = onDocumentUpdated({
 
       try { fs.unlinkSync(localImposedPath); } catch(e) {}
 
-      // --- FIX START: Get Signed URL correctly ---
+      // Get Signed URL
       const [signedImposedUrl] = await imposedFile.getSignedUrl({ 
           action: 'read', 
           expires: '03-09-2491' 
       });
-      // --- FIX END ---
 
       // 7. Update Firestore
       const projectRef = db.collection('projects').doc(projectId);
