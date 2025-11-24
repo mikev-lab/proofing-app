@@ -718,6 +718,12 @@ function populateSpecsForm() {
     if (specPaper) specPaper.value = projectSpecs.paperType || '';
     if (specCoverPaper) specCoverPaper.value = projectSpecs.coverPaperType || '';
     
+    // --- [FIX] Restore Reading Direction ---
+    if (specReadingDirection && projectSpecs.readingDirection) {
+        specReadingDirection.value = projectSpecs.readingDirection;
+    }
+    // --------------------------------------
+
     // [NEW] Update Visuals to match restored state
     updateSelectionVisuals();
 
