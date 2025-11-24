@@ -276,15 +276,22 @@ const triggerAutosave = debounce(async () => {
     }
 }, 2000); // 2000ms = 2 seconds
 
+// --- Cover Preview Tabs Logic ---
 function setupCoverPreviewTabs() {
     const btnOutside = document.getElementById('btn-preview-outside');
     const btnInside = document.getElementById('btn-preview-inside');
+    const groupOuter = document.getElementById('outer-cover-group');
+    const groupInner = document.getElementById('inner-cover-group');
 
     if (btnOutside && btnInside) {
         btnOutside.addEventListener('click', () => {
             coverPreviewMode = 'outside';
             btnOutside.className = 'px-3 py-1 text-xs font-medium rounded text-white bg-indigo-600 shadow-sm transition-colors';
             btnInside.className = 'px-3 py-1 text-xs font-medium rounded text-gray-400 hover:text-white transition-colors';
+            
+            if(groupOuter) groupOuter.classList.remove('hidden');
+            if(groupInner) groupInner.classList.add('hidden');
+            
             renderCoverPreview();
         });
 
@@ -292,6 +299,10 @@ function setupCoverPreviewTabs() {
             coverPreviewMode = 'inside';
             btnInside.className = 'px-3 py-1 text-xs font-medium rounded text-white bg-indigo-600 shadow-sm transition-colors';
             btnOutside.className = 'px-3 py-1 text-xs font-medium rounded text-gray-400 hover:text-white transition-colors';
+            
+            if(groupOuter) groupOuter.classList.add('hidden');
+            if(groupInner) groupInner.classList.remove('hidden');
+            
             renderCoverPreview();
         });
     }
@@ -685,8 +696,6 @@ function updateFileName(inputId, displayId) {
 
     input.addEventListener('change', async (e) => {
         const file = e.target.files[0];
-
-        // Clear existing controls
         const existingControls = input.parentElement.querySelectorAll('.custom-controls');
         existingControls.forEach(el => el.remove());
 
@@ -694,30 +703,27 @@ function updateFileName(inputId, displayId) {
             if (display) display.textContent = file.name;
             selectedFiles[inputId] = file; 
 
-            const supportedImages = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp'];
-            const isPDF = file.type === 'application/pdf';
-            const isSupportedImage = supportedImages.includes(file.type);
-            const isPsd = file.name.toLowerCase().endsWith('.psd');
-            const isLocal = (isPDF || isSupportedImage) && !isPsd;
+            const name = file.name.toLowerCase();
+            const type = file.type.toLowerCase();
 
-            // Reset settings for new file
+            const isPDF = type === 'application/pdf' || name.endsWith('.pdf');
+            // [FIX] Add TIFF/AI support
+            const isComplexFormat = /\.(psd|ai|tiff|tif)$/i.test(name);
+            const isWebImage = type.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(name);
+            const isLocal = (isPDF || isWebImage) && !isComplexFormat;
+
             coverSettings[inputId] = { pageIndex: 1, scaleMode: 'fill' };
 
             if (!isLocal) {
                 processCoverFile(file, inputId);
             } else {
-                coverSources[inputId] = { 
-                    file: file, 
-                    status: 'ready', 
-                    isServer: false 
-                };
+                coverSources[inputId] = { file: file, status: 'ready', isServer: false };
             }
 
-            // Generate Controls (using the new reusable function)
             await createCoverControls(inputId, file);
 
             if (isLocal) renderCoverPreview();
-            triggerAutosave(); // Trigger save on new file
+            triggerAutosave();
 
         } else {
             if (display) display.textContent = '';
@@ -745,10 +751,8 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
     }
 
     const isServer = sourceEntry.isServer;
-    // CRITICAL: File is null for server files to prevent accessing stale local properties
-    const file = isServer ? null : sourceEntry.file; 
+    const file = isServer ? null : sourceEntry.file;
     
-    // Use stable path for caching
     const fileKey = isServer ? (sourceEntry.storagePath || sourceEntry.previewUrl || 'server_url') : (file ? file.name : 'unknown_file');
     const timestamp = (file && file.lastModified) ? file.lastModified : 'server_timestamp';
     const cacheKey = `${fileKey}_${pageIndex}_${timestamp}_stretched`;
@@ -760,26 +764,36 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
             if (isServer) {
                 if (!sourceEntry.previewUrl) return null;
 
-                // 1. Use Remote Document Caching
-                let pdfDocPromise = remotePdfDocCache.get(fileKey);
-                if (!pdfDocPromise) {
-                    const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
-                    pdfDocPromise = loadingTask.promise;
-                    remotePdfDocCache.set(fileKey, pdfDocPromise);
+                // [FIX] Check if Image or PDF
+                const pathToCheck = (sourceEntry.storagePath || sourceEntry.previewUrl).toLowerCase();
+                const isImage = /\.(jpg|jpeg|png|webp|gif|bmp)($|\?)/i.test(pathToCheck);
+
+                if (isImage) {
+                    const resp = await fetch(sourceEntry.previewUrl);
+                    if (!resp.ok) throw new Error("Failed to fetch image");
+                    const blob = await resp.blob();
+                    return createImageBitmap(blob);
+                } else {
+                    // PDF Logic
+                    const docCacheKey = sourceEntry.storagePath || sourceEntry.previewUrl;
+                    let pdfDocPromise = remotePdfDocCache.get(docCacheKey);
+                    if (!pdfDocPromise) {
+                        const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
+                        pdfDocPromise = loadingTask.promise;
+                        remotePdfDocCache.set(docCacheKey, pdfDocPromise);
+                    }
+                    const pdf = await pdfDocPromise;
+                    const page = await pdf.getPage(pageIndex);
+                    const viewport = page.getViewport({ scale: 1.5 });
+                    const cvs = document.createElement('canvas');
+                    cvs.width = viewport.width;
+                    cvs.height = viewport.height;
+                    await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+                    return createImageBitmap(cvs);
                 }
-                const pdf = await pdfDocPromise;
 
-                // 2. Render
-                const page = await pdf.getPage(pageIndex);
-                const viewport = page.getViewport({ scale: 1.5 }); // Good quality for covers
-                const cvs = document.createElement('canvas');
-                cvs.width = viewport.width;
-                cvs.height = viewport.height;
-                await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
-                return createImageBitmap(cvs);
-
-            } else if (file && file.type === 'application/pdf') {
-                // Local PDF: Use ArrayBuffer + pdfDocCache
+            } else if (file && (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))) {
+                // Local PDF
                 let pdfDoc = pdfDocCache.get(file);
                 if (!pdfDoc) {
                     const arrayBuffer = await file.arrayBuffer();
@@ -790,11 +804,13 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
                 const page = await pdf.getPage(pageIndex);
                 const viewport = page.getViewport({ scale: 1.5 });
                 const cvs = document.createElement('canvas');
-                cvs.width = viewport.width; cvs.height = viewport.height;
+                cvs.width = viewport.width;
+                cvs.height = viewport.height;
                 await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
                 return createImageBitmap(cvs);
 
-            } else if (file && file.type.startsWith('image/')) {
+            } else if (file) {
+                // Local Image
                 return createImageBitmap(file);
             }
             return null;
@@ -806,7 +822,6 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
 
     if (!imgBitmap) return;
 
-    // --- Draw Logic ---
     ctx.save();
     ctx.beginPath();
     ctx.rect(targetZone.x, targetZone.y, targetZone.w, targetZone.h);
@@ -815,7 +830,6 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
     const imgW = imgBitmap.width;
     const imgH = imgBitmap.height;
 
-    // Scale to fill TOTAL zone (Spine + Front/Back)
     let scale = totalZone.h / imgH; 
     if (imgW * scale < totalZone.w) {
         scale = totalZone.w / imgW;
@@ -827,11 +841,9 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
 
     let drawX;
     if (anchor === 'right') {
-        // Align to the RIGHT edge of the total zone
         const totalRight = totalZone.x + totalZone.w;
         drawX = totalRight - drawW;
     } else {
-        // Align to the LEFT edge of the total zone
         drawX = totalZone.x;
     }
 
@@ -991,13 +1003,11 @@ if (tabInterior && tabCover) {
 // --- Data Model Logic ---
 
 async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = null) {
-    // [FIX] 1. Strip auto-blanks before adding content.
-    // This prevents "piling up" blanks. New content replaces the placeholders.
+    // 1. Strip auto-blanks
     while (pages.length > 0 && pages[pages.length - 1].isAutoBlank) {
         pages.pop();
     }
     
-    // Sanitize insert index in case stripping shifted bounds
     if (insertAtIndex !== null && insertAtIndex > pages.length) {
         insertAtIndex = pages.length;
     }
@@ -1006,28 +1016,34 @@ async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = n
 
     for (const file of Array.from(files)) {
         const sourceId = Date.now() + Math.random().toString(16).slice(2);
+        const name = file.name.toLowerCase();
+        const type = file.type.toLowerCase();
 
-        const supportedImages = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp'];
-        const isPDF = file.type === 'application/pdf';
-        const isSupportedImage = supportedImages.includes(file.type);
-        const isPsd = file.name.toLowerCase().endsWith('.psd');
+        const isPDF = type === 'application/pdf' || name.endsWith('.pdf');
         
-        const isLocal = (isPDF || isSupportedImage) && !isPsd;
+        // [FIX] Treat PSD, AI, and TIFF as "Server Files" (Browser can't render them)
+        const isComplexFormat = /\.(psd|ai|tiff|tif)$/i.test(name);
+        
+        // Check for web-safe image formats
+        const isWebImage = type.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(name);
+        
+        // Local if PDF or Web Image, AND NOT a complex format
+        const isLocal = (isPDF || isWebImage) && !isComplexFormat;
 
         if (isLocal) {
             sourceFiles[sourceId] = file;
             let numPages = 1;
-            if (file.type === 'application/pdf') {
+            
+            if (isPDF) {
                  try {
                     const fileUrl = URL.createObjectURL(file);
                     const pdf = await pdfjsLib.getDocument(fileUrl).promise;
                     numPages = pdf.numPages;
-                 } catch (e) {
-                     console.warn("Could not parse PDF", e);
-                 }
+                 } catch (e) { console.warn("Could not parse PDF", e); }
             }
             addPagesToModel(newPages, sourceId, numPages, isSpreadUpload);
         } else {
+            // Server processing for PSD, AI, TIFF
             sourceFiles[sourceId] = { 
                 file: file, 
                 status: 'uploading', 
@@ -1046,8 +1062,6 @@ async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = n
     }
     
     saveState();
-    // [FIX] 2. Re-balance immediately. 
-    // If we added 1 page, and now have 3, this will add 1 auto-blank to reach 4.
     balancePages();
     triggerAutosave();
 }
@@ -2048,17 +2062,11 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     const card = document.createElement('div');
     card.dataset.id = page.id;
 
-    let classes = "page-card relative group bg-slate-800 shadow-lg border border-slate-700 transition-all hover:border-indigo-500 overflow-hidden cursor-grab active:cursor-grabbing";
-
-    // Prevent frame scaling weirdness by not applying transition to width/height changes if JS handles it
-    // But classes is a string.
+    let classes = "page-card relative group bg-slate-800 shadow-lg border border-slate-700 transition-all hover:border-indigo-500 overflow-hidden cursor-grab active:cursor-grabbing flex-shrink-0";
 
     if (projectType === 'single') {
-        // Loose sheets: Full border, NO rounded corners (Square)
-        // Ensure it doesn't scale border thickness. Border is 2px.
         classes += " border-2";
     } else {
-        // Booklet: Spread styling
         if (isFirstPage) {
             classes += " border-l-2 border-l-slate-900";
         } else if (isRightPage) {
@@ -2069,44 +2077,21 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     }
     card.className = classes;
 
-    // Fix: Ensure the CARD element adapts size but doesn't glitch.
-    // The card size is usually determined by its content (the canvasContainer).
-    // canvasContainer has fixed pixel width/height set by JS.
-    // So the card should grow naturally.
-    // The "Frame scales up" issue might be due to border-width appearing smaller relative to content?
-    // No, border is in CSS pixels. If we zoom (browser zoom or canvas scale?), standard CSS handles it.
-    // If we increase `pixelsPerInch`, the DIV grows in pixels.
-    // 2px border remains 2px.
-    // Maybe the user means the border looks too thin/thick?
-    // "Frame scales up as you zoom in and canvas gets larger."
-    // If `viewerScale` increases, `pixelsPerInch` increases.
-    // `containerW` increases. `style.width` increases.
-    // The DOM element gets bigger.
-    // The border is constant 1px (or 2px).
-    // Visually, the frame (border) should stay relative?
-    // Standard behavior is fine. Maybe the user saw layout shift.
-    // `flex-shrink-0` on card helps.
-    card.style.flexShrink = '0';
-
     // Layout Logic
     const bleedPx = bleed * pixelsPerInch;
     let containerW, containerH;
     let canvasLeft, canvasTop;
 
     if (projectType === 'single') {
-        // Loose Sheets: Full View
         containerW = (width + (bleed * 2)) * pixelsPerInch;
         containerH = (height + (bleed * 2)) * pixelsPerInch;
         canvasLeft = 0;
         canvasTop = 0;
     } else {
-        // Spread Logic
         if (isRightPage) {
-            // Right Page: Clip LEFT bleed (Spine)
             containerW = (width + bleed) * pixelsPerInch;
             canvasLeft = -bleedPx;
         } else {
-            // Left Page: Clip RIGHT bleed (Spine)
             containerW = (width + bleed) * pixelsPerInch;
             canvasLeft = 0;
         }
@@ -2131,11 +2116,20 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     const dragHandle = document.createElement('div');
     dragHandle.className = "drag-handle absolute top-2 left-2 p-1.5 bg-slate-900/80 text-white rounded cursor-move opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-sm z-30 hover:bg-indigo-600 shadow-sm";
     dragHandle.title = "Drag to Reorder";
-    // Grid/Grip Icon
     dragHandle.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>';
     card.appendChild(dragHandle);
 
-    // Overlay Controls - Always render these
+    // [NEW] DPI Warning Badge
+    const dpiWarning = document.createElement('div');
+    dpiWarning.id = `dpi-warning-${page.id}`;
+    dpiWarning.className = "hidden absolute top-2 left-12 bg-red-500/90 text-white text-[10px] font-bold px-2 py-1 rounded shadow-sm backdrop-blur-sm z-30 flex items-center gap-1 pointer-events-none";
+    dpiWarning.innerHTML = `
+        <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+        <span>Low Res (<span id="dpi-val-${page.id}">0</span> DPI)</span>
+    `;
+    card.appendChild(dpiWarning);
+
+    // Overlay Controls
     const controls = document.createElement('div');
     controls.className = "absolute top-2 right-2 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-900/80 p-1 rounded backdrop-blur-sm z-20";
     controls.innerHTML = `
@@ -2145,7 +2139,7 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     `;
     card.appendChild(controls);
 
-    // Overlay Settings (Transparent Buttons) - Always render these
+    // Overlay Settings
     const settingsOverlay = document.createElement('div');
     settingsOverlay.className = "absolute bottom-0 inset-x-0 p-2 opacity-0 group-hover:opacity-100 transition-opacity bg-gradient-to-t from-slate-900/90 to-transparent flex justify-center gap-2 z-20";
 
@@ -2157,7 +2151,7 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
 
     modes.forEach(mode => {
         const btn = document.createElement('button');
-        btn.type = 'button'; // Prevent form submission
+        btn.type = 'button';
         btn.className = `p-1.5 rounded border ${page.settings.scaleMode === mode.id ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800/80 border-slate-600 text-gray-400 hover:bg-slate-700 hover:text-white'}`;
         btn.innerHTML = mode.icon;
         btn.title = mode.title;
@@ -2170,29 +2164,19 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     pageNum.className = "absolute bottom-1 left-2 text-[10px] text-white/50 font-mono z-20";
     pageNum.textContent = `P${index + 1}`;
 
-    card.appendChild(controls);
     card.appendChild(canvasContainer);
-    card.appendChild(settingsOverlay);
     card.appendChild(pageNum);
 
-    // Add Placeholder
     const placeholder = document.createElement('div');
     placeholder.className = "absolute inset-0 flex items-center justify-center text-gray-600 bg-slate-200 z-10 transition-opacity duration-300";
     placeholder.innerHTML = '<div class="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>';
     placeholder.id = `placeholder-${page.id}`;
     canvasContainer.appendChild(placeholder);
 
-    // Add specific drop handling for this card
-    // We use the input ID trick again, but specific to this card if needed?
-    // Actually, we can just reuse the logic: drop -> updates this page's source.
-
     ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
         card.addEventListener(eventName, (e) => {
-            // Only intercept if it's a FILE drag. Allow SortableJS drags to bubble.
             if (e.dataTransfer.types.includes('Files')) {
-                e.preventDefault();
-                e.stopPropagation();
-
+                e.preventDefault(); e.stopPropagation();
                 if (eventName === 'dragenter' || eventName === 'dragover') {
                     card.classList.add('ring-2', 'ring-indigo-500', 'ring-offset-2');
                 } else {
@@ -2205,11 +2189,7 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     card.addEventListener('drop', async (e) => {
         if (e.dataTransfer.types.includes('Files')) {
             const files = e.dataTransfer.files;
-            if (files.length > 0) {
-                const file = files[0];
-                // Replace content of THIS page
-                await updatePageContent(page.id, file);
-            }
+            if (files.length > 0) await updatePageContent(page.id, files[0]);
         }
     });
 
@@ -2218,20 +2198,26 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
 }
 
 // Helper to replace page content
+// Helper to replace page content
 async function updatePageContent(pageId, file) {
     const page = pages.find(p => p.id === pageId);
     if (!page) return;
 
     const sourceId = Date.now() + Math.random().toString(16).slice(2);
-    const isLocal = file.type === 'application/pdf' || file.type.startsWith('image/');
+    
+    const name = file.name.toLowerCase();
+    const type = file.type.toLowerCase();
+    
+    // [FIX] Robust Detection
+    const isPDF = type === 'application/pdf' || name.endsWith('.pdf');
+    const isPsd = name.endsWith('.psd') || name.endsWith('.ai');
+    const isImage = type.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(name);
+    const isLocal = (isPDF || isImage) && !isPsd;
 
     if (isLocal) {
         sourceFiles[sourceId] = file;
         page.sourceFileId = sourceId;
-        page.pageIndex = 1; // Reset to page 1 of new file
-
-        // If it's a PDF, we might want to know if it has more pages, but for a single replacement we usually just take page 1.
-        // Unless we want to expand? For now, simple replacement.
+        page.pageIndex = 1; // Reset to page 1
 
         // Update UI
         const canvas = document.getElementById(`canvas-${pageId}`);
@@ -2251,11 +2237,8 @@ async function updatePageContent(pageId, file) {
 
         await processServerFile(file, sourceId);
     }
-
-    // Trigger re-render to update thumbnails or other UI if needed
-    // But renderPageCanvas above might be enough.
-    // Safest to re-render viewer if we want to ensure everything syncs?
-    // renderPageCanvas is faster.
+    
+    triggerAutosave();
 }
 
 async function renderPageCanvas(page, canvas) {
@@ -2267,13 +2250,15 @@ async function renderPageCanvas(page, canvas) {
     // 1. Handle Blank Page
     if (page.sourceFileId === null) {
         drawBlankPage(page, canvas, view);
+        // Hide DPI warning if it exists
+        const w = document.getElementById(`dpi-warning-${page.id}`);
+        if (w) w.classList.add('hidden');
         return;
     }
 
     // 2. Validate Source
     const sourceEntry = sourceFiles[page.sourceFileId];
     if (!sourceEntry) {
-        // Draw visual error on canvas if source is missing
         const ctx = canvas.getContext('2d');
         ctx.fillStyle = '#f3f4f6'; ctx.fillRect(0,0,canvas.width, canvas.height);
         ctx.fillStyle = '#ef4444'; ctx.font = '10px sans-serif'; 
@@ -2290,7 +2275,7 @@ async function renderPageCanvas(page, canvas) {
     
     const visualScale = (250 * viewerScale) / ((width + bleed*2) * 96);
     const pixelsPerInch = 96 * visualScale;
-    const pixelDensity = 1.5; // Balance between sharpness and performance
+    const pixelDensity = 1.5; 
 
     const totalW = width + (bleed*2);
     const totalH = height + (bleed*2);
@@ -2314,57 +2299,38 @@ async function renderPageCanvas(page, canvas) {
     ctx.fillRect(0, 0, totalW, totalH);
 
     // --- OPTIMIZATION 1: Blurry Placeholder ---
-    // Check if we have the low-res thumbnail cached. If so, draw it immediately.
     try {
         const file = sourceEntry.isServer ? null : sourceEntry.file;
         const fileKey = sourceEntry.isServer ? (sourceEntry.storagePath || sourceEntry.previewUrl) : (file ? file.name : 'unknown');
         const timestamp = (file && file.lastModified) ? file.lastModified : 'server';
-        
-        // Look for the 0.25 scale key
         const thumbCacheKey = `${fileKey}_${page.pageIndex || 1}_${timestamp}_s0.25`;
 
         if (imageCache.has(thumbCacheKey)) {
             const thumbBitmap = imageCache.get(thumbCacheKey);
             if (thumbBitmap) {
-                // Calculate positioning for the placeholder (Match drawFileWithTransform logic)
-                const srcW = thumbBitmap.width;
-                const srcH = thumbBitmap.height;
-                const srcRatio = srcW / srcH;
-                const targetRatio = totalW / totalH;
-                
+                // ... (Logic to draw thumb placeholder same as before) ...
+                // Simplified for brevity: We assume this draws underneath if main render is slow
+                const srcW = thumbBitmap.width; const srcH = thumbBitmap.height;
+                const srcRatio = srcW / srcH; const targetRatio = totalW / totalH;
                 let drawW, drawH, drawX, drawY;
                 const mode = page.settings.scaleMode || 'fit';
-                const panX = page.settings.panX || 0;
-                const panY = page.settings.panY || 0;
+                const panX = page.settings.panX || 0; const panY = page.settings.panY || 0;
                 
-                if (mode === 'stretch') { 
-                    drawW = totalW; drawH = totalH; 
-                } else if (mode === 'fit') {
-                    if (srcRatio > targetRatio) { drawW = totalW; drawH = totalW / srcRatio; }
-                    else { drawH = totalH; drawW = totalH * srcRatio; }
-                } else { // fill
-                    if (srcRatio > targetRatio) { drawH = totalH; drawW = totalH * srcRatio; }
-                    else { drawW = totalW; drawH = totalW / srcRatio; }
+                if (mode === 'stretch') { drawW = totalW; drawH = totalH; } 
+                else if (mode === 'fit') {
+                    if (srcRatio > targetRatio) { drawW = totalW; drawH = totalW / srcRatio; } else { drawH = totalH; drawW = totalH * srcRatio; }
+                } else {
+                    if (srcRatio > targetRatio) { drawH = totalH; drawW = totalH * srcRatio; } else { drawW = totalW; drawH = totalW / srcRatio; }
                 }
-                
                 drawX = (totalW - drawW) / 2 + (panX * totalW);
                 drawY = (totalH - drawH) / 2 + (panY * totalH);
-
-                ctx.save();
-                ctx.beginPath(); ctx.rect(0, 0, totalW, totalH); ctx.clip();
-                // Optional: ctx.filter = 'blur(2px)'; // Add blur if you want a "loading" effect
                 ctx.drawImage(thumbBitmap, drawX, drawY, drawW, drawH);
-                ctx.restore();
             }
         }
-    } catch (e) {
-        // Ignore placeholder errors, proceeding to main render
-    }
-    // ------------------------------------------
+    } catch (e) {}
 
-    // 5. Draw File (High Res)
-    // This overwrites the placeholder with the sharp version
-    await drawFileWithTransform(
+    // 5. Draw File (High Res) - [UPDATED] Capture Stats
+    const renderStats = await drawFileWithTransform(
         ctx, sourceEntry, 0, 0, totalW, totalH, 
         page.settings.scaleMode, 
         page.settings.alignment, 
@@ -2375,12 +2341,39 @@ async function renderPageCanvas(page, canvas) {
         page.settings.panY
     );
 
-    // --- OPTIMIZATION 2: Sync to Thumbnail ---
-    // Push the loaded image to the sidebar so it doesn't have to load again
+    // --- [NEW] DPI CHECK LOGIC ---
+    const warningEl = document.getElementById(`dpi-warning-${page.id}`);
+    const valEl = document.getElementById(`dpi-val-${page.id}`);
+
+    if (renderStats && renderStats.isImage && warningEl && valEl) {
+        // canvasPageWidthPx / physicalPageWidthInches = Current Context PPI
+        // NOTE: 'pixelsPerInch' variable is the display scaling factor.
+        // 'ctx' was scaled by 'pixelsPerInch'. 
+        // So 'drawW' returned by drawFileWithTransform is in *logical inches* on the context.
+        // Wait, let's re-verify drawFileWithTransform:
+        // "drawW = targetW" (where targetW was totalW, which is INCHES).
+        // Yes! drawFileWithTransform works in the coordinate space of the context.
+        // The context was scaled by `pixelsPerInch`.
+        // So `renderStats.drawW` is in INCHES.
+        
+        // Effective DPI = Source Pixels / Printed Inches
+        const effectiveDPI = renderStats.srcW / renderStats.drawW;
+        
+        if (effectiveDPI < 300) {
+            valEl.textContent = Math.round(effectiveDPI);
+            warningEl.classList.remove('hidden');
+        } else {
+            warningEl.classList.add('hidden');
+        }
+    } else if (warningEl) {
+        // Hide if PDF or render failed or not applicable
+        warningEl.classList.add('hidden');
+    }
+    // ------------------------------
+
     if (typeof updateThumbnailFromMain === 'function') {
         updateThumbnailFromMain(page);
     }
-    // ------------------------------------------
 
     // 6. Draw Guides
     const guideScale = pixelsPerInch / 72;
@@ -2492,23 +2485,22 @@ function drawBlankPage(page, canvas, view) {
 
 // Add 'forceScale' to the arguments (defaults to null)
 async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW, targetH, mode, align, pageIndex = 1, pageId = null, viewMode = 'full', panX = 0, panY = 0, forceScale = null) {
-    if (!sourceEntry) return;
+    if (!sourceEntry) return null;
 
     const isServer = sourceEntry.isServer;
     const file = isServer ? null : sourceEntry.file; 
     const status = sourceEntry.status || 'ready';
 
     if (status === 'error') {
-        ctx.fillStyle = '#fee2e2'; ctx.fillRect(targetX, targetY, targetW, targetH); return;
+        ctx.fillStyle = '#fee2e2'; ctx.fillRect(targetX, targetY, targetW, targetH); return null;
     }
     if (status === 'processing' || status === 'uploading') {
-        drawProcessingState(ctx, targetX, targetY, targetW, targetH); return;
+        drawProcessingState(ctx, targetX, targetY, targetW, targetH); return null;
     }
 
     const fileKey = isServer ? (sourceEntry.storagePath || sourceEntry.previewUrl || 'server_url') : (file ? file.name : 'unknown_file');
     const timestamp = (file && file.lastModified) ? file.lastModified : 'server_timestamp';
     
-    // Generate unique keys for the requested scale AND the full scale version
     const scaleKey = forceScale ? `_s${forceScale}` : '_full';
     const cacheKey = `${fileKey}_${pageIndex}_${timestamp}${scaleKey}`;
     const fullCacheKey = `${fileKey}_${pageIndex}_${timestamp}_full`; 
@@ -2516,34 +2508,47 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
     let imgBitmap;
 
     try {
-        // OPTIMIZATION: If requesting a thumbnail (forceScale), check if Full Version is already available/loading
-        // This prevents "double downloading" the PDF logic.
         if (forceScale && (imageCache.has(fullCacheKey) || pendingLoadCache.has(fullCacheKey))) {
             imgBitmap = await fetchBitmapWithCache(fullCacheKey, async () => null); 
         } else {
-            // Normal Load
             imgBitmap = await fetchBitmapWithCache(cacheKey, async () => {
-                // Use 0.25 for thumbnails, 1.5 for server viewer, 1.0 for local viewer
                 const renderScale = forceScale || (isServer ? 1.5 : 1.0); 
 
                 if (isServer) {
                     if (!sourceEntry.previewUrl) return null; 
-                    let pdfDocPromise = remotePdfDocCache.get(fileKey);
-                    if (!pdfDocPromise) {
-                        const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
-                        pdfDocPromise = loadingTask.promise;
-                        remotePdfDocCache.set(fileKey, pdfDocPromise);
-                    }
-                    const pdf = await pdfDocPromise;
-                    const page = await pdf.getPage(pageIndex);
-                    const viewport = page.getViewport({ scale: renderScale }); 
-                    const tempCanvas = document.createElement('canvas');
-                    tempCanvas.width = viewport.width;
-                    tempCanvas.height = viewport.height;
-                    await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport: viewport }).promise;
-                    return createImageBitmap(tempCanvas);
+                    
+                    // [FIX] Check if URL points to an image or PDF
+                    // If storagePath is available, check extension. Fallback to checking previewUrl.
+                    const pathToCheck = (sourceEntry.storagePath || sourceEntry.previewUrl).toLowerCase();
+                    const isImage = /\.(jpg|jpeg|png|webp|gif|bmp)($|\?)/i.test(pathToCheck);
 
-                } else if (file && file.type === 'application/pdf') {
+                    if (isImage) {
+                        // --- Image Loader ---
+                        const resp = await fetch(sourceEntry.previewUrl);
+                        if (!resp.ok) throw new Error("Failed to fetch image");
+                        const blob = await resp.blob();
+                        return createImageBitmap(blob);
+                    } else {
+                        // --- PDF Loader (Default for PDF, PSD, AI previews) ---
+                        const docCacheKey = sourceEntry.storagePath || sourceEntry.previewUrl;
+                        let pdfDocPromise = remotePdfDocCache.get(docCacheKey);
+                        if (!pdfDocPromise) {
+                            const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
+                            pdfDocPromise = loadingTask.promise;
+                            remotePdfDocCache.set(docCacheKey, pdfDocPromise);
+                        }
+                        const pdf = await pdfDocPromise;
+                        const page = await pdf.getPage(pageIndex);
+                        const viewport = page.getViewport({ scale: renderScale }); 
+                        const tempCanvas = document.createElement('canvas');
+                        tempCanvas.width = viewport.width;
+                        tempCanvas.height = viewport.height;
+                        await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport: viewport }).promise;
+                        return createImageBitmap(tempCanvas);
+                    }
+
+                } else if (file && (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))) {
+                    // Local PDF
                     let pdfDoc = pdfDocCache.get(file);
                     if (!pdfDoc) {
                         const arrayBuffer = await file.arrayBuffer(); 
@@ -2559,7 +2564,8 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
                     await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport: viewport }).promise;
                     return createImageBitmap(tempCanvas);
 
-                } else if (file && file.type.startsWith('image/')) {
+                } else if (file) {
+                    // Local Image
                     return createImageBitmap(file);
                 }
                 return null;
@@ -2567,10 +2573,9 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
         }
         
         if (!imgBitmap) {
-            ctx.fillStyle = '#f1f5f9'; ctx.fillRect(targetX, targetY, targetW, targetH); return;
+            ctx.fillStyle = '#f1f5f9'; ctx.fillRect(targetX, targetY, targetW, targetH); return null;
         }
 
-        // --- Draw Logic ---
         const srcW = imgBitmap.width;
         const srcH = imgBitmap.height;
         const srcRatio = srcW / srcH;
@@ -2596,9 +2601,18 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
         ctx.drawImage(imgBitmap, drawX, drawY, drawW, drawH);
         ctx.restore();
 
+        if (!forceScale) {
+            const isImg = isServer 
+                ? /\.(jpg|jpeg|png|webp|gif|bmp)($|\?)/i.test((sourceEntry.storagePath || sourceEntry.previewUrl).toLowerCase())
+                : (file && (file.type.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(file.name)));
+            return { srcW, drawW, isImage: isImg };
+        }
+        return null;
+
     } catch (e) {
         console.error("Draw Render Error:", e);
         ctx.fillStyle = '#fee2e2'; ctx.fillRect(targetX, targetY, targetW, targetH);
+        return null;
     }
 }
 
@@ -3909,6 +3923,8 @@ async function handleUpload(e) {
 
         const trimW = projectSpecs.dimensions.width;
         const trimH = projectSpecs.dimensions.height;
+        
+        // Total Trim Width (Back + Spine + Front)
         const totalCoverW = (trimW * 2) + calcSpineW;
 
         await updateDoc(doc(db, 'projects', projectId), {
@@ -3920,7 +3936,7 @@ async function handleUpload(e) {
             'specs.spineWidth': calcSpineW 
         });
 
-        // 2. Metadata
+        // 2. Metadata Construction
         pages.forEach(p => {
             const safeSettings = {
                 scaleMode: p.settings.scaleMode || 'fit',
@@ -3964,37 +3980,38 @@ async function handleUpload(e) {
 
         addCoverMeta('cover_front', 'file-cover-front', 'cover_front');
         addCoverMeta('cover_back', 'file-cover-back', 'cover_back');
-        // [FIX] Add inner covers
         addCoverMeta('cover_inside_front', 'file-cover-inside-front', 'cover_inside_front');
         addCoverMeta('cover_inside_back', 'file-cover-inside-back', 'cover_inside_back');
 
         const spineMode = window.currentSpineMode || 'file';
+        
+        // [FIX] Only add spine file metadata if we are using a FILE or MIRROR mode.
+        // If mode is 'stretch', we skip adding a spine part, so the backend knows to extend the adjacent cover.
         if (spineMode === 'file') {
             addCoverMeta('cover_spine', 'file-spine', 'cover_spine');
-        } else {
-            let sourceKey = spineMode.includes('front') ? 'cover_front' : 'cover_back';
-            let settingsKey = spineMode.includes('front') ? 'file-cover-front' : 'file-cover-back';
-            
-            if (allSourcePaths[sourceKey]) {
-                let scaleMode = 'fill';
-                let flip = false;
-                if (spineMode.includes('stretch')) scaleMode = 'stretch';
-                if (spineMode.includes('wrap') || spineMode.includes('mirror')) flip = true;
-
-                const sourceSettings = coverSettings[settingsKey] || { pageIndex: 1 };
-
-                bookletMetadata.push({
-                    storagePath: allSourcePaths[sourceKey],
-                    type: 'cover_spine',
-                    sourcePageIndex: (sourceSettings.pageIndex || 1) - 1,
-                    settings: { scaleMode, flip }
-                });
+        } else if (spineMode.includes('wrap') || spineMode.includes('mirror')) {
+            // If stretching, we do NOT send a spine part. 
+            // If mirroring/wrapping (without stretch), we send the source as the spine part.
+            if (!spineMode.includes('stretch')) {
+                let sourceKey = spineMode.includes('front') ? 'cover_front' : 'cover_back';
+                let settingsKey = spineMode.includes('front') ? 'file-cover-front' : 'file-cover-back';
+                
+                if (allSourcePaths[sourceKey]) {
+                    const sourceSettings = coverSettings[settingsKey] || { pageIndex: 1 };
+                    bookletMetadata.push({
+                        storagePath: allSourcePaths[sourceKey],
+                        type: 'cover_spine',
+                        sourcePageIndex: (sourceSettings.pageIndex || 1) - 1,
+                        settings: { scaleMode: 'fill', flip: true }
+                    });
+                }
             }
         }
 
         progressText.textContent = 'Generating Proof...';
         const generateBooklet = httpsCallable(functions, 'generateBooklet');
-        await generateBooklet({ projectId: projectId, files: bookletMetadata });
+        // [FIX] Pass spineMode to backend
+        await generateBooklet({ projectId: projectId, files: bookletMetadata, spineMode: spineMode });
 
         progressText.textContent = 'Finalizing...';
         const submitGuestUpload = httpsCallable(functions, 'submitGuestUpload');

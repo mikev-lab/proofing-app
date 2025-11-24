@@ -1847,21 +1847,22 @@ exports.generateBooklet = onCall({
 }, async (request) => {
     if (!request.auth) throw new HttpsError('unauthenticated', 'User must be authenticated.');
 
-    const { projectId, files } = request.data;
+    const { projectId, files, spineMode } = request.data; // [FIX] Accept spineMode
     if (!projectId || !Array.isArray(files)) throw new HttpsError('invalid-argument', 'Missing projectId or files array.');
 
     logger.log(`Generating booklet for project ${projectId} with ${files.length} files.`);
 
     const bucket = admin.storage().bucket();
     const authAxios = await getAuthenticatedClient();
+    
+    // Ensure imports are available in function scope
     const { PDFDocument, cmyk } = require('pdf-lib');
     const { pushGraphicsState, popGraphicsState, clip, endPath, moveTo, lineTo } = require('pdf-lib');
 
     const projectRef = db.collection('projects').doc(projectId);
     const projectDoc = await projectRef.get();
     if (!projectDoc.exists) throw new HttpsError('not-found', 'Project not found.');
-    const projectData = projectDoc.data();
-    const specs = projectData.specs || {};
+    const specs = projectDoc.data().specs || {};
 
     const resolvedDims = resolveDimensions(specs.dimensions);
     const trimWidth = resolvedDims.width || 8.5;
@@ -1885,9 +1886,10 @@ exports.generateBooklet = onCall({
             let isPdf = false;
             const ext = path.extname(storagePath).toLowerCase();
 
-            if (ext === '.psd' || ext === '.ai') {
+            if (ext === '.psd' || ext === '.ai' || ext === '.tiff' || ext === '.tif') {
                 const convertFormData = new FormData();
                 convertFormData.append('files', fs.createReadStream(tempPath), path.basename(storagePath));
+                // Gotenberg's LibreOffice module handles TIFF conversion to PDF
                 const response = await authAxios.post(`${GOTENBERG_URL}/forms/libreoffice/convert`, convertFormData, { responseType: 'arraybuffer' });
                 fs.writeFileSync(tempPath, response.data);
                 isPdf = true;
@@ -1953,7 +1955,6 @@ exports.generateBooklet = onCall({
 
             const interiorSheets = Math.ceil(interiorFiles.length / 2);
             
-            // Spine Formula: (Interior Sheets * Interior Caliper) + (Cover Caliper * 2)
             let spineWidth = (interiorSheets * interiorCaliper) + (coverCaliper * 2);
             if (specs.binding === 'saddleStitch' || specs.binding === 'loose') spineWidth = 0;
 
@@ -2013,7 +2014,15 @@ exports.generateBooklet = onCall({
                     drawY = targetY - (drawH - targetH) / 2;
                 }
 
+                drawW = Number.isFinite(drawW) ? drawW : 0;
+                drawH = Number.isFinite(drawH) ? drawH : 0;
+                drawX = Number.isFinite(drawX) ? drawX : 0;
+                drawY = Number.isFinite(drawY) ? drawY : 0;
+
+                if (drawW <= 0 || drawH <= 0) return;
+
                 page.pushOperators(pushGraphicsState());
+                
                 page.pushOperators(
                      moveTo(targetX, targetY),
                      lineTo(targetX + targetW, targetY),
@@ -2043,36 +2052,51 @@ exports.generateBooklet = onCall({
                 page.pushOperators(popGraphicsState());
             }
 
-            await drawPart(coverPage1, coverFiles.back, 0, 0, trimWidth + bleed, totalHeight); 
-            await drawPart(coverPage1, coverFiles.spine, trimWidth + bleed, 0, spineWidth, totalHeight);
-            await drawPart(coverPage1, coverFiles.front, trimWidth + bleed + spineWidth, 0, trimWidth + bleed, totalHeight);
+            // --- [FIX] Dynamic Zone Logic for Stretch ---
+            let zoneLeft = { x: 0, y: 0, w: trimWidth + bleed, h: totalHeight }; // Back
+            let zoneMid = { x: trimWidth + bleed, y: 0, w: spineWidth, h: totalHeight }; // Spine
+            let zoneRight = { x: trimWidth + bleed + spineWidth, y: 0, w: trimWidth + bleed, h: totalHeight }; // Front
 
-            // --- Page 2: Inner Cover (Inside Front - Glue - Inside Back) ---
-            // Only generate if inner files exist or binding requires glue area (Perfect Bound)
+            let drawSpine = true;
+
+            if (spineMode === 'wrap-front-stretch') {
+                // Front covers spine
+                zoneRight.x = zoneMid.x;
+                zoneRight.w = zoneRight.w + zoneMid.w;
+                drawSpine = false;
+            } else if (spineMode === 'wrap-back-stretch') {
+                // Back covers spine
+                zoneLeft.w = zoneLeft.w + zoneMid.w;
+                drawSpine = false;
+            }
+
+            // Draw Back
+            await drawPart(coverPage1, coverFiles.back, zoneLeft.x, zoneLeft.y, zoneLeft.w, zoneLeft.h); 
+            
+            // Draw Spine (if not skipped by stretch)
+            if (drawSpine) {
+                await drawPart(coverPage1, coverFiles.spine, zoneMid.x, zoneMid.y, zoneMid.w, zoneMid.h);
+            }
+
+            // Draw Front
+            await drawPart(coverPage1, coverFiles.front, zoneRight.x, zoneRight.y, zoneRight.w, zoneRight.h);
+
+
+            // --- Page 2: Inner Cover ---
             if (coverFiles.inside_front || coverFiles.inside_back || (specs.binding === 'perfectBound' && spineWidth > 0)) {
                 const coverPage2 = coverDoc.addPage([totalWidth * 72, totalHeight * 72]);
                 
-                // Inner Spread layout: [Inside Front] [Glue Area] [Inside Back]
-                // Corresponding to reverse of [Back] [Spine] [Front]
-                // Left Page (Inside Front) -> x=0
-                // Glue Area -> Center
-                // Right Page (Inside Back) -> x = Trim + Bleed + Spine
-
                 await drawPart(coverPage2, coverFiles.inside_front, 0, 0, trimWidth + bleed, totalHeight);
                 await drawPart(coverPage2, coverFiles.inside_back, trimWidth + bleed + spineWidth, 0, trimWidth + bleed, totalHeight);
 
-                // Draw Blank Glue Area if Perfect Bound
                 if (specs.binding === 'perfectBound' && spineWidth > 0) {
-                    const glueW = (spineWidth + 0.25) * 72; // Spine + 0.125 + 0.125
+                    const glueW = (spineWidth + 0.25) * 72; 
                     const centerX = ((trimWidth + bleed) * 72) + ((spineWidth * 72) / 2);
                     const glueX = centerX - (glueW / 2);
                     
                     coverPage2.drawRectangle({
-                        x: glueX,
-                        y: 0,
-                        width: glueW,
-                        height: totalHeight * 72,
-                        color: cmyk(0, 0, 0, 0) // White / Transparent
+                        x: glueX, y: 0, width: glueW, height: totalHeight * 72,
+                        color: cmyk(0, 0, 0, 0) 
                     });
                 }
             }
