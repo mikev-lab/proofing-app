@@ -3749,7 +3749,6 @@ async function handleUpload(e) {
     if (binding === 'saddleStitch') {
         const MAX_TOTAL = 24;
         const MAX_INTERIOR = MAX_TOTAL - COVER_PAGES; 
-
         if (totalInteriorPages > MAX_INTERIOR) {
             alert(`Page Count Limit Exceeded.\n\nSaddle Stitch books are limited to ${MAX_TOTAL} total pages (Cover + Interior).\n\nYou currently have ${totalInteriorPages} interior pages + 4 cover pages = ${totalInteriorPages + 4} Total.\n\nPlease remove ${totalInteriorPages - MAX_INTERIOR} pages.`);
             return;
@@ -3766,26 +3765,40 @@ async function handleUpload(e) {
         const progressText = document.getElementById('progress-text');
         const bookletMetadata = [];
 
-        // 1. Calculate & Save Cover Dimensions (Fixes Guides)
-        const paperObj = HARDCODED_PAPER_TYPES.find(p => p.name === projectSpecs.paperType);
-        const caliper = paperObj ? paperObj.caliper : 0.004;
-        const totalSheets = Math.ceil((totalInteriorPages + 4) / 2);
-        let calcSpineW = totalSheets * caliper;
+        // --- 1. Calculate & Save Cover Dimensions (Fixed Formula) ---
+        // Formula: (Interior Sheets * Interior Caliper) + (Cover Caliper * 2)
+        
+        // Get Interior Caliper
+        const interiorPaperObj = HARDCODED_PAPER_TYPES.find(p => p.name === projectSpecs.paperType);
+        const interiorCaliper = interiorPaperObj ? interiorPaperObj.caliper : 0.004;
+        
+        // Get Cover Caliper
+        const coverPaperObj = HARDCODED_PAPER_TYPES.find(p => p.name === projectSpecs.coverPaperType);
+        // Fallback to interior caliper if cover paper isn't specified (e.g. self-cover), or default 0.004
+        const coverCaliper = coverPaperObj ? coverPaperObj.caliper : (interiorPaperObj ? interiorCaliper : 0.004);
+
+        // Calculate
+        const interiorSheets = Math.ceil(totalInteriorPages / 2);
+        let calcSpineW = (interiorSheets * interiorCaliper) + (coverCaliper * 2);
+        
         if (binding === 'saddleStitch' || binding === 'loose') calcSpineW = 0;
 
         const trimW = projectSpecs.dimensions.width;
         const trimH = projectSpecs.dimensions.height;
         const totalCoverW = (trimW * 2) + calcSpineW;
 
+        // Save to Firestore
         await updateDoc(doc(db, 'projects', projectId), {
             'specs.coverDimensions': {
                 width: totalCoverW,
                 height: trimH,
                 units: projectSpecs.dimensions.units
-            }
+            },
+            // Also save the calculated spine width for reference
+            'specs.spineWidth': calcSpineW 
         });
 
-        // 2. Build Metadata
+        // --- 2. Build Metadata ---
         pages.forEach(p => {
             const safeSettings = {
                 scaleMode: p.settings.scaleMode || 'fit',
@@ -3867,7 +3880,6 @@ async function handleUpload(e) {
         uploadContainer.classList.add('hidden');
         successState.classList.remove('hidden');
 
-        // [FIX] Conditional Redirect based on Role
         setTimeout(() => {
             if (isAdmin) {
                 window.location.href = `admin_project.html?id=${projectId}`;

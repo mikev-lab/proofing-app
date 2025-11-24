@@ -1855,6 +1855,7 @@ exports.generateBooklet = onCall({
     const bucket = admin.storage().bucket();
     const authAxios = await getAuthenticatedClient();
     const { PDFDocument } = require('pdf-lib');
+    const { pushGraphicsState, popGraphicsState, clip, endPath, moveTo, lineTo } = require('pdf-lib');
 
     const projectRef = db.collection('projects').doc(projectId);
     const projectDoc = await projectRef.get();
@@ -1940,12 +1941,18 @@ exports.generateBooklet = onCall({
         if (coverFiles.front || coverFiles.back || coverFiles.spine) {
             coverDoc = await PDFDocument.create();
 
-            const paperType = specs.paperType || '';
-            const paperObj = HARDCODED_PAPER_TYPES.find(p => p.name === paperType);
-            const caliper = paperObj ? paperObj.caliper : 0.004; 
-            const pageCount = (specs.pageCount && specs.pageCount > 0) ? specs.pageCount : interiorFiles.length;
+            // [FIX] Apply Correct Spine Formula
+            const interiorPaperObj = HARDCODED_PAPER_TYPES.find(p => p.name === specs.paperType);
+            const interiorCaliper = interiorPaperObj ? interiorPaperObj.caliper : 0.004;
 
-            let spineWidth = (pageCount / 2) * caliper;
+            const coverPaperObj = HARDCODED_PAPER_TYPES.find(p => p.name === specs.coverPaperType);
+            const coverCaliper = coverPaperObj ? coverPaperObj.caliper : (interiorPaperObj ? interiorCaliper : 0.004);
+
+            // Note: interiorFiles.length is the number of pages submitted. 
+            const interiorSheets = Math.ceil(interiorFiles.length / 2);
+            
+            let spineWidth = (interiorSheets * interiorCaliper) + (coverCaliper * 2);
+            
             if (specs.binding === 'saddleStitch' || specs.binding === 'loose') spineWidth = 0;
 
             const totalWidth = (trimWidth * 2) + spineWidth + (bleed * 2);
@@ -1960,9 +1967,9 @@ exports.generateBooklet = onCall({
 
                 if (isPdf) {
                     const srcDoc = await PDFDocument.load(fs.readFileSync(localPath));
-                    const pageIndex = fileMeta.sourcePageIndex || 0;
-                    const safeIndex = (pageIndex >= 0 && pageIndex < srcDoc.getPageCount()) ? pageIndex : 0;
-                    const [embedded] = await coverDoc.embedPages([srcDoc.getPage(safeIndex)]);
+                    let idx = fileMeta.sourcePageIndex || 0;
+                    if (idx < 0 || idx >= srcDoc.getPageCount()) idx = 0;
+                    const [embedded] = await coverDoc.embedPages([srcDoc.getPage(idx)]);
                     embeddable = embedded;
                     srcW = embedded.width;
                     srcH = embedded.height;
@@ -1986,46 +1993,58 @@ exports.generateBooklet = onCall({
                 let drawW, drawH, drawX, drawY;
 
                 const mode = fileMeta.settings?.scaleMode || 'fill';
-                
-                // Fill/Fit logic
+                const isFlipped = fileMeta.settings?.flip || false;
+
                 if (mode === 'stretch') {
-                    drawW = targetW; drawH = targetH;
+                    drawW = targetW; drawH = targetH; drawX = targetX; drawY = targetY;
                 } else if (mode === 'fit') {
                     if (srcRatio > targetRatio) { drawW = targetW; drawH = targetW / srcRatio; }
                     else { drawH = targetH; drawW = targetH * srcRatio; }
-                } else { // Fill
+                    drawX = targetX + (targetW - drawW) / 2;
+                    drawY = targetY + (targetH - drawH) / 2;
+                } else { 
                     if (srcRatio > targetRatio) { drawH = targetH; drawW = targetH * srcRatio; }
                     else { drawW = targetW; drawH = targetW / srcRatio; }
+                    drawX = targetX - (drawW - targetW) / 2;
+                    drawY = targetY - (drawH - targetH) / 2;
                 }
 
-                // Center in target box
-                drawX = targetX + (targetW - drawW) / 2;
-                drawY = targetY + (targetH - drawH) / 2;
+                drawW = Number.isFinite(drawW) ? drawW : 0;
+                drawH = Number.isFinite(drawH) ? drawH : 0;
+                drawX = Number.isFinite(drawX) ? drawX : 0;
+                drawY = Number.isFinite(drawY) ? drawY : 0;
 
-                // Apply Flip
-                if (fileMeta.settings?.flip) {
-                    // To flip strictly within the target box:
-                    // 1. Translate to center of TARGET box
+                if (drawW <= 0 || drawH <= 0) return;
+
+                coverPage.pushOperators(pushGraphicsState());
+                coverPage.pushOperators(
+                     moveTo(targetX, targetY),
+                     lineTo(targetX + targetW, targetY),
+                     lineTo(targetX + targetW, targetY + targetH),
+                     lineTo(targetX, targetY + targetH),
+                     lineTo(targetX, targetY),
+                     clip(),
+                     endPath()
+                );
+
+                if (isFlipped) {
                     const cx = targetX + targetW / 2;
                     coverPage.translateContent(cx, 0);
-                    // 2. Flip
                     coverPage.scaleContent(-1, 1);
-                    // 3. Translate back
                     coverPage.translateContent(-cx, 0);
                 }
 
-                // Removed clipping path to debug blank issue.
-                // Drawing the image directly.
                 if (isPdf) coverPage.drawPage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
                 else coverPage.drawImage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
 
-                // Reset transformation for next part if we flipped
-                if (fileMeta.settings?.flip) {
+                if (isFlipped) {
                     const cx = targetX + targetW / 2;
                     coverPage.translateContent(cx, 0);
-                    coverPage.scaleContent(-1, 1); // Flip back
+                    coverPage.scaleContent(-1, 1);
                     coverPage.translateContent(-cx, 0);
                 }
+                
+                coverPage.pushOperators(popGraphicsState());
             }
 
             await drawPart(coverFiles.back, 0, 0, trimWidth + bleed, totalHeight); 
