@@ -1567,6 +1567,11 @@ async function renderMinimap() {
 }
 
 async function populateMinimapCanvas(ctx, pageList, w, h) {
+    // [FIX] Clear the canvas completely before drawing to prevent "ghost" images
+    // (e.g. Page 4 remaining on the left side when Page 1 is drawn on the right)
+    ctx.fillStyle = '#1e293b'; // Match background color
+    ctx.fillRect(0, 0, w, h);
+
     const margin = 5;
     const pageW = (w - (margin*3)) / 2;
     const pageH = h - (margin*2);
@@ -1584,8 +1589,6 @@ async function populateMinimapCanvas(ctx, pageList, w, h) {
         if (!sourceEntry) return;
 
         // Force low-res render (0.25) via the queue system
-        // We use enqueueRender to ensure we don't clog the main thread,
-        // but we rely on browser cache to make it fast.
         await drawFileWithTransform(
             ctx, sourceEntry, x, y, pageW, pageH,
             page.settings.scaleMode || 'fit',
@@ -1599,7 +1602,6 @@ async function populateMinimapCanvas(ctx, pageList, w, h) {
     };
 
     // Layout Logic
-    // Check if the first page in list is actually Page 1 (Right Only)
     const isFirstPage = (pages.indexOf(pageList[0]) === 0);
 
     if (isFirstPage) {
@@ -3405,9 +3407,13 @@ async function init() {
         // 6. Logic Check
         let specsMissing = false;
         let dimValid = false;
-        if (typeof projectSpecs.dimensions === 'object' && projectSpecs.dimensions.width) dimValid = true;
-        if (!dimValid || !projectSpecs.binding) specsMissing = true;
 
+        if (projectSpecs && projectSpecs.dimensions) {
+             // Handle both object and legacy string formats if necessary, though resolveDimensions handles it earlier
+             if (typeof projectSpecs.dimensions === 'object' && projectSpecs.dimensions.width > 0) dimValid = true;
+        }
+        
+        if (!dimValid || !projectSpecs.binding) specsMissing = true;
         if (specsMissing) {
             // If specs are missing, we can lift the curtain immediately to show the form
             loadingState.classList.add('hidden');

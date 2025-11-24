@@ -478,6 +478,9 @@ export async function initializeSharedViewer(config) {
     /**
      * Renders a page or spread onto the main canvas.
      */
+    /**
+     * Renders a page or spread onto the main canvas.
+     */
     async function renderPage(viewNumber) {
         if (!pdfDoc) {
              console.warn("renderPage called but pdfDoc is null.");
@@ -507,7 +510,9 @@ export async function initializeSharedViewer(config) {
         // Handle case where view has no pages (e.g., blank page added for even spread count)
         if (pagesToRenderIndices.length === 0 || pagesToRenderIndices[0] > pdfDoc.numPages) {
             pageRendering = false;
-            renderingThrobber.classList.add('hidden');
+            // Only hide throbber if we still have a PDF loaded (fixes the zombie render issue)
+            if (pdfDoc) renderingThrobber.classList.add('hidden');
+            
             const visibleContext = pdfCanvas.getContext('2d');
             if (visibleContext) visibleContext.clearRect(0, 0, pdfCanvas.width, pdfCanvas.height); // Clear canvas
             if (pageNumPending !== null) { // Check if another page was queued
@@ -679,7 +684,14 @@ export async function initializeSharedViewer(config) {
             console.error("Error rendering page/spread:", err);
         } finally {
             pageRendering = false; // Mark rendering as complete
-            renderingThrobber.classList.add('hidden'); // Hide loading indicator
+            
+            // [FIX] Only hide throbber if we still have a valid document loaded.
+            // If pdfDoc is null, it means we switched to 'processing' state during this render,
+            // so we must keep the throbber visible and NOT hide it.
+            if (pdfDoc) {
+                renderingThrobber.classList.add('hidden');
+            }
+            
             // If another page was requested during rendering, render it now
             if (pageNumPending !== null) {
                 const pending = pageNumPending;
@@ -733,12 +745,11 @@ export async function initializeSharedViewer(config) {
      * @param {object | null} versionData - The version object from Firestore, or null if no version exists.
      */
     function loadVersion(versionData) {
-        // This function centralizes the logic for handling all possible version states.
-
         if (!versionData) {
-            // Case where no versions exist for the project.
+            // [FIX] Unload PDF to prevent zombie renders
+            pdfDoc = null; 
+            
             if (renderingThrobber) {
-                // To avoid destroying the canvas, we use the throbber overlay for this message too.
                 renderingThrobber.innerHTML = '<p class="text-gray-400 p-4">No proof file available for this project yet.</p>';
                 renderingThrobber.classList.remove('hidden');
             }
@@ -753,6 +764,9 @@ export async function initializeSharedViewer(config) {
 
         // Case 1: PDF is processing. Show a persistent loading message.
         if (status === 'processing') {
+            // [FIX] Unload PDF immediately so scroll events don't trigger a render of the old file
+            pdfDoc = null;
+
             if (renderingThrobber) {
                 renderingThrobber.innerHTML = `
                     <div class="h-10 w-10 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900" role="status"></div>
@@ -763,11 +777,14 @@ export async function initializeSharedViewer(config) {
             if (pdfCanvas) pdfCanvas.classList.add('hidden');
             if (navigationControls) navigationControls.classList.add('hidden');
             if (guidesSection) guidesSection.classList.add('hidden');
-            return; // The onSnapshot listener will trigger a reload when status changes.
+            return; 
         }
 
-        // Case 2: PDF processing resulted in an error. Show the error message.
+        // Case 2: PDF processing resulted in an error.
         if (status === 'error') {
+            // [FIX] Unload PDF here too
+            pdfDoc = null;
+
             if (renderingThrobber) {
                 renderingThrobber.innerHTML = `
                     <div class="text-center p-4">
@@ -785,7 +802,7 @@ export async function initializeSharedViewer(config) {
 
         // Case 3: Status is 'complete' or missing (legacy). Proceed to load the PDF.
         if (pdfCanvas) pdfCanvas.classList.remove('hidden');
-        if (renderingThrobber) renderingThrobber.classList.add('hidden'); // Ensure any previous message is gone.
+        if (renderingThrobber) renderingThrobber.classList.add('hidden');
 
         const urlToLoad = versionData.previewURL || versionData.fileURL;
 
@@ -793,6 +810,9 @@ export async function initializeSharedViewer(config) {
             console.log(`Loading URL for version ${versionData.version}: ${urlToLoad.substring(0, 100)}...`);
             loadPdf(urlToLoad);
         } else if (!urlToLoad) {
+            // [FIX] Unload PDF
+            pdfDoc = null;
+
             console.error("No URL found for version:", versionData.version);
             if (renderingThrobber) {
                 renderingThrobber.innerHTML = `
@@ -807,8 +827,7 @@ export async function initializeSharedViewer(config) {
             if (navigationControls) navigationControls.classList.add('hidden');
             if (guidesSection) guidesSection.classList.add('hidden');
         } else {
-            console.log(`Version ${versionData.version} selected, but URL is the same as currently loaded. No reload needed.`);
-            // If URL is the same, just ensure the main UI is visible.
+            console.log(`Version ${versionData.version} selected, but URL is the same as currently loaded.`);
             if (!pageRendering && renderingThrobber) renderingThrobber.classList.add('hidden');
             if (pdfCanvas) pdfCanvas.classList.remove('hidden');
             if (navigationControls) navigationControls.classList.remove('hidden');
@@ -914,7 +933,14 @@ export async function initializeSharedViewer(config) {
     // --- Initialization ---
 
     // Set up initial view mode based on project specs
-    const isBook = projectSpecs && (projectSpecs.binding === 'Perfect Bound' || projectSpecs.binding === 'Saddle-Stitch');
+    const binding = projectSpecs?.binding;
+    const isBook = binding && (
+        binding.toLowerCase() === 'perfect bound' || 
+        binding.toLowerCase() === 'perfectbound' || 
+        binding.toLowerCase() === 'saddle-stitch' || 
+        binding.toLowerCase() === 'saddlestitch'
+    );
+
     if (isBook && viewModeSelect) {
         viewModeSelect.value = 'spread';
         currentViewMode = 'spread';
