@@ -1909,22 +1909,29 @@ async function populateMinimapCanvas(ctx, pageList, w, h) {
     };
 
     // Layout Logic
-    // [FIX] Ensure we correctly identify Page 1 to put it on the Right
+    const isRTL = projectSpecs.readingDirection === 'rtl';
     const isFirstPage = (pages.indexOf(pageList[0]) === 0);
 
     if (isFirstPage) {
-        await drawPage(pageList[0], rightX, topY);
+        // Page 1: LTR = Right, RTL = Left
+        const x = isRTL ? leftX : rightX;
+        await drawPage(pageList[0], x, topY);
     } else {
-        if (pageList[0]) await drawPage(pageList[0], leftX, topY);
-        if (pageList.length > 1 && pageList[1]) await drawPage(pageList[1], rightX, topY);
+        // Spreads: pageList is [EvenPage, OddPage] (e.g., [P2, P3])
+        // LTR Visual: [P2, P3] -> P2 is Left, P3 is Right
+        // RTL Visual: [P3, P2] -> P3 is Left, P2 is Right
+        
+        const pLeft = isRTL ? pageList[1] : pageList[0];
+        const pRight = isRTL ? pageList[0] : pageList[1];
+
+        if (pLeft) await drawPage(pLeft, leftX, topY);
+        if (pRight) await drawPage(pRight, rightX, topY);
     }
 }
 
 // --- NEW HELPER: Sync Main View to Thumbnail ---
 function updateThumbnailFromMain(page) {
     // 1. Find the thumbnail canvas
-    // It might be a single ID or a composite spread ID.
-    // We search for any canvas ID containing the page ID.
     const thumbCanvas = document.querySelector(`canvas[id*="thumb-canvas-"][id*="${page.id}"]`);
     if (!thumbCanvas) return;
 
@@ -1938,21 +1945,33 @@ function updateThumbnailFromMain(page) {
     const leftX = margin;
     const rightX = margin + pageW + margin;
     const topY = margin;
+    
+    const isRTL = projectSpecs.readingDirection === 'rtl';
 
     // 2. Determine position on thumbnail
-    // If page index is 1 (first page), it's always on the Right
-    let x = leftX;
-    if (page.pageIndex === 1) {
-        x = rightX;
+    let x;
+    
+    // Check if this is the very first page of the book
+    if (pages.indexOf(page) === 0) {
+        x = isRTL ? leftX : rightX;
     } else {
-        // Even index in array = Left, Odd = Right? 
-        // Actually, rely on the ID structure or page logic.
-        // Simplified: If it's the first ID in the spread string, it's Left.
-        if (thumbCanvas.id.includes(`${page.id}_`)) x = leftX; // Start of ID
-        else if (thumbCanvas.id.includes(`_${page.id}`)) x = rightX; // End of ID
+        // The ID structure from renderMinimap is `thumb-canvas-${id1}_${id2}`
+        // where id1 is the first item in the list (Even page) and id2 is the second (Odd page).
+        // e.g., P2_P3
         
-        // Fallback for P1 which might be singular
-        if (pages.indexOf(page) === 0) x = rightX;
+        const isFirstInPair = thumbCanvas.id.includes(`thumb-canvas-${page.id}_`);
+        
+        if (isRTL) {
+            // RTL Visual: [P3 (Odd), P2 (Even)]
+            // If page is P2 (FirstInPair): It goes on the Right
+            // If page is P3 (SecondInPair): It goes on the Left
+            x = isFirstInPair ? rightX : leftX;
+        } else {
+            // LTR Visual: [P2 (Even), P3 (Odd)]
+            // If page is P2 (FirstInPair): It goes on the Left
+            // If page is P3 (SecondInPair): It goes on the Right
+            x = isFirstInPair ? leftX : rightX;
+        }
     }
 
     // 3. Draw the Full Res Cache onto the Thumbnail
