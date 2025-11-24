@@ -825,7 +825,8 @@ export async function initializeSharedViewer(config) {
             console.error("Project data or versions array is missing.");
             return;
         }
-        const versionData = projectData.versions.find(v => v.version === versionNumber);
+        // [FIX] Use versionNumber
+        const versionData = projectData.versions.find(v => v.versionNumber === versionNumber);
         if (!versionData) {
             console.error("Version not found:", versionNumber);
             return;
@@ -1004,7 +1005,7 @@ export async function initializeSharedViewer(config) {
         if (projectData && projectData.versions && projectData.versions.length > 0) {
             projectData.versions.sort((a,b) => b.version - a.version).forEach(v => {
                 const option = document.createElement('option');
-                option.value = v.version;
+                option.value = v.versionNumber;
 
                 let statusIcon = '';
                 if (v.preflightStatus === 'passed') {
@@ -1015,8 +1016,9 @@ export async function initializeSharedViewer(config) {
                     statusIcon = '❌ ';
                 }
 
-                const isLatest = v.version === Math.max(...projectData.versions.map(ver => ver.version));
-                option.textContent = `${statusIcon}Version ${v.version}${isLatest ? ' (Latest)' : ''}`;
+                const isLatest = v.versionNumber === Math.max(...projectData.versions.map(ver => ver.versionNumber));
+                // [FIX] Display versionNumber
+                option.textContent = `${statusIcon}Version ${v.versionNumber}${isLatest ? ' (Latest)' : ''}`;
                 versionSelector.appendChild(option);
             });
         } else {
@@ -1026,7 +1028,7 @@ export async function initializeSharedViewer(config) {
              try {
                  const selectedVersion = parseInt(e.target.value, 10);
                  if (!isNaN(selectedVersion)) {
-                     const versionData = projectData.versions.find(v => v.version === selectedVersion);
+                     const versionData = projectData.versions.find(v => v.versionNumber === selectedVersion);
                      loadProofByVersion(selectedVersion);
                      displayPreflightResults(versionData); // Update preflight details on change
                  }
@@ -1075,32 +1077,34 @@ export async function initializeSharedViewer(config) {
     }
 
 
-    // --- Initial PDF Load ---
+// --- Initial PDF Load ---
     let versionToLoad = null;
     if (projectData && projectData.versions && projectData.versions.length > 0) {
-        // Find the most recent version to load by default.
-        // If the admin is viewing, respect the version selector's current value.
-        let targetVersionNumber;
-        if (isAdmin && versionSelector && versionSelector.value) {
-            try {
-                targetVersionNumber = parseInt(versionSelector.value, 10);
-            } catch (e) {
-                // Fallback to max version if parsing fails
-                targetVersionNumber = Math.max(...projectData.versions.map(v => v.version));
-            }
-        } else {
-            // For clients or if selector isn't ready, just get the latest version number.
-            targetVersionNumber = Math.max(...projectData.versions.map(v => v.version));
+        // 1. Calculate the true latest version number from the data
+        const latestVersionNumber = Math.max(...projectData.versions.map(v => v.versionNumber));
+        
+        let targetVersionNumber = latestVersionNumber;
+
+        // 2. If the admin selector exists, verify if we should use its value or override it
+        if (isAdmin && versionSelector) {
+            // If the selector has a valid number, check if we should respect it
+            // (Only respect it if it's NOT just the default/first option, but usually on a fresh load/update
+            // we want to force the latest version to show the progress we just waited for).
+            
+            // FORCE UPDATE: Set the dropdown to match our calculated latest version
+            // This overrides any browser behavior that auto-selected "Version 1"
+            versionSelector.value = latestVersionNumber; 
         }
 
-        versionToLoad = projectData.versions.find(v => v.version === targetVersionNumber);
+        // 3. Find the version object
+        versionToLoad = projectData.versions.find(v => v.versionNumber === targetVersionNumber);
 
-        // Fallback just in case find fails but versions exist.
+        // 4. Fallback: If exact match failed, robustly find the max version object
         if (!versionToLoad) {
-             versionToLoad = projectData.versions.reduce((latest, current) => (current.version > latest.version ? current : latest), projectData.versions[0]);
+             versionToLoad = projectData.versions.reduce((latest, current) => (current.versionNumber > latest.versionNumber ? current : latest), projectData.versions[0]);
         }
     }
-
+    
     // Delegate the entire rendering logic to the centralized function.
     // It handles all cases, including when versionToLoad is null.
     loadVersion(versionToLoad);

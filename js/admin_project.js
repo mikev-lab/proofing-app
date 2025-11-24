@@ -379,7 +379,7 @@ onAuthStateChanged(auth, async (user) => {
 
                     // Find the max version number in the new data
                     const maxVersion = currentVersions.length > 0
-                        ? Math.max(...currentVersions.map(v => v.version))
+                        ? Math.max(...currentVersions.map(v => v.versionNumber))
                         : 0;
 
                     // Check if we have a new latest version compared to what was previously known/selected
@@ -434,7 +434,7 @@ onAuthStateChanged(auth, async (user) => {
 
                     // Restore selection ONLY if we didn't decide to switch to latest
                     if (targetVersion && versionSelector) {
-                        const versionExists = currentVersions.some(v => v.version === targetVersion);
+                        const versionExists = currentVersions.some(v => v.versionNumber === targetVersion);
                         if (versionExists) {
                              versionSelector.value = targetVersion;
                         }

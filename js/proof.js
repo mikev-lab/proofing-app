@@ -486,6 +486,21 @@ async function updateProjectStatus(status) {
 
 
             console.log('[Load Project] Initializing shared viewer...');
+
+            const versionSelector = document.getElementById('version-selector');
+            const currentVersions = projectData.versions || [];
+
+            const maxVersion = currentVersions.length > 0
+                ? Math.max(...currentVersions.map(v => v.versionNumber))
+                : 0;
+
+            const selectedVersion = versionSelector ? parseInt(versionSelector.value, 10) : null;
+            
+            // If the user is on an older version and a new one arrives, force update to latest
+            if (selectedVersion && maxVersion > selectedVersion) {
+                 console.log(`[Auto-Update] New version detected (v${maxVersion}). Switching from v${selectedVersion}.`);
+                 if (versionSelector) versionSelector.value = ""; // Reset selector so viewer defaults to latest
+            }
             // The onSnapshot listener provides real-time updates.
             // Every time the project document changes (e.g., a version's processingStatus
             // changes from 'processing' to 'complete'), this code will re-run.
