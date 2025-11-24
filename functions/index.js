@@ -1847,7 +1847,7 @@ exports.generateBooklet = onCall({
 }, async (request) => {
     if (!request.auth) throw new HttpsError('unauthenticated', 'User must be authenticated.');
 
-    const { projectId, files, spineMode } = request.data; // [FIX] Accept spineMode
+    const { projectId, files, spineMode } = request.data; 
     if (!projectId || !Array.isArray(files)) throw new HttpsError('invalid-argument', 'Missing projectId or files array.');
 
     logger.log(`Generating booklet for project ${projectId} with ${files.length} files.`);
@@ -1855,7 +1855,6 @@ exports.generateBooklet = onCall({
     const bucket = admin.storage().bucket();
     const authAxios = await getAuthenticatedClient();
     
-    // Ensure imports are available in function scope
     const { PDFDocument, cmyk } = require('pdf-lib');
     const { pushGraphicsState, popGraphicsState, clip, endPath, moveTo, lineTo } = require('pdf-lib');
 
@@ -1879,22 +1878,34 @@ exports.generateBooklet = onCall({
     try {
         async function prepareFileForEmbedding(storagePath) {
             if (fileCache[storagePath]) return fileCache[storagePath];
-            const tempPath = path.join(os.tmpdir(), `temp_${Date.now()}_${Math.random().toString(36).substring(7)}`);
+
+            // [FIX] Extract extension and preserve it in the temp filename
+            const ext = path.extname(storagePath).toLowerCase();
+            const tempFileName = `temp_${Date.now()}_${Math.random().toString(36).substring(7)}${ext}`;
+            const tempPath = path.join(os.tmpdir(), tempFileName);
+            
             await bucket.file(storagePath).download({ destination: tempPath });
             tempFiles.push(tempPath);
 
             let isPdf = false;
-            const ext = path.extname(storagePath).toLowerCase();
 
-            if (ext === '.psd' || ext === '.ai' || ext === '.tiff' || ext === '.tif') {
+            if (ext === '.pdf') {
+                isPdf = true;
+            } 
+            else if (ext === '.jpg' || ext === '.jpeg' || ext === '.png') {
+                isPdf = false;
+            } 
+            else {
+                // Unsupported types (PSD, AI, TIFF, WebP) -> Convert to PDF
+                logger.log(`Converting unsupported format ${ext} to PDF...`);
                 const convertFormData = new FormData();
                 convertFormData.append('files', fs.createReadStream(tempPath), path.basename(storagePath));
-                // Gotenberg's LibreOffice module handles TIFF conversion to PDF
                 const response = await authAxios.post(`${GOTENBERG_URL}/forms/libreoffice/convert`, convertFormData, { responseType: 'arraybuffer' });
+                
+                // Overwrite temp file with the new PDF data
                 fs.writeFileSync(tempPath, response.data);
                 isPdf = true;
-            } else if (ext === '.pdf') isPdf = true;
-            else isPdf = false;
+            }
 
             const result = { path: tempPath, isPdf };
             fileCache[storagePath] = result;
@@ -1935,8 +1946,10 @@ exports.generateBooklet = onCall({
             } else {
                 const imgBytes = fs.readFileSync(localPath);
                 let embeddedImage;
+                // [FIX] localPath now has the extension, so this check works correctly
                 if (localPath.toLowerCase().endsWith('.png')) embeddedImage = await interiorDoc.embedPng(imgBytes);
                 else embeddedImage = await interiorDoc.embedJpg(imgBytes);
+                
                 drawOnSheet(interiorDoc, embeddedImage, trimWidth, trimHeight, bleed, settings, false);
             }
         }
@@ -1980,6 +1993,7 @@ exports.generateBooklet = onCall({
                     srcH = embedded.height;
                 } else {
                     const imgBytes = fs.readFileSync(localPath);
+                    // [FIX] localPath now has the extension, so this check works correctly
                     if (localPath.toLowerCase().endsWith('.png')) embeddable = await coverDoc.embedPng(imgBytes);
                     else embeddable = await coverDoc.embedJpg(imgBytes);
                     srcW = embeddable.width;
@@ -2022,7 +2036,6 @@ exports.generateBooklet = onCall({
                 if (drawW <= 0 || drawH <= 0) return;
 
                 page.pushOperators(pushGraphicsState());
-                
                 page.pushOperators(
                      moveTo(targetX, targetY),
                      lineTo(targetX + targetW, targetY),
@@ -2052,35 +2065,24 @@ exports.generateBooklet = onCall({
                 page.pushOperators(popGraphicsState());
             }
 
-            // --- [FIX] Dynamic Zone Logic for Stretch ---
-            let zoneLeft = { x: 0, y: 0, w: trimWidth + bleed, h: totalHeight }; // Back
-            let zoneMid = { x: trimWidth + bleed, y: 0, w: spineWidth, h: totalHeight }; // Spine
-            let zoneRight = { x: trimWidth + bleed + spineWidth, y: 0, w: trimWidth + bleed, h: totalHeight }; // Front
+            let zoneLeft = { x: 0, y: 0, w: trimWidth + bleed, h: totalHeight }; 
+            let zoneMid = { x: trimWidth + bleed, y: 0, w: spineWidth, h: totalHeight }; 
+            let zoneRight = { x: trimWidth + bleed + spineWidth, y: 0, w: trimWidth + bleed, h: totalHeight }; 
 
             let drawSpine = true;
 
             if (spineMode === 'wrap-front-stretch') {
-                // Front covers spine
                 zoneRight.x = zoneMid.x;
                 zoneRight.w = zoneRight.w + zoneMid.w;
                 drawSpine = false;
             } else if (spineMode === 'wrap-back-stretch') {
-                // Back covers spine
                 zoneLeft.w = zoneLeft.w + zoneMid.w;
                 drawSpine = false;
             }
 
-            // Draw Back
             await drawPart(coverPage1, coverFiles.back, zoneLeft.x, zoneLeft.y, zoneLeft.w, zoneLeft.h); 
-            
-            // Draw Spine (if not skipped by stretch)
-            if (drawSpine) {
-                await drawPart(coverPage1, coverFiles.spine, zoneMid.x, zoneMid.y, zoneMid.w, zoneMid.h);
-            }
-
-            // Draw Front
+            if (drawSpine) await drawPart(coverPage1, coverFiles.spine, zoneMid.x, zoneMid.y, zoneMid.w, zoneMid.h);
             await drawPart(coverPage1, coverFiles.front, zoneRight.x, zoneRight.y, zoneRight.w, zoneRight.h);
-
 
             // --- Page 2: Inner Cover ---
             if (coverFiles.inside_front || coverFiles.inside_back || (specs.binding === 'perfectBound' && spineWidth > 0)) {

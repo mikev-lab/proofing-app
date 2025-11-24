@@ -696,37 +696,52 @@ function updateFileName(inputId, displayId) {
 
     input.addEventListener('change', async (e) => {
         const file = e.target.files[0];
+
+        // Clear existing controls
         const existingControls = input.parentElement.querySelectorAll('.custom-controls');
         existingControls.forEach(el => el.remove());
 
         if (file) {
-            if (display) display.textContent = file.name;
+            if (display) {
+                display.textContent = file.name;
+                // Unhide the filename text so the adjacent Delete (X) button appears
+                display.classList.remove('hidden');
+            }
             selectedFiles[inputId] = file; 
 
             const name = file.name.toLowerCase();
             const type = file.type.toLowerCase();
 
+            // Robust File Type Detection
             const isPDF = type === 'application/pdf' || name.endsWith('.pdf');
-            // [FIX] Add TIFF/AI support
             const isComplexFormat = /\.(psd|ai|tiff|tif)$/i.test(name);
             const isWebImage = type.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(name);
             const isLocal = (isPDF || isWebImage) && !isComplexFormat;
 
+            // Reset settings for new file
             coverSettings[inputId] = { pageIndex: 1, scaleMode: 'fill' };
 
             if (!isLocal) {
                 processCoverFile(file, inputId);
             } else {
-                coverSources[inputId] = { file: file, status: 'ready', isServer: false };
+                coverSources[inputId] = { 
+                    file: file, 
+                    status: 'ready', 
+                    isServer: false 
+                };
             }
 
+            // Generate Controls
             await createCoverControls(inputId, file);
 
             if (isLocal) renderCoverPreview();
             triggerAutosave();
 
         } else {
-            if (display) display.textContent = '';
+            if (display) {
+                display.textContent = '';
+                display.classList.add('hidden');
+            }
             delete selectedFiles[inputId];
             delete coverSources[inputId]; 
             renderCoverPreview();
@@ -764,9 +779,10 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
             if (isServer) {
                 if (!sourceEntry.previewUrl) return null;
 
-                // [FIX] Check if Image or PDF
-                const pathToCheck = (sourceEntry.storagePath || sourceEntry.previewUrl).toLowerCase();
-                const isImage = /\.(jpg|jpeg|png|webp|gif|bmp)($|\?)/i.test(pathToCheck);
+                // [FIX] Check if URL points to an image or PDF
+                const pathToCheck = (sourceEntry.storagePath || sourceEntry.previewUrl || '').toLowerCase();
+                const cleanPath = pathToCheck.split('?')[0];
+                const isImage = /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(cleanPath);
 
                 if (isImage) {
                     const resp = await fetch(sourceEntry.previewUrl);
@@ -1003,7 +1019,7 @@ if (tabInterior && tabCover) {
 // --- Data Model Logic ---
 
 async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = null) {
-    // 1. Strip auto-blanks
+    // 1. Strip auto-blanks before adding content
     while (pages.length > 0 && pages[pages.length - 1].isAutoBlank) {
         pages.pop();
     }
@@ -1019,15 +1035,16 @@ async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = n
         const name = file.name.toLowerCase();
         const type = file.type.toLowerCase();
 
+        // Robust File Type Detection
         const isPDF = type === 'application/pdf' || name.endsWith('.pdf');
         
-        // [FIX] Treat PSD, AI, and TIFF as "Server Files" (Browser can't render them)
+        // Complex formats must go to server
         const isComplexFormat = /\.(psd|ai|tiff|tif)$/i.test(name);
         
-        // Check for web-safe image formats
+        // Check for supported web image formats (MIME or Extension)
         const isWebImage = type.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(name);
         
-        // Local if PDF or Web Image, AND NOT a complex format
+        // Treat as local ONLY if it is a PDF or Web Image AND NOT a complex format
         const isLocal = (isPDF || isWebImage) && !isComplexFormat;
 
         if (isLocal) {
@@ -1039,7 +1056,9 @@ async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = n
                     const fileUrl = URL.createObjectURL(file);
                     const pdf = await pdfjsLib.getDocument(fileUrl).promise;
                     numPages = pdf.numPages;
-                 } catch (e) { console.warn("Could not parse PDF", e); }
+                 } catch (e) { 
+                     console.warn("Could not parse PDF", e); 
+                 }
             }
             addPagesToModel(newPages, sourceId, numPages, isSpreadUpload);
         } else {
@@ -2062,7 +2081,8 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     const card = document.createElement('div');
     card.dataset.id = page.id;
 
-    let classes = "page-card relative group bg-slate-800 shadow-lg border border-slate-700 transition-all hover:border-indigo-500 overflow-hidden cursor-grab active:cursor-grabbing flex-shrink-0";
+    // [FIX] Removed 'overflow-hidden' from here so tooltips can extend outside
+    let classes = "page-card relative group bg-slate-800 shadow-lg border border-slate-700 transition-all hover:border-indigo-500 cursor-grab active:cursor-grabbing flex-shrink-0";
 
     if (projectType === 'single') {
         classes += " border-2";
@@ -2076,6 +2096,7 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
         }
     }
     card.className = classes;
+    card.style.flexShrink = '0';
 
     // Layout Logic
     const bleedPx = bleed * pixelsPerInch;
@@ -2099,6 +2120,7 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
         canvasTop = 0;
     }
 
+    // [FIX] 'overflow-hidden' stays here to clip the canvas/image content
     const canvasContainer = document.createElement('div');
     canvasContainer.className = "relative overflow-hidden bg-white shadow-sm mx-auto";
     canvasContainer.style.width = `${containerW}px`;
@@ -2119,13 +2141,26 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     dragHandle.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>';
     card.appendChild(dragHandle);
 
-    // [NEW] DPI Warning Badge
+    // [FIX] Compact Icon-Only Warning with Solid SVG
     const dpiWarning = document.createElement('div');
     dpiWarning.id = `dpi-warning-${page.id}`;
-    dpiWarning.className = "hidden absolute top-2 left-12 bg-red-500/90 text-white text-[10px] font-bold px-2 py-1 rounded shadow-sm backdrop-blur-sm z-30 flex items-center gap-1 pointer-events-none";
+    // Position: Left side, next to drag handle. Z-40 to sit above overlays.
+    dpiWarning.className = "hidden absolute top-2 left-9 z-40 group/dpi";
     dpiWarning.innerHTML = `
-        <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
-        <span>Low Res (<span id="dpi-val-${page.id}">0</span> DPI)</span>
+        <div class="text-yellow-400 bg-slate-900/80 p-1.5 rounded-md backdrop-blur-md border border-yellow-500/30 shadow-md cursor-help transition-colors hover:text-yellow-300 hover:border-yellow-400">
+            <svg class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" />
+            </svg>
+        </div>
+        <div class="absolute left-0 top-full mt-2 w-48 bg-slate-900 text-gray-200 text-[11px] px-3 py-2 rounded-lg border border-slate-600 shadow-xl opacity-0 group-hover/dpi:opacity-100 transition-opacity pointer-events-none z-50">
+            <p class="font-bold text-yellow-400 mb-1 flex items-center gap-1">
+                Low Resolution (<span id="dpi-val-${page.id}" class="font-mono">0</span> DPI)
+            </p>
+            <p class="leading-tight text-gray-300">
+                300 DPI is standard. 
+                <span class="block mt-1 text-gray-400 italic">Images below this may appear blurry or pixelated in print.</span>
+            </p>
+        </div>
     `;
     card.appendChild(dpiWarning);
 
@@ -2208,11 +2243,10 @@ async function updatePageContent(pageId, file) {
     const name = file.name.toLowerCase();
     const type = file.type.toLowerCase();
     
-    // [FIX] Robust Detection
     const isPDF = type === 'application/pdf' || name.endsWith('.pdf');
-    const isPsd = name.endsWith('.psd') || name.endsWith('.ai');
-    const isImage = type.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(name);
-    const isLocal = (isPDF || isImage) && !isPsd;
+    const isComplexFormat = /\.(psd|ai|tiff|tif)$/i.test(name);
+    const isWebImage = type.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(name);
+    const isLocal = (isPDF || isWebImage) && !isComplexFormat;
 
     if (isLocal) {
         sourceFiles[sourceId] = file;
@@ -2508,6 +2542,7 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
     let imgBitmap;
 
     try {
+        // OPTIMIZATION: If requesting a thumbnail (forceScale), check if Full Version is already available
         if (forceScale && (imageCache.has(fullCacheKey) || pendingLoadCache.has(fullCacheKey))) {
             imgBitmap = await fetchBitmapWithCache(fullCacheKey, async () => null); 
         } else {
@@ -2517,10 +2552,12 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
                 if (isServer) {
                     if (!sourceEntry.previewUrl) return null; 
                     
-                    // [FIX] Check if URL points to an image or PDF
-                    // If storagePath is available, check extension. Fallback to checking previewUrl.
-                    const pathToCheck = (sourceEntry.storagePath || sourceEntry.previewUrl).toLowerCase();
-                    const isImage = /\.(jpg|jpeg|png|webp|gif|bmp)($|\?)/i.test(pathToCheck);
+                    // [FIX] Check if URL points to an image or PDF based on extension
+                    const pathToCheck = (sourceEntry.storagePath || sourceEntry.previewUrl || '').toLowerCase();
+                    // Remove query params if any for check
+                    const cleanPath = pathToCheck.split('?')[0];
+                    
+                    const isImage = /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(cleanPath);
 
                     if (isImage) {
                         // --- Image Loader ---
@@ -2529,7 +2566,7 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
                         const blob = await resp.blob();
                         return createImageBitmap(blob);
                     } else {
-                        // --- PDF Loader (Default for PDF, PSD, AI previews) ---
+                        // --- PDF Loader ---
                         const docCacheKey = sourceEntry.storagePath || sourceEntry.previewUrl;
                         let pdfDocPromise = remotePdfDocCache.get(docCacheKey);
                         if (!pdfDocPromise) {
@@ -2565,7 +2602,7 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
                     return createImageBitmap(tempCanvas);
 
                 } else if (file) {
-                    // Local Image
+                    // Local Image Fallback
                     return createImageBitmap(file);
                 }
                 return null;
@@ -2602,9 +2639,8 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
         ctx.restore();
 
         if (!forceScale) {
-            const isImg = isServer 
-                ? /\.(jpg|jpeg|png|webp|gif|bmp)($|\?)/i.test((sourceEntry.storagePath || sourceEntry.previewUrl).toLowerCase())
-                : (file && (file.type.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(file.name)));
+            const cleanPath = isServer ? (sourceEntry.storagePath || sourceEntry.previewUrl || '').toLowerCase().split('?')[0] : (file ? file.name.toLowerCase() : '');
+            const isImg = /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(cleanPath) || (file && file.type.startsWith('image/'));
             return { srcW, drawW, isImage: isImg };
         }
         return null;
