@@ -276,21 +276,18 @@
                             Your project is <strong>print-ready</strong>.
                         </label>
                     </div>
-
                     <div class="flex items-start">
                         <input type="checkbox" id="check-spelling" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
                         <label for="check-spelling" class="ml-3 text-sm text-gray-300 leading-tight">
                             You've checked for <strong>spelling errors</strong>.
                         </label>
                     </div>
-
                     <div class="flex items-start">
                         <input type="checkbox" id="check-layout" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
                         <label for="check-layout" class="ml-3 text-sm text-gray-300 leading-tight">
                             You've checked for <strong>layout issues</strong>.
                         </label>
                     </div>
-
                     <div class="flex items-start">
                         <input type="checkbox" id="check-artwork" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
                         <label for="check-artwork" class="ml-3 text-sm text-gray-300 leading-tight">
@@ -298,24 +295,33 @@
                         </label>
                     </div>
 
-                    <div class="flex items-start">
-                        <input type="checkbox" id="check-colors" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
-                        <label for="check-colors" class="ml-3 text-sm text-gray-300 leading-tight">
-                            You are satisfied with the estimated colors, or have ordered a physical proof to see what the printed colors will look like.
-                        </label>
+                    <div class="space-y-2 mt-2">
+                        <div class="flex items-start bg-indigo-900/20 p-2 -ml-2 rounded-lg border border-indigo-500/30">
+                            <input type="checkbox" id="check-trim" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
+                            <label for="check-trim" class="ml-3 text-sm text-gray-200 leading-tight" id="approval-trim-text">
+                                Correct Trim Size: <span class="font-bold text-white">--</span>
+                            </label>
+                        </div>
+
+                        <div class="flex items-start bg-indigo-900/20 p-2 -ml-2 rounded-lg border border-indigo-500/30">
+                            <input type="checkbox" id="check-interior-paper" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
+                            <label for="check-interior-paper" class="ml-3 text-sm text-gray-200 leading-tight" id="approval-interior-paper-text">
+                                Interior Paper: <span class="font-bold text-white">--</span>
+                            </label>
+                        </div>
+
+                        <div id="container-cover-paper" class="flex items-start bg-indigo-900/20 p-2 -ml-2 rounded-lg border border-indigo-500/30">
+                            <input type="checkbox" id="check-cover-paper" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
+                            <label for="check-cover-paper" class="ml-3 text-sm text-gray-200 leading-tight" id="approval-cover-paper-text">
+                                Cover Paper: <span class="font-bold text-white">--</span>
+                            </label>
+                        </div>
                     </div>
 
-                    <div class="flex items-start">
+                    <div class="flex items-start mt-2 pt-2 border-t border-slate-700/50">
                         <input type="checkbox" id="check-responsibility" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
                         <label for="check-responsibility" class="ml-3 text-sm text-red-200/90 leading-tight">
                             If the proof containing errors is approved, you're responsible for all costs, including corrections and reprints.
-                        </label>
-                    </div>
-
-                    <div class="flex items-start bg-indigo-900/20 p-2 -ml-2 rounded-lg border border-indigo-500/30">
-                        <input type="checkbox" id="check-specs" class="flex-shrink-0 mt-1 h-5 w-5 rounded border-gray-600 bg-slate-700 text-indigo-500 focus:ring-indigo-500/50">
-                        <label for="check-specs" class="ml-3 text-sm text-gray-200 leading-tight" id="approval-specs-text">
-                            You are approving this to be printed on <span class="font-bold text-white">{STOCK}</span> in <span class="font-bold text-white">{COLOR}</span>.
                         </label>
                     </div>
 

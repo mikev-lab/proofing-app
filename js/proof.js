@@ -2,6 +2,7 @@ import { auth, db, functions, generateGuestLink } from './firebase.js';
 import { onAuthStateChanged, signOut, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 import { httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js";
 import { initializeSharedViewer } from './viewer.js';
+import { STANDARD_PAPER_SIZES } from './guides.js';
 // [UPDATE] Added 'query' and 'orderBy' to the imports
 import { doc, onSnapshot, updateDoc, collection, getDocs, Timestamp, addDoc, getDoc, arrayUnion, serverTimestamp, setDoc, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 import * as pdfjsLib from "https://mozilla.github.io/pdf.js/build/pdf.mjs";
@@ -56,25 +57,100 @@ let unsubscribeHistoryListener = null;
 let isGuest = false;
 let guestPermissions = {};
 
+// --- Helper: Find Standard Size Name ---
+function findMatchingStandardSize(dims) {
+    if (!dims || !dims.width || !dims.height) return null;
+
+    // Convert to points for comparison (1 in = 72 pts, 1 mm = 2.83465 pts)
+    const wPoints = dims.units === 'mm' ? dims.width * 2.83465 : dims.width * 72;
+    const hPoints = dims.units === 'mm' ? dims.height * 2.83465 : dims.height * 72;
+    const tolerance = 3; // ~1mm tolerance
+
+    for (const [key, std] of Object.entries(STANDARD_PAPER_SIZES)) {
+        const stdW = std.width_mm * 2.83465;
+        const stdH = std.height_mm * 2.83465;
+
+        // Exact Match (Portrait)
+        if (Math.abs(wPoints - stdW) < tolerance && Math.abs(hPoints - stdH) < tolerance) return key;
+        // Rotated Match (Landscape)
+        if (Math.abs(wPoints - stdH) < tolerance && Math.abs(hPoints - stdW) < tolerance) return key;
+    }
+    return null;
+}
 // Define these functions in the main script scope
 function showApproveConfirmation(projectData) {
     if (!approvalModal) return;
 
-    // 1. Populate the dynamic text placeholder (Shorter version)
-    const stock = projectData.specs?.paperType || projectData.specs?.stock || "Standard Stock";
-    const color = projectData.specs?.colorType || projectData.specs?.ink || "Standard Color";
+    const specs = projectData.specs || {};
     
-    if (approvalSpecsText) {
-        // Notice the removal of "By approving this, you acknowledge that..."
-        approvalSpecsText.innerHTML = `You are approving this to be printed on <span class="font-bold text-white">${stock}</span> in <span class="font-bold text-white">${color}</span>.`;
+    // 1. Populate Trim Size
+    const trimTextEl = document.getElementById('approval-trim-text');
+    if (trimTextEl) {
+        let dimString = "N/A";
+        if (specs.dimensions) {
+            if (typeof specs.dimensions === 'string') {
+                // If stored as string key, look up name
+                const std = STANDARD_PAPER_SIZES[specs.dimensions];
+                // [FIX] Include the group name (e.g. "A4 (ISO A)")
+                dimString = std ? `${std.name} (${std.group})` : specs.dimensions;
+            } else if (specs.dimensions.width && specs.dimensions.height) {
+                // If stored as object, check for match or format nicely
+                const matchKey = findMatchingStandardSize(specs.dimensions);
+                
+                if (matchKey) {
+                    const std = STANDARD_PAPER_SIZES[matchKey];
+                    // [FIX] Include the group name
+                    dimString = `${std.name} (${std.group})`;
+                } else {
+                    // Custom: Clean up the decimals
+                    const w = parseFloat(specs.dimensions.width);
+                    const h = parseFloat(specs.dimensions.height);
+                    const unit = specs.dimensions.units || 'in';
+                    // Format to max 3 decimal places
+                    const wStr = Number(w.toFixed(3)).toString();
+                    const hStr = Number(h.toFixed(3)).toString();
+                    dimString = `${wStr} x ${hStr} ${unit}`;
+                }
+            }
+        }
+        trimTextEl.innerHTML = `Confirm Trim Size: <span class="font-bold text-white">${dimString}</span>`;
     }
 
-    // 2. Reset the form (uncheck boxes, clear signature)
+    // 2. Populate Interior Paper
+    const interiorPaperEl = document.getElementById('approval-interior-paper-text');
+    if (interiorPaperEl) {
+        const paper = specs.paperType || "Standard";
+        interiorPaperEl.innerHTML = `Confirm Interior Paper: <span class="font-bold text-white">${paper}</span>`;
+    }
+
+    // 3. Populate Cover Paper (Hide if not applicable)
+    const coverContainer = document.getElementById('container-cover-paper');
+    const coverPaperEl = document.getElementById('approval-cover-paper-text');
+    const coverCheckbox = document.getElementById('check-cover-paper');
+    
+    if (coverContainer && coverPaperEl && coverCheckbox) {
+        if (specs.coverPaperType) {
+            coverContainer.classList.remove('hidden');
+            coverPaperEl.innerHTML = `Confirm Cover Paper: <span class="font-bold text-white">${specs.coverPaperType}</span>`;
+            // Ensure it's required
+            coverCheckbox.required = true;
+            // Reset state
+            coverCheckbox.checked = false;
+            coverCheckbox.disabled = false;
+        } else {
+            // Hide and disable so it doesn't block validation
+            coverContainer.classList.add('hidden');
+            coverCheckbox.checked = true; // Auto-check hidden fields to pass "every()" validation
+            coverCheckbox.disabled = true; 
+        }
+    }
+
+    // 4. Reset the form
     approvalFormModal.reset();
     modalConfirmBtn.disabled = true;
     modalConfirmBtn.classList.add('opacity-50', 'cursor-not-allowed');
 
-    // 3. Show the modal
+    // 5. Show the modal
     approvalModal.classList.remove('hidden');
 }
 

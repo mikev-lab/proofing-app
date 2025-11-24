@@ -5,6 +5,7 @@ import { doc, onSnapshot, getDoc, updateDoc, Timestamp, collection, query, order
 import { ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
 import { initializeSharedViewer } from './viewer.js';
 import { STANDARD_PAPER_SIZES } from './guides.js';
+import { HARDCODED_PAPER_TYPES } from './guest_constants.js';
 import { initializeImpositionUI } from './imposition-ui.js';
 import Sortable from 'https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/modular/sortable.esm.js';
 import * as pdfjsLib from 'https://mozilla.github.io/pdf.js/build/pdf.mjs';
@@ -165,6 +166,32 @@ const urlParams = new URLSearchParams(window.location.search);
 const projectId = urlParams.get('id');
 let currentProjectData = null; // Store current project data globally for save function
 
+const coverPaperTypeSelect = document.getElementById('cover-paper-type');
+
+// --- Populate Paper Selects ---
+function populatePaperSelects() {
+    // Clear existing
+    paperTypeSelect.innerHTML = '<option value="" disabled selected>Select Interior Paper</option>';
+    coverPaperTypeSelect.innerHTML = '<option value="" disabled selected>Select Cover Paper</option>';
+    
+    // Add "None" option for Cover
+    const noneOpt = document.createElement('option');
+    noneOpt.value = '';
+    noneOpt.textContent = 'None / Self-Cover';
+    coverPaperTypeSelect.appendChild(noneOpt);
+
+    // Populate from Constant
+    HARDCODED_PAPER_TYPES.forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = p.name;
+        opt.textContent = p.name;
+        
+        paperTypeSelect.appendChild(opt.cloneNode(true));
+        coverPaperTypeSelect.appendChild(opt);
+    });
+}
+populatePaperSelects(); // Call immediately
+
 // --- Populate Dimensions Select ---
 function populateDimensionsSelect() {
     dimensionsSelect.innerHTML = ''; // Clear existing
@@ -231,16 +258,13 @@ function populateSpecsForm(projectData) {
 
     // 1. Dimensions Logic
     if (typeof specs.dimensions === 'object' && specs.dimensions !== null) {
-        // Try to match a standard preset first
         const standardKey = findMatchingStandardSize(specs.dimensions);
-        
         if (standardKey && dimensionsSelect.querySelector(`option[value="${standardKey}"]`)) {
             dimensionsSelect.value = standardKey;
             customDimensionInputs.classList.add('hidden');
             customWidthInput.required = false;
             customHeightInput.required = false;
         } else {
-            // Fallback to Custom
             dimensionsSelect.value = 'custom';
             customDimensionInputs.classList.remove('hidden');
             customWidthInput.value = specs.dimensions.width || '';
@@ -254,7 +278,6 @@ function populateSpecsForm(projectData) {
             dimensionsSelect.value = specs.dimensions;
          } else {
              dimensionsSelect.value = 'custom';
-             // Handle legacy string format "WxH"
              const parts = specs.dimensions.split('x');
              if (parts.length === 2) {
                  customWidthInput.value = parseFloat(parts[0]) || '';
@@ -269,31 +292,21 @@ function populateSpecsForm(projectData) {
     }
 
     // 2. Page Count Logic
-    // Use specs.pageCount if valid, otherwise calculate from guest state (auto-calculated)
     let count = specs.pageCount;
     if ((!count || count === 0) && guestState.pages) {
         count = guestState.pages.length;
-        // Add cover pages if booklet (Guest builder separates them)
-        // Note: Guest builder "pages" array are usually interior. 
-        // Covers are separate. But typically "Page Count" implies interior + cover pages.
-        // Adjust logic based on your shop's convention. 
-        // Assuming count = interior pages here.
     }
     pageCountInput.value = count || '';
 
     // 3. Binding Logic
-    // Map Guest Builder values to Admin values
     let bindingVal = specs.binding || 'Perfect Bound';
     const bindingMap = {
         'perfectBound': 'Perfect Bound',
-        'saddleStitch': 'Saddle-Stitch', // Ensure this matches your <option> value in HTML
-        'loose': 'Coil Bound' // Map loose to a default or keep as is
+        'saddleStitch': 'Saddle-Stitch', 
+        'loose': 'Coil Bound' 
     };
-    
-    // Normalize value
     if (bindingMap[bindingVal]) bindingVal = bindingMap[bindingVal];
     
-    // Check if value exists in dropdown, else default
     if (bindingSelect.querySelector(`option[value="${bindingVal}"]`)) {
         bindingSelect.value = bindingVal;
     } else if (bindingSelect.querySelector(`option[value="${bindingVal.replace('-', ' ')}"]`)) {
@@ -301,46 +314,17 @@ function populateSpecsForm(projectData) {
     }
 
     // 4. Paper Type Logic (Interior)
-    paperTypeSelect.value = specs.paperType || 'Gloss';
+    // [FIX] Use the specific value passed from builder, or default to first option if not set
+    if (specs.paperType) {
+        paperTypeSelect.value = specs.paperType;
+    }
 
-    // 5. Cover Paper Logic (Dynamic Injection)
-    // Check if we need to show cover paper
-    const coverPaperVal = specs.coverPaperType;
-    let coverPaperGroup = document.getElementById('cover-paper-group');
-
-    if (coverPaperVal) {
-        // If the group doesn't exist, create it dynamically
-        if (!coverPaperGroup) {
-            const parent = paperTypeSelect.closest('.bg-slate-700') || paperTypeSelect.parentElement; // Fallback parent
-            
-            // Create container
-            coverPaperGroup = document.createElement('div');
-            coverPaperGroup.id = 'cover-paper-group';
-            coverPaperGroup.className = "mt-4";
-            
-            const label = document.createElement('label');
-            label.className = "block text-sm font-medium text-gray-300 mb-2";
-            label.textContent = "Cover Paper Type";
-            
-            const select = document.createElement('select');
-            select.id = 'cover-paper-type';
-            select.className = "w-full bg-slate-800 border border-slate-600 rounded-md py-2 px-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500";
-            
-            // Clone options from main paper select
-            Array.from(paperTypeSelect.options).forEach(opt => {
-                select.appendChild(opt.cloneNode(true));
-            });
-
-            coverPaperGroup.appendChild(label);
-            coverPaperGroup.appendChild(select);
-            
-            // Insert after main paper select
-            if(paperTypeSelect.parentNode) paperTypeSelect.parentNode.insertBefore(coverPaperGroup, paperTypeSelect.nextSibling);
-        }
-
-        // Set Value
-        const coverSelect = document.getElementById('cover-paper-type');
-        if (coverSelect) coverSelect.value = coverPaperVal;
+    // 5. Cover Paper Logic
+    // [FIX] Use the specific value passed from builder
+    if (specs.coverPaperType) {
+        coverPaperTypeSelect.value = specs.coverPaperType;
+    } else {
+        coverPaperTypeSelect.value = ""; // None
     }
 
     // Other Fields
@@ -350,94 +334,56 @@ function populateSpecsForm(projectData) {
 }
 
 // --- Specs Form Submit Handler ---
+// --- Save Spec Changes Handler ---
 specsForm.addEventListener('submit', async (e) => {
     e.preventDefault();
-    saveSpecsBtn.disabled = true;
-    saveSpecsBtn.textContent = 'Saving...';
-
+    saveSpecsButton.disabled = true;
+    specsStatusMessage.textContent = 'Saving...';
+    
     try {
-        // Get selected Project Type
-        const selectedType = document.querySelector('input[name="projectType"]:checked');
-        if (!selectedType) {
-            throw new Error('Please select a project type.');
-        }
-        const typeValue = selectedType.value; // 'loose', 'saddleStitch', 'perfectBound'
-
-        const sizePreset = specSizePreset.value;
-        let dimensionsVal; // For Firestore
-        let localDimensions; // For local state
-
-        if (!sizePreset) throw new Error("Please select a finished size.");
-
-        if (sizePreset === 'custom') {
-            const width = parseFloat(specWidth.value);
-            const height = parseFloat(specHeight.value);
-            const unit = specUnit.value;
-
-            if (isNaN(width) || width <= 0 || isNaN(height) || height <= 0) {
-                throw new Error('Invalid custom dimensions');
-            }
-
-            dimensionsVal = {
-                width: width,
-                height: height,
-                units: unit
-            };
-        } else {
-            // Standard Size Key (e.g., 'A4') - Resolve to Object immediately for Backend Consistency
-            dimensionsVal = resolveDimensions(sizePreset);
-        }
-
-        // Local dimensions are now always the resolved object
-        localDimensions = resolveDimensions(dimensionsVal);
-
-        const specsUpdate = {
-            'projectType': typeValue === 'loose' ? 'single' : 'booklet',
-            'specs.dimensions': dimensionsVal,
-            'specs.binding': typeValue === 'loose' ? 'loose' : typeValue,
-            // [FIX] Page count is dynamic/calculated in builder, so we set to 0
-            'specs.pageCount': 0,
-            // [FIX] Save Interior Paper Type for ALL project types
-            'specs.paperType': specPaper.value 
+        const updatedSpecs = {
+            pageCount: parseInt(pageCountInput.value, 10) || null,
+            binding: bindingSelect.value,
+            readingDirection: readingDirectionSelect.value,
+            // [FIX] Read from new selects
+            paperType: paperTypeSelect.value,
+            coverPaperType: coverPaperTypeSelect.value || null, 
+            bleedInches: parseFloat(bleedInchesInput.value) || 0,
+            safetyInches: parseFloat(safetyInchesInput.value) || 0,
         };
 
-        // [FIX] Handle Cover Paper Type logic
-        if (typeValue === 'loose') {
-            specsUpdate['specs.coverPaperType'] = null;
+        if (dimensionsSelect.value === 'custom') {
+             const width = parseFloat(customWidthInput.value);
+             const height = parseFloat(customHeightInput.value);
+             if (isNaN(width) || isNaN(height) || width <= 0 || height <= 0) throw new Error('Invalid custom dimensions');
+             updatedSpecs.dimensions = { width, height, units: customUnitsSelect.value };
         } else {
-            // Required for Saddle Stitch and Perfect Bound
-            if (!specCoverPaper.value) throw new Error("Please select a cover paper type.");
-            specsUpdate['specs.coverPaperType'] = specCoverPaper.value;
+            updatedSpecs.dimensions = dimensionsSelect.value;
         }
 
-        const projectRef = doc(db, 'projects', projectId);
-        await updateDoc(projectRef, specsUpdate);
+        const projectRef = doc(db, "projects", projectId);
+        await updateDoc(projectRef, { specs: updatedSpecs });
 
-        // Update State locally to avoid reload
-        projectSpecs = {
-            dimensions: localDimensions,
-            binding: specsUpdate['specs.binding'],
-            pageCount: 0,
-            paperType: specsUpdate['specs.paperType'],
-            coverPaperType: specsUpdate['specs.coverPaperType']
-        };
-        projectType = specsUpdate['projectType'];
+        specsStatusMessage.textContent = 'Specifications saved successfully!';
+        specsStatusMessage.className = 'mt-2 text-center text-sm text-green-400';
 
-        // Hide modal and show upload UI
-        specsModal.classList.add('hidden');
-        uploadContainer.classList.remove('hidden');
+        // Trigger viewer update
+        if (currentProjectData) {
+             currentProjectData.specs = updatedSpecs;
+             initializeSharedViewer({
+                 db, auth, projectId,
+                 projectData: currentProjectData,
+                 isAdmin: true
+             });
+        }
 
-        // Refresh UI logic (Buttons, Tabs, etc.)
-        refreshBuilderUI();
-
-        await initializeBuilder();
-
-    } catch (err) {
-        console.error("Error saving specs:", err);
-        alert("Failed to save specifications: " + err.message);
+    } catch (error) {
+        console.error("Error saving specs:", error);
+        specsStatusMessage.textContent = `Error: ${error.message}`;
+        specsStatusMessage.className = 'mt-2 text-center text-sm text-red-400';
     } finally {
-        saveSpecsBtn.disabled = false;
-        saveSpecsBtn.textContent = 'Save & Continue';
+        saveSpecsButton.disabled = false;
+        setTimeout(() => { specsStatusMessage.textContent = ''; }, 4000);
     }
 });
 

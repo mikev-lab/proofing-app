@@ -373,11 +373,16 @@
                                                     <option value="ltr">Left-to-Right</option>
                                                     <option value="rtl">Right-to-Left</option>
                                                 </select></div>
-                                            <div class="form-group"><label for="paper-type">Paper Type</label><select id="paper-type" name="paper-type">
-                                                    <option value="Gloss">Gloss</option>
-                                                    <option value="Matte">Matte</option>
-                                                    <option value="Uncoated">Uncoated</option>
-                                                </select></div>
+                                            <div class="form-group">
+                                                <label for="paper-type">Interior Paper Type</label>
+                                                <select id="paper-type" name="paper-type">
+                                                    </select>
+                                            </div>
+                                            <div class="form-group">
+                                                <label for="cover-paper-type">Cover Paper Type</label>
+                                                <select id="cover-paper-type" name="cover-paper-type">
+                                                    </select>
+                                            </div>
                                         </div>
                                         <div class="mt-6 border-t border-slate-700/50 pt-4"><button type="submit" id="save-specs-button" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-blue-800 disabled:cursor-not-allowed">Save Specification Changes</button>
                                             <p id="specs-status-message" class="mt-2 text-center text-sm"></p>
