@@ -478,6 +478,9 @@ export async function initializeSharedViewer(config) {
     /**
      * Renders a page or spread onto the main canvas.
      */
+    /**
+     * Renders a page or spread onto the main canvas.
+     */
     async function renderPage(viewNumber) {
         if (!pdfDoc) {
              console.warn("renderPage called but pdfDoc is null.");
@@ -507,7 +510,9 @@ export async function initializeSharedViewer(config) {
         // Handle case where view has no pages (e.g., blank page added for even spread count)
         if (pagesToRenderIndices.length === 0 || pagesToRenderIndices[0] > pdfDoc.numPages) {
             pageRendering = false;
-            renderingThrobber.classList.add('hidden');
+            // Only hide throbber if we still have a PDF loaded (fixes the zombie render issue)
+            if (pdfDoc) renderingThrobber.classList.add('hidden');
+            
             const visibleContext = pdfCanvas.getContext('2d');
             if (visibleContext) visibleContext.clearRect(0, 0, pdfCanvas.width, pdfCanvas.height); // Clear canvas
             if (pageNumPending !== null) { // Check if another page was queued
@@ -679,7 +684,14 @@ export async function initializeSharedViewer(config) {
             console.error("Error rendering page/spread:", err);
         } finally {
             pageRendering = false; // Mark rendering as complete
-            renderingThrobber.classList.add('hidden'); // Hide loading indicator
+            
+            // [FIX] Only hide throbber if we still have a valid document loaded.
+            // If pdfDoc is null, it means we switched to 'processing' state during this render,
+            // so we must keep the throbber visible and NOT hide it.
+            if (pdfDoc) {
+                renderingThrobber.classList.add('hidden');
+            }
+            
             // If another page was requested during rendering, render it now
             if (pageNumPending !== null) {
                 const pending = pageNumPending;
@@ -729,16 +741,13 @@ export async function initializeSharedViewer(config) {
 
     /**
      * Handles the logic for loading a specific version, including checking its processing status.
-     * This function manipulates the DOM to show loading/error states or triggers the PDF load.
-     * @param {object | null} versionData - The version object from Firestore, or null if no version exists.
      */
     function loadVersion(versionData) {
-        // This function centralizes the logic for handling all possible version states.
-
         if (!versionData) {
-            // Case where no versions exist for the project.
+            // [FIX] Unload PDF to prevent zombie renders
+            pdfDoc = null; 
+            
             if (renderingThrobber) {
-                // To avoid destroying the canvas, we use the throbber overlay for this message too.
                 renderingThrobber.innerHTML = '<p class="text-gray-400 p-4">No proof file available for this project yet.</p>';
                 renderingThrobber.classList.remove('hidden');
             }
@@ -753,21 +762,30 @@ export async function initializeSharedViewer(config) {
 
         // Case 1: PDF is processing. Show a persistent loading message.
         if (status === 'processing') {
+            // [FIX] Unload PDF immediately so scroll events don't trigger a render of the old file
+            pdfDoc = null;
+
             if (renderingThrobber) {
                 renderingThrobber.innerHTML = `
                     <div class="h-10 w-10 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900" role="status"></div>
                     <p class="mt-3 text-gray-300 text-sm">Optimizing PDF for viewing, please wait...</p>
                 `;
                 renderingThrobber.classList.remove('hidden');
+                
+                // [FIX] Block clicks on the viewer while processing
+                if(pdfViewer) pdfViewer.style.pointerEvents = 'none';
             }
             if (pdfCanvas) pdfCanvas.classList.add('hidden');
             if (navigationControls) navigationControls.classList.add('hidden');
             if (guidesSection) guidesSection.classList.add('hidden');
-            return; // The onSnapshot listener will trigger a reload when status changes.
+            return; 
         }
 
-        // Case 2: PDF processing resulted in an error. Show the error message.
+        // Case 2: PDF processing resulted in an error.
         if (status === 'error') {
+            // [FIX] Unload PDF here too
+            pdfDoc = null;
+
             if (renderingThrobber) {
                 renderingThrobber.innerHTML = `
                     <div class="text-center p-4">
@@ -785,15 +803,23 @@ export async function initializeSharedViewer(config) {
 
         // Case 3: Status is 'complete' or missing (legacy). Proceed to load the PDF.
         if (pdfCanvas) pdfCanvas.classList.remove('hidden');
-        if (renderingThrobber) renderingThrobber.classList.add('hidden'); // Ensure any previous message is gone.
+        
+        if (renderingThrobber) {
+            renderingThrobber.classList.add('hidden');
+            // [FIX] Re-enable clicks/interaction
+            if(pdfViewer) pdfViewer.style.pointerEvents = 'auto';
+        }
 
         const urlToLoad = versionData.previewURL || versionData.fileURL;
 
         if (urlToLoad && urlToLoad !== currentlyLoadedURL) {
-            console.log(`Loading URL for version ${versionData.version}: ${urlToLoad.substring(0, 100)}...`);
+            console.log(`Loading URL for version ${versionData.versionNumber}: ${urlToLoad.substring(0, 100)}...`);
             loadPdf(urlToLoad);
         } else if (!urlToLoad) {
-            console.error("No URL found for version:", versionData.version);
+            // [FIX] Unload PDF
+            pdfDoc = null;
+
+            console.error("No URL found for version:", versionData.versionNumber);
             if (renderingThrobber) {
                 renderingThrobber.innerHTML = `
                     <div class="text-center p-4">
@@ -807,8 +833,7 @@ export async function initializeSharedViewer(config) {
             if (navigationControls) navigationControls.classList.add('hidden');
             if (guidesSection) guidesSection.classList.add('hidden');
         } else {
-            console.log(`Version ${versionData.version} selected, but URL is the same as currently loaded. No reload needed.`);
-            // If URL is the same, just ensure the main UI is visible.
+            console.log(`Version ${versionData.versionNumber} selected, but URL is the same as currently loaded.`);
             if (!pageRendering && renderingThrobber) renderingThrobber.classList.add('hidden');
             if (pdfCanvas) pdfCanvas.classList.remove('hidden');
             if (navigationControls) navigationControls.classList.remove('hidden');
@@ -825,7 +850,8 @@ export async function initializeSharedViewer(config) {
             console.error("Project data or versions array is missing.");
             return;
         }
-        const versionData = projectData.versions.find(v => v.version === versionNumber);
+        // [FIX] Use versionNumber
+        const versionData = projectData.versions.find(v => v.versionNumber === versionNumber);
         if (!versionData) {
             console.error("Version not found:", versionNumber);
             return;
@@ -913,7 +939,14 @@ export async function initializeSharedViewer(config) {
     // --- Initialization ---
 
     // Set up initial view mode based on project specs
-    const isBook = projectSpecs && (projectSpecs.binding === 'Perfect Bound' || projectSpecs.binding === 'Saddle-Stitch');
+    const binding = projectSpecs?.binding;
+    const isBook = binding && (
+        binding.toLowerCase() === 'perfect bound' || 
+        binding.toLowerCase() === 'perfectbound' || 
+        binding.toLowerCase() === 'saddle-stitch' || 
+        binding.toLowerCase() === 'saddlestitch'
+    );
+
     if (isBook && viewModeSelect) {
         viewModeSelect.value = 'spread';
         currentViewMode = 'spread';
@@ -1004,7 +1037,7 @@ export async function initializeSharedViewer(config) {
         if (projectData && projectData.versions && projectData.versions.length > 0) {
             projectData.versions.sort((a,b) => b.version - a.version).forEach(v => {
                 const option = document.createElement('option');
-                option.value = v.version;
+                option.value = v.versionNumber;
 
                 let statusIcon = '';
                 if (v.preflightStatus === 'passed') {
@@ -1015,8 +1048,9 @@ export async function initializeSharedViewer(config) {
                     statusIcon = '❌ ';
                 }
 
-                const isLatest = v.version === Math.max(...projectData.versions.map(ver => ver.version));
-                option.textContent = `${statusIcon}Version ${v.version}${isLatest ? ' (Latest)' : ''}`;
+                const isLatest = v.versionNumber === Math.max(...projectData.versions.map(ver => ver.versionNumber));
+                // [FIX] Display versionNumber
+                option.textContent = `${statusIcon}Version ${v.versionNumber}${isLatest ? ' (Latest)' : ''}`;
                 versionSelector.appendChild(option);
             });
         } else {
@@ -1026,7 +1060,7 @@ export async function initializeSharedViewer(config) {
              try {
                  const selectedVersion = parseInt(e.target.value, 10);
                  if (!isNaN(selectedVersion)) {
-                     const versionData = projectData.versions.find(v => v.version === selectedVersion);
+                     const versionData = projectData.versions.find(v => v.versionNumber === selectedVersion);
                      loadProofByVersion(selectedVersion);
                      displayPreflightResults(versionData); // Update preflight details on change
                  }
@@ -1061,46 +1095,57 @@ export async function initializeSharedViewer(config) {
 
         coverTab.addEventListener('click', () => {
             currentView = 'cover';
-            projectSpecs = projectData.cover.specs || projectData.specs;
+            if (projectData.specs && projectData.specs.coverDimensions) {
+                // Create a temporary specs object for the cover view
+                projectSpecs = {
+                    ...projectData.specs,
+                    dimensions: projectData.specs.coverDimensions
+                };
+            } else {
+                projectSpecs = projectData.cover?.specs || projectData.specs;
+            }
+
             coverTab.classList.add('border-indigo-500', 'text-indigo-400');
             coverTab.classList.remove('border-transparent', 'text-gray-400');
             internalsTab.classList.add('border-transparent', 'text-gray-400');
             internalsTab.classList.remove('border-indigo-500', 'text-indigo-400');
+            
             loadVersion(projectData.cover);
             displayPreflightResults(projectData.cover);
 
-            // --- NEW: Refresh Annotations Sidebar ---
             if (annotationsManager) annotationsManager.refresh();
         });
     }
 
 
-    // --- Initial PDF Load ---
+// --- Initial PDF Load ---
     let versionToLoad = null;
     if (projectData && projectData.versions && projectData.versions.length > 0) {
-        // Find the most recent version to load by default.
-        // If the admin is viewing, respect the version selector's current value.
-        let targetVersionNumber;
-        if (isAdmin && versionSelector && versionSelector.value) {
-            try {
-                targetVersionNumber = parseInt(versionSelector.value, 10);
-            } catch (e) {
-                // Fallback to max version if parsing fails
-                targetVersionNumber = Math.max(...projectData.versions.map(v => v.version));
-            }
-        } else {
-            // For clients or if selector isn't ready, just get the latest version number.
-            targetVersionNumber = Math.max(...projectData.versions.map(v => v.version));
+        // 1. Calculate the true latest version number from the data
+        const latestVersionNumber = Math.max(...projectData.versions.map(v => v.versionNumber));
+        
+        let targetVersionNumber = latestVersionNumber;
+
+        // 2. If the admin selector exists, verify if we should use its value or override it
+        if (isAdmin && versionSelector) {
+            // If the selector has a valid number, check if we should respect it
+            // (Only respect it if it's NOT just the default/first option, but usually on a fresh load/update
+            // we want to force the latest version to show the progress we just waited for).
+            
+            // FORCE UPDATE: Set the dropdown to match our calculated latest version
+            // This overrides any browser behavior that auto-selected "Version 1"
+            versionSelector.value = latestVersionNumber; 
         }
 
-        versionToLoad = projectData.versions.find(v => v.version === targetVersionNumber);
+        // 3. Find the version object
+        versionToLoad = projectData.versions.find(v => v.versionNumber === targetVersionNumber);
 
-        // Fallback just in case find fails but versions exist.
+        // 4. Fallback: If exact match failed, robustly find the max version object
         if (!versionToLoad) {
-             versionToLoad = projectData.versions.reduce((latest, current) => (current.version > latest.version ? current : latest), projectData.versions[0]);
+             versionToLoad = projectData.versions.reduce((latest, current) => (current.versionNumber > latest.versionNumber ? current : latest), projectData.versions[0]);
         }
     }
-
+    
     // Delegate the entire rendering logic to the centralized function.
     // It handles all cases, including when versionToLoad is null.
     loadVersion(versionToLoad);

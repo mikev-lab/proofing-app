@@ -33,11 +33,12 @@ function formatTimestamp(fbTimestamp) {
 }
 
 // --- UPDATE START: New Status Logic with Throbber ---
+// --- UPDATE START: New Status Logic with Throbber ---
 function getStatusBadge(status) {
     status = status || 'unknown';
     const lowerStatus = status.toLowerCase();
     
-    // Base classes (added flex and items-center for icon alignment)
+    // Base classes
     let classes = "px-3 py-1 rounded-full text-xs font-medium inline-flex items-center gap-1";
     let text = status.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
     let icon = "";
@@ -50,7 +51,7 @@ function getStatusBadge(status) {
         case 'approved':
             classes += " bg-green-500/20 text-green-300";
             text = "Approved";
-            // Throbber Icon
+            // Throbber Icon for processing
             icon = `<svg class="animate-spin h-3 w-3 text-green-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                         <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
@@ -72,7 +73,7 @@ function getStatusBadge(status) {
             classes += " bg-red-500/20 text-red-300"; 
             break;
         case 'awaiting_upload': 
-        case 'awaiting client upload': // Handle spaced version
+        case 'awaiting client upload': 
             classes += " bg-blue-500/20 text-blue-300";
             text = "Awaiting Upload";
             break;
@@ -80,9 +81,20 @@ function getStatusBadge(status) {
             classes += " bg-yellow-500/20 text-yellow-300";
             text = "Pending Review";
             break;
+            
+        // [FIX] New Statuses
+        case 'waiting admin review':
+            classes += " bg-purple-500/20 text-purple-300";
+            text = "Needs Review"; 
+            break;
+        case 'pending approval':
+            classes += " bg-yellow-500/20 text-yellow-300";
+            text = "Client Approval";
+            break;
+            
         default: 
             classes += " bg-gray-500/20 text-gray-300"; 
-            text = "Unknown"; 
+            // Fallback: Use the capitalized text we generated at the start
             break;
     }
     return `<span class="${classes}">${text}${icon}</span>`;

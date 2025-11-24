@@ -48,11 +48,14 @@
                             </svg>
                             <span id="notification-indicator" class="hidden absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-red-500"></span>
                         </button>
-                        <div id="notification-panel" class="hidden absolute right-0 mt-2 w-80 bg-slate-800 rounded-lg shadow-lg border border-slate-700/50 z-10">
-                            <div class="p-3 border-b border-slate-700/50">
+                        <div id="notification-panel" class="hidden absolute right-0 mt-2 w-80 bg-slate-800 rounded-lg shadow-lg border border-slate-700/50 z-50">
+                            <div class="p-3 border-b border-slate-700/50 flex justify-between items-center">
                                 <h3 class="font-semibold text-white">Notifications</h3>
+                                <button id="clear-notifications-btn" class="text-xs text-indigo-400 hover:text-indigo-300 transition-colors hover:underline">
+                                    Clear All
+                                </button>
                             </div>
-                            <div id="notification-list" class="py-1 max-h-96 overflow-y-auto">
+                            <div id="notification-list" class="py-1 max-h-96 overflow-y-auto custom-scrollbar">
                                 <p class="px-4 py-2 text-sm text-gray-400">No new notifications</p>
                             </div>
                         </div>
@@ -134,7 +137,8 @@
             </main>
         </div>
     </div>
-     <div id="share-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center hidden z-50">
+
+    <div id="share-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center hidden z-50">
         <div class="bg-slate-800 rounded-lg shadow-xl p-6 w-full max-w-lg mx-4 border border-slate-700/50">
             <div class="flex justify-between items-center mb-4">
                 <h3 class="text-xl font-semibold text-white">Generate Guest Link</h3>
@@ -177,6 +181,7 @@
             </div>
         </div>
     </div>
+
     <div id="request-files-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center hidden z-50">
         <div class="bg-slate-800 rounded-lg shadow-xl p-6 w-full max-w-lg mx-4 border border-slate-700/50">
             <div class="flex justify-between items-center mb-4">

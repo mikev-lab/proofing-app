@@ -5,6 +5,7 @@ import { doc, onSnapshot, getDoc, updateDoc, Timestamp, collection, query, order
 import { ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
 import { initializeSharedViewer } from './viewer.js';
 import { STANDARD_PAPER_SIZES } from './guides.js';
+import { HARDCODED_PAPER_TYPES } from './guest_constants.js';
 import { initializeImpositionUI } from './imposition-ui.js';
 import Sortable from 'https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/modular/sortable.esm.js';
 import * as pdfjsLib from 'https://mozilla.github.io/pdf.js/build/pdf.mjs';
@@ -23,6 +24,7 @@ const generatedLinkUrlInput = document.getElementById('generated-link-url');
 const copyLinkButton = document.getElementById('copy-link-button');
 const copyStatusMessage = document.getElementById('copy-status-message');
 const guestLinksList = document.getElementById('guest-links-list');
+const sendProofButton = document.getElementById('send-proof-button');
 
 const loadingSpinner = document.getElementById('loading-spinner');
 const proofContent = document.getElementById('proof-content');
@@ -165,6 +167,32 @@ const urlParams = new URLSearchParams(window.location.search);
 const projectId = urlParams.get('id');
 let currentProjectData = null; // Store current project data globally for save function
 
+const coverPaperTypeSelect = document.getElementById('cover-paper-type');
+
+// --- Populate Paper Selects ---
+function populatePaperSelects() {
+    // Clear existing
+    paperTypeSelect.innerHTML = '<option value="" disabled selected>Select Interior Paper</option>';
+    coverPaperTypeSelect.innerHTML = '<option value="" disabled selected>Select Cover Paper</option>';
+    
+    // Add "None" option for Cover
+    const noneOpt = document.createElement('option');
+    noneOpt.value = '';
+    noneOpt.textContent = 'None / Self-Cover';
+    coverPaperTypeSelect.appendChild(noneOpt);
+
+    // Populate from Constant
+    HARDCODED_PAPER_TYPES.forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = p.name;
+        opt.textContent = p.name;
+        
+        paperTypeSelect.appendChild(opt.cloneNode(true));
+        coverPaperTypeSelect.appendChild(opt);
+    });
+}
+populatePaperSelects(); // Call immediately
+
 // --- Populate Dimensions Select ---
 function populateDimensionsSelect() {
     dimensionsSelect.innerHTML = ''; // Clear existing
@@ -202,63 +230,125 @@ dimensionsSelect.addEventListener('change', () => {
      customHeightInput.required = dimensionsSelect.value === 'custom';
 });
 
-// --- Populate Form from Data ---
-function populateSpecsForm(specs) {
-    if (!specs) return;
+// --- Helper: Find Standard Size ---
+function findMatchingStandardSize(dims) {
+    if (!dims || !dims.width || !dims.height) return null;
 
-    // Dimensions
+    // Convert to points for comparison (1 in = 72 pts, 1 mm = 2.83465 pts)
+    const wPoints = dims.units === 'mm' ? dims.width * 2.83465 : dims.width * 72;
+    const hPoints = dims.units === 'mm' ? dims.height * 2.83465 : dims.height * 72;
+    const tolerance = 3; // ~1mm tolerance
+
+    for (const [key, std] of Object.entries(STANDARD_PAPER_SIZES)) {
+        const stdW = std.width_mm * 2.83465;
+        const stdH = std.height_mm * 2.83465;
+
+        // Exact Match (Portrait)
+        if (Math.abs(wPoints - stdW) < tolerance && Math.abs(hPoints - stdH) < tolerance) return key;
+        // Rotated Match (Landscape)
+        if (Math.abs(wPoints - stdH) < tolerance && Math.abs(hPoints - stdW) < tolerance) return key;
+    }
+    return null;
+}
+
+// --- Populate Form from Data ---
+function populateSpecsForm(projectData) {
+    if (!projectData) return;
+    const specs = projectData.specs || {};
+    const guestState = projectData.guestBuilderState || {};
+
+    // 1. Dimensions Logic
     if (typeof specs.dimensions === 'object' && specs.dimensions !== null) {
-        dimensionsSelect.value = 'custom';
-        customDimensionInputs.classList.remove('hidden');
-        customWidthInput.value = specs.dimensions.width || '';
-        customHeightInput.value = specs.dimensions.height || '';
-        customUnitsSelect.value = specs.dimensions.units || 'in';
-        customWidthInput.required = true;
-        customHeightInput.required = true;
+        const standardKey = findMatchingStandardSize(specs.dimensions);
+        if (standardKey && dimensionsSelect.querySelector(`option[value="${standardKey}"]`)) {
+            dimensionsSelect.value = standardKey;
+            customDimensionInputs.classList.add('hidden');
+            customWidthInput.required = false;
+            customHeightInput.required = false;
+        } else {
+            dimensionsSelect.value = 'custom';
+            customDimensionInputs.classList.remove('hidden');
+            customWidthInput.value = specs.dimensions.width || '';
+            customHeightInput.value = specs.dimensions.height || '';
+            customUnitsSelect.value = specs.dimensions.units || 'in';
+            customWidthInput.required = true;
+            customHeightInput.required = true;
+        }
     } else if (typeof specs.dimensions === 'string') {
          if (dimensionsSelect.querySelector(`option[value="${specs.dimensions}"]`)) {
             dimensionsSelect.value = specs.dimensions;
          } else {
-             // Handle legacy string format (e.g., "5x7") - Assume inches, set to custom
              dimensionsSelect.value = 'custom';
              const parts = specs.dimensions.split('x');
              if (parts.length === 2) {
                  customWidthInput.value = parseFloat(parts[0]) || '';
                  customHeightInput.value = parseFloat(parts[1]) || '';
              }
-             customUnitsSelect.value = 'in'; // Assume inches
+             customUnitsSelect.value = 'in';
              customDimensionInputs.classList.remove('hidden');
-             customWidthInput.required = true;
-             customHeightInput.required = true;
          }
     } else {
-         dimensionsSelect.value = 'US_Letter'; // Default if missing/invalid
+         dimensionsSelect.value = 'US_Letter'; 
          customDimensionInputs.classList.add('hidden');
-         customWidthInput.required = false;
-         customHeightInput.required = false;
     }
 
+    // 2. Page Count Logic
+    let count = specs.pageCount;
+    if ((!count || count === 0) && guestState.pages) {
+        count = guestState.pages.length;
+    }
+    pageCountInput.value = count || '';
+
+    // 3. Binding Logic
+    let bindingVal = specs.binding || 'Perfect Bound';
+    const bindingMap = {
+        'perfectBound': 'Perfect Bound',
+        'saddleStitch': 'Saddle-Stitch', 
+        'loose': 'Coil Bound' 
+    };
+    if (bindingMap[bindingVal]) bindingVal = bindingMap[bindingVal];
+    
+    if (bindingSelect.querySelector(`option[value="${bindingVal}"]`)) {
+        bindingSelect.value = bindingVal;
+    } else if (bindingSelect.querySelector(`option[value="${bindingVal.replace('-', ' ')}"]`)) {
+         bindingSelect.value = bindingVal.replace('-', ' ');
+    }
+
+    // 4. Paper Type Logic (Interior)
+    // [FIX] Use the specific value passed from builder, or default to first option if not set
+    if (specs.paperType) {
+        paperTypeSelect.value = specs.paperType;
+    }
+
+    // 5. Cover Paper Logic
+    // [FIX] Use the specific value passed from builder
+    if (specs.coverPaperType) {
+        coverPaperTypeSelect.value = specs.coverPaperType;
+    } else {
+        coverPaperTypeSelect.value = ""; // None
+    }
+
+    // Other Fields
     bleedInchesInput.value = specs.bleedInches ?? 0.125;
     safetyInchesInput.value = specs.safetyInches ?? 0.125;
-    pageCountInput.value = specs.pageCount || '';
-    bindingSelect.value = specs.binding || 'Perfect Bound';
     readingDirectionSelect.value = specs.readingDirection || 'ltr';
-    paperTypeSelect.value = specs.paperType || 'Gloss';
 }
 
+// --- Specs Form Submit Handler ---
 // --- Save Spec Changes Handler ---
 specsForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     saveSpecsButton.disabled = true;
     specsStatusMessage.textContent = 'Saving...';
-    specsStatusMessage.className = 'mt-2 text-center text-sm text-yellow-400';
-
+    
     try {
         const updatedSpecs = {
             pageCount: parseInt(pageCountInput.value, 10) || null,
             binding: bindingSelect.value,
             readingDirection: readingDirectionSelect.value,
+            // [FIX] Read from new selects
             paperType: paperTypeSelect.value,
+            coverPaperType: coverPaperTypeSelect.value || null, 
             bleedInches: parseFloat(bleedInchesInput.value) || 0,
             safetyInches: parseFloat(safetyInchesInput.value) || 0,
         };
@@ -266,67 +356,37 @@ specsForm.addEventListener('submit', async (e) => {
         if (dimensionsSelect.value === 'custom') {
              const width = parseFloat(customWidthInput.value);
              const height = parseFloat(customHeightInput.value);
-             if (isNaN(width) || isNaN(height) || width <= 0 || height <= 0) {
-                 throw new Error('Please enter valid, positive numbers for custom width and height.');
-             }
-              // Basic check for safety margin vs custom dimensions
-             if (customUnitsSelect.value === 'in' && (updatedSpecs.safetyInches * 2 >= width || updatedSpecs.safetyInches * 2 >= height)) {
-                 throw new Error('Safety margin cannot be larger than half the page dimension.');
-             } // Add similar check for mm if needed
-
-             updatedSpecs.dimensions = {
-                 width: width,
-                 height: height,
-                 units: customUnitsSelect.value
-             };
+             if (isNaN(width) || isNaN(height) || width <= 0 || height <= 0) throw new Error('Invalid custom dimensions');
+             updatedSpecs.dimensions = { width, height, units: customUnitsSelect.value };
         } else {
             updatedSpecs.dimensions = dimensionsSelect.value;
         }
 
-         // Validate page count
-         if (!updatedSpecs.pageCount || updatedSpecs.pageCount <= 0) {
-             throw new Error('Please enter a valid, positive page count.');
-         }
-
-        // Update Firestore
         const projectRef = doc(db, "projects", projectId);
         await updateDoc(projectRef, { specs: updatedSpecs });
 
         specsStatusMessage.textContent = 'Specifications saved successfully!';
         specsStatusMessage.className = 'mt-2 text-center text-sm text-green-400';
 
-         // --- Trigger viewer update AFTER saving ---
-         // Find the currently selected version to reload
-        const currentVersionNum = parseInt(document.getElementById('version-selector')?.value, 10);
-        if (!isNaN(currentVersionNum)) {
-             // Temporarily update local data for immediate guide redraw
-             if (currentProjectData) {
-                 currentProjectData.specs = updatedSpecs;
-                 initializeSharedViewer({ // Re-initialize with updated specs
-                     db,
-                     auth,
-                     projectId,
-                     projectData: currentProjectData, // Pass updated data
-                     isAdmin: true
-                 });
-                 // Reloading the same version should now re-render with new guides
-                 // loadProofByVersion(currentVersionNum); // You might not need this if initializeSharedViewer handles it
-             }
+        // Trigger viewer update
+        if (currentProjectData) {
+             currentProjectData.specs = updatedSpecs;
+             initializeSharedViewer({
+                 db, auth, projectId,
+                 projectData: currentProjectData,
+                 isAdmin: true
+             });
         }
-        // --- End trigger viewer update ---
-
 
     } catch (error) {
-        console.error("Error saving specifications:", error);
-        specsStatusMessage.textContent = `Error: ${error.message || 'Could not save.'}`;
+        console.error("Error saving specs:", error);
+        specsStatusMessage.textContent = `Error: ${error.message}`;
         specsStatusMessage.className = 'mt-2 text-center text-sm text-red-400';
     } finally {
         saveSpecsButton.disabled = false;
-        // Clear status message after a few seconds
-         setTimeout(() => { specsStatusMessage.textContent = ''; }, 4000);
+        setTimeout(() => { specsStatusMessage.textContent = ''; }, 4000);
     }
 });
-
 
 // --- Firestore Listener ---
 onAuthStateChanged(auth, async (user) => {
@@ -365,7 +425,7 @@ onAuthStateChanged(auth, async (user) => {
                     }
 
                     // Populate the specs form
-                    populateSpecsForm(currentProjectData.specs);
+                    populateSpecsForm(currentProjectData);
 
                     // --- ADD THIS LINE ---
                     // Populate the manual cover specs form
@@ -373,15 +433,55 @@ onAuthStateChanged(auth, async (user) => {
 
                     renderImpositions(currentProjectData.impositions);
 
-                    // --- Real-time Update Logic ---
-                    // Check which version is currently selected in the dropdown
+                    // --- Real-time Update Logic (Smart Version Switching) ---
                     const versionSelector = document.getElementById('version-selector');
-                    const selectedVersion = versionSelector ? parseInt(versionSelector.value, 10) : null;
+                    const currentVersions = currentProjectData.versions || [];
 
-                    // Re-initialize the viewer. The logic inside viewer.js will now handle
-                    // the different processing states based on the fresh `currentProjectData`.
-                    // This ensures that if the status of the *currently viewed* version
-                    // changes (e.g., from 'processing' to 'complete'), the view will auto-update.
+                    // Find the max version number in the new data
+                    const maxVersion = currentVersions.length > 0
+                        ? Math.max(...currentVersions.map(v => v.versionNumber))
+                        : 0;
+
+                    // Check if we have a new latest version compared to what was previously known/selected
+                    // Note: We don't track 'previousMax' explicitly in a var, but we can infer if the user
+                    // was on an older version but a new one is now available (maxVersion > selectedVersion).
+                    // However, "Auto Update" implies: If I am viewing the LATEST, and a NEW LATEST comes in, switch to it.
+                    // If I am explicitly viewing an OLD version (history), don't switch.
+
+                    const selectedVersion = versionSelector ? parseInt(versionSelector.value, 10) : null;
+                    let targetVersion = selectedVersion;
+
+                    // HEURISTIC: If the user was viewing the *previous* latest version, auto-switch to the *new* latest.
+                    // Or simpler: If selectedVersion is null (initial load) OR we just want to force latest if new proof arrived.
+                    // Given the user request "viewer keeps trying to load an older version", we should prioritize the latest
+                    // if the update event was likely triggered by a new version creation.
+
+                    // Let's detect if the versions array grew.
+                    // Since we don't have `previousProjectData` easily available here without global state management beyond `currentProjectData`
+                    // (which is already updated), we can rely on the fact that `versionSelector.value` reflects the state *before* this update cycle
+                    // (because we haven't rebuilt it yet? No, viewer.js rebuilds it).
+
+                    // Actually, `initializeSharedViewer` rebuilds the dropdown.
+                    // So we need to decide the target version *before* calling it, pass it (if viewer supports), or manipulate after.
+                    // Viewer.js defaults to MAX version if no selector value.
+
+                    // STRATEGY:
+                    // 1. If `selectedVersion` (from DOM) < `maxVersion` (from Data), it implies a new version might have arrived.
+                    // 2. However, user might be browsing history.
+                    // 3. BUT, if the `processingStatus` of the *latest* version just changed (e.g. processing -> complete), we want to see it.
+
+                    // SIMPLIFIED FIX: Always default to the LATEST version when an update occurs,
+                    // UNLESS the user has explicitly interacted to select an older one?
+                    // The user complaint is that it *doesn't* update.
+                    // So let's force update to the latest version if the latest version number is higher than the currently selected one.
+
+                    if (selectedVersion && maxVersion > selectedVersion) {
+                        console.log(`[Auto-Update] New version detected (v${maxVersion}). Switching from v${selectedVersion}.`);
+                        targetVersion = null; // Setting to null forces viewer.js to pick the latest
+                        if (versionSelector) versionSelector.value = ""; // Clear DOM value to prevent "stickiness"
+                    }
+
+                    // Re-initialize the viewer.
                     initializeSharedViewer({
                         db,
                         auth,
@@ -392,13 +492,11 @@ onAuthStateChanged(auth, async (user) => {
 
                     initializeImpositionUI({ projectData: currentProjectData, db, projectId });
 
-                    // After initialization, ensure the dropdown reflects the correct version if it exists.
-                    // The viewer's internal logic selects the latest, but we might need to respect the dropdown.
-                    if (versionSelector && selectedVersion) {
-                        // Find if the selected version still exists in the new data
-                        const versionExists = currentProjectData.versions.some(v => v.version === selectedVersion);
+                    // Restore selection ONLY if we didn't decide to switch to latest
+                    if (targetVersion && versionSelector) {
+                        const versionExists = currentVersions.some(v => v.versionNumber === targetVersion);
                         if (versionExists) {
-                             versionSelector.value = selectedVersion;
+                             versionSelector.value = targetVersion;
                         }
                     }
 
@@ -407,9 +505,15 @@ onAuthStateChanged(auth, async (user) => {
                    currentProjectData.status === 'In Production' || 
                    currentProjectData.status === 'Imposition Complete';
 
+                   const isWaitingReview = currentProjectData.status === 'Waiting Admin Review';
+
                     // Toggle approve/unapprove buttons
                     approveButton.classList.toggle('hidden', isApproved);
                     unapproveButton.classList.toggle('hidden', !isApproved);
+
+                    if (sendProofButton) {
+                        sendProofButton.classList.toggle('hidden', !isWaitingReview);
+                    }
 
                     // Disable upload forms if project is approved
                     if (isApproved) {
@@ -821,7 +925,6 @@ if (rerunPreflightButton) {
         if (!currentProjectData || !projectId) return;
 
         // A. Get the latest version to check
-        // We assume we are checking the latest version available in the array
         const versions = currentProjectData.versions || [];
         if (versions.length === 0) {
             alert("No file versions found to check.");
@@ -845,7 +948,6 @@ if (rerunPreflightButton) {
 
         try {
             // C. Call the Cloud Function
-            // Note: Ensure 'analyzePdfToolbox' is deployed and available
             const analyzePdfToolbox = httpsCallable(functions, 'analyzePdfToolbox');
             
             console.log(`Running preflight on: ${latestVersion.filePath}`);
@@ -856,21 +958,27 @@ if (rerunPreflightButton) {
 
             const analysis = result.data; // { preflightStatus, preflightResults, dimensions }
 
-            // D. Update Firestore
-            // We must update the specific version in the versions array
+            // D. Update Firestore Safely
             const updatedVersions = [...versions];
-            updatedVersions[latestVersionIndex] = {
+            
+            // [FIX] Construct the object step-by-step to avoid "undefined" values
+            const updatedVersionEntry = {
                 ...latestVersion,
                 preflightStatus: analysis.preflightStatus,
-                preflightResults: analysis.preflightResults,
-                // Update dimensions if they were found
-                specs: analysis.dimensions ? { 
-                    ...latestVersion.specs, // preserve existing specs if any
-                    dimensions: analysis.dimensions 
-                } : latestVersion.specs
+                preflightResults: analysis.preflightResults
             };
+
+            // Only update specs if we actually received dimensions. 
+            // If not, we leave 'specs' alone (it stays as it was in ...latestVersion)
+            if (analysis.dimensions) {
+                updatedVersionEntry.specs = {
+                    ...(latestVersion.specs || {}), // Handle case where specs didn't exist yet
+                    dimensions: analysis.dimensions
+                };
+            }
+
+            updatedVersions[latestVersionIndex] = updatedVersionEntry;
             
-            // Also update the top-level status if needed, or just the versions
             const projectRef = doc(db, "projects", projectId);
             await updateDoc(projectRef, { 
                 versions: updatedVersions 
@@ -1248,5 +1356,38 @@ function renderImpositions(impositions) {
             </a>
         `;
         container.appendChild(item);
+    });
+}
+
+if (sendProofButton) {
+    sendProofButton.addEventListener('click', async () => {
+        if (!projectId) return;
+        
+        const confirmSend = confirm("Are you sure the files are ready? This will unlock the proof for the client to approve.");
+        if (!confirmSend) return;
+
+        sendProofButton.disabled = true;
+        sendProofButton.textContent = "Sending...";
+
+        try {
+            const projectRef = doc(db, "projects", projectId);
+            // Change status to 'Pending Approval' to unlock client UI
+            await updateDoc(projectRef, { status: 'Pending Approval' });
+
+            const recordHistory = httpsCallable(functions, 'recordHistory');
+            await recordHistory({
+                projectId: projectId,
+                action: 'admin_sent_proof'
+            });
+            
+            alert("Proof sent to client successfully.");
+
+        } catch (error) {
+            console.error("Error sending proof:", error);
+            alert("Failed to update status: " + error.message);
+        } finally {
+            sendProofButton.disabled = false;
+            sendProofButton.textContent = "Send Proof to Client";
+        }
     });
 }

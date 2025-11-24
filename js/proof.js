@@ -2,6 +2,7 @@ import { auth, db, functions, generateGuestLink } from './firebase.js';
 import { onAuthStateChanged, signOut, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 import { httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js";
 import { initializeSharedViewer } from './viewer.js';
+import { STANDARD_PAPER_SIZES } from './guides.js';
 // [UPDATE] Added 'query' and 'orderBy' to the imports
 import { doc, onSnapshot, updateDoc, collection, getDocs, Timestamp, addDoc, getDoc, arrayUnion, serverTimestamp, setDoc, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 import * as pdfjsLib from "https://mozilla.github.io/pdf.js/build/pdf.mjs";
@@ -56,25 +57,100 @@ let unsubscribeHistoryListener = null;
 let isGuest = false;
 let guestPermissions = {};
 
+// --- Helper: Find Standard Size Name ---
+function findMatchingStandardSize(dims) {
+    if (!dims || !dims.width || !dims.height) return null;
+
+    // Convert to points for comparison (1 in = 72 pts, 1 mm = 2.83465 pts)
+    const wPoints = dims.units === 'mm' ? dims.width * 2.83465 : dims.width * 72;
+    const hPoints = dims.units === 'mm' ? dims.height * 2.83465 : dims.height * 72;
+    const tolerance = 3; // ~1mm tolerance
+
+    for (const [key, std] of Object.entries(STANDARD_PAPER_SIZES)) {
+        const stdW = std.width_mm * 2.83465;
+        const stdH = std.height_mm * 2.83465;
+
+        // Exact Match (Portrait)
+        if (Math.abs(wPoints - stdW) < tolerance && Math.abs(hPoints - stdH) < tolerance) return key;
+        // Rotated Match (Landscape)
+        if (Math.abs(wPoints - stdH) < tolerance && Math.abs(hPoints - stdW) < tolerance) return key;
+    }
+    return null;
+}
 // Define these functions in the main script scope
 function showApproveConfirmation(projectData) {
     if (!approvalModal) return;
 
-    // 1. Populate the dynamic text placeholder (Shorter version)
-    const stock = projectData.specs?.paperType || projectData.specs?.stock || "Standard Stock";
-    const color = projectData.specs?.colorType || projectData.specs?.ink || "Standard Color";
+    const specs = projectData.specs || {};
     
-    if (approvalSpecsText) {
-        // Notice the removal of "By approving this, you acknowledge that..."
-        approvalSpecsText.innerHTML = `You are approving this to be printed on <span class="font-bold text-white">${stock}</span> in <span class="font-bold text-white">${color}</span>.`;
+    // 1. Populate Trim Size
+    const trimTextEl = document.getElementById('approval-trim-text');
+    if (trimTextEl) {
+        let dimString = "N/A";
+        if (specs.dimensions) {
+            if (typeof specs.dimensions === 'string') {
+                // If stored as string key, look up name
+                const std = STANDARD_PAPER_SIZES[specs.dimensions];
+                // [FIX] Include the group name (e.g. "A4 (ISO A)")
+                dimString = std ? `${std.name} (${std.group})` : specs.dimensions;
+            } else if (specs.dimensions.width && specs.dimensions.height) {
+                // If stored as object, check for match or format nicely
+                const matchKey = findMatchingStandardSize(specs.dimensions);
+                
+                if (matchKey) {
+                    const std = STANDARD_PAPER_SIZES[matchKey];
+                    // [FIX] Include the group name
+                    dimString = `${std.name} (${std.group})`;
+                } else {
+                    // Custom: Clean up the decimals
+                    const w = parseFloat(specs.dimensions.width);
+                    const h = parseFloat(specs.dimensions.height);
+                    const unit = specs.dimensions.units || 'in';
+                    // Format to max 3 decimal places
+                    const wStr = Number(w.toFixed(3)).toString();
+                    const hStr = Number(h.toFixed(3)).toString();
+                    dimString = `${wStr} x ${hStr} ${unit}`;
+                }
+            }
+        }
+        trimTextEl.innerHTML = `Confirm Trim Size: <span class="font-bold text-white">${dimString}</span>`;
     }
 
-    // 2. Reset the form (uncheck boxes, clear signature)
+    // 2. Populate Interior Paper
+    const interiorPaperEl = document.getElementById('approval-interior-paper-text');
+    if (interiorPaperEl) {
+        const paper = specs.paperType || "Standard";
+        interiorPaperEl.innerHTML = `Confirm Interior Paper: <span class="font-bold text-white">${paper}</span>`;
+    }
+
+    // 3. Populate Cover Paper (Hide if not applicable)
+    const coverContainer = document.getElementById('container-cover-paper');
+    const coverPaperEl = document.getElementById('approval-cover-paper-text');
+    const coverCheckbox = document.getElementById('check-cover-paper');
+    
+    if (coverContainer && coverPaperEl && coverCheckbox) {
+        if (specs.coverPaperType) {
+            coverContainer.classList.remove('hidden');
+            coverPaperEl.innerHTML = `Confirm Cover Paper: <span class="font-bold text-white">${specs.coverPaperType}</span>`;
+            // Ensure it's required
+            coverCheckbox.required = true;
+            // Reset state
+            coverCheckbox.checked = false;
+            coverCheckbox.disabled = false;
+        } else {
+            // Hide and disable so it doesn't block validation
+            coverContainer.classList.add('hidden');
+            coverCheckbox.checked = true; // Auto-check hidden fields to pass "every()" validation
+            coverCheckbox.disabled = true; 
+        }
+    }
+
+    // 4. Reset the form
     approvalFormModal.reset();
     modalConfirmBtn.disabled = true;
     modalConfirmBtn.classList.add('opacity-50', 'cursor-not-allowed');
 
-    // 3. Show the modal
+    // 5. Show the modal
     approvalModal.classList.remove('hidden');
 }
 
@@ -276,7 +352,12 @@ async function updateProjectStatus(status) {
 
 
 // --- Project Data Loader ---
- function loadProjectForUser(user) {
+// --- Project Data Loader ---
+// Keep track of previous state to prevent unnecessary re-renders
+let lastVersionCount = 0;
+let lastStatus = null;
+
+function loadProjectForUser(user) {
     // Use currentProjectId (which should be set from initialProjectId)
     console.log(`[Load Project] Starting for user: ${user?.uid || 'anonymous/unknown'}, projectId: ${currentProjectId}, isGuest: ${isGuest}`);
 
@@ -301,17 +382,14 @@ async function updateProjectStatus(status) {
     console.log(`[Load Project] Setting up Firestore listener for project: ${currentProjectId}`);
     const projectRef = doc(db, "projects", currentProjectId);
 
-    // --- [NEW] Setup History Listener ---
-    // Remove previous history listener if exists
+    // --- Setup History Listener ---
     if (unsubscribeHistoryListener) {
         unsubscribeHistoryListener();
         unsubscribeHistoryListener = null;
     }
 
-    // Create the history query
     const historyQuery = query(collection(db, "projects", currentProjectId, "history"), orderBy("timestamp", "desc"));
 
-    // Attach the listener
     unsubscribeHistoryListener = onSnapshot(historyQuery, (snapshot) => {
         const historyList = document.getElementById('project-history-list');
         if (historyList) {
@@ -325,7 +403,6 @@ async function updateProjectStatus(status) {
                 const eventTime = event.timestamp ? new Date(event.timestamp.seconds * 1000).toLocaleString() : 'N/A';
                 const signature = event.details && event.details.signature ? `<span class="italic text-gray-400"> - E-Signature: ${event.details.signature}</span>` : '';
                 
-                // Formatting action text
                 let actionText = event.action ? event.action.replace(/_/g, ' ') : 'Unknown Action';
                 actionText = actionText.charAt(0).toUpperCase() + actionText.slice(1);
 
@@ -344,23 +421,32 @@ async function updateProjectStatus(status) {
     }, (error) => {
         console.error("[Load Project] Error fetching history:", error);
         const historyList = document.getElementById('project-history-list');
-        // Only show error if it's not a permission issue that we expect for some guests (though we fixed that)
         if(historyList) historyList.innerHTML = '<p class="text-red-400 text-xs">Unable to load history.</p>';
     });
-    // ------------------------------------
 
-
+    // --- Setup Project Listener ---
     if (unsubscribeProjectListener) {
         console.log('[Load Project] Unsubscribing previous listener.');
         unsubscribeProjectListener();
         unsubscribeProjectListener = null;
     }
 
-
     unsubscribeProjectListener = onSnapshot(projectRef, (docSnap) => {
         console.log(`[Load Project] onSnapshot triggered. docSnap exists: ${docSnap.exists()}`);
         if (docSnap.exists()) {
             const projectData = docSnap.data();
+            
+            // [FIX] Smart Update Check
+            const currentVersionCount = projectData.versions ? projectData.versions.length : 0;
+            const currentStatus = projectData.status;
+            
+            // If only guestBuilderState changed (draft saving), do NOT re-init viewer
+            // Only re-init if version count changed or status changed
+            const shouldReInit = (currentVersionCount !== lastVersionCount) || (currentStatus !== lastStatus);
+            
+            lastVersionCount = currentVersionCount;
+            lastStatus = currentStatus;
+
             console.log('[Load Project] Project data received:', projectData);
 
             if(projectName) projectName.textContent = projectData.projectName;
@@ -370,8 +456,7 @@ async function updateProjectStatus(status) {
             const approvalBanner = document.getElementById('approval-banner');
 
             if (actionPanel && commentTool && approvalBanner) {
-                // Reset action panel HTML to original state
-                // This fixes the issue where buttons disappeared after a status change
+                // Reset action panel HTML to prevent duplicate buttons and stale state
                 actionPanel.innerHTML = `
                     <h3 class="text-xl font-semibold text-white mb-4">Actions</h3>
                     <form id="approval-form">
@@ -394,42 +479,31 @@ async function updateProjectStatus(status) {
                         </div>
                     </form>`;
 
-                 // Re-attach the main form submit listener after resetting HTML
                  const newApprovalForm = document.getElementById('approval-form');
                  if(newApprovalForm) {
                     newApprovalForm.addEventListener('submit', (e) => {
                         e.preventDefault();
-                        console.log(`[Approval Form] Re-attached submit handler. Action: ${actionToConfirm}`);
                         const confirmBtn = document.getElementById('confirm-action-button');
                         if (actionToConfirm && confirmBtn) {
                             confirmBtn.disabled = true;
                             confirmBtn.textContent = 'Processing...';
                             updateProjectStatus(actionToConfirm === 'approve' ? 'approved' : 'changes_requested');
                         } else {
-                             console.warn('[Approval Form] Re-attached submit handler called but no action selected or button not found.');
                              hideConfirmation();
                         }
                     });
                  }
 
-                // Determine if current user is an Editor/Owner
                 let isEditor = false;
-
                 if (isGuest) {
-                    // Guest permissions dictate access
                     if (guestPermissions.isOwner) isEditor = true;
                 } else {
-                    // Authenticated user viewing their project is an editor
-                    // (Admins viewing via proof page also fall here)
                     isEditor = true;
                 }
 
-                // Apply Guest Permissions
                 if (isGuest) {
                     actionPanel.style.display = guestPermissions.canApprove ? 'block' : 'none';
                     commentTool.style.display = guestPermissions.canAnnotate ? 'block' : 'none';
-                    console.log(`[Load Project] Guest UI set: canApprove=${guestPermissions.canApprove}, canAnnotate=${guestPermissions.canAnnotate}, isOwner=${guestPermissions.isOwner}`);
-
                     if (guestPermissions.isOwner && headerShareButton) {
                         headerShareButton.classList.remove('hidden');
                     }
@@ -438,39 +512,50 @@ async function updateProjectStatus(status) {
                     commentTool.style.display = 'block';
                 }
 
-                // Show/Hide Builder Button
-                if (isEditor && navEditBuilderButton) {
-                    navEditBuilderButton.classList.remove('hidden');
+                // [FIX] Re-query the button from the DOM to ensure we have the live element
+                const currentBuilderBtn = document.getElementById('nav-edit-builder-button');
+                
+                if (isEditor && currentBuilderBtn) {
+                    currentBuilderBtn.classList.remove('hidden');
 
-                    // Setup Listener (Remove old to prevent duplicates if snapshot re-runs)
-                    const newBtn = navEditBuilderButton.cloneNode(true);
-                    navEditBuilderButton.parentNode.replaceChild(newBtn, navEditBuilderButton);
+                    // Clone to strip old listeners, then replace
+                    const newBtn = currentBuilderBtn.cloneNode(true);
+                    
+                    if (currentBuilderBtn.parentNode) {
+                        currentBuilderBtn.parentNode.replaceChild(newBtn, currentBuilderBtn);
 
-                    newBtn.addEventListener('click', () => {
-                        let url = `guest_upload.html?projectId=${currentProjectId}`;
-                        if (isGuest && initialGuestToken) {
-                            url += `&guestToken=${initialGuestToken}`;
-                        }
-                        window.location.href = url;
-                    });
-                } else if (navEditBuilderButton) {
-                    navEditBuilderButton.classList.add('hidden');
+                        newBtn.addEventListener('click', () => {
+                            let url = `guest_upload.html?projectId=${currentProjectId}`;
+                            if (isGuest && initialGuestToken) {
+                                url += `&guestToken=${initialGuestToken}`;
+                            }
+                            window.location.href = url;
+                        });
+                    }
+                } else if (currentBuilderBtn) {
+                    currentBuilderBtn.classList.add('hidden');
                 }
 
-                // Check Project Status (AFTER resetting HTML)
                  if (approvedStatuses.includes(projectData.status)) {
                      approvalBanner.classList.remove('hidden');
+                     approvalBanner.className = "mb-6 bg-green-800/50 border border-green-500 text-green-200 px-4 py-3 rounded-lg relative";
+                     approvalBanner.innerHTML = '<strong class="font-bold">Proof Approved!</strong> <span class="block sm:inline">This project is locked for printing and cannot be modified.</span>';
+                     
                      actionPanel.innerHTML = `<p class="text-center text-lg font-semibold text-green-400">Proof Approved</p>`;
                      commentTool.style.display = 'none';
-                     console.log(`[Load Project] Project status is ${projectData.status}, hiding action buttons and comment tool.`);
+                 } else if (projectData.status === 'Waiting Admin Review') {
+                     approvalBanner.classList.remove('hidden');
+                     approvalBanner.className = "mb-6 bg-blue-900/50 border border-blue-500 text-blue-200 px-4 py-3 rounded-lg relative";
+                     approvalBanner.innerHTML = '<strong class="font-bold">Under Review.</strong> <span class="block sm:inline">An administrator is reviewing your submission. You will be notified when the proof is ready for approval.</span>';
+                     
+                     actionPanel.innerHTML = `<p class="text-center text-lg font-semibold text-blue-400">Waiting for Review</p>`;
+                     commentTool.style.display = 'none'; 
                  } else if (projectData.status === 'changes_requested') {
                      approvalBanner.classList.add('hidden');
                      actionPanel.innerHTML = `<p class="text-center text-lg font-semibold text-red-400">Changes Requested</p>`;
-                     commentTool.style.display = 'none'; // Still disable comments if changes are requested
+                     commentTool.style.display = 'none';
                  } else {
                     approvalBanner.classList.add('hidden');
-                     // Status is pending, add listeners to the (now existing) buttons
-                     console.log(`[Load Project] Project status is ${projectData.status}, adding button listeners.`);
                      const approveButton = document.getElementById('approve-button');
                      const requestChangesButton = document.getElementById('request-changes-button');
                      const cancelActionButton = document.getElementById('cancel-action-button');
@@ -479,29 +564,36 @@ async function updateProjectStatus(status) {
                      if (requestChangesButton) requestChangesButton.addEventListener('click', showRequestChangesConfirmation);
                      if (cancelActionButton) cancelActionButton.addEventListener('click', hideConfirmation);
                  }
-
-            } else {
-                console.warn('[Load Project] Action panel or comment tool element not found.');
             }
 
+            if (shouldReInit) {
+                console.log('[Load Project] Significant change detected. Re-initializing viewer.');
+                
+                // Auto-Update Logic for Viewer
+                const versionSelector = document.getElementById('version-selector');
+                const currentVersions = projectData.versions || [];
+                const maxVersion = currentVersions.length > 0
+                    ? Math.max(...currentVersions.map(v => v.versionNumber))
+                    : 0;
+                const selectedVersion = versionSelector ? parseInt(versionSelector.value, 10) : null;
+                
+                // If user is on older version and new one arrives, switch
+                if (selectedVersion && maxVersion > selectedVersion) {
+                     if (versionSelector) versionSelector.value = ""; 
+                }
 
-            console.log('[Load Project] Initializing shared viewer...');
-            // The onSnapshot listener provides real-time updates.
-            // Every time the project document changes (e.g., a version's processingStatus
-            // changes from 'processing' to 'complete'), this code will re-run.
-            // We just need to re-initialize the viewer with the fresh `projectData`.
-            // The logic inside viewer.js will handle showing the correct state.
-            initializeSharedViewer({
-                db,
-                auth,
-                projectId: currentProjectId,
-                projectData: projectData,
-                isAdmin: false,
-                isGuest: isGuest,
-                guestPermissions: guestPermissions
-            });
-            console.log('[Load Project] Shared viewer initialization called.');
-
+                initializeSharedViewer({
+                    db,
+                    auth,
+                    projectId: currentProjectId,
+                    projectData: projectData,
+                    isAdmin: false,
+                    isGuest: isGuest,
+                    guestPermissions: guestPermissions
+                });
+            } else {
+                console.log('[Load Project] Skipping viewer re-init (only draft state changed).');
+            }
 
             loadingSpinner.classList.add('hidden');
             proofContent.classList.remove('hidden');
@@ -518,7 +610,8 @@ async function updateProjectStatus(status) {
          }
     });
      console.log('[Load Project] Firestore listener attached.');
-} // --- End loadProjectForUser ---
+}
+// --- End loadProjectForUser ---
 
 
 // --- AUTHENTICATION STATE MANAGER ---

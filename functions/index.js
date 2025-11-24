@@ -155,6 +155,11 @@ const optimizePdfLogic = onObjectFinalized({
     let optimizationFailed = false;
     try {
         const { spawn } = require('child-process-promise');
+        // Check if input file exists before running GS
+        if (!fs.existsSync(sourceForProcessing)) {
+             throw new Error(`Source file missing at ${sourceForProcessing}`);
+        }
+
         await spawn('gs', [
             '-sDEVICE=pdfwrite',
             '-dCompatibilityLevel=1.4',
@@ -171,12 +176,24 @@ const optimizePdfLogic = onObjectFinalized({
         logger.error('Optimization failed. Attempting fallbacks.', error);
         optimizationFailed = true;
         
-        if (useRepairedFile && fs.existsSync(repairedFilePath)) {
-            fs.copyFileSync(repairedFilePath, tempPreviewPath);
-        } else if (fs.existsSync(tempFilePath)) {
-            fs.copyFileSync(tempFilePath, tempPreviewPath);
-        } else {
-            throw new Error("Fatal: All files (Original and Repaired) are missing.");
+        // Force ensure destination directory exists (though tmpdir should exist)
+        const path = require('path');
+        const dir = path.dirname(tempPreviewPath);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+        // Safer Copy Logic
+        try {
+            if (useRepairedFile && fs.existsSync(repairedFilePath)) {
+                fs.copyFileSync(repairedFilePath, tempPreviewPath);
+                logger.log('Fallback: Copied repaired file to preview path.');
+            } else if (fs.existsSync(tempFilePath)) {
+                fs.copyFileSync(tempFilePath, tempPreviewPath);
+                logger.log('Fallback: Copied original source file to preview path.');
+            } else {
+                throw new Error("Fatal: All files (Original and Repaired) are missing.");
+            }
+        } catch (copyErr) {
+             throw new Error(`Fallback copy failed: ${copyErr.message}`);
         }
     }
 
@@ -213,16 +230,36 @@ const optimizePdfLogic = onObjectFinalized({
             }
         });
         logger.log(`Job complete for ${fullFileName}`);
+    } else {
+        throw new Error(`Final preview file missing at ${tempPreviewPath} after optimization and fallback attempts.`);
     }
 
   } catch (err) {
     logger.error("Fatal error processing PDF:", err);
     try {
-        await projectRef.update(isCover 
-            ? { 'cover.processingStatus': 'error', 'cover.processingError': err.message } 
-            : { 'versions': admin.firestore.FieldValue.arrayRemove() }
-        ); 
-    } catch(e) {}
+        await db.runTransaction(async (t) => {
+            const doc = await t.get(projectRef);
+            if (!doc.exists) return;
+
+            if (isCover) {
+                t.update(projectRef, {
+                    'cover.processingStatus': 'error',
+                    'cover.processingError': err.message
+                });
+            } else {
+                const data = doc.data();
+                const versions = data.versions || [];
+                const idx = versions.findIndex(v => v.filePath === filePath);
+                if (idx !== -1) {
+                    versions[idx].processingStatus = 'error';
+                    versions[idx].processingError = err.message;
+                    t.update(projectRef, { versions });
+                }
+            }
+        });
+    } catch(e) {
+        logger.error("Failed to write error status to Firestore:", e);
+    }
   } finally {
     // Cleanup
     [tempFilePath, tempPreviewPath, repairedFilePath].forEach(p => {
@@ -236,6 +273,73 @@ if (process.env.FUNCTION_TARGET === 'optimizePdf' || process.env.FUNCTIONS_EMULA
 }
 
 // --- Shared Constants (Mirrored from Frontend) ---
+// Define standard paper sizes with dimensions in millimeters (Backend Copy)
+const STANDARD_PAPER_SIZES = {
+    // ISO A Series
+    'A0': { name: 'A0', width_mm: 841, height_mm: 1189, group: 'ISO A' },
+    'A1': { name: 'A1', width_mm: 594, height_mm: 841, group: 'ISO A' },
+    'A2': { name: 'A2', width_mm: 420, height_mm: 594, group: 'ISO A' },
+    'A3': { name: 'A3', width_mm: 297, height_mm: 420, group: 'ISO A' },
+    'A4': { name: 'A4', width_mm: 210, height_mm: 297, group: 'ISO A' },
+    'A5': { name: 'A5', width_mm: 148, height_mm: 210, group: 'ISO A' },
+    'A6': { name: 'A6', width_mm: 105, height_mm: 148, group: 'ISO A' },
+    // ISO B Series
+    'B0': { name: 'B0', width_mm: 1000, height_mm: 1414, group: 'ISO B' },
+    'B1': { name: 'B1', width_mm: 707, height_mm: 1000, group: 'ISO B' },
+    'B2': { name: 'B2', width_mm: 500, height_mm: 707, group: 'ISO B' },
+    'B3': { name: 'B3', width_mm: 353, height_mm: 500, group: 'ISO B' },
+    'B4': { name: 'B4', width_mm: 250, height_mm: 353, group: 'ISO B' },
+    'B5': { name: 'B5', width_mm: 176, height_mm: 250, group: 'ISO B' },
+    'B6': { name: 'B6', width_mm: 125, height_mm: 176, group: 'ISO B' },
+    // JIS B Series
+    'JIS_B0': { name: 'JIS B0', width_mm: 1030, height_mm: 1456, group: 'JIS B' },
+    'JIS_B1': { name: 'JIS B1', width_mm: 728, height_mm: 1030, group: 'JIS B' },
+    'JIS_B2': { name: 'JIS B2', width_mm: 515, height_mm: 728, group: 'JIS B' },
+    'JIS_B3': { name: 'JIS B3', width_mm: 364, height_mm: 515, group: 'JIS B' },
+    'JIS_B4': { name: 'JIS B4', width_mm: 257, height_mm: 364, group: 'JIS B' },
+    'JIS_B5': { name: 'JIS B5', width_mm: 182, height_mm: 257, group: 'JIS B' },
+    'JIS_B6': { name: 'JIS B6', width_mm: 128, height_mm: 182, group: 'JIS B' },
+    'JIS_B7': { name: 'JIS B7', width_mm: 91, height_mm: 128, group: 'JIS B' },
+    // US Sizes
+    'US_Letter': { name: 'Letter', width_mm: 215.9, height_mm: 279.4, group: 'US Standard' },
+    'US_Legal': { name: 'Legal', width_mm: 215.9, height_mm: 355.6, group: 'US Standard' },
+    'US_Tabloid': { name: 'Tabloid / Ledger', width_mm: 279.4, height_mm: 431.8, group: 'US Standard' },
+    'US_Junior_Legal': { name: 'Junior Legal', width_mm: 127, height_mm: 203.2, group: 'US Standard' },
+    // Common Business Cards
+    'US_Business_Card': { name: 'US Business Card', width_mm: 88.9, height_mm: 50.8, group: 'Business Cards' },
+    'EU_Business_Card': { name: 'EU Business Card', width_mm: 85, height_mm: 55, group: 'Business Cards' },
+    'JP_Business_Card': { name: 'JP Business Card', width_mm: 91, height_mm: 55, group: 'Business Cards' },
+    // Common Postcards
+    'US_Postcard': { name: 'US Postcard', width_mm: 101.6, height_mm: 152.4, group: 'Postcards' },
+    'US_Postcard_Large': { name: 'US Postcard Large', width_mm: 127, height_mm: 177.8, group: 'Postcards' },
+    'A6_Postcard': { name: 'A6 Postcard', width_mm: 105, height_mm: 148, group: 'Postcards' },
+};
+
+function resolveDimensions(specDimensions) {
+    if (typeof specDimensions === 'object' && specDimensions !== null && specDimensions.width && specDimensions.height) {
+        // Normalize MM to Inches for backend consistency
+        if (specDimensions.units === 'mm') {
+            return {
+                width: parseFloat(specDimensions.width) / 25.4,
+                height: parseFloat(specDimensions.height) / 25.4,
+                units: 'in'
+            };
+        }
+        return specDimensions;
+    }
+
+    if (typeof specDimensions === 'string' && STANDARD_PAPER_SIZES[specDimensions]) {
+        const size = STANDARD_PAPER_SIZES[specDimensions];
+        return {
+            width: size.width_mm / 25.4,
+            height: size.height_mm / 25.4,
+            units: 'in'
+        };
+    }
+
+    return { width: 8.5, height: 11, units: 'in' }; // Default Letter
+}
+
 const HARDCODED_PAPER_TYPES = [
     { name: "60lb Text", caliper: 0.0032 },
     { name: "70lb Text", caliper: 0.0038 },
@@ -1271,19 +1375,11 @@ exports.createFileRequest = onCall({ region: 'us-central1' }, async (request) =>
 
 // --- NEW Callable Function for Submitting Guest Upload ---
 exports.submitGuestUpload = onCall({ region: 'us-central1' }, async (request) => {
-    // This function is called by the guest after they finish uploading files.
-    // It validates the token (via context or explicit check) and updates the status.
-
-    // 1. Auth Check (Guests are anonymous but have a token claim, or we check token manually)
-    // Since the guest is signed in anonymously and has a claim, request.auth should be populated.
     if (!request.auth) {
         throw new HttpsError('unauthenticated', 'User must be authenticated.');
     }
 
     const { projectId } = request.data;
-
-    // In a real world scenario, we should double check the guest's permissions against the projectId
-    // However, Firestore rules handle the write security. This function is mainly for NOTIFICATIONS.
 
     if (!projectId) {
         throw new HttpsError('invalid-argument', 'Missing projectId.');
@@ -1292,9 +1388,9 @@ exports.submitGuestUpload = onCall({ region: 'us-central1' }, async (request) =>
     try {
         const projectRef = db.collection('projects').doc(projectId);
 
-        // Update status
+        // [FIX] Set status to 'Waiting Admin Review' so client page hides buttons
         await projectRef.update({
-            status: 'Pending Review', // or simply 'Pending'
+            status: 'Waiting Admin Review', 
             lastUploadAt: admin.firestore.FieldValue.serverTimestamp()
         });
 
@@ -1743,218 +1839,187 @@ exports.generateBooklet = onCall({
 }, async (request) => {
     if (!request.auth) throw new HttpsError('unauthenticated', 'User must be authenticated.');
 
-    const { projectId, files } = request.data;
-    if (!projectId || !Array.isArray(files)) {
-        throw new HttpsError('invalid-argument', 'Missing projectId or files array.');
-    }
+    const { projectId, files, spineMode } = request.data; 
+    if (!projectId || !Array.isArray(files)) throw new HttpsError('invalid-argument', 'Missing projectId or files array.');
 
-    // --- DEBUG LOGGING START ---
     logger.log(`Generating booklet for project ${projectId} with ${files.length} files.`);
-    if (files.length > 0) {
-        logger.log(`DEBUG: First file object: ${JSON.stringify(files[0])}`);
-    }
-    // --- DEBUG LOGGING END ---
 
     const bucket = admin.storage().bucket();
     const authAxios = await getAuthenticatedClient();
+    
+    const { PDFDocument, cmyk } = require('pdf-lib');
+    const { pushGraphicsState, popGraphicsState, clip, endPath, moveTo, lineTo } = require('pdf-lib');
 
-    // Fetch Project Specs
     const projectRef = db.collection('projects').doc(projectId);
     const projectDoc = await projectRef.get();
     if (!projectDoc.exists) throw new HttpsError('not-found', 'Project not found.');
-    const projectData = projectDoc.data();
-    const specs = projectData.specs || {};
+    const specs = projectDoc.data().specs || {};
 
-    // Dimensions (default to Letter if missing)
-    const trimWidth = specs.dimensions?.width || 8.5;
-    const trimHeight = specs.dimensions?.height || 11;
+    const resolvedDims = resolveDimensions(specs.dimensions);
+    const trimWidth = resolvedDims.width || 8.5;
+    const trimHeight = resolvedDims.height || 11;
     const bleed = 0.125;
 
-    // Create Documents
     const interiorDoc = await PDFDocument.create();
     let coverDoc = null;
 
-    // Cache for downloaded/converted files to avoid redundancy
-    const fileCache = {}; // storagePath -> { path: localPath, isPdf: boolean }
-    const pdfDocCache = {}; // localPath -> PDFDocument instance (Optimization for re-use)
-    const tempFiles = []; // Track for cleanup
+    const fileCache = {}; 
+    const pdfDocCache = {}; 
+    const tempFiles = []; 
 
     try {
-        // Helper to convert non-embeddable files (PSD, etc) to PDF/PNG
         async function prepareFileForEmbedding(storagePath) {
-            // Check Cache
             if (fileCache[storagePath]) return fileCache[storagePath];
 
-            const tempPath = path.join(os.tmpdir(), `temp_${Date.now()}_${Math.random().toString(36).substring(7)}`);
+            // [FIX] Extract extension and preserve it in the temp filename
+            const ext = path.extname(storagePath).toLowerCase();
+            const tempFileName = `temp_${Date.now()}_${Math.random().toString(36).substring(7)}${ext}`;
+            const tempPath = path.join(os.tmpdir(), tempFileName);
+            
             await bucket.file(storagePath).download({ destination: tempPath });
             tempFiles.push(tempPath);
 
             let isPdf = false;
-            const ext = path.extname(storagePath).toLowerCase();
 
-            if (ext === '.psd' || ext === '.ai') {
-                logger.log(`Converting ${ext} file to PDF via Gotenberg...`);
+            if (ext === '.pdf') {
+                isPdf = true;
+            } 
+            else if (ext === '.jpg' || ext === '.jpeg' || ext === '.png') {
+                isPdf = false;
+            } 
+            else {
+                // Unsupported types (PSD, AI, TIFF, WebP) -> Convert to PDF
+                logger.log(`Converting unsupported format ${ext} to PDF...`);
                 const convertFormData = new FormData();
                 convertFormData.append('files', fs.createReadStream(tempPath), path.basename(storagePath));
-
-                const response = await authAxios.post(`${GOTENBERG_URL}/forms/libreoffice/convert`, convertFormData, {
-                    responseType: 'arraybuffer'
-                });
-
-                // Replace temp file with converted PDF
+                const response = await authAxios.post(`${GOTENBERG_URL}/forms/libreoffice/convert`, convertFormData, { responseType: 'arraybuffer' });
+                
+                // Overwrite temp file with the new PDF data
                 fs.writeFileSync(tempPath, response.data);
                 isPdf = true;
-            } else if (ext === '.pdf') {
-                isPdf = true;
-            } else {
-                 // Images (JPG, PNG)
-                 isPdf = false;
             }
 
             const result = { path: tempPath, isPdf };
-            fileCache[storagePath] = result; // Cache it
+            fileCache[storagePath] = result;
             return result;
         }
 
-        // Process Files
         const interiorFiles = files.filter(f => f.type.startsWith('interior'));
-        // --- DEBUG LOGGING START ---
-        logger.log(`DEBUG: Found ${interiorFiles.length} interior files.`);
-        // --- DEBUG LOGGING END ---
-
         const coverFiles = {
             front: files.find(f => f.type === 'cover_front'),
             spine: files.find(f => f.type === 'cover_spine'),
-            back: files.find(f => f.type === 'cover_back')
+            back: files.find(f => f.type === 'cover_back'),
+            inside_front: files.find(f => f.type === 'cover_inside_front'),
+            inside_back: files.find(f => f.type === 'cover_inside_back')
         };
 
         // --- 1. Build Interior ---
         for (const [index, fileMeta] of interiorFiles.entries()) {
-            logger.log(`Processing Interior Page ${index + 1}/${interiorFiles.length}. Source: ${fileMeta.storagePath}, PageIdx: ${fileMeta.sourcePageIndex}, Settings: ${JSON.stringify(fileMeta.settings)}`);
-
-            // Handle Blank Page
             if (!fileMeta.storagePath) {
-                // Draw blank page
                 drawOnSheet(interiorDoc, { isBlank: true }, trimWidth, trimHeight, bleed, fileMeta.settings || {}, false);
                 continue;
             }
-
-            const { path: localPath, isPdf } = await prepareFileForEmbedding(fileMeta.storagePath, fileMeta.type);
+            const { path: localPath, isPdf } = await prepareFileForEmbedding(fileMeta.storagePath);
             const settings = fileMeta.settings || { scaleMode: 'fit', alignment: 'center' };
 
             if (isPdf) {
                 let srcDoc;
-
-                // OPTIMIZATION: Re-use PDFDocument instance if already loaded
-                if (pdfDocCache[localPath]) {
-                    srcDoc = pdfDocCache[localPath];
-                } else {
-                    // Load and cache
+                if (pdfDocCache[localPath]) srcDoc = pdfDocCache[localPath];
+                else {
                     const pdfBytes = fs.readFileSync(localPath);
-                    // IMPORTANT: Load without indices for speed if we only need sequential access, but here we access random pages.
-                    // Just standard load.
                     srcDoc = await PDFDocument.load(pdfBytes);
                     pdfDocCache[localPath] = srcDoc;
                 }
-
-                // Extract specific page index if provided, otherwise default to 0
-                const pageIndex = fileMeta.sourcePageIndex !== undefined ? fileMeta.sourcePageIndex : 0;
-
+                const pageIndex = fileMeta.sourcePageIndex || 0;
                 if (pageIndex < srcDoc.getPageCount()) {
                     const [embeddedPage] = await interiorDoc.embedPages([srcDoc.getPage(pageIndex)]);
                     drawOnSheet(interiorDoc, embeddedPage, trimWidth, trimHeight, bleed, settings, true);
-                } else {
-                    logger.warn(`Requested page index ${pageIndex} out of bounds for file ${fileMeta.storagePath}`);
                 }
-
             } else {
-                // Image
                 const imgBytes = fs.readFileSync(localPath);
                 let embeddedImage;
+                // [FIX] localPath now has the extension, so this check works correctly
                 if (localPath.toLowerCase().endsWith('.png')) embeddedImage = await interiorDoc.embedPng(imgBytes);
                 else embeddedImage = await interiorDoc.embedJpg(imgBytes);
-
+                
                 drawOnSheet(interiorDoc, embeddedImage, trimWidth, trimHeight, bleed, settings, false);
             }
         }
 
-        // --- 2. Build Cover (If exists) ---
-        if (coverFiles.front || coverFiles.back || coverFiles.spine) {
+        // --- 2. Build Cover ---
+        if (coverFiles.front || coverFiles.back || coverFiles.spine || coverFiles.inside_front || coverFiles.inside_back) {
             coverDoc = await PDFDocument.create();
 
-            // Calculate Spine
             const paperType = specs.paperType || '';
-            const paperObj = HARDCODED_PAPER_TYPES.find(p => p.name === paperType);
-            const caliper = paperObj ? paperObj.caliper : 0.004; // Default fallback
+            const interiorPaperObj = HARDCODED_PAPER_TYPES.find(p => p.name === paperType);
+            const interiorCaliper = interiorPaperObj ? interiorPaperObj.caliper : 0.004;
 
-            // For MVP, let's use a fixed calculation based on page count from project
-            // Note: interiorFiles.length might be accurate if fully populated, but specs.pageCount is what user entered.
-            // Let's use specs.pageCount if available and seemingly valid, else fallback.
-            const pageCount = (specs.pageCount && specs.pageCount > 0) ? specs.pageCount : interiorFiles.length;
+            const coverPaperType = specs.coverPaperType || '';
+            const coverPaperObj = HARDCODED_PAPER_TYPES.find(p => p.name === coverPaperType);
+            const coverCaliper = coverPaperObj ? coverPaperObj.caliper : (interiorPaperObj ? interiorCaliper : 0.004);
 
-            let spineWidth = (pageCount / 2) * caliper;
-
-            // Force spine to 0 if not perfect bound
-            if (specs.binding === 'saddleStitch' || specs.binding === 'loose') {
-                spineWidth = 0;
-            }
+            const interiorSheets = Math.ceil(interiorFiles.length / 2);
+            
+            let spineWidth = (interiorSheets * interiorCaliper) + (coverCaliper * 2);
+            if (specs.binding === 'saddleStitch' || specs.binding === 'loose') spineWidth = 0;
 
             const totalWidth = (trimWidth * 2) + spineWidth + (bleed * 2);
             const totalHeight = trimHeight + (bleed * 2);
+            
+            // --- Page 1: Outer Cover (Back - Spine - Front) ---
+            const coverPage1 = coverDoc.addPage([totalWidth * 72, totalHeight * 72]); 
 
-            const coverPage = coverDoc.addPage([totalWidth * 72, totalHeight * 72]); // PDF uses points (72 dpi)
-
-            // Helper to draw cover part with Aspect Fill
-            async function drawPart(fileMeta, x, y, w, h) {
+            async function drawPart(page, fileMeta, x, y, w, h) {
                 if (!fileMeta) return;
                 const { path: localPath, isPdf } = await prepareFileForEmbedding(fileMeta.storagePath);
-
                 let embeddable;
                 let srcW, srcH;
 
                 if (isPdf) {
                     const srcDoc = await PDFDocument.load(fs.readFileSync(localPath));
-                    const [embedded] = await coverDoc.embedPages([srcDoc.getPage(0)]);
+                    let idx = fileMeta.sourcePageIndex || 0;
+                    if (idx < 0 || idx >= srcDoc.getPageCount()) idx = 0;
+                    const [embedded] = await coverDoc.embedPages([srcDoc.getPage(idx)]);
                     embeddable = embedded;
                     srcW = embedded.width;
                     srcH = embedded.height;
                 } else {
                     const imgBytes = fs.readFileSync(localPath);
+                    // [FIX] localPath now has the extension, so this check works correctly
                     if (localPath.toLowerCase().endsWith('.png')) embeddable = await coverDoc.embedPng(imgBytes);
                     else embeddable = await coverDoc.embedJpg(imgBytes);
                     srcW = embeddable.width;
                     srcH = embeddable.height;
                 }
 
-                // Sanitize inputs
-                const targetW = Number.isFinite(w) ? w * 72 : 0;
-                const targetH = Number.isFinite(h) ? h * 72 : 0;
-                const targetX = Number.isFinite(x) ? x * 72 : 0;
-                const targetY = Number.isFinite(y) ? y * 72 : 0;
+                const targetW = w * 72;
+                const targetH = h * 72;
+                const targetX = x * 72;
+                const targetY = y * 72;
 
                 if (targetW <= 0 || targetH <= 0) return;
 
                 const srcRatio = srcW / srcH;
                 const targetRatio = targetW / targetH;
-
                 let drawW, drawH, drawX, drawY;
 
-                // Fill Logic
-                if (srcRatio > targetRatio) {
-                    // Image is wider: Crop width
-                    drawH = targetH;
-                    drawW = targetH * srcRatio;
-                    drawY = targetY;
+                const mode = fileMeta.settings?.scaleMode || 'fill';
+                const isFlipped = fileMeta.settings?.flip || false;
+
+                if (mode === 'stretch') {
+                    drawW = targetW; drawH = targetH; drawX = targetX; drawY = targetY;
+                } else if (mode === 'fit') {
+                    if (srcRatio > targetRatio) { drawW = targetW; drawH = targetW / srcRatio; }
+                    else { drawH = targetH; drawW = targetH * srcRatio; }
+                    drawX = targetX + (targetW - drawW) / 2;
+                    drawY = targetY + (targetH - drawH) / 2;
+                } else { 
+                    if (srcRatio > targetRatio) { drawH = targetH; drawW = targetH * srcRatio; }
+                    else { drawW = targetW; drawH = targetW / srcRatio; }
                     drawX = targetX - (drawW - targetW) / 2;
-                } else {
-                    // Image is taller: Crop height
-                    drawW = targetW;
-                    drawH = targetW / srcRatio;
-                    drawX = targetX;
                     drawY = targetY - (drawH - targetH) / 2;
                 }
 
-                // Ensure finite
                 drawW = Number.isFinite(drawW) ? drawW : 0;
                 drawH = Number.isFinite(drawH) ? drawH : 0;
                 drawX = Number.isFinite(drawX) ? drawX : 0;
@@ -1962,14 +2027,8 @@ exports.generateBooklet = onCall({
 
                 if (drawW <= 0 || drawH <= 0) return;
 
-                // --- IMPLEMENTING CLIPPING ---
-                const { pushGraphicsState, popGraphicsState, clip, endPath, moveTo, lineTo } = require('pdf-lib');
-
-                // 1. Save State
-                coverPage.pushOperators(pushGraphicsState());
-
-                // 2. Clip
-                coverPage.pushOperators(
+                page.pushOperators(pushGraphicsState());
+                page.pushOperators(
                      moveTo(targetX, targetY),
                      lineTo(targetX + targetW, targetY),
                      lineTo(targetX + targetW, targetY + targetH),
@@ -1979,54 +2038,78 @@ exports.generateBooklet = onCall({
                      endPath()
                 );
 
-                // 3. Draw
-                if (isPdf) {
-                    coverPage.drawPage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
-                } else {
-                    coverPage.drawImage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
+                if (isFlipped) {
+                    const cx = targetX + targetW / 2;
+                    page.translateContent(cx, 0);
+                    page.scaleContent(-1, 1);
+                    page.translateContent(-cx, 0);
                 }
 
-                // 4. Restore State
-                coverPage.pushOperators(popGraphicsState());
+                if (isPdf) page.drawPage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
+                else page.drawImage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
+
+                if (isFlipped) {
+                    const cx = targetX + targetW / 2;
+                    page.translateContent(cx, 0);
+                    page.scaleContent(-1, 1);
+                    page.translateContent(-cx, 0);
+                }
+                page.pushOperators(popGraphicsState());
             }
 
-            // Draw Back (Left)
-            await drawPart(coverFiles.back, 0, 0, trimWidth + bleed, totalHeight); // Includes left bleed
+            let zoneLeft = { x: 0, y: 0, w: trimWidth + bleed, h: totalHeight }; 
+            let zoneMid = { x: trimWidth + bleed, y: 0, w: spineWidth, h: totalHeight }; 
+            let zoneRight = { x: trimWidth + bleed + spineWidth, y: 0, w: trimWidth + bleed, h: totalHeight }; 
 
-            // Draw Spine (Middle)
-            await drawPart(coverFiles.spine, trimWidth + bleed, 0, spineWidth, totalHeight);
+            let drawSpine = true;
 
-            // Draw Front (Right)
-            await drawPart(coverFiles.front, trimWidth + bleed + spineWidth, 0, trimWidth + bleed, totalHeight);
+            if (spineMode === 'wrap-front-stretch') {
+                zoneRight.x = zoneMid.x;
+                zoneRight.w = zoneRight.w + zoneMid.w;
+                drawSpine = false;
+            } else if (spineMode === 'wrap-back-stretch') {
+                zoneLeft.w = zoneLeft.w + zoneMid.w;
+                drawSpine = false;
+            }
+
+            await drawPart(coverPage1, coverFiles.back, zoneLeft.x, zoneLeft.y, zoneLeft.w, zoneLeft.h); 
+            if (drawSpine) await drawPart(coverPage1, coverFiles.spine, zoneMid.x, zoneMid.y, zoneMid.w, zoneMid.h);
+            await drawPart(coverPage1, coverFiles.front, zoneRight.x, zoneRight.y, zoneRight.w, zoneRight.h);
+
+            // --- Page 2: Inner Cover ---
+            if (coverFiles.inside_front || coverFiles.inside_back || (specs.binding === 'perfectBound' && spineWidth > 0)) {
+                const coverPage2 = coverDoc.addPage([totalWidth * 72, totalHeight * 72]);
+                
+                await drawPart(coverPage2, coverFiles.inside_front, 0, 0, trimWidth + bleed, totalHeight);
+                await drawPart(coverPage2, coverFiles.inside_back, trimWidth + bleed + spineWidth, 0, trimWidth + bleed, totalHeight);
+
+                if (specs.binding === 'perfectBound' && spineWidth > 0) {
+                    const glueW = (spineWidth + 0.25) * 72; 
+                    const centerX = ((trimWidth + bleed) * 72) + ((spineWidth * 72) / 2);
+                    const glueX = centerX - (glueW / 2);
+                    
+                    coverPage2.drawRectangle({
+                        x: glueX, y: 0, width: glueW, height: totalHeight * 72,
+                        color: cmyk(0, 0, 0, 0) 
+                    });
+                }
+            }
         }
 
-        // Force cleanup of cached PDF docs to free memory before saving
-        for (const key in pdfDocCache) {
-            delete pdfDocCache[key];
-        }
+        for (const key in pdfDocCache) { delete pdfDocCache[key]; }
 
-        // --- 3. Save & Update ---
-
-        // Interior
         if (interiorFiles.length > 0) {
             const pdfBytes = await interiorDoc.save();
-            // Use lowercase to match optimizePdf detection patterns and avoid case sensitivity issues
             const fileName = `${Date.now()}_interior_built.pdf`;
             const storagePath = `proofs/${projectId}/${fileName}`;
             await bucket.file(storagePath).save(pdfBytes, { contentType: 'application/pdf' });
-
-            logger.log(`Uploaded interior booklet to ${storagePath}. Relying on optimizePdf trigger to create version entry.`);
         }
 
-        // Cover
         if (coverDoc) {
             const pdfBytes = await coverDoc.save();
-            // Use lowercase to match optimizePdf detection patterns
             const fileName = `${Date.now()}_cover_built.pdf`;
             const storagePath = `proofs/${projectId}/${fileName}`;
             await bucket.file(storagePath).save(pdfBytes, { contentType: 'application/pdf' });
-
-            logger.log(`Uploaded cover booklet to ${storagePath}. Relying on optimizePdf trigger to update cover entry.`);
         }
 
         return { success: true };
@@ -2035,10 +2118,7 @@ exports.generateBooklet = onCall({
         logger.error("Error generating booklet:", err);
         throw new HttpsError('internal', err.message);
     } finally {
-        // Cleanup
-        tempFiles.forEach(p => {
-            try { fs.unlinkSync(p); } catch (e) {}
-        });
+        tempFiles.forEach(p => { try { fs.unlinkSync(p); } catch (e) {} });
     }
 });
 
@@ -2573,6 +2653,7 @@ exports.getNotifications = onCall({ region: 'us-central1' }, async (request) => 
 });
 
 // --- Helper Function for Preflight Checks (Corrected Tool) ---
+// --- Helper Function for Preflight Checks ---
 async function runPreflightChecks(filePath, logger) {
     const { spawn } = require('child-process-promise');
     
@@ -2589,7 +2670,6 @@ async function runPreflightChecks(filePath, logger) {
         const pdfInfoResult = await spawn('pdfinfo', [filePath], { capture: ['stdout', 'stderr'] });
         const pdfInfoOutput = pdfInfoResult.stdout.toString();
         
-        // Fail loudly if no output
         if (!pdfInfoOutput) throw new Error('No output from pdfinfo');
 
         const sizeMatch = pdfInfoOutput.match(/Page size:\s*([\d\.]+) x ([\d\.]+) pts/);
@@ -2604,7 +2684,6 @@ async function runPreflightChecks(filePath, logger) {
         }
     } catch (error) {
         logger.warn('Dimensions check failed:', error);
-        // Don't mark the whole job as failed just for dimensions, but log it.
     }
 
     // --- 2. Font Check (pdffonts) ---
@@ -2612,7 +2691,7 @@ async function runPreflightChecks(filePath, logger) {
         const result = await spawn('pdffonts', [filePath], { capture: ['stdout', 'stderr'] });
         const fontOutput = result.stdout ? result.stdout.toString() : '';
 
-        if (!fontOutput) throw new Error('No output from pdffonts (tool may be missing)');
+        if (!fontOutput) throw new Error('No output from pdffonts');
 
         const lines = fontOutput.split('\n');
         const unembeddedFonts = [];
@@ -2638,7 +2717,6 @@ async function runPreflightChecks(filePath, logger) {
         }
 
     } catch (error) {
-        // CATCHES ENOENT NOW
         logger.error('Font check failed:', error);
         preflightResults.fontCheck.status = 'warning';
         preflightResults.fontCheck.details = `Check failed: ${error.message}`;
@@ -2649,7 +2727,7 @@ async function runPreflightChecks(filePath, logger) {
         const result = await spawn('pdfinfo', [filePath], { capture: ['stdout', 'stderr'] });
         const colorOutput = result.stdout ? result.stdout.toString() : '';
 
-        if (!colorOutput) throw new Error('No output from pdfinfo (tool may be missing)');
+        if (!colorOutput) throw new Error('No output from pdfinfo');
 
         const issues = [];
         if (colorOutput.includes('DeviceRGB') || colorOutput.includes('ICCBased')) issues.push('RGB');
@@ -2664,7 +2742,6 @@ async function runPreflightChecks(filePath, logger) {
             preflightResults.colorSpaceCheck.details = 'No RGB/Spot colors detected.';
         }
     } catch (e) {
-        // CATCHES ENOENT NOW
         preflightResults.colorSpaceCheck.status = 'warning';
         preflightResults.colorSpaceCheck.details = `Check failed: ${e.message}`;
     }
@@ -2674,11 +2751,12 @@ async function runPreflightChecks(filePath, logger) {
         const result = await spawn('pdfimages', ['-list', filePath], { capture: ['stdout', 'stderr'] });
         const dpiOutput = result.stdout ? result.stdout.toString() : '';
 
-        if (!dpiOutput) throw new Error('No output from pdfimages (tool may be missing)');
+        if (!dpiOutput) throw new Error('No output from pdfimages');
 
         const lines = dpiOutput.split('\n');
         const lowDpiImages = [];
-        const MIN_DPI = 300; 
+        // [FIX] Threshold set to 290 to handle minor scaling for bleed
+        const MIN_DPI = 290; 
 
         for (let i = 2; i < lines.length; i++) {
             const line = lines[i].trim();
@@ -2688,6 +2766,7 @@ async function runPreflightChecks(filePath, logger) {
                 const xPpi = parseInt(parts[parts.length - 4], 10);
                 const yPpi = parseInt(parts[parts.length - 3], 10);
                 const pageNum = parts[0];
+                
                 if (!isNaN(xPpi) && !isNaN(yPpi)) {
                     if (xPpi < MIN_DPI || yPpi < MIN_DPI) {
                         lowDpiImages.push(`Page ${pageNum} (${xPpi} dpi)`);
@@ -2698,15 +2777,14 @@ async function runPreflightChecks(filePath, logger) {
 
         if (lowDpiImages.length > 0) {
             preflightResults.dpiCheck.status = 'warning';
-            preflightResults.dpiCheck.details = `${lowDpiImages.length} low-res images: ${lowDpiImages.slice(0, 3).join(', ')}`;
+            preflightResults.dpiCheck.details = `${lowDpiImages.length} low-res images (< ${MIN_DPI} DPI): ${lowDpiImages.slice(0, 3).join(', ')}`;
             if (preflightStatus !== 'failed') preflightStatus = 'warning';
         } else {
             preflightResults.dpiCheck.status = 'passed';
-            preflightResults.dpiCheck.details = `All images at or above ${MIN_DPI} DPI.`;
+            preflightResults.dpiCheck.details = `All images safe (>= ${MIN_DPI} DPI).`;
         }
 
     } catch (error) {
-        // CATCHES ENOENT NOW
         logger.error('DPI check failed:', error);
         preflightResults.dpiCheck.status = 'warning';
         preflightResults.dpiCheck.details = `Check failed: ${error.message}`;
@@ -2716,25 +2794,28 @@ async function runPreflightChecks(filePath, logger) {
 }
 
 // --- Worker Function (Runs in Cloud Run Container) ---
-exports.analyzePdfToolbox = onCall({
-    region: 'us-central1',
-    memory: '2GiB',
-    timeoutSeconds: 300,
-}, async (request) => {
-    if (!request.auth) throw new HttpsError('unauthenticated', 'Auth required.');
+if (process.env.FUNCTION_TARGET === 'analyzePdfToolbox' || process.env.FUNCTIONS_EMULATOR === 'true') {
+    exports.analyzePdfToolbox = onCall({
+        region: 'us-central1',
+        memory: '2GiB',
+        timeoutSeconds: 300,
+    }, async (request) => {
+        if (!request.auth) throw new HttpsError('unauthenticated', 'Auth required.');
 
-    const { gcsPath } = request.data; 
-    const bucket = admin.storage().bucket();
-    const path = require('path'); // Ensure path is available
-    const os = require('os');     // Ensure os is available
-    const tempFilePath = path.join(os.tmpdir(), `analyze_${Date.now()}.pdf`);
-    
-    await bucket.file(gcsPath).download({ destination: tempFilePath });
+        const { gcsPath } = request.data; 
+        const bucket = admin.storage().bucket();
+        const path = require('path'); 
+        const os = require('os');     
+        const tempFilePath = path.join(os.tmpdir(), `analyze_${Date.now()}.pdf`);
+        
+        await bucket.file(gcsPath).download({ destination: tempFilePath });
 
-    try {
-        const result = await runPreflightChecks(tempFilePath, logger);
-        return result;
-    } finally {
-        try { require('fs').unlinkSync(tempFilePath); } catch(e) {}
-    }
-});
+        try {
+            // Pass the global logger to the helper
+            const result = await runPreflightChecks(tempFilePath, logger);
+            return result;
+        } finally {
+            try { require('fs').unlinkSync(tempFilePath); } catch(e) {}
+        }
+    });
+}

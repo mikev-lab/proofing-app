@@ -35,6 +35,15 @@ const progressBar = document.getElementById('progress-bar');
 const progressText = document.getElementById('progress-text');
 const progressPercent = document.getElementById('progress-percent');
 
+const professionalUploadUI = document.getElementById('professional-upload-ui');
+const proUploadForm = document.getElementById('pro-upload-form');
+const proFileInterior = document.getElementById('pro-file-interior');
+const proFileCover = document.getElementById('pro-file-cover');
+const proCoverGroup = document.getElementById('pro-cover-group');
+const proUploadBtns = document.querySelectorAll('.pro-upload-btn');
+
+let uploadMode = 'builder';
+
 // Locked UI Elements
 const lockedState = document.getElementById('locked-state');
 const lockedByUserSpan = document.getElementById('locked-by-user');
@@ -136,6 +145,7 @@ let _previewCtx = null;
 let sourceFiles = {}; // Map: id -> File object
 let pages = []; // Array: { id, sourceFileId, pageIndex, settings: { scaleMode, alignment }, isSpread: boolean }
 let viewerScale = 0.5; // Zoom level for viewer
+let coverPreviewMode = 'outside';
 // --- LRU Cache Implementation ---
 class LRUCache {
     constructor(limit = 50) {
@@ -274,6 +284,38 @@ const triggerAutosave = debounce(async () => {
         if (saveBtn) saveBtn.innerHTML = `<span class="text-red-400">Save Failed</span>`;
     }
 }, 2000); // 2000ms = 2 seconds
+
+// --- Cover Preview Tabs Logic ---
+function setupCoverPreviewTabs() {
+    const btnOutside = document.getElementById('btn-preview-outside');
+    const btnInside = document.getElementById('btn-preview-inside');
+    const groupOuter = document.getElementById('outer-cover-group');
+    const groupInner = document.getElementById('inner-cover-group');
+
+    if (btnOutside && btnInside) {
+        btnOutside.addEventListener('click', () => {
+            coverPreviewMode = 'outside';
+            btnOutside.className = 'px-3 py-1 text-xs font-medium rounded text-white bg-indigo-600 shadow-sm transition-colors';
+            btnInside.className = 'px-3 py-1 text-xs font-medium rounded text-gray-400 hover:text-white transition-colors';
+            
+            if(groupOuter) groupOuter.classList.remove('hidden');
+            if(groupInner) groupInner.classList.add('hidden');
+            
+            renderCoverPreview();
+        });
+
+        btnInside.addEventListener('click', () => {
+            coverPreviewMode = 'inside';
+            btnInside.className = 'px-3 py-1 text-xs font-medium rounded text-white bg-indigo-600 shadow-sm transition-colors';
+            btnOutside.className = 'px-3 py-1 text-xs font-medium rounded text-gray-400 hover:text-white transition-colors';
+            
+            if(groupOuter) groupOuter.classList.add('hidden');
+            if(groupInner) groupInner.classList.remove('hidden');
+            
+            renderCoverPreview();
+        });
+    }
+}
 
 // --- Helper: Resolve Dimensions ---
 function resolveDimensions(specDimensions) {
@@ -432,35 +474,198 @@ unitToggles.forEach(btn => {
     });
 });
 
+// --- Professional Upload Mode Switchers ---
+if (proUploadBtns) {
+    proUploadBtns.forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            // Prevent the click from triggering the parent label's radio select immediately
+            // (We handle the selection manually below)
+            e.stopPropagation();
+            e.preventDefault();
+
+            // Set Mode
+            uploadMode = 'professional';
+            
+            // Select the Binding Radio manually based on the button's data attribute
+            const type = btn.dataset.type;
+            const radio = document.querySelector(`input[name="projectType"][value="${type}"]`);
+            if (radio) {
+                radio.checked = true;
+                radio.dispatchEvent(new Event('change')); // Trigger change to update UI states
+            }
+
+            // Update the main "Save" button text to reflect the new flow
+            saveSpecsBtn.textContent = 'Continue to Upload';
+            
+            // [NEW] Update Visuals
+            updateSelectionVisuals();
+        });
+    });
+}
+
+// Listen for normal radio clicks to reset mode back to 'builder'
+Array.from(projectTypeRadios).forEach(radio => {
+    radio.addEventListener('click', () => {
+        // If user clicks the big card (not the pro button), revert to standard builder
+        if (uploadMode === 'professional') {
+            uploadMode = 'builder';
+            saveSpecsBtn.textContent = 'Save & Start Builder';
+        }
+        // [NEW] Update Visuals
+        updateSelectionVisuals();
+    });
+});
+
+if (proUploadForm) {
+    proUploadForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const submitBtn = proUploadForm.querySelector('button[type="submit"]');
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Processing...';
+
+        try {
+            const interiorFile = proFileInterior.files[0];
+            const coverFile = proFileCover.files[0];
+
+            // Basic validation
+            if (!interiorFile) throw new Error("Interior PDF is required.");
+            
+            // Initialize tracking
+            const allSourcePaths = {};
+            const bookletMetadata = [];
+            const progressText = document.getElementById('progress-text') || { textContent: '' }; 
+            
+            // Helper: Upload file to Firebase Storage
+            const uploadFile = async (file, type) => {
+                const timestamp = Date.now();
+                const cleanName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+                const storagePath = `guest_uploads/${projectId}/${timestamp}_pro_${type}_${cleanName}`;
+                const storageRef = ref(storage, storagePath);
+                await uploadBytesResumable(storageRef, file);
+                return storagePath;
+            };
+
+            // 1. Upload Interior
+            const interiorPath = await uploadFile(interiorFile, 'interior');
+            allSourcePaths['pro_interior'] = interiorPath;
+
+            // 2. Parse Interior Page Count (using PDF.js locally)
+            const fileUrl = URL.createObjectURL(interiorFile);
+            const pdf = await pdfjsLib.getDocument(fileUrl).promise;
+            const numPages = pdf.numPages;
+
+            // 3. Create Metadata (Expand Pages)
+            // We map every page 0 to N-1 to the single source file
+            for (let i = 0; i < numPages; i++) {
+                bookletMetadata.push({
+                    storagePath: interiorPath,
+                    sourcePageIndex: i,
+                    settings: { scaleMode: 'fit', alignment: 'center' },
+                    type: 'interior_page'
+                });
+            }
+
+            // 4. Handle Cover
+            if (coverFile) {
+                const coverPath = await uploadFile(coverFile, 'cover');
+                allSourcePaths['pro_cover'] = coverPath;
+                
+                // For professional uploads, we assume the PDF is a complete pre-imposed cover
+                // So we map it to 'cover_front' which the backend treats as the primary cover part
+                bookletMetadata.push({
+                    storagePath: coverPath,
+                    type: 'cover_front',
+                    sourcePageIndex: 0,
+                    settings: { scaleMode: 'fit' }
+                });
+            }
+
+            // 5. Generate Booklet
+            const generateBooklet = httpsCallable(functions, 'generateBooklet');
+            // Pass spineMode='file' to disable any auto-stretch/mirror logic in the backend
+            await generateBooklet({ projectId: projectId, files: bookletMetadata, spineMode: 'file' });
+
+            // 6. Submit Status
+            const submitGuestUpload = httpsCallable(functions, 'submitGuestUpload');
+            await submitGuestUpload({ projectId: projectId });
+
+            // 7. Persist State
+            await persistStateAfterSubmit(allSourcePaths, 'submitted_complete');
+
+            // 8. Success Redirect
+            professionalUploadUI.classList.add('hidden');
+            successState.classList.remove('hidden');
+            
+            setTimeout(() => {
+                if (isAdmin) window.location.href = `admin_project.html?id=${projectId}`;
+                else {
+                    let url = `proof.html?id=${projectId}`;
+                    if (guestToken) url += `&guestToken=${guestToken}`;
+                    window.location.href = url;
+                }
+            }, 3000);
+
+        } catch (error) {
+            console.error("Professional Upload Failed:", error);
+            alert("Upload failed: " + error.message);
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Upload & Generate Proof';
+        }
+    });
+}
+
 // --- Handle Project Type Selection ---
 Array.from(projectTypeRadios).forEach(radio => {
     radio.addEventListener('change', (e) => {
         const val = e.target.value;
-
-        // Reset/Update Binding Field (Hidden)
         specBinding.value = val === 'loose' ? '' : val;
 
-        // Visibility Logic
+        // Always show the paper section container
+        paperSection.classList.remove('hidden');
+        
+        // Interior Paper is always required/visible
+        specPaper.required = true;
+
         if (val === 'loose') {
-            pageCountSection.classList.add('hidden');
-            paperSection.classList.add('hidden');
-            specPageCount.required = false;
-            specPaper.required = false;
+            // Hide Cover Paper specifically for loose sheets
+            if(specCoverPaper.parentElement) specCoverPaper.parentElement.classList.add('hidden');
             specCoverPaper.required = false;
-        } else if (val === 'saddleStitch') {
-            pageCountSection.classList.remove('hidden');
-            paperSection.classList.add('hidden');
-            specPageCount.required = true;
-            specPaper.required = false;
-        } else if (val === 'perfectBound') {
-            pageCountSection.classList.remove('hidden');
-            paperSection.classList.remove('hidden');
-            specPageCount.required = true;
-            specPaper.required = true;
+        } else {
+            // Show Cover Paper for Saddle Stitch & Perfect Bound
+            if(specCoverPaper.parentElement) specCoverPaper.parentElement.classList.remove('hidden');
             specCoverPaper.required = true;
         }
+        
+        // [NEW] Update Visuals
+        updateSelectionVisuals();
     });
 });
+
+// [NEW] Helper to find standard size key from dimensions object
+function findMatchingStandardSize(dims) {
+    if (!dims || !dims.width || !dims.height) return null;
+
+    // Convert input dims to points for comparison (1 inch = 72 pts, 1 mm = 2.83465 pts)
+    // Use 2.83465 (72/25.4) for mm conversion
+    const wPoints = dims.units === 'mm' ? dims.width * 2.83465 : dims.width * 72;
+    const hPoints = dims.units === 'mm' ? dims.height * 2.83465 : dims.height * 72;
+
+    // Tolerance for floating point errors (approx 1mm ~ 3 points)
+    const tolerance = 3; 
+
+    for (const [key, std] of Object.entries(STANDARD_PAPER_SIZES)) {
+        // Standard sizes in the config are likely stored in mm or have mm/in properties
+        // Assuming STANDARD_PAPER_SIZES items have width_mm and height_mm
+        const stdW = std.width_mm * 2.83465;
+        const stdH = std.height_mm * 2.83465;
+
+        // Check exact match (Portrait)
+        if (Math.abs(wPoints - stdW) < tolerance && Math.abs(hPoints - stdH) < tolerance) return key;
+        // Check rotated match (Landscape)
+        if (Math.abs(wPoints - stdH) < tolerance && Math.abs(hPoints - stdW) < tolerance) return key;
+    }
+    return null;
+}
 
 // --- Helper: Populate Specs Form ---
 function populateSpecsForm() {
@@ -484,30 +689,28 @@ function populateSpecsForm() {
 
     // 2. Dimensions
     if (projectSpecs.dimensions) {
-        if (typeof projectSpecs.dimensions === 'object') {
-            // Check if it matches a preset? Hard to check exact float matches.
-            // Default to Custom for safety unless we want to reverse-lookup.
-            // Or just set values.
+        const standardKey = findMatchingStandardSize(projectSpecs.dimensions);
+        if (standardKey) {
+            specSizePreset.value = standardKey;
+            specSizePreset.dispatchEvent(new Event('change'));
+        } else {
             specSizePreset.value = 'custom';
             specSizePreset.dispatchEvent(new Event('change'));
-
             specWidth.value = projectSpecs.dimensions.width || '';
             specHeight.value = projectSpecs.dimensions.height || '';
-
             if (projectSpecs.dimensions.units) {
                 const btn = document.querySelector(`.unit-toggle[data-unit="${projectSpecs.dimensions.units}"]`);
                 if (btn) btn.click();
             }
-        } else if (typeof projectSpecs.dimensions === 'string') {
-             specSizePreset.value = projectSpecs.dimensions;
-             specSizePreset.dispatchEvent(new Event('change'));
         }
     }
 
     // 3. Other Fields
-    if (specPageCount) specPageCount.value = projectSpecs.pageCount || '';
     if (specPaper) specPaper.value = projectSpecs.paperType || '';
     if (specCoverPaper) specCoverPaper.value = projectSpecs.coverPaperType || '';
+    
+    // [NEW] Update Visuals to match restored state
+    updateSelectionVisuals();
 }
 
 // --- Back Button Logic ---
@@ -532,11 +735,10 @@ async function createCoverControls(inputId, fileOrUrl) {
     const container = document.getElementById(inputId)?.parentElement;
     if (!container) return;
 
-    // Remove existing controls to prevent duplicates
+    // 1. Initial Clear
     const existing = container.querySelectorAll('.custom-controls');
     existing.forEach(el => el.remove());
 
-    // Default settings if missing
     if (!coverSettings[inputId]) {
         coverSettings[inputId] = { pageIndex: 1, scaleMode: 'fill' };
     }
@@ -545,35 +747,33 @@ async function createCoverControls(inputId, fileOrUrl) {
     const controls = document.createElement('div');
     controls.className = 'custom-controls mt-2 flex flex-col gap-2 z-20 relative';
 
-    // 1. Page Selector (Only for PDF)
     let pdfSourceUrl;
     let isPDF = false;
-    let localObjectURL; // For cleanup
+    let localObjectURL; 
 
     if (typeof fileOrUrl === 'string') {
-        // Source is a remote URL (restored file)
         pdfSourceUrl = fileOrUrl;
         isPDF = pdfSourceUrl.toLowerCase().endsWith('.pdf') || true;
     } else if (fileOrUrl && fileOrUrl.type === 'application/pdf') {
-        // Source is a local File object (new upload)
         pdfSourceUrl = URL.createObjectURL(fileOrUrl);
         localObjectURL = pdfSourceUrl;
         isPDF = true;
     }
     
     if (isPDF && pdfSourceUrl) {
-        let docPromise;
-        
         try {
+            let docPromise;
             if (typeof fileOrUrl === 'string' && fileOrUrl.startsWith('http')) {
-                // Remote PDF (Restored) - Use the Remote cache based on URL/Path
                 docPromise = remotePdfDocCache.get(fileOrUrl) || pdfjsLib.getDocument(fileOrUrl).promise;
             } else {
-                // Local PDF (New Upload)
                 docPromise = pdfjsLib.getDocument(localObjectURL).promise;
             }
 
-            const pdf = await docPromise;
+            const pdf = await docPromise; 
+
+            // [FIX] Check for duplicates AGAIN after await
+            const reCheck = container.querySelectorAll('.custom-controls');
+            reCheck.forEach(el => el.remove());
 
             if (pdf.numPages > 1) {
                 const pageCtrl = document.createElement('div');
@@ -590,20 +790,17 @@ async function createCoverControls(inputId, fileOrUrl) {
                 `;
                 controls.appendChild(pageCtrl);
 
-                // Bind Events
                 setTimeout(() => {
                     const setPage = (val) => {
                         let newPg = parseInt(val);
                         if (isNaN(newPg) || newPg < 1) newPg = 1;
                         if (newPg > pdf.numPages) newPg = pdf.numPages;
-                        
                         coverSettings[inputId].pageIndex = newPg;
                         const el = document.getElementById(`pg-input-${inputId}`);
                         if(el) el.value = newPg;
                         renderCoverPreview();
                         triggerAutosave();
                     };
-                    
                     const inputEl = document.getElementById(`pg-input-${inputId}`);
                     if(inputEl) {
                         inputEl.onclick = (ev) => ev.stopPropagation();
@@ -611,22 +808,17 @@ async function createCoverControls(inputId, fileOrUrl) {
                     }
                     const prevBtn = document.getElementById(`prev-${inputId}`);
                     if(prevBtn) prevBtn.onclick = (ev) => { ev.stopPropagation(); setPage(coverSettings[inputId].pageIndex - 1); };
-                    
                     const nextBtn = document.getElementById(`next-${inputId}`);
                     if(nextBtn) nextBtn.onclick = (ev) => { ev.stopPropagation(); setPage(coverSettings[inputId].pageIndex + 1); };
                 }, 0);
             }
-            
-            // Cleanup the temporary local blob URL
             if (localObjectURL) URL.revokeObjectURL(localObjectURL);
-            
         } catch (e) { 
             console.warn("Error loading PDF for controls", e);
             if (localObjectURL) URL.revokeObjectURL(localObjectURL);
         }
     }
 
-    // 2. Scale Buttons (Remains the same)
     const scaleCtrl = document.createElement('div');
     scaleCtrl.className = "flex justify-center gap-1 mt-1";
     ['fit', 'fill', 'stretch'].forEach(mode => {
@@ -635,7 +827,6 @@ async function createCoverControls(inputId, fileOrUrl) {
         const isActive = currentSettings.scaleMode === mode;
         btn.className = `text-[10px] px-2 py-1 rounded border ${isActive ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-600 text-gray-400 hover:text-white'}`;
         btn.textContent = mode.charAt(0).toUpperCase() + mode.slice(1);
-        
         btn.onclick = (ev) => {
             ev.stopPropagation();
             ev.preventDefault();
@@ -648,7 +839,6 @@ async function createCoverControls(inputId, fileOrUrl) {
         scaleCtrl.appendChild(btn);
     });
     controls.appendChild(scaleCtrl);
-    
     container.appendChild(controls);
 }
 
@@ -666,14 +856,21 @@ function updateFileName(inputId, displayId) {
         existingControls.forEach(el => el.remove());
 
         if (file) {
-            if (display) display.textContent = file.name;
+            if (display) {
+                display.textContent = file.name;
+                // Unhide the filename text so the adjacent Delete (X) button appears
+                display.classList.remove('hidden');
+            }
             selectedFiles[inputId] = file; 
 
-            const supportedImages = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp'];
-            const isPDF = file.type === 'application/pdf';
-            const isSupportedImage = supportedImages.includes(file.type);
-            const isPsd = file.name.toLowerCase().endsWith('.psd');
-            const isLocal = (isPDF || isSupportedImage) && !isPsd;
+            const name = file.name.toLowerCase();
+            const type = file.type.toLowerCase();
+
+            // Robust File Type Detection
+            const isPDF = type === 'application/pdf' || name.endsWith('.pdf');
+            const isComplexFormat = /\.(psd|ai|tiff|tif)$/i.test(name);
+            const isWebImage = type.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(name);
+            const isLocal = (isPDF || isWebImage) && !isComplexFormat;
 
             // Reset settings for new file
             coverSettings[inputId] = { pageIndex: 1, scaleMode: 'fill' };
@@ -688,14 +885,17 @@ function updateFileName(inputId, displayId) {
                 };
             }
 
-            // Generate Controls (using the new reusable function)
+            // Generate Controls
             await createCoverControls(inputId, file);
 
             if (isLocal) renderCoverPreview();
-            triggerAutosave(); // Trigger save on new file
+            triggerAutosave();
 
         } else {
-            if (display) display.textContent = '';
+            if (display) {
+                display.textContent = '';
+                display.classList.add('hidden');
+            }
             delete selectedFiles[inputId];
             delete coverSources[inputId]; 
             renderCoverPreview();
@@ -720,10 +920,8 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
     }
 
     const isServer = sourceEntry.isServer;
-    // CRITICAL: File is null for server files to prevent accessing stale local properties
-    const file = isServer ? null : sourceEntry.file; 
+    const file = isServer ? null : sourceEntry.file;
     
-    // Use stable path for caching
     const fileKey = isServer ? (sourceEntry.storagePath || sourceEntry.previewUrl || 'server_url') : (file ? file.name : 'unknown_file');
     const timestamp = (file && file.lastModified) ? file.lastModified : 'server_timestamp';
     const cacheKey = `${fileKey}_${pageIndex}_${timestamp}_stretched`;
@@ -735,26 +933,37 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
             if (isServer) {
                 if (!sourceEntry.previewUrl) return null;
 
-                // 1. Use Remote Document Caching
-                let pdfDocPromise = remotePdfDocCache.get(fileKey);
-                if (!pdfDocPromise) {
-                    const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
-                    pdfDocPromise = loadingTask.promise;
-                    remotePdfDocCache.set(fileKey, pdfDocPromise);
+                // [FIX] Check if URL points to an image or PDF
+                const pathToCheck = (sourceEntry.storagePath || sourceEntry.previewUrl || '').toLowerCase();
+                const cleanPath = pathToCheck.split('?')[0];
+                const isImage = /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(cleanPath);
+
+                if (isImage) {
+                    const resp = await fetch(sourceEntry.previewUrl);
+                    if (!resp.ok) throw new Error("Failed to fetch image");
+                    const blob = await resp.blob();
+                    return createImageBitmap(blob);
+                } else {
+                    // PDF Logic
+                    const docCacheKey = sourceEntry.storagePath || sourceEntry.previewUrl;
+                    let pdfDocPromise = remotePdfDocCache.get(docCacheKey);
+                    if (!pdfDocPromise) {
+                        const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
+                        pdfDocPromise = loadingTask.promise;
+                        remotePdfDocCache.set(docCacheKey, pdfDocPromise);
+                    }
+                    const pdf = await pdfDocPromise;
+                    const page = await pdf.getPage(pageIndex);
+                    const viewport = page.getViewport({ scale: 1.5 });
+                    const cvs = document.createElement('canvas');
+                    cvs.width = viewport.width;
+                    cvs.height = viewport.height;
+                    await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+                    return createImageBitmap(cvs);
                 }
-                const pdf = await pdfDocPromise;
 
-                // 2. Render
-                const page = await pdf.getPage(pageIndex);
-                const viewport = page.getViewport({ scale: 1.5 }); // Good quality for covers
-                const cvs = document.createElement('canvas');
-                cvs.width = viewport.width;
-                cvs.height = viewport.height;
-                await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
-                return createImageBitmap(cvs);
-
-            } else if (file && file.type === 'application/pdf') {
-                // Local PDF: Use ArrayBuffer + pdfDocCache
+            } else if (file && (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))) {
+                // Local PDF
                 let pdfDoc = pdfDocCache.get(file);
                 if (!pdfDoc) {
                     const arrayBuffer = await file.arrayBuffer();
@@ -765,11 +974,13 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
                 const page = await pdf.getPage(pageIndex);
                 const viewport = page.getViewport({ scale: 1.5 });
                 const cvs = document.createElement('canvas');
-                cvs.width = viewport.width; cvs.height = viewport.height;
+                cvs.width = viewport.width;
+                cvs.height = viewport.height;
                 await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
                 return createImageBitmap(cvs);
 
-            } else if (file && file.type.startsWith('image/')) {
+            } else if (file) {
+                // Local Image
                 return createImageBitmap(file);
             }
             return null;
@@ -781,7 +992,6 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
 
     if (!imgBitmap) return;
 
-    // --- Draw Logic ---
     ctx.save();
     ctx.beginPath();
     ctx.rect(targetZone.x, targetZone.y, targetZone.w, targetZone.h);
@@ -790,7 +1000,6 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
     const imgW = imgBitmap.width;
     const imgH = imgBitmap.height;
 
-    // Scale to fill TOTAL zone (Spine + Front/Back)
     let scale = totalZone.h / imgH; 
     if (imgW * scale < totalZone.w) {
         scale = totalZone.w / imgW;
@@ -802,11 +1011,9 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
 
     let drawX;
     if (anchor === 'right') {
-        // Align to the RIGHT edge of the total zone
         const totalRight = totalZone.x + totalZone.w;
         drawX = totalRight - drawW;
     } else {
-        // Align to the LEFT edge of the total zone
         drawX = totalZone.x;
     }
 
@@ -856,6 +1063,47 @@ function setupDropZone(inputId) {
         input.dispatchEvent(new Event('change'));
     }
 }
+
+// [NEW] Helper to enforce binding constraints (Multiples of 4 or 2)
+function balancePages() {
+    // 1. Strip existing auto-blanks from the end to "reset"
+    // This ensures we don't just keep piling them on.
+    while (pages.length > 0 && pages[pages.length - 1].isAutoBlank) {
+        pages.pop();
+    }
+
+    const binding = projectSpecs?.binding;
+    if (!binding || binding === 'loose') {
+        renderBookViewer();
+        renderMinimap();
+        return;
+    }
+
+    // Saddle Stitch = Multiple of 4. Perfect Bound = Multiple of 2.
+    const multiple = (binding === 'saddleStitch' || binding === 'saddle-stitch') ? 4 : 2;
+    const currentCount = pages.length;
+    const remainder = currentCount % multiple;
+
+    if (remainder !== 0) {
+        const needed = multiple - remainder;
+        for (let i = 0; i < needed; i++) {
+            const pageId = `auto_blank_${Date.now()}_${i}`;
+            pages.push({
+                id: pageId,
+                sourceFileId: null,
+                pageIndex: 1,
+                settings: { scaleMode: 'fit', alignment: 'center', panX: 0, panY: 0 },
+                isSpread: false,
+                isAutoBlank: true // [Tag] Distinguish from user-added blanks
+            });
+        }
+    }
+    
+    renderBookViewer();
+    renderMinimap();
+}
+
+
 
 function validateForm() {
     let isValid = false;
@@ -925,63 +1173,69 @@ if (tabInterior && tabCover) {
 // --- Data Model Logic ---
 
 async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = null) {
+    // 1. Strip auto-blanks before adding content
+    while (pages.length > 0 && pages[pages.length - 1].isAutoBlank) {
+        pages.pop();
+    }
+    
+    if (insertAtIndex !== null && insertAtIndex > pages.length) {
+        insertAtIndex = pages.length;
+    }
+
     const newPages = [];
 
     for (const file of Array.from(files)) {
         const sourceId = Date.now() + Math.random().toString(16).slice(2);
+        const name = file.name.toLowerCase();
+        const type = file.type.toLowerCase();
 
-        // --- FIX: Strict Check for Browser-Supported Types ---
-        const supportedImages = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp'];
-        const isPDF = file.type === 'application/pdf';
-        const isSupportedImage = supportedImages.includes(file.type);
+        // Robust File Type Detection
+        const isPDF = type === 'application/pdf' || name.endsWith('.pdf');
         
-        // Fallback: Check extension if mime type is generic or missing
-        const isPsd = file.name.toLowerCase().endsWith('.psd');
+        // Complex formats must go to server
+        const isComplexFormat = /\.(psd|ai|tiff|tif)$/i.test(name);
         
-        // Only treat as local if it's a PDF or a supported web image (and NOT a PSD)
-        const isLocal = (isPDF || isSupportedImage) && !isPsd;
+        // Check for supported web image formats (MIME or Extension)
+        const isWebImage = type.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(name);
+        
+        // Treat as local ONLY if it is a PDF or Web Image AND NOT a complex format
+        const isLocal = (isPDF || isWebImage) && !isComplexFormat;
 
         if (isLocal) {
             sourceFiles[sourceId] = file;
-
             let numPages = 1;
-            if (file.type === 'application/pdf') {
+            
+            if (isPDF) {
                  try {
                     const fileUrl = URL.createObjectURL(file);
                     const pdf = await pdfjsLib.getDocument(fileUrl).promise;
                     numPages = pdf.numPages;
-                    // For caching/performance, we don't revoke immediately here in the loop
-                 } catch (e) {
-                     console.warn("Could not parse PDF", e);
+                 } catch (e) { 
+                     console.warn("Could not parse PDF", e); 
                  }
             }
-
             addPagesToModel(newPages, sourceId, numPages, isSpreadUpload);
-
         } else {
-            // SERVER SIDE PROCESSING (PSD, AI)
+            // Server processing for PSD, AI, TIFF
             sourceFiles[sourceId] = { 
                 file: file, 
                 status: 'uploading', 
                 previewUrl: null,
-                isServer: true // Explicitly flag as server source
+                isServer: true 
             }; 
-
             addPagesToModel(newPages, sourceId, 1, isSpreadUpload);
-
-            // Start Background Process
             processServerFile(file, sourceId);
         }
     }
 
-    if (insertAtIndex !== null && insertAtIndex >= 0 && insertAtIndex <= pages.length) {
+    if (insertAtIndex !== null && insertAtIndex >= 0) {
         pages.splice(insertAtIndex, 0, ...newPages);
     } else {
         pages.push(...newPages);
     }
+    
     saveState();
-    renderBookViewer();
-    renderMinimap();
+    balancePages();
     triggerAutosave();
 }
 
@@ -1202,8 +1456,9 @@ window.deletePage = (pageId) => {
     saveState();
     pages = pages.filter(p => p.id !== pageId);
     imageCache.delete(pageId); 
-    renderBookViewer();
-    renderMinimap();
+    
+    // [FIX] Re-balance after deletion
+    balancePages();
     triggerAutosave();
 };
 
@@ -1567,6 +1822,10 @@ async function renderMinimap() {
 }
 
 async function populateMinimapCanvas(ctx, pageList, w, h) {
+    // [FIX] 1. Clear canvas with background color to prevent "ghost" images
+    ctx.fillStyle = '#1e293b'; 
+    ctx.fillRect(0, 0, w, h);
+
     const margin = 5;
     const pageW = (w - (margin*3)) / 2;
     const pageH = h - (margin*2);
@@ -1576,6 +1835,7 @@ async function populateMinimapCanvas(ctx, pageList, w, h) {
 
     // Helper
     const drawPage = async (page, x, y) => {
+        // Draw white page background
         ctx.fillStyle = '#ffffff'; 
         ctx.fillRect(x, y, pageW, pageH);
 
@@ -1583,9 +1843,6 @@ async function populateMinimapCanvas(ctx, pageList, w, h) {
         const sourceEntry = sourceFiles[page.sourceFileId];
         if (!sourceEntry) return;
 
-        // Force low-res render (0.25) via the queue system
-        // We use enqueueRender to ensure we don't clog the main thread,
-        // but we rely on browser cache to make it fast.
         await drawFileWithTransform(
             ctx, sourceEntry, x, y, pageW, pageH,
             page.settings.scaleMode || 'fit',
@@ -1593,13 +1850,13 @@ async function populateMinimapCanvas(ctx, pageList, w, h) {
             page.pageIndex || 1,
             page.id,
             'full', 
-            0, 0, // Pan X/Y
-            0.25 // Force Scale
+            0, 0, 
+            0.25 
         );
     };
 
     // Layout Logic
-    // Check if the first page in list is actually Page 1 (Right Only)
+    // [FIX] Ensure we correctly identify Page 1 to put it on the Right
     const isFirstPage = (pages.indexOf(pageList[0]) === 0);
 
     if (isFirstPage) {
@@ -1929,31 +2186,41 @@ window.triggerInsert = (index, type) => {
 };
 
 function addBlankPages(insertAtIndex, count = 1) {
+    // [FIX] 1. Strip auto-blanks first. 
+    // If you have [Content, AutoBlank] and add a Manual Blank, 
+    // we want [Content, ManualBlank], not [Content, AutoBlank, ManualBlank].
+    while (pages.length > 0 && pages[pages.length - 1].isAutoBlank) {
+        pages.pop();
+    }
+
+    if (insertAtIndex !== null && insertAtIndex > pages.length) {
+        insertAtIndex = pages.length;
+    }
+
     const newPages = [];
-
-    // For now, assume inserting SINGLE blank pages unless we want blank spreads?
-    // Let's just add standard single pages which will flow into spreads naturally.
     for (let i = 0; i < count; i++) {
-        // Use a special ID for blank pages or just null sourceFileId?
-        // We need a unique ID for the page itself.
-        const pageId = `blank_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-
+        const pageId = `manual_blank_${Date.now()}_${i}`;
         newPages.push({
             id: pageId,
-            sourceFileId: null, // Indicates blank
-            pageIndex: 1, // Irrelevant
+            sourceFileId: null,
+            pageIndex: 1,
             settings: { scaleMode: 'fit', alignment: 'center', panX: 0, panY: 0 },
-            isSpread: false
+            isSpread: false,
+            isAutoBlank: false // [Important] This is a REAL page now
         });
     }
 
-    if (insertAtIndex !== null && insertAtIndex >= 0 && insertAtIndex <= pages.length) {
+    if (insertAtIndex !== null && insertAtIndex >= 0) {
         pages.splice(insertAtIndex, 0, ...newPages);
     } else {
         pages.push(...newPages);
     }
 
-    renderBookViewer();
+    saveState();
+    // [FIX] 2. Re-balance immediately.
+    // If adding this manual blank made the total 3, this will add 1 auto-blank to fix it.
+    balancePages();
+    triggerAutosave();
 }
 
 insertFileInput.addEventListener('change', (e) => {
@@ -1968,17 +2235,12 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     const card = document.createElement('div');
     card.dataset.id = page.id;
 
-    let classes = "page-card relative group bg-slate-800 shadow-lg border border-slate-700 transition-all hover:border-indigo-500 overflow-hidden cursor-grab active:cursor-grabbing";
-
-    // Prevent frame scaling weirdness by not applying transition to width/height changes if JS handles it
-    // But classes is a string.
+    // [FIX] Removed 'overflow-hidden' from here so tooltips can extend outside
+    let classes = "page-card relative group bg-slate-800 shadow-lg border border-slate-700 transition-all hover:border-indigo-500 cursor-grab active:cursor-grabbing flex-shrink-0";
 
     if (projectType === 'single') {
-        // Loose sheets: Full border, NO rounded corners (Square)
-        // Ensure it doesn't scale border thickness. Border is 2px.
         classes += " border-2";
     } else {
-        // Booklet: Spread styling
         if (isFirstPage) {
             classes += " border-l-2 border-l-slate-900";
         } else if (isRightPage) {
@@ -1988,24 +2250,6 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
         }
     }
     card.className = classes;
-
-    // Fix: Ensure the CARD element adapts size but doesn't glitch.
-    // The card size is usually determined by its content (the canvasContainer).
-    // canvasContainer has fixed pixel width/height set by JS.
-    // So the card should grow naturally.
-    // The "Frame scales up" issue might be due to border-width appearing smaller relative to content?
-    // No, border is in CSS pixels. If we zoom (browser zoom or canvas scale?), standard CSS handles it.
-    // If we increase `pixelsPerInch`, the DIV grows in pixels.
-    // 2px border remains 2px.
-    // Maybe the user means the border looks too thin/thick?
-    // "Frame scales up as you zoom in and canvas gets larger."
-    // If `viewerScale` increases, `pixelsPerInch` increases.
-    // `containerW` increases. `style.width` increases.
-    // The DOM element gets bigger.
-    // The border is constant 1px (or 2px).
-    // Visually, the frame (border) should stay relative?
-    // Standard behavior is fine. Maybe the user saw layout shift.
-    // `flex-shrink-0` on card helps.
     card.style.flexShrink = '0';
 
     // Layout Logic
@@ -2014,19 +2258,15 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     let canvasLeft, canvasTop;
 
     if (projectType === 'single') {
-        // Loose Sheets: Full View
         containerW = (width + (bleed * 2)) * pixelsPerInch;
         containerH = (height + (bleed * 2)) * pixelsPerInch;
         canvasLeft = 0;
         canvasTop = 0;
     } else {
-        // Spread Logic
         if (isRightPage) {
-            // Right Page: Clip LEFT bleed (Spine)
             containerW = (width + bleed) * pixelsPerInch;
             canvasLeft = -bleedPx;
         } else {
-            // Left Page: Clip RIGHT bleed (Spine)
             containerW = (width + bleed) * pixelsPerInch;
             canvasLeft = 0;
         }
@@ -2034,6 +2274,7 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
         canvasTop = 0;
     }
 
+    // [FIX] 'overflow-hidden' stays here to clip the canvas/image content
     const canvasContainer = document.createElement('div');
     canvasContainer.className = "relative overflow-hidden bg-white shadow-sm mx-auto";
     canvasContainer.style.width = `${containerW}px`;
@@ -2051,11 +2292,33 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     const dragHandle = document.createElement('div');
     dragHandle.className = "drag-handle absolute top-2 left-2 p-1.5 bg-slate-900/80 text-white rounded cursor-move opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-sm z-30 hover:bg-indigo-600 shadow-sm";
     dragHandle.title = "Drag to Reorder";
-    // Grid/Grip Icon
     dragHandle.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>';
     card.appendChild(dragHandle);
 
-    // Overlay Controls - Always render these
+    // [FIX] Compact Icon-Only Warning with Solid SVG
+    const dpiWarning = document.createElement('div');
+    dpiWarning.id = `dpi-warning-${page.id}`;
+    // Position: Left side, next to drag handle. Z-40 to sit above overlays.
+    dpiWarning.className = "hidden absolute top-2 left-9 z-40 group/dpi";
+    dpiWarning.innerHTML = `
+        <div class="text-yellow-400 bg-slate-900/80 p-1.5 rounded-md backdrop-blur-md border border-yellow-500/30 shadow-md cursor-help transition-colors hover:text-yellow-300 hover:border-yellow-400">
+            <svg class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" />
+            </svg>
+        </div>
+        <div class="absolute left-0 top-full mt-2 w-48 bg-slate-900 text-gray-200 text-[11px] px-3 py-2 rounded-lg border border-slate-600 shadow-xl opacity-0 group-hover/dpi:opacity-100 transition-opacity pointer-events-none z-50">
+            <p class="font-bold text-yellow-400 mb-1 flex items-center gap-1">
+                Low Resolution (<span id="dpi-val-${page.id}" class="font-mono">0</span> DPI)
+            </p>
+            <p class="leading-tight text-gray-300">
+                300 DPI is standard. 
+                <span class="block mt-1 text-gray-400 italic">Images below this may appear blurry or pixelated in print.</span>
+            </p>
+        </div>
+    `;
+    card.appendChild(dpiWarning);
+
+    // Overlay Controls
     const controls = document.createElement('div');
     controls.className = "absolute top-2 right-2 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-900/80 p-1 rounded backdrop-blur-sm z-20";
     controls.innerHTML = `
@@ -2065,7 +2328,7 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     `;
     card.appendChild(controls);
 
-    // Overlay Settings (Transparent Buttons) - Always render these
+    // Overlay Settings
     const settingsOverlay = document.createElement('div');
     settingsOverlay.className = "absolute bottom-0 inset-x-0 p-2 opacity-0 group-hover:opacity-100 transition-opacity bg-gradient-to-t from-slate-900/90 to-transparent flex justify-center gap-2 z-20";
 
@@ -2077,7 +2340,7 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
 
     modes.forEach(mode => {
         const btn = document.createElement('button');
-        btn.type = 'button'; // Prevent form submission
+        btn.type = 'button';
         btn.className = `p-1.5 rounded border ${page.settings.scaleMode === mode.id ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800/80 border-slate-600 text-gray-400 hover:bg-slate-700 hover:text-white'}`;
         btn.innerHTML = mode.icon;
         btn.title = mode.title;
@@ -2090,29 +2353,19 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     pageNum.className = "absolute bottom-1 left-2 text-[10px] text-white/50 font-mono z-20";
     pageNum.textContent = `P${index + 1}`;
 
-    card.appendChild(controls);
     card.appendChild(canvasContainer);
-    card.appendChild(settingsOverlay);
     card.appendChild(pageNum);
 
-    // Add Placeholder
     const placeholder = document.createElement('div');
     placeholder.className = "absolute inset-0 flex items-center justify-center text-gray-600 bg-slate-200 z-10 transition-opacity duration-300";
     placeholder.innerHTML = '<div class="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>';
     placeholder.id = `placeholder-${page.id}`;
     canvasContainer.appendChild(placeholder);
 
-    // Add specific drop handling for this card
-    // We use the input ID trick again, but specific to this card if needed?
-    // Actually, we can just reuse the logic: drop -> updates this page's source.
-
     ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
         card.addEventListener(eventName, (e) => {
-            // Only intercept if it's a FILE drag. Allow SortableJS drags to bubble.
             if (e.dataTransfer.types.includes('Files')) {
-                e.preventDefault();
-                e.stopPropagation();
-
+                e.preventDefault(); e.stopPropagation();
                 if (eventName === 'dragenter' || eventName === 'dragover') {
                     card.classList.add('ring-2', 'ring-indigo-500', 'ring-offset-2');
                 } else {
@@ -2125,11 +2378,7 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     card.addEventListener('drop', async (e) => {
         if (e.dataTransfer.types.includes('Files')) {
             const files = e.dataTransfer.files;
-            if (files.length > 0) {
-                const file = files[0];
-                // Replace content of THIS page
-                await updatePageContent(page.id, file);
-            }
+            if (files.length > 0) await updatePageContent(page.id, files[0]);
         }
     });
 
@@ -2138,20 +2387,25 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
 }
 
 // Helper to replace page content
+// Helper to replace page content
 async function updatePageContent(pageId, file) {
     const page = pages.find(p => p.id === pageId);
     if (!page) return;
 
     const sourceId = Date.now() + Math.random().toString(16).slice(2);
-    const isLocal = file.type === 'application/pdf' || file.type.startsWith('image/');
+    
+    const name = file.name.toLowerCase();
+    const type = file.type.toLowerCase();
+    
+    const isPDF = type === 'application/pdf' || name.endsWith('.pdf');
+    const isComplexFormat = /\.(psd|ai|tiff|tif)$/i.test(name);
+    const isWebImage = type.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(name);
+    const isLocal = (isPDF || isWebImage) && !isComplexFormat;
 
     if (isLocal) {
         sourceFiles[sourceId] = file;
         page.sourceFileId = sourceId;
-        page.pageIndex = 1; // Reset to page 1 of new file
-
-        // If it's a PDF, we might want to know if it has more pages, but for a single replacement we usually just take page 1.
-        // Unless we want to expand? For now, simple replacement.
+        page.pageIndex = 1; // Reset to page 1
 
         // Update UI
         const canvas = document.getElementById(`canvas-${pageId}`);
@@ -2171,11 +2425,8 @@ async function updatePageContent(pageId, file) {
 
         await processServerFile(file, sourceId);
     }
-
-    // Trigger re-render to update thumbnails or other UI if needed
-    // But renderPageCanvas above might be enough.
-    // Safest to re-render viewer if we want to ensure everything syncs?
-    // renderPageCanvas is faster.
+    
+    triggerAutosave();
 }
 
 async function renderPageCanvas(page, canvas) {
@@ -2187,13 +2438,15 @@ async function renderPageCanvas(page, canvas) {
     // 1. Handle Blank Page
     if (page.sourceFileId === null) {
         drawBlankPage(page, canvas, view);
+        // Hide DPI warning if it exists
+        const w = document.getElementById(`dpi-warning-${page.id}`);
+        if (w) w.classList.add('hidden');
         return;
     }
 
     // 2. Validate Source
     const sourceEntry = sourceFiles[page.sourceFileId];
     if (!sourceEntry) {
-        // Draw visual error on canvas if source is missing
         const ctx = canvas.getContext('2d');
         ctx.fillStyle = '#f3f4f6'; ctx.fillRect(0,0,canvas.width, canvas.height);
         ctx.fillStyle = '#ef4444'; ctx.font = '10px sans-serif'; 
@@ -2210,7 +2463,7 @@ async function renderPageCanvas(page, canvas) {
     
     const visualScale = (250 * viewerScale) / ((width + bleed*2) * 96);
     const pixelsPerInch = 96 * visualScale;
-    const pixelDensity = 1.5; // Balance between sharpness and performance
+    const pixelDensity = 1.5; 
 
     const totalW = width + (bleed*2);
     const totalH = height + (bleed*2);
@@ -2234,57 +2487,36 @@ async function renderPageCanvas(page, canvas) {
     ctx.fillRect(0, 0, totalW, totalH);
 
     // --- OPTIMIZATION 1: Blurry Placeholder ---
-    // Check if we have the low-res thumbnail cached. If so, draw it immediately.
     try {
         const file = sourceEntry.isServer ? null : sourceEntry.file;
         const fileKey = sourceEntry.isServer ? (sourceEntry.storagePath || sourceEntry.previewUrl) : (file ? file.name : 'unknown');
         const timestamp = (file && file.lastModified) ? file.lastModified : 'server';
-        
-        // Look for the 0.25 scale key
         const thumbCacheKey = `${fileKey}_${page.pageIndex || 1}_${timestamp}_s0.25`;
 
         if (imageCache.has(thumbCacheKey)) {
             const thumbBitmap = imageCache.get(thumbCacheKey);
             if (thumbBitmap) {
-                // Calculate positioning for the placeholder (Match drawFileWithTransform logic)
-                const srcW = thumbBitmap.width;
-                const srcH = thumbBitmap.height;
-                const srcRatio = srcW / srcH;
-                const targetRatio = totalW / totalH;
-                
+                const srcW = thumbBitmap.width; const srcH = thumbBitmap.height;
+                const srcRatio = srcW / srcH; const targetRatio = totalW / totalH;
                 let drawW, drawH, drawX, drawY;
                 const mode = page.settings.scaleMode || 'fit';
-                const panX = page.settings.panX || 0;
-                const panY = page.settings.panY || 0;
+                const panX = page.settings.panX || 0; const panY = page.settings.panY || 0;
                 
-                if (mode === 'stretch') { 
-                    drawW = totalW; drawH = totalH; 
-                } else if (mode === 'fit') {
-                    if (srcRatio > targetRatio) { drawW = totalW; drawH = totalW / srcRatio; }
-                    else { drawH = totalH; drawW = totalH * srcRatio; }
-                } else { // fill
-                    if (srcRatio > targetRatio) { drawH = totalH; drawW = totalH * srcRatio; }
-                    else { drawW = totalW; drawH = totalW / srcRatio; }
+                if (mode === 'stretch') { drawW = totalW; drawH = totalH; } 
+                else if (mode === 'fit') {
+                    if (srcRatio > targetRatio) { drawW = totalW; drawH = totalW / srcRatio; } else { drawH = totalH; drawW = totalH * srcRatio; }
+                } else {
+                    if (srcRatio > targetRatio) { drawH = totalH; drawW = totalH * srcRatio; } else { drawW = totalW; drawH = totalW / srcRatio; }
                 }
-                
                 drawX = (totalW - drawW) / 2 + (panX * totalW);
                 drawY = (totalH - drawH) / 2 + (panY * totalH);
-
-                ctx.save();
-                ctx.beginPath(); ctx.rect(0, 0, totalW, totalH); ctx.clip();
-                // Optional: ctx.filter = 'blur(2px)'; // Add blur if you want a "loading" effect
                 ctx.drawImage(thumbBitmap, drawX, drawY, drawW, drawH);
-                ctx.restore();
             }
         }
-    } catch (e) {
-        // Ignore placeholder errors, proceeding to main render
-    }
-    // ------------------------------------------
+    } catch (e) {}
 
-    // 5. Draw File (High Res)
-    // This overwrites the placeholder with the sharp version
-    await drawFileWithTransform(
+    // 5. Draw File (High Res) & Capture Stats
+    const renderStats = await drawFileWithTransform(
         ctx, sourceEntry, 0, 0, totalW, totalH, 
         page.settings.scaleMode, 
         page.settings.alignment, 
@@ -2295,12 +2527,43 @@ async function renderPageCanvas(page, canvas) {
         page.settings.panY
     );
 
-    // --- OPTIMIZATION 2: Sync to Thumbnail ---
-    // Push the loaded image to the sidebar so it doesn't have to load again
+    // --- [UPDATED] DPI CHECK LOGIC ---
+    const warningEl = document.getElementById(`dpi-warning-${page.id}`);
+    const valEl = document.getElementById(`dpi-val-${page.id}`);
+
+    if (renderStats && renderStats.isImage && warningEl && valEl) {
+        // Effective DPI = Source Pixels / Printed Inches
+        const effectiveDPI = renderStats.srcW / renderStats.drawW;
+        
+        // Tolerance set to 290 to ignore standard bleed stretching (which drops 300 -> ~294)
+        const DPI_THRESHOLD = 290; 
+
+        if (effectiveDPI < DPI_THRESHOLD) {
+            valEl.textContent = Math.round(effectiveDPI);
+            warningEl.classList.remove('hidden');
+            
+            // Make it red if really low (< 200), yellow if just slightly low
+            const icon = warningEl.querySelector('div');
+            if (icon) {
+                if (effectiveDPI < 200) {
+                    // Severe
+                    icon.className = "text-red-400 bg-slate-900/80 p-1.5 rounded-md backdrop-blur-md border border-red-500/30 shadow-md cursor-help transition-colors hover:text-red-300 hover:border-red-400";
+                } else {
+                    // Warning
+                    icon.className = "text-yellow-400 bg-slate-900/80 p-1.5 rounded-md backdrop-blur-md border border-yellow-500/30 shadow-md cursor-help transition-colors hover:text-yellow-300 hover:border-yellow-400";
+                }
+            }
+        } else {
+            warningEl.classList.add('hidden');
+        }
+    } else if (warningEl) {
+        // Hide if PDF or render failed or not applicable
+        warningEl.classList.add('hidden');
+    }
+
     if (typeof updateThumbnailFromMain === 'function') {
         updateThumbnailFromMain(page);
     }
-    // ------------------------------------------
 
     // 6. Draw Guides
     const guideScale = pixelsPerInch / 72;
@@ -2339,7 +2602,6 @@ function drawBlankPage(page, canvas, view) {
     const height = projectSpecs.dimensions.height;
     const bleed = 0.125;
 
-    // Consistent Scaling Logic
     const visualScale = (250 * viewerScale) / ((width + bleed*2) * 96);
     const pixelsPerInch = 96 * visualScale;
     const pixelDensity = 1.5;
@@ -2352,16 +2614,10 @@ function drawBlankPage(page, canvas, view) {
 
     canvas.style.width = `${totalW * pixelsPerInch}px`;
     canvas.style.height = `${totalH * pixelsPerInch}px`;
-
-    // Position logic
     canvas.style.top = '0px';
     
-    // 'view' is now available here
-    if (view === 'right') {
-        canvas.style.left = `-${bleed * pixelsPerInch}px`;
-    } else {
-        canvas.style.left = '0px';
-    }
+    if (view === 'right') canvas.style.left = `-${bleed * pixelsPerInch}px`;
+    else canvas.style.left = '0px';
 
     ctx.setTransform(pixelDensity, 0, 0, pixelDensity, 0, 0);
     ctx.scale(pixelsPerInch, pixelsPerInch);
@@ -2382,7 +2638,16 @@ function drawBlankPage(page, canvas, view) {
     ctx.font = 'italic 0.4px sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText("Drop File Here", totalW / 2, totalH / 2);
+    
+    // [FIX] Updated text to indicate usability
+    if (page.isAutoBlank) {
+        ctx.fillText("Required Blank", totalW / 2, totalH / 2 - 0.4);
+        ctx.font = '0.25px sans-serif';
+        ctx.fillText("(Binding Requirement)", totalW / 2, totalH / 2 + 0.1);
+        ctx.fillText("Drag File Here to Replace", totalW / 2, totalH / 2 + 0.5);
+    } else {
+        ctx.fillText("Drop File Here", totalW / 2, totalH / 2);
+    }
 
     // Draw Guides
     const guideScale = pixelsPerInch / 72; 
@@ -2410,23 +2675,22 @@ function drawBlankPage(page, canvas, view) {
 
 // Add 'forceScale' to the arguments (defaults to null)
 async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW, targetH, mode, align, pageIndex = 1, pageId = null, viewMode = 'full', panX = 0, panY = 0, forceScale = null) {
-    if (!sourceEntry) return;
+    if (!sourceEntry) return null;
 
     const isServer = sourceEntry.isServer;
     const file = isServer ? null : sourceEntry.file; 
     const status = sourceEntry.status || 'ready';
 
     if (status === 'error') {
-        ctx.fillStyle = '#fee2e2'; ctx.fillRect(targetX, targetY, targetW, targetH); return;
+        ctx.fillStyle = '#fee2e2'; ctx.fillRect(targetX, targetY, targetW, targetH); return null;
     }
     if (status === 'processing' || status === 'uploading') {
-        drawProcessingState(ctx, targetX, targetY, targetW, targetH); return;
+        drawProcessingState(ctx, targetX, targetY, targetW, targetH); return null;
     }
 
     const fileKey = isServer ? (sourceEntry.storagePath || sourceEntry.previewUrl || 'server_url') : (file ? file.name : 'unknown_file');
     const timestamp = (file && file.lastModified) ? file.lastModified : 'server_timestamp';
     
-    // Generate unique keys for the requested scale AND the full scale version
     const scaleKey = forceScale ? `_s${forceScale}` : '_full';
     const cacheKey = `${fileKey}_${pageIndex}_${timestamp}${scaleKey}`;
     const fullCacheKey = `${fileKey}_${pageIndex}_${timestamp}_full`; 
@@ -2434,34 +2698,50 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
     let imgBitmap;
 
     try {
-        // OPTIMIZATION: If requesting a thumbnail (forceScale), check if Full Version is already available/loading
-        // This prevents "double downloading" the PDF logic.
+        // OPTIMIZATION: If requesting a thumbnail (forceScale), check if Full Version is already available
         if (forceScale && (imageCache.has(fullCacheKey) || pendingLoadCache.has(fullCacheKey))) {
             imgBitmap = await fetchBitmapWithCache(fullCacheKey, async () => null); 
         } else {
-            // Normal Load
             imgBitmap = await fetchBitmapWithCache(cacheKey, async () => {
-                // Use 0.25 for thumbnails, 1.5 for server viewer, 1.0 for local viewer
                 const renderScale = forceScale || (isServer ? 1.5 : 1.0); 
 
                 if (isServer) {
                     if (!sourceEntry.previewUrl) return null; 
-                    let pdfDocPromise = remotePdfDocCache.get(fileKey);
-                    if (!pdfDocPromise) {
-                        const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
-                        pdfDocPromise = loadingTask.promise;
-                        remotePdfDocCache.set(fileKey, pdfDocPromise);
-                    }
-                    const pdf = await pdfDocPromise;
-                    const page = await pdf.getPage(pageIndex);
-                    const viewport = page.getViewport({ scale: renderScale }); 
-                    const tempCanvas = document.createElement('canvas');
-                    tempCanvas.width = viewport.width;
-                    tempCanvas.height = viewport.height;
-                    await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport: viewport }).promise;
-                    return createImageBitmap(tempCanvas);
+                    
+                    // [FIX] Check if URL points to an image or PDF based on extension
+                    const pathToCheck = (sourceEntry.storagePath || sourceEntry.previewUrl || '').toLowerCase();
+                    // Remove query params if any for check
+                    const cleanPath = pathToCheck.split('?')[0];
+                    
+                    const isImage = /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(cleanPath);
 
-                } else if (file && file.type === 'application/pdf') {
+                    if (isImage) {
+                        // --- Image Loader ---
+                        const resp = await fetch(sourceEntry.previewUrl);
+                        if (!resp.ok) throw new Error("Failed to fetch image");
+                        const blob = await resp.blob();
+                        return createImageBitmap(blob);
+                    } else {
+                        // --- PDF Loader ---
+                        const docCacheKey = sourceEntry.storagePath || sourceEntry.previewUrl;
+                        let pdfDocPromise = remotePdfDocCache.get(docCacheKey);
+                        if (!pdfDocPromise) {
+                            const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
+                            pdfDocPromise = loadingTask.promise;
+                            remotePdfDocCache.set(docCacheKey, pdfDocPromise);
+                        }
+                        const pdf = await pdfDocPromise;
+                        const page = await pdf.getPage(pageIndex);
+                        const viewport = page.getViewport({ scale: renderScale }); 
+                        const tempCanvas = document.createElement('canvas');
+                        tempCanvas.width = viewport.width;
+                        tempCanvas.height = viewport.height;
+                        await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport: viewport }).promise;
+                        return createImageBitmap(tempCanvas);
+                    }
+
+                } else if (file && (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))) {
+                    // Local PDF
                     let pdfDoc = pdfDocCache.get(file);
                     if (!pdfDoc) {
                         const arrayBuffer = await file.arrayBuffer(); 
@@ -2477,7 +2757,8 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
                     await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport: viewport }).promise;
                     return createImageBitmap(tempCanvas);
 
-                } else if (file && file.type.startsWith('image/')) {
+                } else if (file) {
+                    // Local Image Fallback
                     return createImageBitmap(file);
                 }
                 return null;
@@ -2485,10 +2766,9 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
         }
         
         if (!imgBitmap) {
-            ctx.fillStyle = '#f1f5f9'; ctx.fillRect(targetX, targetY, targetW, targetH); return;
+            ctx.fillStyle = '#f1f5f9'; ctx.fillRect(targetX, targetY, targetW, targetH); return null;
         }
 
-        // --- Draw Logic ---
         const srcW = imgBitmap.width;
         const srcH = imgBitmap.height;
         const srcRatio = srcW / srcH;
@@ -2514,9 +2794,17 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
         ctx.drawImage(imgBitmap, drawX, drawY, drawW, drawH);
         ctx.restore();
 
+        if (!forceScale) {
+            const cleanPath = isServer ? (sourceEntry.storagePath || sourceEntry.previewUrl || '').toLowerCase().split('?')[0] : (file ? file.name.toLowerCase() : '');
+            const isImg = /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(cleanPath) || (file && file.type.startsWith('image/'));
+            return { srcW, drawW, isImage: isImg };
+        }
+        return null;
+
     } catch (e) {
         console.error("Draw Render Error:", e);
         ctx.fillStyle = '#fee2e2'; ctx.fillRect(targetX, targetY, targetW, targetH);
+        return null;
     }
 }
 
@@ -2743,14 +3031,32 @@ function drawProcessingState(ctx, x, y, w, h) {
 async function renderCoverPreview() {
     if (!coverCanvas || !projectSpecs || !projectSpecs.dimensions) return;
 
-    // 1. Lock this render ID
     const myRenderId = ++coverRenderId;
+
+    // --- [FIX] 2. Zoom/Scroll Container Fix ---
+    // Switch parent from flex-center (clips overflow) to grid-center (allows scroll)
+    const parent = coverCanvas.parentElement;
+    if (parent) {
+        parent.classList.remove('flex', 'items-center', 'justify-center');
+        parent.classList.add('grid', 'place-items-center');
+    }
 
     const scale = 2; 
     const trimWidth = projectSpecs.dimensions.width;
     const trimHeight = projectSpecs.dimensions.height;
     const bleed = 0.125;
-    const spineWidth = calculateSpineWidth(projectSpecs);
+    
+    const paperObj = HARDCODED_PAPER_TYPES.find(p => p.name === projectSpecs.paperType);
+    const interiorCaliper = paperObj ? paperObj.caliper : 0.004;
+    const coverPaperObj = HARDCODED_PAPER_TYPES.find(p => p.name === projectSpecs.coverPaperType);
+    const coverCaliper = coverPaperObj ? coverPaperObj.caliper : (paperObj ? interiorCaliper : 0.004);
+    
+    const interiorSheets = Math.ceil(pages.length / 2);
+    let spineWidth = (interiorSheets * interiorCaliper) + (coverCaliper * 2);
+    
+    if (projectSpecs.binding === 'saddleStitch' || projectSpecs.binding === 'loose') spineWidth = 0;
+
+    if (spineWidthDisplay) spineWidthDisplay.textContent = spineWidth.toFixed(3);
 
     const totalWidth = (trimWidth * 2) + spineWidth + (bleed * 2);
     const totalHeight = trimHeight + (bleed * 2);
@@ -2758,7 +3064,6 @@ async function renderCoverPreview() {
     const basePPI = 40; 
     const pixelsPerInch = basePPI * coverZoom; 
     
-    // 2. REUSE Offscreen Canvas
     if (!_previewOffscreen) {
         _previewOffscreen = document.createElement('canvas');
         _previewCtx = _previewOffscreen.getContext('2d', { alpha: false });
@@ -2767,7 +3072,6 @@ async function renderCoverPreview() {
     const reqW = Math.ceil(totalWidth * pixelsPerInch * scale);
     const reqH = Math.ceil(totalHeight * pixelsPerInch * scale);
 
-    // Only resize if dimensions changed (avoids clearing memory unnecessarily)
     if (_previewOffscreen.width !== reqW || _previewOffscreen.height !== reqH) {
         _previewOffscreen.width = reqW;
         _previewOffscreen.height = reqH;
@@ -2775,7 +3079,6 @@ async function renderCoverPreview() {
 
     const ctx = _previewCtx;
 
-    // Clear & Setup
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, reqW, reqH);
@@ -2783,56 +3086,160 @@ async function renderCoverPreview() {
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
     ctx.scale(pixelsPerInch, pixelsPerInch);
 
-    const zoneBack = { x: 0, y: 0, w: bleed + trimWidth, h: totalHeight };
-    const zoneSpine = { x: bleed + trimWidth, y: 0, w: spineWidth, h: totalHeight };
-    const zoneFront = { x: bleed + trimWidth + spineWidth, y: 0, w: trimWidth + bleed, h: totalHeight };
-    const zoneBackPlusSpine = { x: 0, y: 0, w: zoneBack.w + zoneSpine.w, h: totalHeight };
-    const zoneFrontPlusSpine = { x: zoneSpine.x, y: 0, w: zoneSpine.w + zoneFront.w, h: totalHeight };
-    const spineMode = window.currentSpineMode || 'file';
+    // Define Zones
+    // zoneLeft = Back Cover area (0 to trim+bleed)
+    // zoneMid = Spine area
+    // zoneRight = Front Cover area
+    let zoneLeft = { x: 0, y: 0, w: bleed + trimWidth, h: totalHeight };
+    let zoneMid = { x: bleed + trimWidth, y: 0, w: spineWidth, h: totalHeight };
+    let zoneRight = { x: bleed + trimWidth + spineWidth, y: 0, w: trimWidth + bleed, h: totalHeight };
 
-    // --- DRAWING WITH ABORT CHECKS ---
+    let leftSource, midSource, rightSource;
+    let leftSettings, midSettings, rightSettings;
+    let drawGlueArea = false;
+    let skipMidDraw = false; // Flag to skip drawing the spine separately if it's merged
+
+    if (coverPreviewMode === 'inside') {
+        leftSource = coverSources['file-cover-inside-front'];
+        leftSettings = coverSettings['file-cover-inside-front'] || { pageIndex: 1, scaleMode: 'fill' };
+        
+        rightSource = coverSources['file-cover-inside-back'];
+        rightSettings = coverSettings['file-cover-inside-back'] || { pageIndex: 1, scaleMode: 'fill' };
+        
+        drawGlueArea = (projectSpecs.binding === 'perfectBound' && spineWidth > 0);
+        midSource = null; 
+    } else {
+        leftSource = coverSources['file-cover-back'];
+        leftSettings = coverSettings['file-cover-back'] || { pageIndex: 1, scaleMode: 'fill' };
+        
+        rightSource = coverSources['file-cover-front'];
+        rightSettings = coverSettings['file-cover-front'] || { pageIndex: 1, scaleMode: 'fill' };
+        
+        const spineMode = window.currentSpineMode || 'file';
+
+        if (spineMode === 'file') {
+            midSource = coverSources['file-spine'];
+            midSettings = coverSettings['file-spine'] || { pageIndex: 1, scaleMode: 'fill' };
+        } else {
+            // --- [FIX] 1. Spine Stretch Logic ---
+            if (spineMode === 'wrap-front-stretch') {
+                // Expand Front Cover Zone to include Spine
+                zoneRight.x = zoneMid.x; // Start where spine starts
+                zoneRight.w = zoneMid.w + zoneRight.w; // Combine widths
+                // Force stretch mode for the preview drawing if not set by user, 
+                // but usually user setting applies. For "stretch spine", we imply the image stretches.
+                // However, if we just change the zone, the existing 'fill' or 'fit' logic will apply to the NEW zone.
+                // If the user wants "Stretch", we should probably force scaleMode='stretch' for this render?
+                // Let's stick to the user's scaleMode for the cover, but applying it to the larger zone.
+                skipMidDraw = true;
+            } else if (spineMode === 'wrap-back-stretch') {
+                // Expand Back Cover Zone to include Spine
+                zoneLeft.w = zoneLeft.w + zoneMid.w; // Combine widths
+                skipMidDraw = true;
+            } else if (spineMode.includes('wrap') || spineMode.includes('mirror')) {
+                // Mirror/Wrap uses the midSource separately
+                const isFrontSource = spineMode.includes('front');
+                midSource = isFrontSource ? rightSource : leftSource;
+                midSettings = isFrontSource ? rightSettings : leftSettings;
+            }
+        }
+    }
+
+    // --- DRAWING ---
     
-    // 1. Back Cover
-    if (spineMode === 'wrap-back-stretch') {
-        await drawStretched(ctx, coverSources['file-cover-back'], zoneBack, zoneBackPlusSpine, 'left', coverSettings['file-cover-back'].pageIndex);
-    } else {
-        await drawImageOnCanvas(ctx, coverSources['file-cover-back'], zoneBack.x, zoneBack.y, zoneBack.w, zoneBack.h, coverSettings['file-cover-back'].pageIndex, coverSettings['file-cover-back'].scaleMode);
-    }
-    if (myRenderId !== coverRenderId) return; // Abort if new zoom happened
+    // Left Panel (Back)
+    await drawImageOnCanvas(ctx, leftSource, zoneLeft.x, zoneLeft.y, zoneLeft.w, zoneLeft.h, leftSettings.pageIndex, leftSettings.scaleMode);
+    if (myRenderId !== coverRenderId) return;
 
-    // 2. Spine
-    if (spineMode === 'file') {
-        await drawImageOnCanvas(ctx, coverSources['file-spine'], zoneSpine.x, zoneSpine.y, zoneSpine.w, zoneSpine.h, coverSettings['file-spine'].pageIndex, coverSettings['file-spine'].scaleMode);
-    } else if (spineMode === 'wrap-front-stretch') {
-        await drawStretched(ctx, coverSources['file-cover-front'], zoneSpine, zoneFrontPlusSpine, 'right', coverSettings['file-cover-front'].pageIndex);
-    } else if (spineMode === 'wrap-back-stretch') {
-        await drawStretched(ctx, coverSources['file-cover-back'], zoneSpine, zoneBackPlusSpine, 'left', coverSettings['file-cover-back'].pageIndex);
-    } else if (spineMode.includes('wrap')) {
-        const isFrontSource = spineMode.includes('front');
-        const sourceEntry = isFrontSource ? coverSources['file-cover-front'] : coverSources['file-cover-back'];
-        const settings = isFrontSource ? coverSettings['file-cover-front'] : coverSettings['file-cover-back'];
-        await drawWrapper(ctx, sourceEntry, zoneSpine.x, zoneSpine.y, zoneSpine.w, zoneSpine.h, 'mirror', isFrontSource, 0, settings.pageIndex);
-    }
-    if (myRenderId !== coverRenderId) return; // Abort
+    // Right Panel (Front)
+    await drawImageOnCanvas(ctx, rightSource, zoneRight.x, zoneRight.y, zoneRight.w, zoneRight.h, rightSettings.pageIndex, rightSettings.scaleMode);
+    if (myRenderId !== coverRenderId) return;
 
-    // 3. Front Cover
-    if (spineMode === 'wrap-front-stretch') {
-        await drawStretched(ctx, coverSources['file-cover-front'], zoneFront, zoneFrontPlusSpine, 'right', coverSettings['file-cover-front'].pageIndex);
-    } else {
-        await drawImageOnCanvas(ctx, coverSources['file-cover-front'], zoneFront.x, zoneFront.y, zoneFront.w, zoneFront.h, coverSettings['file-cover-front'].pageIndex, coverSettings['file-cover-front'].scaleMode);
-    }
-    if (myRenderId !== coverRenderId) return; // Abort
+    // Middle Panel (Spine OR Glue)
+    if (coverPreviewMode === 'inside' && drawGlueArea) {
+        // --- [FIX] 3. Glue Area Masking ---
+        // Calculate true glue width (Spine + 0.125 left + 0.125 right)
+        // 0.125 inches in pixels = 0.125 * pixelsPerInch
+        // Wait, coordinates here are in *Points* (scaled by pixelsPerInch logic) 
+        // Actually, totalWidth is in INCHES (calculated at top).
+        // So we multiply by pixelsPerInch to get drawing units.
+        
+        const overlap = 0.125; 
+        const glueW = (spineWidth + (overlap * 2)) * pixelsPerInch; // Convert inches to pixels
+        
+        // Center of the spine in pixels
+        const spineCenterX = (zoneMid.x + (zoneMid.w / 2)) * pixelsPerInch; 
+        
+        // Left edge of glue area
+        const glueX = spineCenterX - (glueW / 2);
+        
+        // Draw Solid Mask (White/Paper Color)
+        // Note: ctx is already scaled by pixelsPerInch, so we use inches directly?
+        // No, previous lines used `zoneLeft.w` (Inches) passed to `drawImageOnCanvas` which handles pixels?
+        // `drawImageOnCanvas` receives (x,y,w,h) in INCHES (zoneLeft.w etc).
+        // But inside `drawImageOnCanvas`, it converts using `pixelsPerInch`? 
+        // No, `drawImageOnCanvas` expects TARGET coordinates. 
+        // Let's look at `ctx.scale(pixelsPerInch, pixelsPerInch)`.
+        // YES, the context is scaled. So we can draw in INCHES.
+        
+        const glueW_Inches = spineWidth + (overlap * 2);
+        const glueX_Inches = zoneMid.x - overlap; // Start 0.125" before spine starts
+        
+        ctx.save();
+        ctx.fillStyle = '#f8fafc'; // Very light gray/white to mask
+        ctx.fillRect(glueX_Inches, 0, glueW_Inches, totalHeight);
+        
+        // Add text (scaled to be readable)
+        ctx.fillStyle = '#94a3b8';
+        // Font size: 10pt size relative to scale
+        ctx.font = `bold ${0.15}px sans-serif`; 
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        
+        ctx.translate(glueX_Inches + (glueW_Inches/2), totalHeight/2);
+        ctx.rotate(-Math.PI/2);
+        ctx.fillText("GLUE AREA (NO PRINT)", 0, 0);
+        ctx.restore();
 
-    // 4. Guides (Fast, no await needed)
+        // Draw Red Safety Lines indicating the overlap
+        ctx.lineWidth = 1 / pixelsPerInch;
+        ctx.strokeStyle = 'rgba(255, 0, 0, 0.5)';
+        ctx.setLineDash([4 / pixelsPerInch, 2 / pixelsPerInch]);
+        
+        ctx.beginPath();
+        ctx.moveTo(glueX_Inches, 0);
+        ctx.lineTo(glueX_Inches, totalHeight);
+        ctx.stroke();
+        
+        ctx.beginPath();
+        ctx.moveTo(glueX_Inches + glueW_Inches, 0);
+        ctx.lineTo(glueX_Inches + glueW_Inches, totalHeight);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+    } else if (coverPreviewMode === 'outside' && !skipMidDraw) {
+        const spineMode = window.currentSpineMode || 'file';
+        
+        if (spineMode === 'file') {
+            await drawImageOnCanvas(ctx, midSource, zoneMid.x, zoneMid.y, zoneMid.w, zoneMid.h, midSettings.pageIndex, midSettings.scaleMode);
+        } else if (spineMode.includes('wrap') || spineMode.includes('mirror')) {
+             const isFrontSource = spineMode.includes('front');
+             const sourceEntry = isFrontSource ? rightSource : leftSource;
+             const settings = isFrontSource ? rightSettings : leftSettings;
+             await drawWrapper(ctx, sourceEntry, zoneMid.x, zoneMid.y, zoneMid.w, zoneMid.h, 'mirror', isFrontSource, 0, settings.pageIndex);
+        }
+    }
+    if (myRenderId !== coverRenderId) return;
+
+    // 4. Guides
     ctx.lineWidth = 1 / pixelsPerInch; 
     const xTrimBackLeft = bleed;
     const xSpineLeft = bleed + trimWidth;
     const xSpineRight = bleed + trimWidth + spineWidth;
     const yBleedTop = bleed;
 
-    // Bleed Fill
     ctx.save();
-    ctx.fillStyle = 'rgba(255, 0, 0, 0.2)';
+    ctx.fillStyle = 'rgba(255, 0, 0, 0.1)'; 
     ctx.beginPath();
     ctx.rect(0, 0, totalWidth, totalHeight);
     ctx.rect(bleed, bleed, trimWidth, trimHeight); 
@@ -2841,7 +3248,6 @@ async function renderCoverPreview() {
     ctx.fill("evenodd");
     ctx.restore();
 
-    // Trim Lines
     ctx.strokeStyle = '#000000';
     ctx.beginPath(); 
     ctx.rect(bleed, bleed, trimWidth, trimHeight);
@@ -2849,7 +3255,6 @@ async function renderCoverPreview() {
     ctx.rect(bleed + trimWidth + spineWidth, bleed, trimWidth, trimHeight);
     ctx.stroke();
 
-    // Safe Area
     const safe = 0.125;
     ctx.strokeStyle = 'rgba(34, 197, 94, 0.5)';
     ctx.beginPath();
@@ -2860,17 +3265,19 @@ async function renderCoverPreview() {
     }
     ctx.stroke();
 
-    // 5. COMMIT TO MAIN CANVAS
+    // 5. COMMIT
     if (myRenderId !== coverRenderId) return;
 
-    if (spineWidthDisplay) spineWidthDisplay.textContent = spineWidth.toFixed(3);
-    
-    // Update Placeholder visibility... (Same logic as before)
     const placeholderEl = document.getElementById('cover-preview-placeholder');
     if (placeholderEl) {
-        const slots = ['file-cover-front', 'file-cover-back', 'file-spine'];
-        const hasContent = slots.some(slot => coverSources[slot] || selectedFiles[slot]);
-        if (hasContent) placeholderEl.style.display = 'none';
+        let hasContent = false;
+        if (coverPreviewMode === 'inside') {
+            hasContent = (coverSources['file-cover-inside-front'] || coverSources['file-cover-inside-back']);
+        } else {
+            hasContent = (coverSources['file-cover-front'] || coverSources['file-cover-back'] || coverSources['file-spine']);
+        }
+        
+        if (hasContent || (coverPreviewMode === 'inside' && spineWidth > 0)) placeholderEl.style.display = 'none';
         else {
             placeholderEl.style.display = 'flex';
             placeholderEl.innerHTML = '<div class="text-center"><p class="text-gray-500 text-sm">Preview will update automatically</p></div>';
@@ -2998,14 +3405,15 @@ specsForm.addEventListener('submit', async (e) => {
         if (!selectedType) {
             throw new Error('Please select a project type.');
         }
-        const typeValue = selectedType.value; // 'loose', 'saddleStitch', 'perfectBound'
+        const typeValue = selectedType.value; 
 
         const sizePreset = specSizePreset.value;
-        let dimensionsVal; // For Firestore
-        let localDimensions; // For local state
+        let dimensionsVal; 
+        let localDimensions; 
 
         if (!sizePreset) throw new Error("Please select a finished size.");
 
+        // Resolve Dimensions
         if (sizePreset === 'custom') {
             const width = parseFloat(specWidth.value);
             const height = parseFloat(specHeight.value);
@@ -3015,74 +3423,108 @@ specsForm.addEventListener('submit', async (e) => {
                 throw new Error('Invalid custom dimensions');
             }
 
-            dimensionsVal = {
-                width: width,
-                height: height,
-                units: unit
-            };
-            // Normalize for local viewer immediately
-            localDimensions = resolveDimensions(dimensionsVal);
+            dimensionsVal = { width, height, units: unit };
         } else {
-            // Standard Size Key (e.g., 'A4')
-            dimensionsVal = sizePreset;
-            localDimensions = resolveDimensions(dimensionsVal);
+            dimensionsVal = resolveDimensions(sizePreset);
         }
 
+        localDimensions = resolveDimensions(dimensionsVal);
+
+        // Prepare Specs Update
         const specsUpdate = {
             'projectType': typeValue === 'loose' ? 'single' : 'booklet',
-            'specs.dimensions': dimensionsVal
+            'specs.dimensions': dimensionsVal,
+            'specs.binding': typeValue === 'loose' ? 'loose' : typeValue,
+            'specs.pageCount': 0, // Dynamic
+            'specs.paperType': specPaper.value 
         };
 
-        // Set Binding Logic
         if (typeValue === 'loose') {
-            specsUpdate['specs.binding'] = 'loose';
+            specsUpdate['specs.coverPaperType'] = null;
         } else {
-            specsUpdate['specs.binding'] = typeValue; // 'saddleStitch' or 'perfectBound'
-            specsUpdate['specs.pageCount'] = parseInt(specPageCount.value) || 0;
-
-            if (typeValue === 'perfectBound') {
-                specsUpdate['specs.paperType'] = specPaper.value;
-                specsUpdate['specs.coverPaperType'] = specCoverPaper.value;
-            }
+            if (!specCoverPaper.value) throw new Error("Please select a cover paper type.");
+            specsUpdate['specs.coverPaperType'] = specCoverPaper.value;
         }
 
+        // Save to Firestore
         const projectRef = doc(db, 'projects', projectId);
         await updateDoc(projectRef, specsUpdate);
 
-        // Reload page or Update State locally to avoid reload
+        // Update Local State
         projectSpecs = {
             dimensions: localDimensions,
             binding: specsUpdate['specs.binding'],
-            pageCount: specsUpdate['specs.pageCount'],
+            pageCount: 0,
             paperType: specsUpdate['specs.paperType'],
             coverPaperType: specsUpdate['specs.coverPaperType']
         };
         projectType = specsUpdate['projectType'];
 
-        // Hide modal and show upload UI (Logic handled in init mostly, but we trigger refresh)
-        specsModal.classList.add('hidden');
-        uploadContainer.classList.remove('hidden');
-
-        // Refresh UI logic
-        refreshBuilderUI();
-
-        await initializeBuilder();
+        // --- MODE LOGIC ---
+        if (uploadMode === 'professional') {
+            // 1. Hide Specs Modal
+            specsModal.classList.add('hidden');
+            
+            // 2. Show Professional UI (NOT the standard upload container)
+            professionalUploadUI.classList.remove('hidden');
+            
+            // 3. Configure Pro UI based on binding
+            if (projectType === 'single') {
+                // Hide cover input for loose sheets
+                document.getElementById('pro-cover-group').classList.add('hidden');
+            } else {
+                // Show cover input for booklets
+                document.getElementById('pro-cover-group').classList.remove('hidden');
+            }
+        } else {
+            // 1. Hide Specs Modal
+            specsModal.classList.add('hidden');
+            
+            // 2. Show Standard Builder UI
+            uploadContainer.classList.remove('hidden');
+            
+            // 3. Initialize Builder
+            refreshBuilderUI();
+            await initializeBuilder();
+        }
 
     } catch (err) {
         console.error("Error saving specs:", err);
         alert("Failed to save specifications: " + err.message);
     } finally {
         saveSpecsBtn.disabled = false;
-        saveSpecsBtn.textContent = 'Save & Continue';
+        // Reset button text based on current mode (in case validation failed)
+        saveSpecsBtn.textContent = uploadMode === 'professional' ? 'Continue to Upload' : 'Save & Start Builder';
     }
 });
 
 function refreshBuilderUI() {
     // Update Header Nav
+    if(professionalUploadUI) professionalUploadUI.classList.add('hidden');
     if (navBackBtn) navBackBtn.classList.remove('hidden');
 
-    // --- 1. INJECT AUTOSAVE STATUS INDICATOR ---
+    // 1. Inject "Edit Specs" Button
     const headerActions = document.getElementById('submit-button')?.parentElement;
+    if (headerActions) {
+        const existingEditBtn = document.getElementById('edit-specs-btn');
+        if (existingEditBtn) existingEditBtn.remove();
+
+        const editBtn = document.createElement('button');
+        editBtn.id = 'edit-specs-btn';
+        editBtn.type = 'button';
+        editBtn.className = 'mr-4 text-xs bg-slate-700 hover:bg-slate-600 text-white px-3 py-2 rounded transition-colors border border-slate-600';
+        editBtn.innerHTML = 'Edit Project Specs';
+        editBtn.onclick = () => {
+            uploadContainer.classList.add('hidden');
+            specsModal.classList.remove('hidden');
+            populateSpecsForm();
+        };
+        
+        const refNode = document.getElementById('save-progress-btn') || document.getElementById('submit-button');
+        headerActions.insertBefore(editBtn, refNode);
+    }
+
+    // 2. Inject Autosave Status Indicator
     if (headerActions && !document.getElementById('save-progress-btn')) {
         const statusIndicator = document.createElement('button'); 
         statusIndicator.id = 'save-progress-btn';
@@ -3096,7 +3538,7 @@ function refreshBuilderUI() {
         headerActions.insertBefore(statusIndicator, document.getElementById('submit-button'));
     }
 
-    // --- 2. INJECT SPINE MODE SELECTOR ---
+    // 3. Inject Spine Mode Selector
     const spineGroup = document.getElementById('spine-upload-group');
     if (spineGroup && !document.getElementById('spine-mode-select')) {
         const wrapper = document.createElement('div');
@@ -3114,15 +3556,12 @@ function refreshBuilderUI() {
         spineGroup.insertBefore(wrapper, spineGroup.querySelector('.drop-zone'));
 
         const selectEl = document.getElementById('spine-mode-select');
-
-        // --- RESTORE VALUE IF EXISTS ---
         if (window.currentSpineMode) {
             selectEl.value = window.currentSpineMode;
             const dropZone = spineGroup.querySelector('.drop-zone');
             if (window.currentSpineMode === 'file') dropZone.classList.remove('hidden');
             else dropZone.classList.add('hidden');
         }
-
         selectEl.addEventListener('change', (e) => {
             window.currentSpineMode = e.target.value;
             const dropZone = spineGroup.querySelector('.drop-zone');
@@ -3133,8 +3572,10 @@ function refreshBuilderUI() {
         });
     }
 
-    // --- 3. CONFIGURE TABS & TOOLBARS ---
-    // ... (Same as your existing code) ...
+    // 4. Setup Cover Preview Tabs (Outside/Inside)
+    setupCoverPreviewTabs();
+
+    // 5. Configure Tabs & Toolbars based on Project Type
     if (projectType === 'single') {
         if (builderTabs) builderTabs.classList.add('hidden');
         if (contentCover) contentCover.classList.add('hidden');
@@ -3171,7 +3612,12 @@ function refreshBuilderUI() {
             if (spineGroup) spineGroup.classList.remove('hidden');
         }
 
-        if (tabInterior) tabInterior.click();
+        if (tabInterior) {
+             // Ensure a tab is active
+             if (!tabInterior.classList.contains('text-indigo-400') && !tabCover.classList.contains('text-indigo-400')) {
+                  tabInterior.click();
+             }
+        }
     }
 }
 
@@ -3293,22 +3739,62 @@ async function drawWrapper(ctx, sourceEntry, targetX, targetY, targetW, targetH,
     ctx.restore();
 }
 
+function updateSelectionVisuals() {
+    const selectedRadio = document.querySelector('input[name="projectType"]:checked');
+    const selectedValue = selectedRadio ? selectedRadio.value : null;
+
+    const types = ['loose', 'saddleStitch', 'perfectBound'];
+
+    types.forEach(type => {
+        const label = document.getElementById(`label-${type}`);
+        const btn = document.querySelector(`.pro-upload-btn[data-type="${type}"]`);
+        
+        // Reset Base Classes
+        if (label) {
+            label.className = "cursor-pointer relative group p-5 rounded-xl border-2 border-slate-700 bg-slate-800/50 hover:bg-slate-800 transition-all text-center h-full flex flex-col items-center justify-center gap-3 min-h-[180px]";
+            // Reset Icon color
+            const svg = label.querySelector('svg');
+            if(svg) svg.classList.remove('text-indigo-400');
+        }
+        if (btn) {
+            btn.className = "pro-upload-btn w-full py-2 text-xs font-medium text-gray-400 bg-slate-900/50 border border-slate-700 rounded-lg hover:bg-slate-800 hover:text-white hover:border-gray-500 transition-colors flex items-center justify-center gap-1";
+        }
+
+        // Apply Active State
+        if (type === selectedValue) {
+            if (uploadMode === 'builder') {
+                // Highlight Card
+                if (label) {
+                    label.classList.remove('border-slate-700', 'bg-slate-800/50');
+                    label.classList.add('border-indigo-500', 'bg-indigo-900/20', 'ring-1', 'ring-indigo-500');
+                    const svg = label.querySelector('svg');
+                    if(svg) svg.classList.add('text-indigo-400');
+                }
+            } else if (uploadMode === 'professional') {
+                // Highlight Button
+                if (btn) {
+                    btn.classList.remove('text-gray-400', 'bg-slate-900/50', 'border-slate-700');
+                    btn.classList.add('bg-indigo-600', 'text-white', 'border-indigo-500', 'ring-1', 'ring-indigo-400');
+                }
+                // Keeping Card somewhat active? No, user wants distinct separation.
+                // We leave the card dim to show "Visual Builder" is NOT selected.
+            }
+        }
+    });
+}
+
 // --- Main Initialization (Trust-Optimized) ---
 async function init() {
-    // FIX: Clear lingering inputs
     if (insertFileInput) insertFileInput.value = '';
     if (hiddenInteriorInput) hiddenInteriorInput.value = '';
     if (fileInteriorDrop) fileInteriorDrop.value = '';
     
     populateSelects();
 
-    // 1. Show Loading State immediately with specific text
     loadingState.classList.remove('hidden');
     uploadContainer.classList.add('hidden');
     
-    // Optional: Update loading text to be more descriptive
     const loadingText = loadingState.querySelector('p') || loadingState;
-    // Store original text to revert later if needed, or just set it
     if(loadingText) loadingText.textContent = "Accessing secure upload portal...";
 
     const params = new URLSearchParams(window.location.search);
@@ -3321,9 +3807,6 @@ async function init() {
     }
 
     try {
-        // 2. Authenticate
-        // If guest token is present, we must use it to sign in as guest.
-        // If no token, we assume the user is already logged in (Admin/Owner via dashboard).
         if (guestToken) {
             const authenticateGuest = httpsCallable(functions, 'authenticateGuest');
             const authResult = await authenticateGuest({ projectId, guestToken });
@@ -3333,7 +3816,6 @@ async function init() {
             }
             await signInWithCustomToken(auth, authResult.data.token);
         } else {
-            // Wait for auth state to settle
             await new Promise((resolve, reject) => {
                 const unsubscribe = onAuthStateChanged(auth, (user) => {
                     unsubscribe();
@@ -3341,7 +3823,6 @@ async function init() {
                         currentUser = user;
                         resolve();
                     } else {
-                        // Redirect to login if not signed in
                         window.location.href = 'index.html';
                         reject(new Error("User not signed in"));
                     }
@@ -3349,36 +3830,26 @@ async function init() {
             });
         }
 
-        // Update current user ref after sign in
         currentUser = auth.currentUser;
 
-        // Check if Admin (for UI logic)
         if (currentUser) {
             try {
                 const userDoc = await getDoc(doc(db, "users", currentUser.uid));
                 if (userDoc.exists() && userDoc.data().role === 'admin') {
                     isAdmin = true;
                 }
-            } catch (e) {
-                // Guests can't read user docs, so this error is expected for them. Ignore.
-            }
+            } catch (e) {}
         }
 
-        // 3. Locking Mechanism
         const lockAcquired = await acquireLock();
         if (!lockAcquired) {
-            // UI is already handled in acquireLock (showing Locked State)
             loadingState.classList.add('hidden');
-            return; // STOP HERE
+            return;
         }
 
-        // Start Heartbeat
         startLockHeartbeat();
-
-        // Setup Exit Handlers
         window.addEventListener('beforeunload', releaseLock);
 
-        // 4. Fetch Project Data
         const projectRef = doc(db, 'projects', projectId);
         const projectSnap = await getDoc(projectRef);
 
@@ -3396,48 +3867,39 @@ async function init() {
             projectSpecs.dimensions = resolveDimensions(projectSpecs.dimensions);
         }
 
-        // 5. UI Setup
         bookletUploadSection.classList.remove('hidden');
         updateFileName('file-cover-front', 'file-name-cover-front');
         updateFileName('file-spine', 'file-name-spine');
         updateFileName('file-cover-back', 'file-name-cover-back');
+        // [FIX] Wire up new inputs
+        updateFileName('file-cover-inside-front', 'file-name-cover-inside-front');
+        updateFileName('file-cover-inside-back', 'file-name-cover-inside-back');
 
-        // 6. Logic Check
         let specsMissing = false;
         let dimValid = false;
-        if (typeof projectSpecs.dimensions === 'object' && projectSpecs.dimensions.width) dimValid = true;
+        if (projectSpecs && projectSpecs.dimensions) {
+             if (typeof projectSpecs.dimensions === 'object' && projectSpecs.dimensions.width > 0) dimValid = true;
+        }
         if (!dimValid || !projectSpecs.binding) specsMissing = true;
 
         if (specsMissing) {
-            // If specs are missing, we can lift the curtain immediately to show the form
             loadingState.classList.add('hidden');
             specsModal.classList.remove('hidden');
             populateSpecsForm();
         } else {
-            // 7. RESTORE STATE (Behind the curtain)
             if(loadingText) loadingText.textContent = "Restoring project files...";
             
-            // Refresh UI elements (Tabs, buttons)
             refreshBuilderUI();
-
-            // Await the FULL restoration (downloading URLs)
-            await restoreBuilderState(); 
-
-            // Initialize Builder (Creates the DOM elements for the viewer)
             await initializeBuilder();
 
-            // 8. CRITICAL: Force the first page to paint pixels
             if (pages.length > 0) {
                 if(loadingText) loadingText.textContent = "Rendering preview...";
-                // This now ACTUALLY renders the pixels, it doesn't just wait
                 await waitForFirstPageRender(); 
             }
 
-            // 9. REVEAL (The Perfect Frame)
             loadingState.classList.add('hidden');
             uploadContainer.classList.remove('hidden');
             
-            // Recalculate layout now that elements have dimension
             setTimeout(() => {
                 fitCoverToView();
                 renderMinimap();
@@ -3499,11 +3961,9 @@ async function restoreBuilderState() {
         const state = docSnap.data().guestBuilderState;
         if (!state) return;
 
-        // Restore Data Models
         pages = state.pages || [];
         if (state.coverSettings) Object.assign(coverSettings, state.coverSettings);
         
-        // Restore Spine UI
         if (state.spineMode) {
             window.currentSpineMode = state.spineMode;
             const spineSelect = document.getElementById('spine-mode-select');
@@ -3517,20 +3977,20 @@ async function restoreBuilderState() {
             }
         }
 
-        // Restore Source Files (Parallelized for Speed)
         if (state.sourceFiles) {
             const entries = Object.entries(state.sourceFiles);
-            
-            // Create an array of promises
             const restorePromises = entries.map(async ([id, meta]) => {
                 try {
-                    // We await individual URL fetches here
                     const url = await getDownloadURL(ref(storage, meta.storagePath));
                     
                     if (id.startsWith('cover_')) {
-                        // Handle Cover Logic
-                        let inputId = (id === 'cover_front') ? 'file-cover-front' : 
-                                      (id === 'cover_spine') ? 'file-spine' : 'file-cover-back';
+                        // [FIX] Handle new keys for restoration
+                        let inputId = null;
+                        if (id === 'cover_front') inputId = 'file-cover-front';
+                        else if (id === 'cover_spine') inputId = 'file-spine';
+                        else if (id === 'cover_back') inputId = 'file-cover-back';
+                        else if (id === 'cover_inside_front') inputId = 'file-cover-inside-front';
+                        else if (id === 'cover_inside_back') inputId = 'file-cover-inside-back';
                         
                         if (inputId) {
                             coverSources[inputId] = {
@@ -3539,17 +3999,16 @@ async function restoreBuilderState() {
                                 previewUrl: url,
                                 storagePath: meta.storagePath 
                             };
-                            // Update UI Text immediately
-                            const displayId = (id === 'cover_front') ? 'file-name-cover-front' :
-                                              (id === 'cover_spine') ? 'file-name-spine' : 'file-name-cover-back';
+                            // Map back to display ID
+                            let displayId = inputId.replace('file-', 'file-name-');
                             const el = document.getElementById(displayId);
-                            if (el) el.textContent = "Restored File";
-
-                            // Setup controls (async, don't block)
+                            if (el) {
+                                el.textContent = "Restored File";
+                                el.classList.remove('hidden');
+                            }
                             createCoverControls(inputId, url);
                         }
                     } else {
-                        // Handle Interior Logic
                         sourceFiles[id] = {
                             status: 'ready',
                             previewUrl: url,
@@ -3561,9 +4020,6 @@ async function restoreBuilderState() {
                     console.warn(`Failed to restore source ${id}`, e);
                 }
             });
-
-            // BLOCK until all URLs are retrieved.
-            // This ensures when the UI reveals, we have every URL needed to render.
             await Promise.all(restorePromises);
         }
 
@@ -3584,48 +4040,40 @@ async function syncProjectState(statusLabel) {
     uploadProgress.classList.remove('hidden');
     progressText.textContent = 'Preparing files...';
 
-    // 1. Identify Active Source IDs (Pages + Covers)
     const activeSourceIds = new Set();
     pages.forEach(p => {
         if (p.sourceFileId) activeSourceIds.add(p.sourceFileId);
     });
 
-    // 2. Categorize Sources (New vs Existing)
-    const filesToUpload = []; // { id, file, type }
-    const allSourcePaths = {}; // id -> storagePath (Final Map)
+    const filesToUpload = []; 
+    const allSourcePaths = {}; 
 
-    // Helper to check source
     const checkSource = (id, src, type) => {
         if (!src) return;
-        
-        // If we already have a storage path recorded in memory, use it (skip upload)
         if (src.storagePath) {
             allSourcePaths[id] = src.storagePath;
             return;
         }
-
-        // Otherwise, check if we have a file to upload
         if (src instanceof File) {
             filesToUpload.push({ id, file: src, type });
         } else if (src.file instanceof File) {
             filesToUpload.push({ id, file: src.file, type });
         } else if (selectedFiles[id]) {
-            // Legacy fallback
             filesToUpload.push({ id, file: selectedFiles[id], type });
         }
     };
 
-    // Check Interior Files
     activeSourceIds.forEach(id => checkSource(id, sourceFiles[id], 'interior_source'));
 
-    // Check Cover Files (Booklet Only)
     if (projectType === 'booklet') {
         checkSource('cover_front', coverSources['file-cover-front'], 'cover_front');
         checkSource('cover_spine', coverSources['file-spine'], 'cover_spine');
         checkSource('cover_back', coverSources['file-cover-back'], 'cover_back');
+        // [FIX] Add new checks
+        checkSource('cover_inside_front', coverSources['file-cover-inside-front'], 'cover_inside_front');
+        checkSource('cover_inside_back', coverSources['file-cover-inside-back'], 'cover_inside_back');
     }
 
-    // 3. Upload New Files
     let completed = 0;
     const total = filesToUpload.length;
 
@@ -3639,18 +4087,20 @@ async function syncProjectState(statusLabel) {
             progressText.textContent = `Uploading ${item.file.name}...`;
             
             await uploadBytesResumable(storageRef, item.file);
-            
-            // Update Master Map
             allSourcePaths[item.id] = storagePath;
             
-            // UPDATE MEMORY: Store the path so we don't re-upload next time
             if (item.type === 'interior_source' && sourceFiles[item.id]) {
                 sourceFiles[item.id].storagePath = storagePath;
             } else if (item.type.startsWith('cover_')) {
-                // Map remote ID back to local slot ID for updating memory
-                const localSlot = item.type === 'cover_front' ? 'file-cover-front' : 
-                                  item.type === 'cover_spine' ? 'file-spine' : 'file-cover-back';
-                if (coverSources[localSlot]) {
+                // Reverse map to update memory
+                let localSlot = null;
+                if (item.type === 'cover_front') localSlot = 'file-cover-front';
+                else if (item.type === 'cover_spine') localSlot = 'file-spine';
+                else if (item.type === 'cover_back') localSlot = 'file-cover-back';
+                else if (item.type === 'cover_inside_front') localSlot = 'file-cover-inside-front';
+                else if (item.type === 'cover_inside_back') localSlot = 'file-cover-inside-back';
+
+                if (localSlot && coverSources[localSlot]) {
                     coverSources[localSlot].storagePath = storagePath;
                 }
             }
@@ -3662,7 +4112,6 @@ async function syncProjectState(statusLabel) {
         }
     }
 
-    // 4. Save State to Firestore
     progressText.textContent = 'Saving Project State...';
     await persistStateAfterSubmit(allSourcePaths, statusLabel);
     
@@ -3705,18 +4154,56 @@ async function handleSaveDraft() {
 async function handleUpload(e) {
     if (e) e.preventDefault();
 
+    const binding = projectSpecs?.binding;
+    const totalInteriorPages = pages.length;
+    const COVER_PAGES = 4; 
+
+    if (binding === 'saddleStitch') {
+        const MAX_TOTAL = 24;
+        const MAX_INTERIOR = MAX_TOTAL - COVER_PAGES; 
+        if (totalInteriorPages > MAX_INTERIOR) {
+            alert(`Page Count Limit Exceeded.\n\nSaddle Stitch books are limited to ${MAX_TOTAL} total pages (Cover + Interior).\n\nYou currently have ${totalInteriorPages} interior pages + 4 cover pages = ${totalInteriorPages + 4} Total.\n\nPlease remove ${totalInteriorPages - MAX_INTERIOR} pages.`);
+            return;
+        }
+    } 
+    
+    balancePages();
+
     submitButton.disabled = true;
     submitButton.textContent = 'Processing...';
 
     try {
-        // 1. Upload & Save State (Mark as processing)
         const allSourcePaths = await syncProjectState('submitted_processing');
         const progressText = document.getElementById('progress-text');
-
-        // 2. Construct Metadata for Backend
         const bookletMetadata = [];
 
-        // Pages
+        // 1. Calculate & Save Cover Dimensions
+        const paperObj = HARDCODED_PAPER_TYPES.find(p => p.name === projectSpecs.paperType);
+        const interiorCaliper = paperObj ? paperObj.caliper : 0.004;
+        
+        const coverPaperObj = HARDCODED_PAPER_TYPES.find(p => p.name === projectSpecs.coverPaperType);
+        const coverCaliper = coverPaperObj ? coverPaperObj.caliper : (paperObj ? interiorCaliper : 0.004);
+
+        const interiorSheets = Math.ceil(totalInteriorPages / 2);
+        let calcSpineW = (interiorSheets * interiorCaliper) + (coverCaliper * 2);
+        if (binding === 'saddleStitch' || binding === 'loose') calcSpineW = 0;
+
+        const trimW = projectSpecs.dimensions.width;
+        const trimH = projectSpecs.dimensions.height;
+        
+        // Total Trim Width (Back + Spine + Front)
+        const totalCoverW = (trimW * 2) + calcSpineW;
+
+        await updateDoc(doc(db, 'projects', projectId), {
+            'specs.coverDimensions': {
+                width: totalCoverW,
+                height: trimH,
+                units: projectSpecs.dimensions.units
+            },
+            'specs.spineWidth': calcSpineW 
+        });
+
+        // 2. Metadata Construction
         pages.forEach(p => {
             const safeSettings = {
                 scaleMode: p.settings.scaleMode || 'fit',
@@ -3726,7 +4213,7 @@ async function handleUpload(e) {
                 view: p.settings.view || 'full'
             };
 
-            if (p.sourceFileId === null) {
+            if (p.sourceFileId === null || p.isAutoBlank) { 
                  bookletMetadata.push({
                     storagePath: null, 
                     sourcePageIndex: 0,
@@ -3746,27 +4233,71 @@ async function handleUpload(e) {
             }
         });
 
-        // Covers
-        if (allSourcePaths['cover_front']) bookletMetadata.push({ storagePath: allSourcePaths['cover_front'], type: 'cover_front' });
-        if (allSourcePaths['cover_spine']) bookletMetadata.push({ storagePath: allSourcePaths['cover_spine'], type: 'cover_spine' });
-        if (allSourcePaths['cover_back']) bookletMetadata.push({ storagePath: allSourcePaths['cover_back'], type: 'cover_back' });
+        const addCoverMeta = (storageKey, settingsKey, type) => {
+            if (allSourcePaths[storageKey]) {
+                const settings = coverSettings[settingsKey] || { pageIndex: 1, scaleMode: 'fill' };
+                bookletMetadata.push({ 
+                    storagePath: allSourcePaths[storageKey], 
+                    type: type,
+                    sourcePageIndex: (settings.pageIndex || 1) - 1, 
+                    settings: settings
+                });
+            }
+        };
 
-        // 3. Call Backend to Generate Proof
-        progressText.textContent = 'Generating Proof...';
+        addCoverMeta('cover_front', 'file-cover-front', 'cover_front');
+        addCoverMeta('cover_back', 'file-cover-back', 'cover_back');
+        addCoverMeta('cover_inside_front', 'file-cover-inside-front', 'cover_inside_front');
+        addCoverMeta('cover_inside_back', 'file-cover-inside-back', 'cover_inside_back');
+
+        const spineMode = window.currentSpineMode || 'file';
         
+        // Only add spine file metadata if we are using a FILE or MIRROR mode.
+        // If mode is 'stretch', we skip adding a spine part, so the backend knows to extend the adjacent cover.
+        if (spineMode === 'file') {
+            addCoverMeta('cover_spine', 'file-spine', 'cover_spine');
+        } else if (spineMode.includes('wrap') || spineMode.includes('mirror')) {
+            // If stretching, we do NOT send a spine part. 
+            // If mirroring/wrapping (without stretch), we send the source as the spine part.
+            if (!spineMode.includes('stretch')) {
+                let sourceKey = spineMode.includes('front') ? 'cover_front' : 'cover_back';
+                let settingsKey = spineMode.includes('front') ? 'file-cover-front' : 'file-cover-back';
+                
+                if (allSourcePaths[sourceKey]) {
+                    const sourceSettings = coverSettings[settingsKey] || { pageIndex: 1 };
+                    bookletMetadata.push({
+                        storagePath: allSourcePaths[sourceKey],
+                        type: 'cover_spine',
+                        sourcePageIndex: (sourceSettings.pageIndex || 1) - 1,
+                        settings: { scaleMode: 'fill', flip: true }
+                    });
+                }
+            }
+        }
+
+        progressText.textContent = 'Generating Proof...';
         const generateBooklet = httpsCallable(functions, 'generateBooklet');
-        await generateBooklet({ projectId: projectId, files: bookletMetadata });
+        // Pass spineMode to backend
+        await generateBooklet({ projectId: projectId, files: bookletMetadata, spineMode: spineMode });
 
         progressText.textContent = 'Finalizing...';
         const submitGuestUpload = httpsCallable(functions, 'submitGuestUpload');
         await submitGuestUpload({ projectId: projectId });
 
-        // 4. Update State to Complete
         await persistStateAfterSubmit(allSourcePaths, 'submitted_complete');
 
-        // 5. Show Success
         uploadContainer.classList.add('hidden');
         successState.classList.remove('hidden');
+
+        setTimeout(() => {
+            if (isAdmin) {
+                window.location.href = `admin_project.html?id=${projectId}`;
+            } else {
+                let url = `proof.html?id=${projectId}`;
+                if (guestToken) url += `&guestToken=${guestToken}`;
+                window.location.href = url;
+            }
+        }, 3000);
 
     } catch (err) {
         console.error("Upload failed:", err);

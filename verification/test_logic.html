@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Guest Upload Logic</title>
+    <script type="module">
+        // Mock Data
+        const STANDARD_PAPER_SIZES = {
+            'A4': { name: 'A4', width_mm: 210, height_mm: 297, group: 'ISO A' }
+        };
+
+        // The function I modified (copied from js/guest_upload.js)
+        function resolveDimensions(specDimensions) {
+            if (typeof specDimensions === 'object' && specDimensions !== null && specDimensions.width && specDimensions.height) {
+                if (specDimensions.units === 'mm') {
+                    return {
+                        width: parseFloat(specDimensions.width) / 25.4,
+                        height: parseFloat(specDimensions.height) / 25.4,
+                        units: 'in'
+                    };
+                }
+                return specDimensions;
+            }
+
+            if (typeof specDimensions === 'string' && STANDARD_PAPER_SIZES[specDimensions]) {
+                const size = STANDARD_PAPER_SIZES[specDimensions];
+                return {
+                    width: size.width_mm / 25.4,
+                    height: size.height_mm / 25.4,
+                    units: 'in'
+                };
+            }
+
+            return { width: 8.5, height: 11, units: 'in' };
+        }
+
+        // Test Logic
+        window.runTest = () => {
+            const output = document.getElementById('output');
+
+            // Test 1: String Preset "A4"
+            const res1 = resolveDimensions('A4');
+            const pass1 = (typeof res1 === 'object' && Math.abs(res1.width - (210/25.4)) < 0.001);
+
+            // Test 2: Object
+            const res2 = resolveDimensions({ width: 10, height: 10, units: 'in' });
+            const pass2 = (res2.width === 10 && res2.units === 'in');
+
+            // Test 3: MM Object
+            const res3 = resolveDimensions({ width: 25.4, height: 25.4, units: 'mm' });
+            const pass3 = (Math.abs(res3.width - 1) < 0.001 && res3.units === 'in');
+
+            output.innerHTML = `
+                <div class="${pass1 ? 'text-green-500' : 'text-red-500'}">Test 1 (A4 String -> Object): ${pass1 ? 'PASS' : 'FAIL'}</div>
+                <pre>${JSON.stringify(res1, null, 2)}</pre>
+
+                <div class="${pass2 ? 'text-green-500' : 'text-red-500'}">Test 2 (Object -> Object): ${pass2 ? 'PASS' : 'FAIL'}</div>
+
+                <div class="${pass3 ? 'text-green-500' : 'text-red-500'}">Test 3 (MM Object -> Inch Object): ${pass3 ? 'PASS' : 'FAIL'}</div>
+            `;
+        };
+    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-900 text-white p-10">
+    <h1 class="text-2xl mb-4">Guest Upload Logic Verification</h1>
+    <button onclick="runTest()" class="bg-indigo-600 px-4 py-2 rounded">Run Logic Test</button>
+    <div id="output" class="mt-4 font-mono text-sm"></div>
+</body>
+</html>
