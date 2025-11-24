@@ -1567,9 +1567,8 @@ async function renderMinimap() {
 }
 
 async function populateMinimapCanvas(ctx, pageList, w, h) {
-    // [FIX] Clear the canvas completely before drawing to prevent "ghost" images
-    // (e.g. Page 4 remaining on the left side when Page 1 is drawn on the right)
-    ctx.fillStyle = '#1e293b'; // Match background color
+    // [FIX] 1. Clear canvas with background color to prevent "ghost" images
+    ctx.fillStyle = '#1e293b'; 
     ctx.fillRect(0, 0, w, h);
 
     const margin = 5;
@@ -1581,6 +1580,7 @@ async function populateMinimapCanvas(ctx, pageList, w, h) {
 
     // Helper
     const drawPage = async (page, x, y) => {
+        // Draw white page background
         ctx.fillStyle = '#ffffff'; 
         ctx.fillRect(x, y, pageW, pageH);
 
@@ -1588,7 +1588,6 @@ async function populateMinimapCanvas(ctx, pageList, w, h) {
         const sourceEntry = sourceFiles[page.sourceFileId];
         if (!sourceEntry) return;
 
-        // Force low-res render (0.25) via the queue system
         await drawFileWithTransform(
             ctx, sourceEntry, x, y, pageW, pageH,
             page.settings.scaleMode || 'fit',
@@ -1596,12 +1595,13 @@ async function populateMinimapCanvas(ctx, pageList, w, h) {
             page.pageIndex || 1,
             page.id,
             'full', 
-            0, 0, // Pan X/Y
-            0.25 // Force Scale
+            0, 0, 
+            0.25 
         );
     };
 
     // Layout Logic
+    // [FIX] Ensure we correctly identify Page 1 to put it on the Right
     const isFirstPage = (pages.indexOf(pageList[0]) === 0);
 
     if (isFirstPage) {
@@ -3083,8 +3083,30 @@ function refreshBuilderUI() {
     // Update Header Nav
     if (navBackBtn) navBackBtn.classList.remove('hidden');
 
-    // --- 1. INJECT AUTOSAVE STATUS INDICATOR ---
+    // [FIX] 2. Inject "Edit Specs" Button
     const headerActions = document.getElementById('submit-button')?.parentElement;
+    if (headerActions) {
+        // Remove existing if present to prevent duplicates
+        const existingEditBtn = document.getElementById('edit-specs-btn');
+        if (existingEditBtn) existingEditBtn.remove();
+
+        const editBtn = document.createElement('button');
+        editBtn.id = 'edit-specs-btn';
+        editBtn.type = 'button';
+        editBtn.className = 'mr-4 text-xs bg-slate-700 hover:bg-slate-600 text-white px-3 py-2 rounded transition-colors border border-slate-600';
+        editBtn.innerHTML = 'Edit Project Specs';
+        editBtn.onclick = () => {
+            uploadContainer.classList.add('hidden');
+            specsModal.classList.remove('hidden');
+            populateSpecsForm();
+        };
+        
+        // Insert before the Save Progress button or Submit button
+        const refNode = document.getElementById('save-progress-btn') || document.getElementById('submit-button');
+        headerActions.insertBefore(editBtn, refNode);
+    }
+
+    // --- 1. INJECT AUTOSAVE STATUS INDICATOR ---
     if (headerActions && !document.getElementById('save-progress-btn')) {
         const statusIndicator = document.createElement('button'); 
         statusIndicator.id = 'save-progress-btn';
@@ -3098,9 +3120,11 @@ function refreshBuilderUI() {
         headerActions.insertBefore(statusIndicator, document.getElementById('submit-button'));
     }
 
+    // ... (Rest of your existing spine mode and tab logic) ...
     // --- 2. INJECT SPINE MODE SELECTOR ---
     const spineGroup = document.getElementById('spine-upload-group');
     if (spineGroup && !document.getElementById('spine-mode-select')) {
+        // ... (Keep existing spine selector code) ...
         const wrapper = document.createElement('div');
         wrapper.className = "mb-2 flex justify-between items-center";
         wrapper.innerHTML = `
@@ -3116,15 +3140,12 @@ function refreshBuilderUI() {
         spineGroup.insertBefore(wrapper, spineGroup.querySelector('.drop-zone'));
 
         const selectEl = document.getElementById('spine-mode-select');
-
-        // --- RESTORE VALUE IF EXISTS ---
         if (window.currentSpineMode) {
             selectEl.value = window.currentSpineMode;
             const dropZone = spineGroup.querySelector('.drop-zone');
             if (window.currentSpineMode === 'file') dropZone.classList.remove('hidden');
             else dropZone.classList.add('hidden');
         }
-
         selectEl.addEventListener('change', (e) => {
             window.currentSpineMode = e.target.value;
             const dropZone = spineGroup.querySelector('.drop-zone');
@@ -3135,8 +3156,7 @@ function refreshBuilderUI() {
         });
     }
 
-    // --- 3. CONFIGURE TABS & TOOLBARS ---
-    // ... (Same as your existing code) ...
+    // ... (Keep existing tab/toolbar logic) ...
     if (projectType === 'single') {
         if (builderTabs) builderTabs.classList.add('hidden');
         if (contentCover) contentCover.classList.add('hidden');
@@ -3158,22 +3178,23 @@ function refreshBuilderUI() {
                 undoBtn.type = 'button';
                 undoBtn.className = 'text-xs bg-slate-700 hover:bg-slate-600 text-gray-200 px-3 py-1.5 rounded border border-slate-600 transition-colors opacity-50 flex items-center gap-1';
                 undoBtn.innerHTML = '↶ Undo';
-                undoBtn.onclick = () => {
-                    window.undo();
-                    triggerAutosave(); 
-                };
+                undoBtn.onclick = () => { window.undo(); triggerAutosave(); };
                 undoBtn.disabled = true;
                 toolbar.prepend(undoBtn);
             }
         }
 
+        // Handle Saddle Stitch (Hide Spine) vs Perfect Bound (Show Spine)
         if (projectSpecs.binding === 'saddleStitch') {
             if (spineGroup) spineGroup.classList.add('hidden');
         } else {
             if (spineGroup) spineGroup.classList.remove('hidden');
         }
 
-        if (tabInterior) tabInterior.click();
+        // Ensure a tab is active
+        if (!tabInterior.classList.contains('text-indigo-400') && !tabCover.classList.contains('text-indigo-400')) {
+             if (tabInterior) tabInterior.click();
+        }
     }
 }
 

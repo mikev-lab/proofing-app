@@ -1089,15 +1089,24 @@ export async function initializeSharedViewer(config) {
 
         coverTab.addEventListener('click', () => {
             currentView = 'cover';
-            projectSpecs = projectData.cover.specs || projectData.specs;
+            if (projectData.specs && projectData.specs.coverDimensions) {
+                // Create a temporary specs object for the cover view
+                projectSpecs = {
+                    ...projectData.specs,
+                    dimensions: projectData.specs.coverDimensions
+                };
+            } else {
+                projectSpecs = projectData.cover?.specs || projectData.specs;
+            }
+
             coverTab.classList.add('border-indigo-500', 'text-indigo-400');
             coverTab.classList.remove('border-transparent', 'text-gray-400');
             internalsTab.classList.add('border-transparent', 'text-gray-400');
             internalsTab.classList.remove('border-indigo-500', 'text-indigo-400');
+            
             loadVersion(projectData.cover);
             displayPreflightResults(projectData.cover);
 
-            // --- NEW: Refresh Annotations Sidebar ---
             if (annotationsManager) annotationsManager.refresh();
         });
     }
