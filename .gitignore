@@ -4,3 +4,4 @@ server.log
 js/firebase-config.js
 *.yaml
 .firebase/hosting..cache
+.firebase/hosting..cache
