@@ -136,6 +136,7 @@ let _previewCtx = null;
 let sourceFiles = {}; // Map: id -> File object
 let pages = []; // Array: { id, sourceFileId, pageIndex, settings: { scaleMode, alignment }, isSpread: boolean }
 let viewerScale = 0.5; // Zoom level for viewer
+let coverPreviewMode = 'outside';
 // --- LRU Cache Implementation ---
 class LRUCache {
     constructor(limit = 50) {
@@ -274,6 +275,27 @@ const triggerAutosave = debounce(async () => {
         if (saveBtn) saveBtn.innerHTML = `<span class="text-red-400">Save Failed</span>`;
     }
 }, 2000); // 2000ms = 2 seconds
+
+function setupCoverPreviewTabs() {
+    const btnOutside = document.getElementById('btn-preview-outside');
+    const btnInside = document.getElementById('btn-preview-inside');
+
+    if (btnOutside && btnInside) {
+        btnOutside.addEventListener('click', () => {
+            coverPreviewMode = 'outside';
+            btnOutside.className = 'px-3 py-1 text-xs font-medium rounded text-white bg-indigo-600 shadow-sm transition-colors';
+            btnInside.className = 'px-3 py-1 text-xs font-medium rounded text-gray-400 hover:text-white transition-colors';
+            renderCoverPreview();
+        });
+
+        btnInside.addEventListener('click', () => {
+            coverPreviewMode = 'inside';
+            btnInside.className = 'px-3 py-1 text-xs font-medium rounded text-white bg-indigo-600 shadow-sm transition-colors';
+            btnOutside.className = 'px-3 py-1 text-xs font-medium rounded text-gray-400 hover:text-white transition-colors';
+            renderCoverPreview();
+        });
+    }
+}
 
 // --- Helper: Resolve Dimensions ---
 function resolveDimensions(specDimensions) {
@@ -2803,14 +2825,32 @@ function drawProcessingState(ctx, x, y, w, h) {
 async function renderCoverPreview() {
     if (!coverCanvas || !projectSpecs || !projectSpecs.dimensions) return;
 
-    // 1. Lock this render ID
     const myRenderId = ++coverRenderId;
+
+    // --- [FIX] 2. Zoom/Scroll Container Fix ---
+    // Switch parent from flex-center (clips overflow) to grid-center (allows scroll)
+    const parent = coverCanvas.parentElement;
+    if (parent) {
+        parent.classList.remove('flex', 'items-center', 'justify-center');
+        parent.classList.add('grid', 'place-items-center');
+    }
 
     const scale = 2; 
     const trimWidth = projectSpecs.dimensions.width;
     const trimHeight = projectSpecs.dimensions.height;
     const bleed = 0.125;
-    const spineWidth = calculateSpineWidth(projectSpecs);
+    
+    const paperObj = HARDCODED_PAPER_TYPES.find(p => p.name === projectSpecs.paperType);
+    const interiorCaliper = paperObj ? paperObj.caliper : 0.004;
+    const coverPaperObj = HARDCODED_PAPER_TYPES.find(p => p.name === projectSpecs.coverPaperType);
+    const coverCaliper = coverPaperObj ? coverPaperObj.caliper : (paperObj ? interiorCaliper : 0.004);
+    
+    const interiorSheets = Math.ceil(pages.length / 2);
+    let spineWidth = (interiorSheets * interiorCaliper) + (coverCaliper * 2);
+    
+    if (projectSpecs.binding === 'saddleStitch' || projectSpecs.binding === 'loose') spineWidth = 0;
+
+    if (spineWidthDisplay) spineWidthDisplay.textContent = spineWidth.toFixed(3);
 
     const totalWidth = (trimWidth * 2) + spineWidth + (bleed * 2);
     const totalHeight = trimHeight + (bleed * 2);
@@ -2818,7 +2858,6 @@ async function renderCoverPreview() {
     const basePPI = 40; 
     const pixelsPerInch = basePPI * coverZoom; 
     
-    // 2. REUSE Offscreen Canvas
     if (!_previewOffscreen) {
         _previewOffscreen = document.createElement('canvas');
         _previewCtx = _previewOffscreen.getContext('2d', { alpha: false });
@@ -2827,7 +2866,6 @@ async function renderCoverPreview() {
     const reqW = Math.ceil(totalWidth * pixelsPerInch * scale);
     const reqH = Math.ceil(totalHeight * pixelsPerInch * scale);
 
-    // Only resize if dimensions changed (avoids clearing memory unnecessarily)
     if (_previewOffscreen.width !== reqW || _previewOffscreen.height !== reqH) {
         _previewOffscreen.width = reqW;
         _previewOffscreen.height = reqH;
@@ -2835,7 +2873,6 @@ async function renderCoverPreview() {
 
     const ctx = _previewCtx;
 
-    // Clear & Setup
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, reqW, reqH);
@@ -2843,56 +2880,160 @@ async function renderCoverPreview() {
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
     ctx.scale(pixelsPerInch, pixelsPerInch);
 
-    const zoneBack = { x: 0, y: 0, w: bleed + trimWidth, h: totalHeight };
-    const zoneSpine = { x: bleed + trimWidth, y: 0, w: spineWidth, h: totalHeight };
-    const zoneFront = { x: bleed + trimWidth + spineWidth, y: 0, w: trimWidth + bleed, h: totalHeight };
-    const zoneBackPlusSpine = { x: 0, y: 0, w: zoneBack.w + zoneSpine.w, h: totalHeight };
-    const zoneFrontPlusSpine = { x: zoneSpine.x, y: 0, w: zoneSpine.w + zoneFront.w, h: totalHeight };
-    const spineMode = window.currentSpineMode || 'file';
+    // Define Zones
+    // zoneLeft = Back Cover area (0 to trim+bleed)
+    // zoneMid = Spine area
+    // zoneRight = Front Cover area
+    let zoneLeft = { x: 0, y: 0, w: bleed + trimWidth, h: totalHeight };
+    let zoneMid = { x: bleed + trimWidth, y: 0, w: spineWidth, h: totalHeight };
+    let zoneRight = { x: bleed + trimWidth + spineWidth, y: 0, w: trimWidth + bleed, h: totalHeight };
 
-    // --- DRAWING WITH ABORT CHECKS ---
+    let leftSource, midSource, rightSource;
+    let leftSettings, midSettings, rightSettings;
+    let drawGlueArea = false;
+    let skipMidDraw = false; // Flag to skip drawing the spine separately if it's merged
+
+    if (coverPreviewMode === 'inside') {
+        leftSource = coverSources['file-cover-inside-front'];
+        leftSettings = coverSettings['file-cover-inside-front'] || { pageIndex: 1, scaleMode: 'fill' };
+        
+        rightSource = coverSources['file-cover-inside-back'];
+        rightSettings = coverSettings['file-cover-inside-back'] || { pageIndex: 1, scaleMode: 'fill' };
+        
+        drawGlueArea = (projectSpecs.binding === 'perfectBound' && spineWidth > 0);
+        midSource = null; 
+    } else {
+        leftSource = coverSources['file-cover-back'];
+        leftSettings = coverSettings['file-cover-back'] || { pageIndex: 1, scaleMode: 'fill' };
+        
+        rightSource = coverSources['file-cover-front'];
+        rightSettings = coverSettings['file-cover-front'] || { pageIndex: 1, scaleMode: 'fill' };
+        
+        const spineMode = window.currentSpineMode || 'file';
+
+        if (spineMode === 'file') {
+            midSource = coverSources['file-spine'];
+            midSettings = coverSettings['file-spine'] || { pageIndex: 1, scaleMode: 'fill' };
+        } else {
+            // --- [FIX] 1. Spine Stretch Logic ---
+            if (spineMode === 'wrap-front-stretch') {
+                // Expand Front Cover Zone to include Spine
+                zoneRight.x = zoneMid.x; // Start where spine starts
+                zoneRight.w = zoneMid.w + zoneRight.w; // Combine widths
+                // Force stretch mode for the preview drawing if not set by user, 
+                // but usually user setting applies. For "stretch spine", we imply the image stretches.
+                // However, if we just change the zone, the existing 'fill' or 'fit' logic will apply to the NEW zone.
+                // If the user wants "Stretch", we should probably force scaleMode='stretch' for this render?
+                // Let's stick to the user's scaleMode for the cover, but applying it to the larger zone.
+                skipMidDraw = true;
+            } else if (spineMode === 'wrap-back-stretch') {
+                // Expand Back Cover Zone to include Spine
+                zoneLeft.w = zoneLeft.w + zoneMid.w; // Combine widths
+                skipMidDraw = true;
+            } else if (spineMode.includes('wrap') || spineMode.includes('mirror')) {
+                // Mirror/Wrap uses the midSource separately
+                const isFrontSource = spineMode.includes('front');
+                midSource = isFrontSource ? rightSource : leftSource;
+                midSettings = isFrontSource ? rightSettings : leftSettings;
+            }
+        }
+    }
+
+    // --- DRAWING ---
     
-    // 1. Back Cover
-    if (spineMode === 'wrap-back-stretch') {
-        await drawStretched(ctx, coverSources['file-cover-back'], zoneBack, zoneBackPlusSpine, 'left', coverSettings['file-cover-back'].pageIndex);
-    } else {
-        await drawImageOnCanvas(ctx, coverSources['file-cover-back'], zoneBack.x, zoneBack.y, zoneBack.w, zoneBack.h, coverSettings['file-cover-back'].pageIndex, coverSettings['file-cover-back'].scaleMode);
-    }
-    if (myRenderId !== coverRenderId) return; // Abort if new zoom happened
+    // Left Panel (Back)
+    await drawImageOnCanvas(ctx, leftSource, zoneLeft.x, zoneLeft.y, zoneLeft.w, zoneLeft.h, leftSettings.pageIndex, leftSettings.scaleMode);
+    if (myRenderId !== coverRenderId) return;
 
-    // 2. Spine
-    if (spineMode === 'file') {
-        await drawImageOnCanvas(ctx, coverSources['file-spine'], zoneSpine.x, zoneSpine.y, zoneSpine.w, zoneSpine.h, coverSettings['file-spine'].pageIndex, coverSettings['file-spine'].scaleMode);
-    } else if (spineMode === 'wrap-front-stretch') {
-        await drawStretched(ctx, coverSources['file-cover-front'], zoneSpine, zoneFrontPlusSpine, 'right', coverSettings['file-cover-front'].pageIndex);
-    } else if (spineMode === 'wrap-back-stretch') {
-        await drawStretched(ctx, coverSources['file-cover-back'], zoneSpine, zoneBackPlusSpine, 'left', coverSettings['file-cover-back'].pageIndex);
-    } else if (spineMode.includes('wrap')) {
-        const isFrontSource = spineMode.includes('front');
-        const sourceEntry = isFrontSource ? coverSources['file-cover-front'] : coverSources['file-cover-back'];
-        const settings = isFrontSource ? coverSettings['file-cover-front'] : coverSettings['file-cover-back'];
-        await drawWrapper(ctx, sourceEntry, zoneSpine.x, zoneSpine.y, zoneSpine.w, zoneSpine.h, 'mirror', isFrontSource, 0, settings.pageIndex);
-    }
-    if (myRenderId !== coverRenderId) return; // Abort
+    // Right Panel (Front)
+    await drawImageOnCanvas(ctx, rightSource, zoneRight.x, zoneRight.y, zoneRight.w, zoneRight.h, rightSettings.pageIndex, rightSettings.scaleMode);
+    if (myRenderId !== coverRenderId) return;
 
-    // 3. Front Cover
-    if (spineMode === 'wrap-front-stretch') {
-        await drawStretched(ctx, coverSources['file-cover-front'], zoneFront, zoneFrontPlusSpine, 'right', coverSettings['file-cover-front'].pageIndex);
-    } else {
-        await drawImageOnCanvas(ctx, coverSources['file-cover-front'], zoneFront.x, zoneFront.y, zoneFront.w, zoneFront.h, coverSettings['file-cover-front'].pageIndex, coverSettings['file-cover-front'].scaleMode);
-    }
-    if (myRenderId !== coverRenderId) return; // Abort
+    // Middle Panel (Spine OR Glue)
+    if (coverPreviewMode === 'inside' && drawGlueArea) {
+        // --- [FIX] 3. Glue Area Masking ---
+        // Calculate true glue width (Spine + 0.125 left + 0.125 right)
+        // 0.125 inches in pixels = 0.125 * pixelsPerInch
+        // Wait, coordinates here are in *Points* (scaled by pixelsPerInch logic) 
+        // Actually, totalWidth is in INCHES (calculated at top).
+        // So we multiply by pixelsPerInch to get drawing units.
+        
+        const overlap = 0.125; 
+        const glueW = (spineWidth + (overlap * 2)) * pixelsPerInch; // Convert inches to pixels
+        
+        // Center of the spine in pixels
+        const spineCenterX = (zoneMid.x + (zoneMid.w / 2)) * pixelsPerInch; 
+        
+        // Left edge of glue area
+        const glueX = spineCenterX - (glueW / 2);
+        
+        // Draw Solid Mask (White/Paper Color)
+        // Note: ctx is already scaled by pixelsPerInch, so we use inches directly?
+        // No, previous lines used `zoneLeft.w` (Inches) passed to `drawImageOnCanvas` which handles pixels?
+        // `drawImageOnCanvas` receives (x,y,w,h) in INCHES (zoneLeft.w etc).
+        // But inside `drawImageOnCanvas`, it converts using `pixelsPerInch`? 
+        // No, `drawImageOnCanvas` expects TARGET coordinates. 
+        // Let's look at `ctx.scale(pixelsPerInch, pixelsPerInch)`.
+        // YES, the context is scaled. So we can draw in INCHES.
+        
+        const glueW_Inches = spineWidth + (overlap * 2);
+        const glueX_Inches = zoneMid.x - overlap; // Start 0.125" before spine starts
+        
+        ctx.save();
+        ctx.fillStyle = '#f8fafc'; // Very light gray/white to mask
+        ctx.fillRect(glueX_Inches, 0, glueW_Inches, totalHeight);
+        
+        // Add text (scaled to be readable)
+        ctx.fillStyle = '#94a3b8';
+        // Font size: 10pt size relative to scale
+        ctx.font = `bold ${0.15}px sans-serif`; 
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        
+        ctx.translate(glueX_Inches + (glueW_Inches/2), totalHeight/2);
+        ctx.rotate(-Math.PI/2);
+        ctx.fillText("GLUE AREA (NO PRINT)", 0, 0);
+        ctx.restore();
 
-    // 4. Guides (Fast, no await needed)
+        // Draw Red Safety Lines indicating the overlap
+        ctx.lineWidth = 1 / pixelsPerInch;
+        ctx.strokeStyle = 'rgba(255, 0, 0, 0.5)';
+        ctx.setLineDash([4 / pixelsPerInch, 2 / pixelsPerInch]);
+        
+        ctx.beginPath();
+        ctx.moveTo(glueX_Inches, 0);
+        ctx.lineTo(glueX_Inches, totalHeight);
+        ctx.stroke();
+        
+        ctx.beginPath();
+        ctx.moveTo(glueX_Inches + glueW_Inches, 0);
+        ctx.lineTo(glueX_Inches + glueW_Inches, totalHeight);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+    } else if (coverPreviewMode === 'outside' && !skipMidDraw) {
+        const spineMode = window.currentSpineMode || 'file';
+        
+        if (spineMode === 'file') {
+            await drawImageOnCanvas(ctx, midSource, zoneMid.x, zoneMid.y, zoneMid.w, zoneMid.h, midSettings.pageIndex, midSettings.scaleMode);
+        } else if (spineMode.includes('wrap') || spineMode.includes('mirror')) {
+             const isFrontSource = spineMode.includes('front');
+             const sourceEntry = isFrontSource ? rightSource : leftSource;
+             const settings = isFrontSource ? rightSettings : leftSettings;
+             await drawWrapper(ctx, sourceEntry, zoneMid.x, zoneMid.y, zoneMid.w, zoneMid.h, 'mirror', isFrontSource, 0, settings.pageIndex);
+        }
+    }
+    if (myRenderId !== coverRenderId) return;
+
+    // 4. Guides
     ctx.lineWidth = 1 / pixelsPerInch; 
     const xTrimBackLeft = bleed;
     const xSpineLeft = bleed + trimWidth;
     const xSpineRight = bleed + trimWidth + spineWidth;
     const yBleedTop = bleed;
 
-    // Bleed Fill
     ctx.save();
-    ctx.fillStyle = 'rgba(255, 0, 0, 0.2)';
+    ctx.fillStyle = 'rgba(255, 0, 0, 0.1)'; 
     ctx.beginPath();
     ctx.rect(0, 0, totalWidth, totalHeight);
     ctx.rect(bleed, bleed, trimWidth, trimHeight); 
@@ -2901,7 +3042,6 @@ async function renderCoverPreview() {
     ctx.fill("evenodd");
     ctx.restore();
 
-    // Trim Lines
     ctx.strokeStyle = '#000000';
     ctx.beginPath(); 
     ctx.rect(bleed, bleed, trimWidth, trimHeight);
@@ -2909,7 +3049,6 @@ async function renderCoverPreview() {
     ctx.rect(bleed + trimWidth + spineWidth, bleed, trimWidth, trimHeight);
     ctx.stroke();
 
-    // Safe Area
     const safe = 0.125;
     ctx.strokeStyle = 'rgba(34, 197, 94, 0.5)';
     ctx.beginPath();
@@ -2920,17 +3059,19 @@ async function renderCoverPreview() {
     }
     ctx.stroke();
 
-    // 5. COMMIT TO MAIN CANVAS
+    // 5. COMMIT
     if (myRenderId !== coverRenderId) return;
 
-    if (spineWidthDisplay) spineWidthDisplay.textContent = spineWidth.toFixed(3);
-    
-    // Update Placeholder visibility... (Same logic as before)
     const placeholderEl = document.getElementById('cover-preview-placeholder');
     if (placeholderEl) {
-        const slots = ['file-cover-front', 'file-cover-back', 'file-spine'];
-        const hasContent = slots.some(slot => coverSources[slot] || selectedFiles[slot]);
-        if (hasContent) placeholderEl.style.display = 'none';
+        let hasContent = false;
+        if (coverPreviewMode === 'inside') {
+            hasContent = (coverSources['file-cover-inside-front'] || coverSources['file-cover-inside-back']);
+        } else {
+            hasContent = (coverSources['file-cover-front'] || coverSources['file-cover-back'] || coverSources['file-spine']);
+        }
+        
+        if (hasContent || (coverPreviewMode === 'inside' && spineWidth > 0)) placeholderEl.style.display = 'none';
         else {
             placeholderEl.style.display = 'flex';
             placeholderEl.innerHTML = '<div class="text-center"><p class="text-gray-500 text-sm">Preview will update automatically</p></div>';
@@ -3120,7 +3261,7 @@ function refreshBuilderUI() {
     // Update Header Nav
     if (navBackBtn) navBackBtn.classList.remove('hidden');
 
-    // [FIX] 2. Inject "Edit Specs" Button
+    // 1. Inject "Edit Specs" Button
     const headerActions = document.getElementById('submit-button')?.parentElement;
     if (headerActions) {
         // Remove existing if present to prevent duplicates
@@ -3143,7 +3284,7 @@ function refreshBuilderUI() {
         headerActions.insertBefore(editBtn, refNode);
     }
 
-    // --- 1. INJECT AUTOSAVE STATUS INDICATOR ---
+    // 2. Inject Autosave Status Indicator
     if (headerActions && !document.getElementById('save-progress-btn')) {
         const statusIndicator = document.createElement('button'); 
         statusIndicator.id = 'save-progress-btn';
@@ -3157,11 +3298,9 @@ function refreshBuilderUI() {
         headerActions.insertBefore(statusIndicator, document.getElementById('submit-button'));
     }
 
-    // ... (Rest of your existing spine mode and tab logic) ...
-    // --- 2. INJECT SPINE MODE SELECTOR ---
+    // 3. Inject Spine Mode Selector
     const spineGroup = document.getElementById('spine-upload-group');
     if (spineGroup && !document.getElementById('spine-mode-select')) {
-        // ... (Keep existing spine selector code) ...
         const wrapper = document.createElement('div');
         wrapper.className = "mb-2 flex justify-between items-center";
         wrapper.innerHTML = `
@@ -3177,12 +3316,15 @@ function refreshBuilderUI() {
         spineGroup.insertBefore(wrapper, spineGroup.querySelector('.drop-zone'));
 
         const selectEl = document.getElementById('spine-mode-select');
+
+        // Restore value if exists
         if (window.currentSpineMode) {
             selectEl.value = window.currentSpineMode;
             const dropZone = spineGroup.querySelector('.drop-zone');
             if (window.currentSpineMode === 'file') dropZone.classList.remove('hidden');
             else dropZone.classList.add('hidden');
         }
+
         selectEl.addEventListener('change', (e) => {
             window.currentSpineMode = e.target.value;
             const dropZone = spineGroup.querySelector('.drop-zone');
@@ -3193,7 +3335,10 @@ function refreshBuilderUI() {
         });
     }
 
-    // ... (Keep existing tab/toolbar logic) ...
+    // 4. Setup Cover Preview Tabs (Outside/Inside)
+    setupCoverPreviewTabs();
+
+    // 5. Configure Tabs & Toolbars based on Project Type
     if (projectType === 'single') {
         if (builderTabs) builderTabs.classList.add('hidden');
         if (contentCover) contentCover.classList.add('hidden');
@@ -3207,6 +3352,7 @@ function refreshBuilderUI() {
         if (toolbarActionsBooklet) toolbarActionsBooklet.classList.remove('hidden');
         if (toolbarSpreadUpload) toolbarSpreadUpload.classList.remove('hidden');
 
+        // Inject Undo Button
         if (!document.getElementById('undo-btn')) {
             const toolbar = document.getElementById('toolbar-actions-booklet');
             if (toolbar) {
@@ -3215,7 +3361,10 @@ function refreshBuilderUI() {
                 undoBtn.type = 'button';
                 undoBtn.className = 'text-xs bg-slate-700 hover:bg-slate-600 text-gray-200 px-3 py-1.5 rounded border border-slate-600 transition-colors opacity-50 flex items-center gap-1';
                 undoBtn.innerHTML = '↶ Undo';
-                undoBtn.onclick = () => { window.undo(); triggerAutosave(); };
+                undoBtn.onclick = () => {
+                    window.undo();
+                    triggerAutosave(); 
+                };
                 undoBtn.disabled = true;
                 toolbar.prepend(undoBtn);
             }
@@ -3355,7 +3504,6 @@ async function drawWrapper(ctx, sourceEntry, targetX, targetY, targetW, targetH,
 
 // --- Main Initialization (Trust-Optimized) ---
 async function init() {
-    // Clear lingering inputs
     if (insertFileInput) insertFileInput.value = '';
     if (hiddenInteriorInput) hiddenInteriorInput.value = '';
     if (fileInteriorDrop) fileInteriorDrop.value = '';
@@ -3442,6 +3590,9 @@ async function init() {
         updateFileName('file-cover-front', 'file-name-cover-front');
         updateFileName('file-spine', 'file-name-spine');
         updateFileName('file-cover-back', 'file-name-cover-back');
+        // [FIX] Wire up new inputs
+        updateFileName('file-cover-inside-front', 'file-name-cover-inside-front');
+        updateFileName('file-cover-inside-back', 'file-name-cover-inside-back');
 
         let specsMissing = false;
         let dimValid = false;
@@ -3458,10 +3609,6 @@ async function init() {
             if(loadingText) loadingText.textContent = "Restoring project files...";
             
             refreshBuilderUI();
-
-            // [FIX] Removed explicit call to restoreBuilderState() here.
-            // It is called inside initializeBuilder(), so calling it here caused it to run twice.
-            
             await initializeBuilder();
 
             if (pages.length > 0) {
@@ -3533,11 +3680,9 @@ async function restoreBuilderState() {
         const state = docSnap.data().guestBuilderState;
         if (!state) return;
 
-        // Restore Data Models
         pages = state.pages || [];
         if (state.coverSettings) Object.assign(coverSettings, state.coverSettings);
         
-        // Restore Spine UI
         if (state.spineMode) {
             window.currentSpineMode = state.spineMode;
             const spineSelect = document.getElementById('spine-mode-select');
@@ -3551,20 +3696,20 @@ async function restoreBuilderState() {
             }
         }
 
-        // Restore Source Files (Parallelized for Speed)
         if (state.sourceFiles) {
             const entries = Object.entries(state.sourceFiles);
-            
-            // Create an array of promises
             const restorePromises = entries.map(async ([id, meta]) => {
                 try {
-                    // We await individual URL fetches here
                     const url = await getDownloadURL(ref(storage, meta.storagePath));
                     
                     if (id.startsWith('cover_')) {
-                        // Handle Cover Logic
-                        let inputId = (id === 'cover_front') ? 'file-cover-front' : 
-                                      (id === 'cover_spine') ? 'file-spine' : 'file-cover-back';
+                        // [FIX] Handle new keys for restoration
+                        let inputId = null;
+                        if (id === 'cover_front') inputId = 'file-cover-front';
+                        else if (id === 'cover_spine') inputId = 'file-spine';
+                        else if (id === 'cover_back') inputId = 'file-cover-back';
+                        else if (id === 'cover_inside_front') inputId = 'file-cover-inside-front';
+                        else if (id === 'cover_inside_back') inputId = 'file-cover-inside-back';
                         
                         if (inputId) {
                             coverSources[inputId] = {
@@ -3573,21 +3718,16 @@ async function restoreBuilderState() {
                                 previewUrl: url,
                                 storagePath: meta.storagePath 
                             };
-                            // Update UI Text immediately
-                            const displayId = (id === 'cover_front') ? 'file-name-cover-front' :
-                                              (id === 'cover_spine') ? 'file-name-spine' : 'file-name-cover-back';
+                            // Map back to display ID
+                            let displayId = inputId.replace('file-', 'file-name-');
                             const el = document.getElementById(displayId);
                             if (el) {
                                 el.textContent = "Restored File";
-                                // [FIX] Unhide the text so the adjacent Delete Button (peer) appears
                                 el.classList.remove('hidden');
                             }
-
-                            // Setup controls (async, don't block)
                             createCoverControls(inputId, url);
                         }
                     } else {
-                        // Handle Interior Logic
                         sourceFiles[id] = {
                             status: 'ready',
                             previewUrl: url,
@@ -3599,8 +3739,6 @@ async function restoreBuilderState() {
                     console.warn(`Failed to restore source ${id}`, e);
                 }
             });
-
-            // BLOCK until all URLs are retrieved.
             await Promise.all(restorePromises);
         }
 
@@ -3621,48 +3759,40 @@ async function syncProjectState(statusLabel) {
     uploadProgress.classList.remove('hidden');
     progressText.textContent = 'Preparing files...';
 
-    // 1. Identify Active Source IDs (Pages + Covers)
     const activeSourceIds = new Set();
     pages.forEach(p => {
         if (p.sourceFileId) activeSourceIds.add(p.sourceFileId);
     });
 
-    // 2. Categorize Sources (New vs Existing)
-    const filesToUpload = []; // { id, file, type }
-    const allSourcePaths = {}; // id -> storagePath (Final Map)
+    const filesToUpload = []; 
+    const allSourcePaths = {}; 
 
-    // Helper to check source
     const checkSource = (id, src, type) => {
         if (!src) return;
-        
-        // If we already have a storage path recorded in memory, use it (skip upload)
         if (src.storagePath) {
             allSourcePaths[id] = src.storagePath;
             return;
         }
-
-        // Otherwise, check if we have a file to upload
         if (src instanceof File) {
             filesToUpload.push({ id, file: src, type });
         } else if (src.file instanceof File) {
             filesToUpload.push({ id, file: src.file, type });
         } else if (selectedFiles[id]) {
-            // Legacy fallback
             filesToUpload.push({ id, file: selectedFiles[id], type });
         }
     };
 
-    // Check Interior Files
     activeSourceIds.forEach(id => checkSource(id, sourceFiles[id], 'interior_source'));
 
-    // Check Cover Files (Booklet Only)
     if (projectType === 'booklet') {
         checkSource('cover_front', coverSources['file-cover-front'], 'cover_front');
         checkSource('cover_spine', coverSources['file-spine'], 'cover_spine');
         checkSource('cover_back', coverSources['file-cover-back'], 'cover_back');
+        // [FIX] Add new checks
+        checkSource('cover_inside_front', coverSources['file-cover-inside-front'], 'cover_inside_front');
+        checkSource('cover_inside_back', coverSources['file-cover-inside-back'], 'cover_inside_back');
     }
 
-    // 3. Upload New Files
     let completed = 0;
     const total = filesToUpload.length;
 
@@ -3676,18 +3806,20 @@ async function syncProjectState(statusLabel) {
             progressText.textContent = `Uploading ${item.file.name}...`;
             
             await uploadBytesResumable(storageRef, item.file);
-            
-            // Update Master Map
             allSourcePaths[item.id] = storagePath;
             
-            // UPDATE MEMORY: Store the path so we don't re-upload next time
             if (item.type === 'interior_source' && sourceFiles[item.id]) {
                 sourceFiles[item.id].storagePath = storagePath;
             } else if (item.type.startsWith('cover_')) {
-                // Map remote ID back to local slot ID for updating memory
-                const localSlot = item.type === 'cover_front' ? 'file-cover-front' : 
-                                  item.type === 'cover_spine' ? 'file-spine' : 'file-cover-back';
-                if (coverSources[localSlot]) {
+                // Reverse map to update memory
+                let localSlot = null;
+                if (item.type === 'cover_front') localSlot = 'file-cover-front';
+                else if (item.type === 'cover_spine') localSlot = 'file-spine';
+                else if (item.type === 'cover_back') localSlot = 'file-cover-back';
+                else if (item.type === 'cover_inside_front') localSlot = 'file-cover-inside-front';
+                else if (item.type === 'cover_inside_back') localSlot = 'file-cover-inside-back';
+
+                if (localSlot && coverSources[localSlot]) {
                     coverSources[localSlot].storagePath = storagePath;
                 }
             }
@@ -3699,7 +3831,6 @@ async function syncProjectState(statusLabel) {
         }
     }
 
-    // 4. Save State to Firestore
     progressText.textContent = 'Saving Project State...';
     await persistStateAfterSubmit(allSourcePaths, statusLabel);
     
@@ -3765,40 +3896,31 @@ async function handleUpload(e) {
         const progressText = document.getElementById('progress-text');
         const bookletMetadata = [];
 
-        // --- 1. Calculate & Save Cover Dimensions (Fixed Formula) ---
-        // Formula: (Interior Sheets * Interior Caliper) + (Cover Caliper * 2)
+        // 1. Calculate & Save Cover Dimensions
+        const paperObj = HARDCODED_PAPER_TYPES.find(p => p.name === projectSpecs.paperType);
+        const interiorCaliper = paperObj ? paperObj.caliper : 0.004;
         
-        // Get Interior Caliper
-        const interiorPaperObj = HARDCODED_PAPER_TYPES.find(p => p.name === projectSpecs.paperType);
-        const interiorCaliper = interiorPaperObj ? interiorPaperObj.caliper : 0.004;
-        
-        // Get Cover Caliper
         const coverPaperObj = HARDCODED_PAPER_TYPES.find(p => p.name === projectSpecs.coverPaperType);
-        // Fallback to interior caliper if cover paper isn't specified (e.g. self-cover), or default 0.004
-        const coverCaliper = coverPaperObj ? coverPaperObj.caliper : (interiorPaperObj ? interiorCaliper : 0.004);
+        const coverCaliper = coverPaperObj ? coverPaperObj.caliper : (paperObj ? interiorCaliper : 0.004);
 
-        // Calculate
         const interiorSheets = Math.ceil(totalInteriorPages / 2);
         let calcSpineW = (interiorSheets * interiorCaliper) + (coverCaliper * 2);
-        
         if (binding === 'saddleStitch' || binding === 'loose') calcSpineW = 0;
 
         const trimW = projectSpecs.dimensions.width;
         const trimH = projectSpecs.dimensions.height;
         const totalCoverW = (trimW * 2) + calcSpineW;
 
-        // Save to Firestore
         await updateDoc(doc(db, 'projects', projectId), {
             'specs.coverDimensions': {
                 width: totalCoverW,
                 height: trimH,
                 units: projectSpecs.dimensions.units
             },
-            // Also save the calculated spine width for reference
             'specs.spineWidth': calcSpineW 
         });
 
-        // --- 2. Build Metadata ---
+        // 2. Metadata
         pages.forEach(p => {
             const safeSettings = {
                 scaleMode: p.settings.scaleMode || 'fit',
@@ -3842,6 +3964,9 @@ async function handleUpload(e) {
 
         addCoverMeta('cover_front', 'file-cover-front', 'cover_front');
         addCoverMeta('cover_back', 'file-cover-back', 'cover_back');
+        // [FIX] Add inner covers
+        addCoverMeta('cover_inside_front', 'file-cover-inside-front', 'cover_inside_front');
+        addCoverMeta('cover_inside_back', 'file-cover-inside-back', 'cover_inside_back');
 
         const spineMode = window.currentSpineMode || 'file';
         if (spineMode === 'file') {

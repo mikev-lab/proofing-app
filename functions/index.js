@@ -1854,7 +1854,7 @@ exports.generateBooklet = onCall({
 
     const bucket = admin.storage().bucket();
     const authAxios = await getAuthenticatedClient();
-    const { PDFDocument } = require('pdf-lib');
+    const { PDFDocument, cmyk } = require('pdf-lib');
     const { pushGraphicsState, popGraphicsState, clip, endPath, moveTo, lineTo } = require('pdf-lib');
 
     const projectRef = db.collection('projects').doc(projectId);
@@ -1903,7 +1903,9 @@ exports.generateBooklet = onCall({
         const coverFiles = {
             front: files.find(f => f.type === 'cover_front'),
             spine: files.find(f => f.type === 'cover_spine'),
-            back: files.find(f => f.type === 'cover_back')
+            back: files.find(f => f.type === 'cover_back'),
+            inside_front: files.find(f => f.type === 'cover_inside_front'),
+            inside_back: files.find(f => f.type === 'cover_inside_back')
         };
 
         // --- 1. Build Interior ---
@@ -1938,28 +1940,30 @@ exports.generateBooklet = onCall({
         }
 
         // --- 2. Build Cover ---
-        if (coverFiles.front || coverFiles.back || coverFiles.spine) {
+        if (coverFiles.front || coverFiles.back || coverFiles.spine || coverFiles.inside_front || coverFiles.inside_back) {
             coverDoc = await PDFDocument.create();
 
-            // [FIX] Apply Correct Spine Formula
-            const interiorPaperObj = HARDCODED_PAPER_TYPES.find(p => p.name === specs.paperType);
+            const paperType = specs.paperType || '';
+            const interiorPaperObj = HARDCODED_PAPER_TYPES.find(p => p.name === paperType);
             const interiorCaliper = interiorPaperObj ? interiorPaperObj.caliper : 0.004;
 
-            const coverPaperObj = HARDCODED_PAPER_TYPES.find(p => p.name === specs.coverPaperType);
+            const coverPaperType = specs.coverPaperType || '';
+            const coverPaperObj = HARDCODED_PAPER_TYPES.find(p => p.name === coverPaperType);
             const coverCaliper = coverPaperObj ? coverPaperObj.caliper : (interiorPaperObj ? interiorCaliper : 0.004);
 
-            // Note: interiorFiles.length is the number of pages submitted. 
             const interiorSheets = Math.ceil(interiorFiles.length / 2);
             
+            // Spine Formula: (Interior Sheets * Interior Caliper) + (Cover Caliper * 2)
             let spineWidth = (interiorSheets * interiorCaliper) + (coverCaliper * 2);
-            
             if (specs.binding === 'saddleStitch' || specs.binding === 'loose') spineWidth = 0;
 
             const totalWidth = (trimWidth * 2) + spineWidth + (bleed * 2);
             const totalHeight = trimHeight + (bleed * 2);
-            const coverPage = coverDoc.addPage([totalWidth * 72, totalHeight * 72]); 
+            
+            // --- Page 1: Outer Cover (Back - Spine - Front) ---
+            const coverPage1 = coverDoc.addPage([totalWidth * 72, totalHeight * 72]); 
 
-            async function drawPart(fileMeta, x, y, w, h) {
+            async function drawPart(page, fileMeta, x, y, w, h) {
                 if (!fileMeta) return;
                 const { path: localPath, isPdf } = await prepareFileForEmbedding(fileMeta.storagePath);
                 let embeddable;
@@ -2009,15 +2013,8 @@ exports.generateBooklet = onCall({
                     drawY = targetY - (drawH - targetH) / 2;
                 }
 
-                drawW = Number.isFinite(drawW) ? drawW : 0;
-                drawH = Number.isFinite(drawH) ? drawH : 0;
-                drawX = Number.isFinite(drawX) ? drawX : 0;
-                drawY = Number.isFinite(drawY) ? drawY : 0;
-
-                if (drawW <= 0 || drawH <= 0) return;
-
-                coverPage.pushOperators(pushGraphicsState());
-                coverPage.pushOperators(
+                page.pushOperators(pushGraphicsState());
+                page.pushOperators(
                      moveTo(targetX, targetY),
                      lineTo(targetX + targetW, targetY),
                      lineTo(targetX + targetW, targetY + targetH),
@@ -2029,27 +2026,56 @@ exports.generateBooklet = onCall({
 
                 if (isFlipped) {
                     const cx = targetX + targetW / 2;
-                    coverPage.translateContent(cx, 0);
-                    coverPage.scaleContent(-1, 1);
-                    coverPage.translateContent(-cx, 0);
+                    page.translateContent(cx, 0);
+                    page.scaleContent(-1, 1);
+                    page.translateContent(-cx, 0);
                 }
 
-                if (isPdf) coverPage.drawPage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
-                else coverPage.drawImage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
+                if (isPdf) page.drawPage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
+                else page.drawImage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
 
                 if (isFlipped) {
                     const cx = targetX + targetW / 2;
-                    coverPage.translateContent(cx, 0);
-                    coverPage.scaleContent(-1, 1);
-                    coverPage.translateContent(-cx, 0);
+                    page.translateContent(cx, 0);
+                    page.scaleContent(-1, 1);
+                    page.translateContent(-cx, 0);
                 }
-                
-                coverPage.pushOperators(popGraphicsState());
+                page.pushOperators(popGraphicsState());
             }
 
-            await drawPart(coverFiles.back, 0, 0, trimWidth + bleed, totalHeight); 
-            await drawPart(coverFiles.spine, trimWidth + bleed, 0, spineWidth, totalHeight);
-            await drawPart(coverFiles.front, trimWidth + bleed + spineWidth, 0, trimWidth + bleed, totalHeight);
+            await drawPart(coverPage1, coverFiles.back, 0, 0, trimWidth + bleed, totalHeight); 
+            await drawPart(coverPage1, coverFiles.spine, trimWidth + bleed, 0, spineWidth, totalHeight);
+            await drawPart(coverPage1, coverFiles.front, trimWidth + bleed + spineWidth, 0, trimWidth + bleed, totalHeight);
+
+            // --- Page 2: Inner Cover (Inside Front - Glue - Inside Back) ---
+            // Only generate if inner files exist or binding requires glue area (Perfect Bound)
+            if (coverFiles.inside_front || coverFiles.inside_back || (specs.binding === 'perfectBound' && spineWidth > 0)) {
+                const coverPage2 = coverDoc.addPage([totalWidth * 72, totalHeight * 72]);
+                
+                // Inner Spread layout: [Inside Front] [Glue Area] [Inside Back]
+                // Corresponding to reverse of [Back] [Spine] [Front]
+                // Left Page (Inside Front) -> x=0
+                // Glue Area -> Center
+                // Right Page (Inside Back) -> x = Trim + Bleed + Spine
+
+                await drawPart(coverPage2, coverFiles.inside_front, 0, 0, trimWidth + bleed, totalHeight);
+                await drawPart(coverPage2, coverFiles.inside_back, trimWidth + bleed + spineWidth, 0, trimWidth + bleed, totalHeight);
+
+                // Draw Blank Glue Area if Perfect Bound
+                if (specs.binding === 'perfectBound' && spineWidth > 0) {
+                    const glueW = (spineWidth + 0.25) * 72; // Spine + 0.125 + 0.125
+                    const centerX = ((trimWidth + bleed) * 72) + ((spineWidth * 72) / 2);
+                    const glueX = centerX - (glueW / 2);
+                    
+                    coverPage2.drawRectangle({
+                        x: glueX,
+                        y: 0,
+                        width: glueW,
+                        height: totalHeight * 72,
+                        color: cmyk(0, 0, 0, 0) // White / Transparent
+                    });
+                }
+            }
         }
 
         for (const key in pdfDocCache) { delete pdfDocCache[key]; }
