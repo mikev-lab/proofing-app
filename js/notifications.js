@@ -1,6 +1,6 @@
 import { auth, db, functions } from './firebase.js';
 import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-import { doc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { collection, query, where, getDocs, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 import { httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js";
 
 async function initializeNotifications() {
@@ -142,6 +142,65 @@ async function initializeNotifications() {
     document.addEventListener('click', (e) => {
         if (!notificationPanel.contains(e.target) && !notificationBell.contains(e.target)) {
             notificationPanel.classList.add('hidden');
+        }
+    });
+}
+
+const clearNotificationsBtn = document.getElementById('clear-notifications-btn');
+
+if (clearNotificationsBtn) {
+    clearNotificationsBtn.addEventListener('click', async (e) => {
+        // Prevent the dropdown from closing immediately if needed
+        e.stopPropagation();
+
+        if (!auth.currentUser) return;
+
+        try {
+            clearNotificationsBtn.textContent = "Clearing...";
+            clearNotificationsBtn.disabled = true;
+            clearNotificationsBtn.classList.add('opacity-50', 'cursor-not-allowed');
+
+            // 1. Get all notifications for this user
+            const q = query(
+                collection(db, "notifications"), 
+                where("recipientUid", "==", auth.currentUser.uid)
+            );
+            const snapshot = await getDocs(q);
+
+            if (snapshot.empty) {
+                // Nothing to delete
+                clearNotificationsBtn.textContent = "Clear All";
+                clearNotificationsBtn.disabled = false;
+                clearNotificationsBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                return;
+            }
+
+            // 2. Batch Delete
+            const batch = writeBatch(db);
+            snapshot.docs.forEach(doc => {
+                batch.delete(doc.ref);
+            });
+
+            await batch.commit();
+            console.log("All notifications cleared.");
+
+            // 3. UI Cleanup (Optional: The onSnapshot listener should handle this automatically, but we can force it)
+            const list = document.getElementById('notification-list');
+            if (list) {
+                list.innerHTML = '<p class="px-4 py-2 text-sm text-gray-400">No new notifications</p>';
+            }
+            const indicator = document.getElementById('notification-indicator');
+            if (indicator) {
+                indicator.classList.add('hidden');
+            }
+
+        } catch (err) {
+            console.error("Error clearing notifications:", err);
+            alert("Failed to clear notifications.");
+        } finally {
+            clearNotificationsBtn.textContent = "Clear All";
+            clearNotificationsBtn.disabled = false;
+            clearNotificationsBtn.classList.remove('opacity-50', 'cursor-not-allowed');
         }
     });
 }

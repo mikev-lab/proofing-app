@@ -91,12 +91,12 @@ service cloud.firestore {
 
     // --- Rules for 'notifications' Collection (NEW) ---
     match /notifications/{notificationId} {
-      // A user can read/update a notification if their UID is in the `recipientUid` field.
-      // this allows them to mark it as 'read'
-      allow read, update: if request.auth != null && request.auth.uid == resource.data.recipientUid;
-      // Disallow client-side creation and deletion.
-      allow create, delete: if false;
-    }
+          // Allow read, update (mark as read), and delete (clear) if the user owns the notification
+          allow read, update, delete: if request.auth != null && request.auth.uid == resource.data.recipientUid;
+          
+          // Disallow client-side creation (server only)
+          allow create: if false;
+        }
 
     // --- Rules for 'projects' Collection ---
     match /projects/{projectId} {
