@@ -71,6 +71,7 @@ const paperSection = document.getElementById('paper-section');
 const pageCountSection = document.getElementById('page-count-section');
 const saveSpecsBtn = document.getElementById('save-specs-btn');
 const projectTypeRadios = document.getElementsByName('projectType');
+const specReadingDirection = document.getElementById('spec-reading-direction');
 
 // Cover Builder Elements
 const tabInterior = document.getElementById('tab-interior');
@@ -1640,6 +1641,8 @@ function renderBookViewer() {
          return;
     }
 
+    const isRTL = projectSpecs.readingDirection === 'rtl';
+
     container.appendChild(createInsertBar(0));
 
     const firstSpread = document.createElement('div');
@@ -1647,10 +1650,20 @@ function renderBookViewer() {
     const spacer = document.createElement('div');
     spacer.style.width = `${width * pixelsPerInch}px`;
     spacer.className = "pointer-events-none";
-    firstSpread.appendChild(spacer);
 
-    if (pages[0]) {
-        firstSpread.appendChild(createPageCard(pages[0], 0, true, false, width, height, bleed, pixelsPerInch, observer));
+    // Page 1 Logic
+    if (isRTL) {
+        // RTL: [Page 1 (Visual Left), Spacer]
+        if (pages[0]) {
+            firstSpread.appendChild(createPageCard(pages[0], 0, false, false, width, height, bleed, pixelsPerInch, observer));
+        }
+        firstSpread.appendChild(spacer);
+    } else {
+        // LTR: [Spacer, Page 1 (Visual Right)]
+        firstSpread.appendChild(spacer);
+        if (pages[0]) {
+            firstSpread.appendChild(createPageCard(pages[0], 0, true, false, width, height, bleed, pixelsPerInch, observer));
+        }
     }
     container.appendChild(firstSpread);
 
@@ -1660,38 +1673,64 @@ function renderBookViewer() {
         const spreadDiv = document.createElement('div');
         spreadDiv.className = "spread-row flex justify-center items-end gap-0 mb-4 min-h-[100px] p-2 border border-transparent hover:border-dashed hover:border-gray-600 rounded";
 
-        const isLeft = pages[i];
-        const isRight = pages[i+1];
+        const pA = pages[i];
+        const pB = pages[i+1];
+
         let isLinkedSpread = false;
-        if (isLeft && isRight && isLeft.sourceFileId && isLeft.sourceFileId === isRight.sourceFileId) {
-            if (isLeft.id.endsWith('_L') && isRight.id.endsWith('_R')) {
+        // Linked spreads (single file split) are always treated as a LTR visual unit (Left Half, Right Half)
+        if (pA && pB && pA.sourceFileId && pA.sourceFileId === pB.sourceFileId) {
+            if (pA.id.endsWith('_L') && pB.id.endsWith('_R')) {
                 isLinkedSpread = true;
             }
         }
 
         if (isLinkedSpread) {
-            const spreadCard = createSpreadCard(isLeft, isRight, i, width, height, bleed, pixelsPerInch, observer);
+            const spreadCard = createSpreadCard(pA, pB, i, width, height, bleed, pixelsPerInch, observer);
             spreadDiv.appendChild(spreadCard);
             i += 2;
         } else {
+            let leftPageObj, rightPageObj;
+            let leftIdx, rightIdx;
+
+            if (isRTL) {
+                // RTL Spread: [P3 (Visual Left), P2 (Visual Right)]
+                leftPageObj = pB; leftIdx = i + 1;
+                rightPageObj = pA; rightIdx = i;
+            } else {
+                // LTR Spread: [P2 (Visual Left), P3 (Visual Right)]
+                leftPageObj = pA; leftIdx = i;
+                rightPageObj = pB; rightIdx = i + 1;
+            }
+
             let leftCard = null;
-            if (pages[i]) {
-                leftCard = createPageCard(pages[i], i, false, false, width, height, bleed, pixelsPerInch, observer);
+            if (leftPageObj) {
+                leftCard = createPageCard(leftPageObj, leftIdx, false, false, width, height, bleed, pixelsPerInch, observer);
                 spreadDiv.appendChild(leftCard);
             }
+
             let rightCard = null;
-            if (i + 1 < pages.length) {
-                rightCard = createPageCard(pages[i+1], i+1, true, false, width, height, bleed, pixelsPerInch, observer);
+            if (rightPageObj) {
+                rightCard = createPageCard(rightPageObj, rightIdx, true, false, width, height, bleed, pixelsPerInch, observer);
                 spreadDiv.appendChild(rightCard);
             }
+
             if (leftCard) leftCard.style.flexShrink = '0';
             if (rightCard) rightCard.style.flexShrink = '0';
+
+            // Handle Odd Pages / Missing Slot
+            if (!leftCard) {
+                 const endSpacer = document.createElement('div');
+                 endSpacer.style.width = `${width * pixelsPerInch}px`;
+                 endSpacer.className = "pointer-events-none";
+                 spreadDiv.prepend(endSpacer);
+            }
             if (!rightCard) {
                  const endSpacer = document.createElement('div');
                  endSpacer.style.width = `${width * pixelsPerInch}px`;
                  endSpacer.className = "pointer-events-none";
                  spreadDiv.appendChild(endSpacer);
             }
+
             i += 2;
         }
         container.appendChild(spreadDiv);
@@ -3455,9 +3494,14 @@ specsForm.addEventListener('submit', async (e) => {
 
         if (typeValue === 'loose') {
             specsUpdate['specs.coverPaperType'] = null;
+            specsUpdate['specs.readingDirection'] = null;
         } else {
             if (!specCoverPaper.value) throw new Error("Please select a cover paper type.");
             specsUpdate['specs.coverPaperType'] = specCoverPaper.value;
+            // Capture Reading Direction
+            if (specReadingDirection) {
+                specsUpdate['specs.readingDirection'] = specReadingDirection.value || 'ltr';
+            }
         }
 
         // Save to Firestore
@@ -3470,7 +3514,8 @@ specsForm.addEventListener('submit', async (e) => {
             binding: specsUpdate['specs.binding'],
             pageCount: 0,
             paperType: specsUpdate['specs.paperType'],
-            coverPaperType: specsUpdate['specs.coverPaperType']
+            coverPaperType: specsUpdate['specs.coverPaperType'],
+            readingDirection: specsUpdate['specs.readingDirection'] || 'ltr'
         };
         projectType = specsUpdate['projectType'];
 
@@ -3820,6 +3865,7 @@ async function init() {
         return;
     }
 
+
     try {
         if (guestToken) {
             const authenticateGuest = httpsCallable(functions, 'authenticateGuest');
@@ -3873,6 +3919,28 @@ async function init() {
         }
 
         const projectData = projectSnap.data();
+
+        // --- ACCESS CHECK: Prevent edits if Approved ---
+        const status = projectData.status;
+        if (status === 'Approved' || status === 'In Production' || status === 'Imposition Complete') {
+             loadingState.classList.add('hidden');
+             lockedState.classList.remove('hidden');
+
+             // Customize Locked Message
+             const lockedTitle = lockedState.querySelector('h2');
+             if(lockedTitle) lockedTitle.textContent = "Project Approved";
+
+             if(lockedByUserSpan) {
+                 lockedByUserSpan.parentElement.innerHTML = `
+                    <span class="block text-gray-300 mb-4">This project has been approved and is now locked for production.</span>
+                    <a href="proof.html?id=${projectId}${guestToken ? '&guestToken='+guestToken : ''}" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                        View Proof
+                    </a>
+                 `;
+             }
+             return;
+        }
+
         projectNameEl.textContent = projectData.projectName;
         projectType = projectData.projectType || 'single'; 
         projectSpecs = projectData.specs || {}; 
@@ -4092,6 +4160,12 @@ async function syncProjectState(statusLabel) {
     const total = filesToUpload.length;
 
     if (total > 0) {
+        // 1. Calculate Total Bytes
+        let totalBytesExpected = 0;
+        filesToUpload.forEach(f => totalBytesExpected += f.file.size);
+        let totalBytesTransferred = 0;
+        const fileProgressMap = new Map(); // id -> bytes
+
         for (const item of filesToUpload) {
             const timestamp = Date.now();
             const cleanName = item.file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
@@ -4100,7 +4174,30 @@ async function syncProjectState(statusLabel) {
 
             progressText.textContent = `Uploading ${item.file.name}...`;
             
-            await uploadBytesResumable(storageRef, item.file);
+            // Use Upload Task to monitor progress
+            const uploadTask = uploadBytesResumable(storageRef, item.file);
+
+            uploadTask.on('state_changed',
+                (snapshot) => {
+                    // Update this file's progress
+                    fileProgressMap.set(item.id, snapshot.bytesTransferred);
+
+                    // Sum all progress
+                    let currentTotal = 0;
+                    fileProgressMap.forEach(v => currentTotal += v);
+
+                    // Update Total Progress Bar
+                    const percent = (currentTotal / totalBytesExpected) * 100;
+                    if(progressBar) progressBar.style.width = `${percent}%`;
+                    if(progressPercent) progressPercent.textContent = `${Math.round(percent)}%`;
+                }
+            );
+
+            await uploadTask; // Wait for completion
+
+            // Ensure this file is marked 100% (in case state_changed missed the very last byte)
+            fileProgressMap.set(item.id, item.file.size);
+
             allSourcePaths[item.id] = storagePath;
             
             if (item.type === 'interior_source' && sourceFiles[item.id]) {
@@ -4118,11 +4215,6 @@ async function syncProjectState(statusLabel) {
                     coverSources[localSlot].storagePath = storagePath;
                 }
             }
-
-            completed++;
-            const percent = (completed / total) * 100;
-            progressBar.style.width = `${percent}%`;
-            progressPercent.textContent = `${Math.round(percent)}%`;
         }
     }
 
