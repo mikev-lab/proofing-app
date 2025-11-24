@@ -35,6 +35,15 @@ const progressBar = document.getElementById('progress-bar');
 const progressText = document.getElementById('progress-text');
 const progressPercent = document.getElementById('progress-percent');
 
+const professionalUploadUI = document.getElementById('professional-upload-ui');
+const proUploadForm = document.getElementById('pro-upload-form');
+const proFileInterior = document.getElementById('pro-file-interior');
+const proFileCover = document.getElementById('pro-file-cover');
+const proCoverGroup = document.getElementById('pro-cover-group');
+const proUploadBtns = document.querySelectorAll('.pro-upload-btn');
+
+let uploadMode = 'builder';
+
 // Locked UI Elements
 const lockedState = document.getElementById('locked-state');
 const lockedByUserSpan = document.getElementById('locked-by-user');
@@ -465,13 +474,153 @@ unitToggles.forEach(btn => {
     });
 });
 
+// --- Professional Upload Mode Switchers ---
+if (proUploadBtns) {
+    proUploadBtns.forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            // Prevent the click from triggering the parent label's radio select immediately
+            // (We handle the selection manually below)
+            e.stopPropagation();
+            e.preventDefault();
+
+            // Set Mode
+            uploadMode = 'professional';
+            
+            // Select the Binding Radio manually based on the button's data attribute
+            const type = btn.dataset.type;
+            const radio = document.querySelector(`input[name="projectType"][value="${type}"]`);
+            if (radio) {
+                radio.checked = true;
+                radio.dispatchEvent(new Event('change')); // Trigger change to update UI states
+            }
+
+            // Update the main "Save" button text to reflect the new flow
+            saveSpecsBtn.textContent = 'Continue to Upload';
+            
+            // [NEW] Update Visuals
+            updateSelectionVisuals();
+        });
+    });
+}
+
+// Listen for normal radio clicks to reset mode back to 'builder'
+Array.from(projectTypeRadios).forEach(radio => {
+    radio.addEventListener('click', () => {
+        // If user clicks the big card (not the pro button), revert to standard builder
+        if (uploadMode === 'professional') {
+            uploadMode = 'builder';
+            saveSpecsBtn.textContent = 'Save & Start Builder';
+        }
+        // [NEW] Update Visuals
+        updateSelectionVisuals();
+    });
+});
+
+if (proUploadForm) {
+    proUploadForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const submitBtn = proUploadForm.querySelector('button[type="submit"]');
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Processing...';
+
+        try {
+            const interiorFile = proFileInterior.files[0];
+            const coverFile = proFileCover.files[0];
+
+            // Basic validation
+            if (!interiorFile) throw new Error("Interior PDF is required.");
+            
+            // Initialize tracking
+            const allSourcePaths = {};
+            const bookletMetadata = [];
+            const progressText = document.getElementById('progress-text') || { textContent: '' }; 
+            
+            // Helper: Upload file to Firebase Storage
+            const uploadFile = async (file, type) => {
+                const timestamp = Date.now();
+                const cleanName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+                const storagePath = `guest_uploads/${projectId}/${timestamp}_pro_${type}_${cleanName}`;
+                const storageRef = ref(storage, storagePath);
+                await uploadBytesResumable(storageRef, file);
+                return storagePath;
+            };
+
+            // 1. Upload Interior
+            const interiorPath = await uploadFile(interiorFile, 'interior');
+            allSourcePaths['pro_interior'] = interiorPath;
+
+            // 2. Parse Interior Page Count (using PDF.js locally)
+            const fileUrl = URL.createObjectURL(interiorFile);
+            const pdf = await pdfjsLib.getDocument(fileUrl).promise;
+            const numPages = pdf.numPages;
+
+            // 3. Create Metadata (Expand Pages)
+            // We map every page 0 to N-1 to the single source file
+            for (let i = 0; i < numPages; i++) {
+                bookletMetadata.push({
+                    storagePath: interiorPath,
+                    sourcePageIndex: i,
+                    settings: { scaleMode: 'fit', alignment: 'center' },
+                    type: 'interior_page'
+                });
+            }
+
+            // 4. Handle Cover
+            if (coverFile) {
+                const coverPath = await uploadFile(coverFile, 'cover');
+                allSourcePaths['pro_cover'] = coverPath;
+                
+                // For professional uploads, we assume the PDF is a complete pre-imposed cover
+                // So we map it to 'cover_front' which the backend treats as the primary cover part
+                bookletMetadata.push({
+                    storagePath: coverPath,
+                    type: 'cover_front',
+                    sourcePageIndex: 0,
+                    settings: { scaleMode: 'fit' }
+                });
+            }
+
+            // 5. Generate Booklet
+            const generateBooklet = httpsCallable(functions, 'generateBooklet');
+            // Pass spineMode='file' to disable any auto-stretch/mirror logic in the backend
+            await generateBooklet({ projectId: projectId, files: bookletMetadata, spineMode: 'file' });
+
+            // 6. Submit Status
+            const submitGuestUpload = httpsCallable(functions, 'submitGuestUpload');
+            await submitGuestUpload({ projectId: projectId });
+
+            // 7. Persist State
+            await persistStateAfterSubmit(allSourcePaths, 'submitted_complete');
+
+            // 8. Success Redirect
+            professionalUploadUI.classList.add('hidden');
+            successState.classList.remove('hidden');
+            
+            setTimeout(() => {
+                if (isAdmin) window.location.href = `admin_project.html?id=${projectId}`;
+                else {
+                    let url = `proof.html?id=${projectId}`;
+                    if (guestToken) url += `&guestToken=${guestToken}`;
+                    window.location.href = url;
+                }
+            }, 3000);
+
+        } catch (error) {
+            console.error("Professional Upload Failed:", error);
+            alert("Upload failed: " + error.message);
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Upload & Generate Proof';
+        }
+    });
+}
+
 // --- Handle Project Type Selection ---
 Array.from(projectTypeRadios).forEach(radio => {
     radio.addEventListener('change', (e) => {
         const val = e.target.value;
         specBinding.value = val === 'loose' ? '' : val;
 
-        // [FIX] Always show the paper section container
+        // Always show the paper section container
         paperSection.classList.remove('hidden');
         
         // Interior Paper is always required/visible
@@ -486,6 +635,9 @@ Array.from(projectTypeRadios).forEach(radio => {
             if(specCoverPaper.parentElement) specCoverPaper.parentElement.classList.remove('hidden');
             specCoverPaper.required = true;
         }
+        
+        // [NEW] Update Visuals
+        updateSelectionVisuals();
     });
 });
 
@@ -531,8 +683,7 @@ function populateSpecsForm() {
         const radio = document.querySelector(`input[name="projectType"][value="${radioValue}"]`);
         if (radio) {
             radio.checked = true;
-            // [FIX] Dispatch event to trigger the visibility logic defined above
-            radio.dispatchEvent(new Event('change')); 
+            radio.dispatchEvent(new Event('change')); // Trigger visibility logic
         }
     }
 
@@ -557,6 +708,9 @@ function populateSpecsForm() {
     // 3. Other Fields
     if (specPaper) specPaper.value = projectSpecs.paperType || '';
     if (specCoverPaper) specCoverPaper.value = projectSpecs.coverPaperType || '';
+    
+    // [NEW] Update Visuals to match restored state
+    updateSelectionVisuals();
 }
 
 // --- Back Button Logic ---
@@ -3246,46 +3400,57 @@ specsForm.addEventListener('submit', async (e) => {
     saveSpecsBtn.textContent = 'Saving...';
 
     try {
+        // Get selected Project Type
         const selectedType = document.querySelector('input[name="projectType"]:checked');
-        if (!selectedType) throw new Error('Please select a project type.');
-        const typeValue = selectedType.value;
+        if (!selectedType) {
+            throw new Error('Please select a project type.');
+        }
+        const typeValue = selectedType.value; 
 
         const sizePreset = specSizePreset.value;
-        let dimensionsVal;
+        let dimensionsVal; 
         let localDimensions; 
 
         if (!sizePreset) throw new Error("Please select a finished size.");
 
+        // Resolve Dimensions
         if (sizePreset === 'custom') {
             const width = parseFloat(specWidth.value);
             const height = parseFloat(specHeight.value);
             const unit = specUnit.value;
-            if (isNaN(width) || width <= 0 || isNaN(height) || height <= 0) throw new Error('Invalid custom dimensions');
+
+            if (isNaN(width) || width <= 0 || isNaN(height) || height <= 0) {
+                throw new Error('Invalid custom dimensions');
+            }
+
             dimensionsVal = { width, height, units: unit };
         } else {
             dimensionsVal = resolveDimensions(sizePreset);
         }
+
         localDimensions = resolveDimensions(dimensionsVal);
 
+        // Prepare Specs Update
         const specsUpdate = {
             'projectType': typeValue === 'loose' ? 'single' : 'booklet',
             'specs.dimensions': dimensionsVal,
             'specs.binding': typeValue === 'loose' ? 'loose' : typeValue,
             'specs.pageCount': 0, // Dynamic
-            // [FIX] Save paper type for ALL project types
             'specs.paperType': specPaper.value 
         };
 
-        if (typeValue !== 'loose') {
-            // Only save cover paper for booklets
-            specsUpdate['specs.coverPaperType'] = specCoverPaper.value;
-        } else {
+        if (typeValue === 'loose') {
             specsUpdate['specs.coverPaperType'] = null;
+        } else {
+            if (!specCoverPaper.value) throw new Error("Please select a cover paper type.");
+            specsUpdate['specs.coverPaperType'] = specCoverPaper.value;
         }
 
+        // Save to Firestore
         const projectRef = doc(db, 'projects', projectId);
         await updateDoc(projectRef, specsUpdate);
 
+        // Update Local State
         projectSpecs = {
             dimensions: localDimensions,
             binding: specsUpdate['specs.binding'],
@@ -3295,28 +3460,52 @@ specsForm.addEventListener('submit', async (e) => {
         };
         projectType = specsUpdate['projectType'];
 
-        specsModal.classList.add('hidden');
-        uploadContainer.classList.remove('hidden');
-        refreshBuilderUI();
-        await initializeBuilder();
+        // --- MODE LOGIC ---
+        if (uploadMode === 'professional') {
+            // 1. Hide Specs Modal
+            specsModal.classList.add('hidden');
+            
+            // 2. Show Professional UI (NOT the standard upload container)
+            professionalUploadUI.classList.remove('hidden');
+            
+            // 3. Configure Pro UI based on binding
+            if (projectType === 'single') {
+                // Hide cover input for loose sheets
+                document.getElementById('pro-cover-group').classList.add('hidden');
+            } else {
+                // Show cover input for booklets
+                document.getElementById('pro-cover-group').classList.remove('hidden');
+            }
+        } else {
+            // 1. Hide Specs Modal
+            specsModal.classList.add('hidden');
+            
+            // 2. Show Standard Builder UI
+            uploadContainer.classList.remove('hidden');
+            
+            // 3. Initialize Builder
+            refreshBuilderUI();
+            await initializeBuilder();
+        }
 
     } catch (err) {
         console.error("Error saving specs:", err);
         alert("Failed to save specifications: " + err.message);
     } finally {
         saveSpecsBtn.disabled = false;
-        saveSpecsBtn.textContent = 'Save & Continue';
+        // Reset button text based on current mode (in case validation failed)
+        saveSpecsBtn.textContent = uploadMode === 'professional' ? 'Continue to Upload' : 'Save & Start Builder';
     }
 });
 
 function refreshBuilderUI() {
     // Update Header Nav
+    if(professionalUploadUI) professionalUploadUI.classList.add('hidden');
     if (navBackBtn) navBackBtn.classList.remove('hidden');
 
     // 1. Inject "Edit Specs" Button
     const headerActions = document.getElementById('submit-button')?.parentElement;
     if (headerActions) {
-        // Remove existing if present to prevent duplicates
         const existingEditBtn = document.getElementById('edit-specs-btn');
         if (existingEditBtn) existingEditBtn.remove();
 
@@ -3331,7 +3520,6 @@ function refreshBuilderUI() {
             populateSpecsForm();
         };
         
-        // Insert before the Save Progress button or Submit button
         const refNode = document.getElementById('save-progress-btn') || document.getElementById('submit-button');
         headerActions.insertBefore(editBtn, refNode);
     }
@@ -3368,15 +3556,12 @@ function refreshBuilderUI() {
         spineGroup.insertBefore(wrapper, spineGroup.querySelector('.drop-zone'));
 
         const selectEl = document.getElementById('spine-mode-select');
-
-        // Restore value if exists
         if (window.currentSpineMode) {
             selectEl.value = window.currentSpineMode;
             const dropZone = spineGroup.querySelector('.drop-zone');
             if (window.currentSpineMode === 'file') dropZone.classList.remove('hidden');
             else dropZone.classList.add('hidden');
         }
-
         selectEl.addEventListener('change', (e) => {
             window.currentSpineMode = e.target.value;
             const dropZone = spineGroup.querySelector('.drop-zone');
@@ -3404,7 +3589,6 @@ function refreshBuilderUI() {
         if (toolbarActionsBooklet) toolbarActionsBooklet.classList.remove('hidden');
         if (toolbarSpreadUpload) toolbarSpreadUpload.classList.remove('hidden');
 
-        // Inject Undo Button
         if (!document.getElementById('undo-btn')) {
             const toolbar = document.getElementById('toolbar-actions-booklet');
             if (toolbar) {
@@ -3422,16 +3606,17 @@ function refreshBuilderUI() {
             }
         }
 
-        // Handle Saddle Stitch (Hide Spine) vs Perfect Bound (Show Spine)
         if (projectSpecs.binding === 'saddleStitch') {
             if (spineGroup) spineGroup.classList.add('hidden');
         } else {
             if (spineGroup) spineGroup.classList.remove('hidden');
         }
 
-        // Ensure a tab is active
-        if (!tabInterior.classList.contains('text-indigo-400') && !tabCover.classList.contains('text-indigo-400')) {
-             if (tabInterior) tabInterior.click();
+        if (tabInterior) {
+             // Ensure a tab is active
+             if (!tabInterior.classList.contains('text-indigo-400') && !tabCover.classList.contains('text-indigo-400')) {
+                  tabInterior.click();
+             }
         }
     }
 }
@@ -3552,6 +3737,50 @@ async function drawWrapper(ctx, sourceEntry, targetX, targetY, targetW, targetH,
         ctx.drawImage(imgBitmap, 0, 0, imgBitmap.width, imgBitmap.height, -scaledW, 0, scaledW, targetH);
     }
     ctx.restore();
+}
+
+function updateSelectionVisuals() {
+    const selectedRadio = document.querySelector('input[name="projectType"]:checked');
+    const selectedValue = selectedRadio ? selectedRadio.value : null;
+
+    const types = ['loose', 'saddleStitch', 'perfectBound'];
+
+    types.forEach(type => {
+        const label = document.getElementById(`label-${type}`);
+        const btn = document.querySelector(`.pro-upload-btn[data-type="${type}"]`);
+        
+        // Reset Base Classes
+        if (label) {
+            label.className = "cursor-pointer relative group p-5 rounded-xl border-2 border-slate-700 bg-slate-800/50 hover:bg-slate-800 transition-all text-center h-full flex flex-col items-center justify-center gap-3 min-h-[180px]";
+            // Reset Icon color
+            const svg = label.querySelector('svg');
+            if(svg) svg.classList.remove('text-indigo-400');
+        }
+        if (btn) {
+            btn.className = "pro-upload-btn w-full py-2 text-xs font-medium text-gray-400 bg-slate-900/50 border border-slate-700 rounded-lg hover:bg-slate-800 hover:text-white hover:border-gray-500 transition-colors flex items-center justify-center gap-1";
+        }
+
+        // Apply Active State
+        if (type === selectedValue) {
+            if (uploadMode === 'builder') {
+                // Highlight Card
+                if (label) {
+                    label.classList.remove('border-slate-700', 'bg-slate-800/50');
+                    label.classList.add('border-indigo-500', 'bg-indigo-900/20', 'ring-1', 'ring-indigo-500');
+                    const svg = label.querySelector('svg');
+                    if(svg) svg.classList.add('text-indigo-400');
+                }
+            } else if (uploadMode === 'professional') {
+                // Highlight Button
+                if (btn) {
+                    btn.classList.remove('text-gray-400', 'bg-slate-900/50', 'border-slate-700');
+                    btn.classList.add('bg-indigo-600', 'text-white', 'border-indigo-500', 'ring-1', 'ring-indigo-400');
+                }
+                // Keeping Card somewhat active? No, user wants distinct separation.
+                // We leave the card dim to show "Visual Builder" is NOT selected.
+            }
+        }
+    });
 }
 
 // --- Main Initialization (Trust-Optimized) ---
@@ -4023,7 +4252,7 @@ async function handleUpload(e) {
 
         const spineMode = window.currentSpineMode || 'file';
         
-        // [FIX] Only add spine file metadata if we are using a FILE or MIRROR mode.
+        // Only add spine file metadata if we are using a FILE or MIRROR mode.
         // If mode is 'stretch', we skip adding a spine part, so the backend knows to extend the adjacent cover.
         if (spineMode === 'file') {
             addCoverMeta('cover_spine', 'file-spine', 'cover_spine');
@@ -4048,7 +4277,7 @@ async function handleUpload(e) {
 
         progressText.textContent = 'Generating Proof...';
         const generateBooklet = httpsCallable(functions, 'generateBooklet');
-        // [FIX] Pass spineMode to backend
+        // Pass spineMode to backend
         await generateBooklet({ projectId: projectId, files: bookletMetadata, spineMode: spineMode });
 
         progressText.textContent = 'Finalizing...';
