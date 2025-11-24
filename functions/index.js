@@ -1848,48 +1848,35 @@ exports.generateBooklet = onCall({
     if (!request.auth) throw new HttpsError('unauthenticated', 'User must be authenticated.');
 
     const { projectId, files } = request.data;
-    if (!projectId || !Array.isArray(files)) {
-        throw new HttpsError('invalid-argument', 'Missing projectId or files array.');
-    }
+    if (!projectId || !Array.isArray(files)) throw new HttpsError('invalid-argument', 'Missing projectId or files array.');
 
-    // --- DEBUG LOGGING START ---
     logger.log(`Generating booklet for project ${projectId} with ${files.length} files.`);
-    if (files.length > 0) {
-        logger.log(`DEBUG: First file object: ${JSON.stringify(files[0])}`);
-    }
-    // --- DEBUG LOGGING END ---
 
     const bucket = admin.storage().bucket();
     const authAxios = await getAuthenticatedClient();
+    const { PDFDocument } = require('pdf-lib');
 
-    // Fetch Project Specs
     const projectRef = db.collection('projects').doc(projectId);
     const projectDoc = await projectRef.get();
     if (!projectDoc.exists) throw new HttpsError('not-found', 'Project not found.');
     const projectData = projectDoc.data();
     const specs = projectData.specs || {};
 
-    // Dimensions (Safety Net: Resolve String to Object)
     const resolvedDims = resolveDimensions(specs.dimensions);
     const trimWidth = resolvedDims.width || 8.5;
     const trimHeight = resolvedDims.height || 11;
     const bleed = 0.125;
 
-    // Create Documents
     const interiorDoc = await PDFDocument.create();
     let coverDoc = null;
 
-    // Cache for downloaded/converted files to avoid redundancy
-    const fileCache = {}; // storagePath -> { path: localPath, isPdf: boolean }
-    const pdfDocCache = {}; // localPath -> PDFDocument instance (Optimization for re-use)
-    const tempFiles = []; // Track for cleanup
+    const fileCache = {}; 
+    const pdfDocCache = {}; 
+    const tempFiles = []; 
 
     try {
-        // Helper to convert non-embeddable files (PSD, etc) to PDF/PNG
         async function prepareFileForEmbedding(storagePath) {
-            // Check Cache
             if (fileCache[storagePath]) return fileCache[storagePath];
-
             const tempPath = path.join(os.tmpdir(), `temp_${Date.now()}_${Math.random().toString(36).substring(7)}`);
             await bucket.file(storagePath).download({ destination: tempPath });
             tempFiles.push(tempPath);
@@ -1898,35 +1885,20 @@ exports.generateBooklet = onCall({
             const ext = path.extname(storagePath).toLowerCase();
 
             if (ext === '.psd' || ext === '.ai') {
-                logger.log(`Converting ${ext} file to PDF via Gotenberg...`);
                 const convertFormData = new FormData();
                 convertFormData.append('files', fs.createReadStream(tempPath), path.basename(storagePath));
-
-                const response = await authAxios.post(`${GOTENBERG_URL}/forms/libreoffice/convert`, convertFormData, {
-                    responseType: 'arraybuffer'
-                });
-
-                // Replace temp file with converted PDF
+                const response = await authAxios.post(`${GOTENBERG_URL}/forms/libreoffice/convert`, convertFormData, { responseType: 'arraybuffer' });
                 fs.writeFileSync(tempPath, response.data);
                 isPdf = true;
-            } else if (ext === '.pdf') {
-                isPdf = true;
-            } else {
-                 // Images (JPG, PNG)
-                 isPdf = false;
-            }
+            } else if (ext === '.pdf') isPdf = true;
+            else isPdf = false;
 
             const result = { path: tempPath, isPdf };
-            fileCache[storagePath] = result; // Cache it
+            fileCache[storagePath] = result;
             return result;
         }
 
-        // Process Files
         const interiorFiles = files.filter(f => f.type.startsWith('interior'));
-        // --- DEBUG LOGGING START ---
-        logger.log(`DEBUG: Found ${interiorFiles.length} interior files.`);
-        // --- DEBUG LOGGING END ---
-
         const coverFiles = {
             front: files.find(f => f.type === 'cover_front'),
             spine: files.find(f => f.type === 'cover_spine'),
@@ -1935,91 +1907,62 @@ exports.generateBooklet = onCall({
 
         // --- 1. Build Interior ---
         for (const [index, fileMeta] of interiorFiles.entries()) {
-            logger.log(`Processing Interior Page ${index + 1}/${interiorFiles.length}. Source: ${fileMeta.storagePath}, PageIdx: ${fileMeta.sourcePageIndex}, Settings: ${JSON.stringify(fileMeta.settings)}`);
-
-            // Handle Blank Page
             if (!fileMeta.storagePath) {
-                // Draw blank page
                 drawOnSheet(interiorDoc, { isBlank: true }, trimWidth, trimHeight, bleed, fileMeta.settings || {}, false);
                 continue;
             }
-
-            const { path: localPath, isPdf } = await prepareFileForEmbedding(fileMeta.storagePath, fileMeta.type);
+            const { path: localPath, isPdf } = await prepareFileForEmbedding(fileMeta.storagePath);
             const settings = fileMeta.settings || { scaleMode: 'fit', alignment: 'center' };
 
             if (isPdf) {
                 let srcDoc;
-
-                // OPTIMIZATION: Re-use PDFDocument instance if already loaded
-                if (pdfDocCache[localPath]) {
-                    srcDoc = pdfDocCache[localPath];
-                } else {
-                    // Load and cache
+                if (pdfDocCache[localPath]) srcDoc = pdfDocCache[localPath];
+                else {
                     const pdfBytes = fs.readFileSync(localPath);
-                    // IMPORTANT: Load without indices for speed if we only need sequential access, but here we access random pages.
-                    // Just standard load.
                     srcDoc = await PDFDocument.load(pdfBytes);
                     pdfDocCache[localPath] = srcDoc;
                 }
-
-                // Extract specific page index if provided, otherwise default to 0
-                const pageIndex = fileMeta.sourcePageIndex !== undefined ? fileMeta.sourcePageIndex : 0;
-
+                const pageIndex = fileMeta.sourcePageIndex || 0;
                 if (pageIndex < srcDoc.getPageCount()) {
                     const [embeddedPage] = await interiorDoc.embedPages([srcDoc.getPage(pageIndex)]);
                     drawOnSheet(interiorDoc, embeddedPage, trimWidth, trimHeight, bleed, settings, true);
-                } else {
-                    logger.warn(`Requested page index ${pageIndex} out of bounds for file ${fileMeta.storagePath}`);
                 }
-
             } else {
-                // Image
                 const imgBytes = fs.readFileSync(localPath);
                 let embeddedImage;
                 if (localPath.toLowerCase().endsWith('.png')) embeddedImage = await interiorDoc.embedPng(imgBytes);
                 else embeddedImage = await interiorDoc.embedJpg(imgBytes);
-
                 drawOnSheet(interiorDoc, embeddedImage, trimWidth, trimHeight, bleed, settings, false);
             }
         }
 
-        // --- 2. Build Cover (If exists) ---
+        // --- 2. Build Cover ---
         if (coverFiles.front || coverFiles.back || coverFiles.spine) {
             coverDoc = await PDFDocument.create();
 
-            // Calculate Spine
             const paperType = specs.paperType || '';
             const paperObj = HARDCODED_PAPER_TYPES.find(p => p.name === paperType);
-            const caliper = paperObj ? paperObj.caliper : 0.004; // Default fallback
-
-            // For MVP, let's use a fixed calculation based on page count from project
-            // Note: interiorFiles.length might be accurate if fully populated, but specs.pageCount is what user entered.
-            // Let's use specs.pageCount if available and seemingly valid, else fallback.
+            const caliper = paperObj ? paperObj.caliper : 0.004; 
             const pageCount = (specs.pageCount && specs.pageCount > 0) ? specs.pageCount : interiorFiles.length;
 
             let spineWidth = (pageCount / 2) * caliper;
-
-            // Force spine to 0 if not perfect bound
-            if (specs.binding === 'saddleStitch' || specs.binding === 'loose') {
-                spineWidth = 0;
-            }
+            if (specs.binding === 'saddleStitch' || specs.binding === 'loose') spineWidth = 0;
 
             const totalWidth = (trimWidth * 2) + spineWidth + (bleed * 2);
             const totalHeight = trimHeight + (bleed * 2);
+            const coverPage = coverDoc.addPage([totalWidth * 72, totalHeight * 72]); 
 
-            const coverPage = coverDoc.addPage([totalWidth * 72, totalHeight * 72]); // PDF uses points (72 dpi)
-
-            // Helper to draw cover part with Aspect Fill
             async function drawPart(fileMeta, x, y, w, h) {
                 if (!fileMeta) return;
                 const { path: localPath, isPdf } = await prepareFileForEmbedding(fileMeta.storagePath);
-
                 let embeddable;
                 let srcW, srcH;
 
                 if (isPdf) {
                     const srcDoc = await PDFDocument.load(fs.readFileSync(localPath));
-                    const [embedded] = await coverDoc.embedPages([srcDoc.getPage(0)]);
+                    const pageIndex = fileMeta.sourcePageIndex || 0;
+                    const safeIndex = (pageIndex >= 0 && pageIndex < srcDoc.getPageCount()) ? pageIndex : 0;
+                    const [embedded] = await coverDoc.embedPages([srcDoc.getPage(safeIndex)]);
                     embeddable = embedded;
                     srcW = embedded.width;
                     srcH = embedded.height;
@@ -2031,107 +1974,79 @@ exports.generateBooklet = onCall({
                     srcH = embeddable.height;
                 }
 
-                // Sanitize inputs
-                const targetW = Number.isFinite(w) ? w * 72 : 0;
-                const targetH = Number.isFinite(h) ? h * 72 : 0;
-                const targetX = Number.isFinite(x) ? x * 72 : 0;
-                const targetY = Number.isFinite(y) ? y * 72 : 0;
+                const targetW = w * 72;
+                const targetH = h * 72;
+                const targetX = x * 72;
+                const targetY = y * 72;
 
                 if (targetW <= 0 || targetH <= 0) return;
 
                 const srcRatio = srcW / srcH;
                 const targetRatio = targetW / targetH;
-
                 let drawW, drawH, drawX, drawY;
 
-                // Fill Logic
-                if (srcRatio > targetRatio) {
-                    // Image is wider: Crop width
-                    drawH = targetH;
-                    drawW = targetH * srcRatio;
-                    drawY = targetY;
-                    drawX = targetX - (drawW - targetW) / 2;
-                } else {
-                    // Image is taller: Crop height
-                    drawW = targetW;
-                    drawH = targetW / srcRatio;
-                    drawX = targetX;
-                    drawY = targetY - (drawH - targetH) / 2;
+                const mode = fileMeta.settings?.scaleMode || 'fill';
+                
+                // Fill/Fit logic
+                if (mode === 'stretch') {
+                    drawW = targetW; drawH = targetH;
+                } else if (mode === 'fit') {
+                    if (srcRatio > targetRatio) { drawW = targetW; drawH = targetW / srcRatio; }
+                    else { drawH = targetH; drawW = targetH * srcRatio; }
+                } else { // Fill
+                    if (srcRatio > targetRatio) { drawH = targetH; drawW = targetH * srcRatio; }
+                    else { drawW = targetW; drawH = targetW / srcRatio; }
                 }
 
-                // Ensure finite
-                drawW = Number.isFinite(drawW) ? drawW : 0;
-                drawH = Number.isFinite(drawH) ? drawH : 0;
-                drawX = Number.isFinite(drawX) ? drawX : 0;
-                drawY = Number.isFinite(drawY) ? drawY : 0;
+                // Center in target box
+                drawX = targetX + (targetW - drawW) / 2;
+                drawY = targetY + (targetH - drawH) / 2;
 
-                if (drawW <= 0 || drawH <= 0) return;
-
-                // --- IMPLEMENTING CLIPPING ---
-                const { pushGraphicsState, popGraphicsState, clip, endPath, moveTo, lineTo } = require('pdf-lib');
-
-                // 1. Save State
-                coverPage.pushOperators(pushGraphicsState());
-
-                // 2. Clip
-                coverPage.pushOperators(
-                     moveTo(targetX, targetY),
-                     lineTo(targetX + targetW, targetY),
-                     lineTo(targetX + targetW, targetY + targetH),
-                     lineTo(targetX, targetY + targetH),
-                     lineTo(targetX, targetY),
-                     clip(),
-                     endPath()
-                );
-
-                // 3. Draw
-                if (isPdf) {
-                    coverPage.drawPage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
-                } else {
-                    coverPage.drawImage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
+                // Apply Flip
+                if (fileMeta.settings?.flip) {
+                    // To flip strictly within the target box:
+                    // 1. Translate to center of TARGET box
+                    const cx = targetX + targetW / 2;
+                    coverPage.translateContent(cx, 0);
+                    // 2. Flip
+                    coverPage.scaleContent(-1, 1);
+                    // 3. Translate back
+                    coverPage.translateContent(-cx, 0);
                 }
 
-                // 4. Restore State
-                coverPage.pushOperators(popGraphicsState());
+                // Removed clipping path to debug blank issue.
+                // Drawing the image directly.
+                if (isPdf) coverPage.drawPage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
+                else coverPage.drawImage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
+
+                // Reset transformation for next part if we flipped
+                if (fileMeta.settings?.flip) {
+                    const cx = targetX + targetW / 2;
+                    coverPage.translateContent(cx, 0);
+                    coverPage.scaleContent(-1, 1); // Flip back
+                    coverPage.translateContent(-cx, 0);
+                }
             }
 
-            // Draw Back (Left)
-            await drawPart(coverFiles.back, 0, 0, trimWidth + bleed, totalHeight); // Includes left bleed
-
-            // Draw Spine (Middle)
+            await drawPart(coverFiles.back, 0, 0, trimWidth + bleed, totalHeight); 
             await drawPart(coverFiles.spine, trimWidth + bleed, 0, spineWidth, totalHeight);
-
-            // Draw Front (Right)
             await drawPart(coverFiles.front, trimWidth + bleed + spineWidth, 0, trimWidth + bleed, totalHeight);
         }
 
-        // Force cleanup of cached PDF docs to free memory before saving
-        for (const key in pdfDocCache) {
-            delete pdfDocCache[key];
-        }
+        for (const key in pdfDocCache) { delete pdfDocCache[key]; }
 
-        // --- 3. Save & Update ---
-
-        // Interior
         if (interiorFiles.length > 0) {
             const pdfBytes = await interiorDoc.save();
-            // Use lowercase to match optimizePdf detection patterns and avoid case sensitivity issues
             const fileName = `${Date.now()}_interior_built.pdf`;
             const storagePath = `proofs/${projectId}/${fileName}`;
             await bucket.file(storagePath).save(pdfBytes, { contentType: 'application/pdf' });
-
-            logger.log(`Uploaded interior booklet to ${storagePath}. Relying on optimizePdf trigger to create version entry.`);
         }
 
-        // Cover
         if (coverDoc) {
             const pdfBytes = await coverDoc.save();
-            // Use lowercase to match optimizePdf detection patterns
             const fileName = `${Date.now()}_cover_built.pdf`;
             const storagePath = `proofs/${projectId}/${fileName}`;
             await bucket.file(storagePath).save(pdfBytes, { contentType: 'application/pdf' });
-
-            logger.log(`Uploaded cover booklet to ${storagePath}. Relying on optimizePdf trigger to update cover entry.`);
         }
 
         return { success: true };
@@ -2140,10 +2055,7 @@ exports.generateBooklet = onCall({
         logger.error("Error generating booklet:", err);
         throw new HttpsError('internal', err.message);
     } finally {
-        // Cleanup
-        tempFiles.forEach(p => {
-            try { fs.unlinkSync(p); } catch (e) {}
-        });
+        tempFiles.forEach(p => { try { fs.unlinkSync(p); } catch (e) {} });
     }
 });
 

@@ -276,7 +276,12 @@ async function updateProjectStatus(status) {
 
 
 // --- Project Data Loader ---
- function loadProjectForUser(user) {
+// --- Project Data Loader ---
+// Keep track of previous state to prevent unnecessary re-renders
+let lastVersionCount = 0;
+let lastStatus = null;
+
+function loadProjectForUser(user) {
     // Use currentProjectId (which should be set from initialProjectId)
     console.log(`[Load Project] Starting for user: ${user?.uid || 'anonymous/unknown'}, projectId: ${currentProjectId}, isGuest: ${isGuest}`);
 
@@ -301,17 +306,14 @@ async function updateProjectStatus(status) {
     console.log(`[Load Project] Setting up Firestore listener for project: ${currentProjectId}`);
     const projectRef = doc(db, "projects", currentProjectId);
 
-    // --- [NEW] Setup History Listener ---
-    // Remove previous history listener if exists
+    // --- Setup History Listener ---
     if (unsubscribeHistoryListener) {
         unsubscribeHistoryListener();
         unsubscribeHistoryListener = null;
     }
 
-    // Create the history query
     const historyQuery = query(collection(db, "projects", currentProjectId, "history"), orderBy("timestamp", "desc"));
 
-    // Attach the listener
     unsubscribeHistoryListener = onSnapshot(historyQuery, (snapshot) => {
         const historyList = document.getElementById('project-history-list');
         if (historyList) {
@@ -325,7 +327,6 @@ async function updateProjectStatus(status) {
                 const eventTime = event.timestamp ? new Date(event.timestamp.seconds * 1000).toLocaleString() : 'N/A';
                 const signature = event.details && event.details.signature ? `<span class="italic text-gray-400"> - E-Signature: ${event.details.signature}</span>` : '';
                 
-                // Formatting action text
                 let actionText = event.action ? event.action.replace(/_/g, ' ') : 'Unknown Action';
                 actionText = actionText.charAt(0).toUpperCase() + actionText.slice(1);
 
@@ -344,23 +345,32 @@ async function updateProjectStatus(status) {
     }, (error) => {
         console.error("[Load Project] Error fetching history:", error);
         const historyList = document.getElementById('project-history-list');
-        // Only show error if it's not a permission issue that we expect for some guests (though we fixed that)
         if(historyList) historyList.innerHTML = '<p class="text-red-400 text-xs">Unable to load history.</p>';
     });
-    // ------------------------------------
 
-
+    // --- Setup Project Listener ---
     if (unsubscribeProjectListener) {
         console.log('[Load Project] Unsubscribing previous listener.');
         unsubscribeProjectListener();
         unsubscribeProjectListener = null;
     }
 
-
     unsubscribeProjectListener = onSnapshot(projectRef, (docSnap) => {
         console.log(`[Load Project] onSnapshot triggered. docSnap exists: ${docSnap.exists()}`);
         if (docSnap.exists()) {
             const projectData = docSnap.data();
+            
+            // [FIX] Smart Update Check
+            const currentVersionCount = projectData.versions ? projectData.versions.length : 0;
+            const currentStatus = projectData.status;
+            
+            // If only guestBuilderState changed (draft saving), do NOT re-init viewer
+            // Only re-init if version count changed or status changed
+            const shouldReInit = (currentVersionCount !== lastVersionCount) || (currentStatus !== lastStatus);
+            
+            lastVersionCount = currentVersionCount;
+            lastStatus = currentStatus;
+
             console.log('[Load Project] Project data received:', projectData);
 
             if(projectName) projectName.textContent = projectData.projectName;
@@ -370,8 +380,7 @@ async function updateProjectStatus(status) {
             const approvalBanner = document.getElementById('approval-banner');
 
             if (actionPanel && commentTool && approvalBanner) {
-                // Reset action panel HTML to original state
-                // This fixes the issue where buttons disappeared after a status change
+                // Reset action panel HTML to prevent duplicate buttons and stale state
                 actionPanel.innerHTML = `
                     <h3 class="text-xl font-semibold text-white mb-4">Actions</h3>
                     <form id="approval-form">
@@ -394,42 +403,31 @@ async function updateProjectStatus(status) {
                         </div>
                     </form>`;
 
-                 // Re-attach the main form submit listener after resetting HTML
                  const newApprovalForm = document.getElementById('approval-form');
                  if(newApprovalForm) {
                     newApprovalForm.addEventListener('submit', (e) => {
                         e.preventDefault();
-                        console.log(`[Approval Form] Re-attached submit handler. Action: ${actionToConfirm}`);
                         const confirmBtn = document.getElementById('confirm-action-button');
                         if (actionToConfirm && confirmBtn) {
                             confirmBtn.disabled = true;
                             confirmBtn.textContent = 'Processing...';
                             updateProjectStatus(actionToConfirm === 'approve' ? 'approved' : 'changes_requested');
                         } else {
-                             console.warn('[Approval Form] Re-attached submit handler called but no action selected or button not found.');
                              hideConfirmation();
                         }
                     });
                  }
 
-                // Determine if current user is an Editor/Owner
                 let isEditor = false;
-
                 if (isGuest) {
-                    // Guest permissions dictate access
                     if (guestPermissions.isOwner) isEditor = true;
                 } else {
-                    // Authenticated user viewing their project is an editor
-                    // (Admins viewing via proof page also fall here)
                     isEditor = true;
                 }
 
-                // Apply Guest Permissions
                 if (isGuest) {
                     actionPanel.style.display = guestPermissions.canApprove ? 'block' : 'none';
                     commentTool.style.display = guestPermissions.canAnnotate ? 'block' : 'none';
-                    console.log(`[Load Project] Guest UI set: canApprove=${guestPermissions.canApprove}, canAnnotate=${guestPermissions.canAnnotate}, isOwner=${guestPermissions.isOwner}`);
-
                     if (guestPermissions.isOwner && headerShareButton) {
                         headerShareButton.classList.remove('hidden');
                     }
@@ -438,39 +436,40 @@ async function updateProjectStatus(status) {
                     commentTool.style.display = 'block';
                 }
 
-                // Show/Hide Builder Button
-                if (isEditor && navEditBuilderButton) {
-                    navEditBuilderButton.classList.remove('hidden');
+                // [FIX] Re-query the button from the DOM to ensure we have the live element
+                const currentBuilderBtn = document.getElementById('nav-edit-builder-button');
+                
+                if (isEditor && currentBuilderBtn) {
+                    currentBuilderBtn.classList.remove('hidden');
 
-                    // Setup Listener (Remove old to prevent duplicates if snapshot re-runs)
-                    const newBtn = navEditBuilderButton.cloneNode(true);
-                    navEditBuilderButton.parentNode.replaceChild(newBtn, navEditBuilderButton);
+                    // Clone to strip old listeners, then replace
+                    const newBtn = currentBuilderBtn.cloneNode(true);
+                    
+                    if (currentBuilderBtn.parentNode) {
+                        currentBuilderBtn.parentNode.replaceChild(newBtn, currentBuilderBtn);
 
-                    newBtn.addEventListener('click', () => {
-                        let url = `guest_upload.html?projectId=${currentProjectId}`;
-                        if (isGuest && initialGuestToken) {
-                            url += `&guestToken=${initialGuestToken}`;
-                        }
-                        window.location.href = url;
-                    });
-                } else if (navEditBuilderButton) {
-                    navEditBuilderButton.classList.add('hidden');
+                        newBtn.addEventListener('click', () => {
+                            let url = `guest_upload.html?projectId=${currentProjectId}`;
+                            if (isGuest && initialGuestToken) {
+                                url += `&guestToken=${initialGuestToken}`;
+                            }
+                            window.location.href = url;
+                        });
+                    }
+                } else if (currentBuilderBtn) {
+                    currentBuilderBtn.classList.add('hidden');
                 }
 
-                // Check Project Status (AFTER resetting HTML)
                  if (approvedStatuses.includes(projectData.status)) {
                      approvalBanner.classList.remove('hidden');
                      actionPanel.innerHTML = `<p class="text-center text-lg font-semibold text-green-400">Proof Approved</p>`;
                      commentTool.style.display = 'none';
-                     console.log(`[Load Project] Project status is ${projectData.status}, hiding action buttons and comment tool.`);
                  } else if (projectData.status === 'changes_requested') {
                      approvalBanner.classList.add('hidden');
                      actionPanel.innerHTML = `<p class="text-center text-lg font-semibold text-red-400">Changes Requested</p>`;
-                     commentTool.style.display = 'none'; // Still disable comments if changes are requested
+                     commentTool.style.display = 'none';
                  } else {
                     approvalBanner.classList.add('hidden');
-                     // Status is pending, add listeners to the (now existing) buttons
-                     console.log(`[Load Project] Project status is ${projectData.status}, adding button listeners.`);
                      const approveButton = document.getElementById('approve-button');
                      const requestChangesButton = document.getElementById('request-changes-button');
                      const cancelActionButton = document.getElementById('cancel-action-button');
@@ -479,44 +478,36 @@ async function updateProjectStatus(status) {
                      if (requestChangesButton) requestChangesButton.addEventListener('click', showRequestChangesConfirmation);
                      if (cancelActionButton) cancelActionButton.addEventListener('click', hideConfirmation);
                  }
+            }
 
+            if (shouldReInit) {
+                console.log('[Load Project] Significant change detected. Re-initializing viewer.');
+                
+                // Auto-Update Logic for Viewer
+                const versionSelector = document.getElementById('version-selector');
+                const currentVersions = projectData.versions || [];
+                const maxVersion = currentVersions.length > 0
+                    ? Math.max(...currentVersions.map(v => v.versionNumber))
+                    : 0;
+                const selectedVersion = versionSelector ? parseInt(versionSelector.value, 10) : null;
+                
+                // If user is on older version and new one arrives, switch
+                if (selectedVersion && maxVersion > selectedVersion) {
+                     if (versionSelector) versionSelector.value = ""; 
+                }
+
+                initializeSharedViewer({
+                    db,
+                    auth,
+                    projectId: currentProjectId,
+                    projectData: projectData,
+                    isAdmin: false,
+                    isGuest: isGuest,
+                    guestPermissions: guestPermissions
+                });
             } else {
-                console.warn('[Load Project] Action panel or comment tool element not found.');
+                console.log('[Load Project] Skipping viewer re-init (only draft state changed).');
             }
-
-
-            console.log('[Load Project] Initializing shared viewer...');
-
-            const versionSelector = document.getElementById('version-selector');
-            const currentVersions = projectData.versions || [];
-
-            const maxVersion = currentVersions.length > 0
-                ? Math.max(...currentVersions.map(v => v.versionNumber))
-                : 0;
-
-            const selectedVersion = versionSelector ? parseInt(versionSelector.value, 10) : null;
-            
-            // If the user is on an older version and a new one arrives, force update to latest
-            if (selectedVersion && maxVersion > selectedVersion) {
-                 console.log(`[Auto-Update] New version detected (v${maxVersion}). Switching from v${selectedVersion}.`);
-                 if (versionSelector) versionSelector.value = ""; // Reset selector so viewer defaults to latest
-            }
-            // The onSnapshot listener provides real-time updates.
-            // Every time the project document changes (e.g., a version's processingStatus
-            // changes from 'processing' to 'complete'), this code will re-run.
-            // We just need to re-initialize the viewer with the fresh `projectData`.
-            // The logic inside viewer.js will handle showing the correct state.
-            initializeSharedViewer({
-                db,
-                auth,
-                projectId: currentProjectId,
-                projectData: projectData,
-                isAdmin: false,
-                isGuest: isGuest,
-                guestPermissions: guestPermissions
-            });
-            console.log('[Load Project] Shared viewer initialization called.');
-
 
             loadingSpinner.classList.add('hidden');
             proofContent.classList.remove('hidden');
@@ -533,7 +524,8 @@ async function updateProjectStatus(status) {
          }
     });
      console.log('[Load Project] Firestore listener attached.');
-} // --- End loadProjectForUser ---
+}
+// --- End loadProjectForUser ---
 
 
 // --- AUTHENTICATION STATE MANAGER ---

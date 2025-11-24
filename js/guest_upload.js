@@ -436,27 +436,21 @@ unitToggles.forEach(btn => {
 Array.from(projectTypeRadios).forEach(radio => {
     radio.addEventListener('change', (e) => {
         const val = e.target.value;
-
-        // Reset/Update Binding Field (Hidden)
         specBinding.value = val === 'loose' ? '' : val;
 
-        // Visibility Logic
+        // [FIX] Always show the paper section container
+        paperSection.classList.remove('hidden');
+        
+        // Interior Paper is always required/visible
+        specPaper.required = true;
+
         if (val === 'loose') {
-            pageCountSection.classList.add('hidden');
-            paperSection.classList.add('hidden');
-            specPageCount.required = false;
-            specPaper.required = false;
+            // Hide Cover Paper specifically for loose sheets
+            if(specCoverPaper.parentElement) specCoverPaper.parentElement.classList.add('hidden');
             specCoverPaper.required = false;
-        } else if (val === 'saddleStitch') {
-            pageCountSection.classList.remove('hidden');
-            paperSection.classList.add('hidden');
-            specPageCount.required = true;
-            specPaper.required = false;
-        } else if (val === 'perfectBound') {
-            pageCountSection.classList.remove('hidden');
-            paperSection.classList.remove('hidden');
-            specPageCount.required = true;
-            specPaper.required = true;
+        } else {
+            // Show Cover Paper for Saddle Stitch & Perfect Bound
+            if(specCoverPaper.parentElement) specCoverPaper.parentElement.classList.remove('hidden');
             specCoverPaper.required = true;
         }
     });
@@ -504,27 +498,22 @@ function populateSpecsForm() {
         const radio = document.querySelector(`input[name="projectType"][value="${radioValue}"]`);
         if (radio) {
             radio.checked = true;
-            radio.dispatchEvent(new Event('change')); // Trigger visibility logic
+            // [FIX] Dispatch event to trigger the visibility logic defined above
+            radio.dispatchEvent(new Event('change')); 
         }
     }
 
     // 2. Dimensions
     if (projectSpecs.dimensions) {
-        // [FIX] Try to reverse-lookup the standard size key (e.g., "A4")
         const standardKey = findMatchingStandardSize(projectSpecs.dimensions);
-        
         if (standardKey) {
-            // Found a standard size! Select it to show "A4" instead of "Custom"
             specSizePreset.value = standardKey;
             specSizePreset.dispatchEvent(new Event('change'));
         } else {
-            // No match, set to Custom
             specSizePreset.value = 'custom';
             specSizePreset.dispatchEvent(new Event('change'));
-
             specWidth.value = projectSpecs.dimensions.width || '';
             specHeight.value = projectSpecs.dimensions.height || '';
-
             if (projectSpecs.dimensions.units) {
                 const btn = document.querySelector(`.unit-toggle[data-unit="${projectSpecs.dimensions.units}"]`);
                 if (btn) btn.click();
@@ -533,10 +522,10 @@ function populateSpecsForm() {
     }
 
     // 3. Other Fields
-    // [FIX] Removed specPageCount population since the element was removed from HTML
     if (specPaper) specPaper.value = projectSpecs.paperType || '';
     if (specCoverPaper) specCoverPaper.value = projectSpecs.coverPaperType || '';
 }
+
 // --- Back Button Logic ---
 if (navBackBtn) {
     navBackBtn.addEventListener('click', async () => {
@@ -559,11 +548,10 @@ async function createCoverControls(inputId, fileOrUrl) {
     const container = document.getElementById(inputId)?.parentElement;
     if (!container) return;
 
-    // Remove existing controls to prevent duplicates
+    // 1. Initial Clear
     const existing = container.querySelectorAll('.custom-controls');
     existing.forEach(el => el.remove());
 
-    // Default settings if missing
     if (!coverSettings[inputId]) {
         coverSettings[inputId] = { pageIndex: 1, scaleMode: 'fill' };
     }
@@ -572,35 +560,33 @@ async function createCoverControls(inputId, fileOrUrl) {
     const controls = document.createElement('div');
     controls.className = 'custom-controls mt-2 flex flex-col gap-2 z-20 relative';
 
-    // 1. Page Selector (Only for PDF)
     let pdfSourceUrl;
     let isPDF = false;
-    let localObjectURL; // For cleanup
+    let localObjectURL; 
 
     if (typeof fileOrUrl === 'string') {
-        // Source is a remote URL (restored file)
         pdfSourceUrl = fileOrUrl;
         isPDF = pdfSourceUrl.toLowerCase().endsWith('.pdf') || true;
     } else if (fileOrUrl && fileOrUrl.type === 'application/pdf') {
-        // Source is a local File object (new upload)
         pdfSourceUrl = URL.createObjectURL(fileOrUrl);
         localObjectURL = pdfSourceUrl;
         isPDF = true;
     }
     
     if (isPDF && pdfSourceUrl) {
-        let docPromise;
-        
         try {
+            let docPromise;
             if (typeof fileOrUrl === 'string' && fileOrUrl.startsWith('http')) {
-                // Remote PDF (Restored) - Use the Remote cache based on URL/Path
                 docPromise = remotePdfDocCache.get(fileOrUrl) || pdfjsLib.getDocument(fileOrUrl).promise;
             } else {
-                // Local PDF (New Upload)
                 docPromise = pdfjsLib.getDocument(localObjectURL).promise;
             }
 
-            const pdf = await docPromise;
+            const pdf = await docPromise; 
+
+            // [FIX] Check for duplicates AGAIN after await
+            const reCheck = container.querySelectorAll('.custom-controls');
+            reCheck.forEach(el => el.remove());
 
             if (pdf.numPages > 1) {
                 const pageCtrl = document.createElement('div');
@@ -617,20 +603,17 @@ async function createCoverControls(inputId, fileOrUrl) {
                 `;
                 controls.appendChild(pageCtrl);
 
-                // Bind Events
                 setTimeout(() => {
                     const setPage = (val) => {
                         let newPg = parseInt(val);
                         if (isNaN(newPg) || newPg < 1) newPg = 1;
                         if (newPg > pdf.numPages) newPg = pdf.numPages;
-                        
                         coverSettings[inputId].pageIndex = newPg;
                         const el = document.getElementById(`pg-input-${inputId}`);
                         if(el) el.value = newPg;
                         renderCoverPreview();
                         triggerAutosave();
                     };
-                    
                     const inputEl = document.getElementById(`pg-input-${inputId}`);
                     if(inputEl) {
                         inputEl.onclick = (ev) => ev.stopPropagation();
@@ -638,22 +621,17 @@ async function createCoverControls(inputId, fileOrUrl) {
                     }
                     const prevBtn = document.getElementById(`prev-${inputId}`);
                     if(prevBtn) prevBtn.onclick = (ev) => { ev.stopPropagation(); setPage(coverSettings[inputId].pageIndex - 1); };
-                    
                     const nextBtn = document.getElementById(`next-${inputId}`);
                     if(nextBtn) nextBtn.onclick = (ev) => { ev.stopPropagation(); setPage(coverSettings[inputId].pageIndex + 1); };
                 }, 0);
             }
-            
-            // Cleanup the temporary local blob URL
             if (localObjectURL) URL.revokeObjectURL(localObjectURL);
-            
         } catch (e) { 
             console.warn("Error loading PDF for controls", e);
             if (localObjectURL) URL.revokeObjectURL(localObjectURL);
         }
     }
 
-    // 2. Scale Buttons (Remains the same)
     const scaleCtrl = document.createElement('div');
     scaleCtrl.className = "flex justify-center gap-1 mt-1";
     ['fit', 'fill', 'stretch'].forEach(mode => {
@@ -662,7 +640,6 @@ async function createCoverControls(inputId, fileOrUrl) {
         const isActive = currentSettings.scaleMode === mode;
         btn.className = `text-[10px] px-2 py-1 rounded border ${isActive ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-600 text-gray-400 hover:text-white'}`;
         btn.textContent = mode.charAt(0).toUpperCase() + mode.slice(1);
-        
         btn.onclick = (ev) => {
             ev.stopPropagation();
             ev.preventDefault();
@@ -675,7 +652,6 @@ async function createCoverControls(inputId, fileOrUrl) {
         scaleCtrl.appendChild(btn);
     });
     controls.appendChild(scaleCtrl);
-    
     container.appendChild(controls);
 }
 
@@ -884,6 +860,47 @@ function setupDropZone(inputId) {
     }
 }
 
+// [NEW] Helper to enforce binding constraints (Multiples of 4 or 2)
+function balancePages() {
+    // 1. Strip existing auto-blanks from the end to "reset"
+    // This ensures we don't just keep piling them on.
+    while (pages.length > 0 && pages[pages.length - 1].isAutoBlank) {
+        pages.pop();
+    }
+
+    const binding = projectSpecs?.binding;
+    if (!binding || binding === 'loose') {
+        renderBookViewer();
+        renderMinimap();
+        return;
+    }
+
+    // Saddle Stitch = Multiple of 4. Perfect Bound = Multiple of 2.
+    const multiple = (binding === 'saddleStitch' || binding === 'saddle-stitch') ? 4 : 2;
+    const currentCount = pages.length;
+    const remainder = currentCount % multiple;
+
+    if (remainder !== 0) {
+        const needed = multiple - remainder;
+        for (let i = 0; i < needed; i++) {
+            const pageId = `auto_blank_${Date.now()}_${i}`;
+            pages.push({
+                id: pageId,
+                sourceFileId: null,
+                pageIndex: 1,
+                settings: { scaleMode: 'fit', alignment: 'center', panX: 0, panY: 0 },
+                isSpread: false,
+                isAutoBlank: true // [Tag] Distinguish from user-added blanks
+            });
+        }
+    }
+    
+    renderBookViewer();
+    renderMinimap();
+}
+
+
+
 function validateForm() {
     let isValid = false;
     // Check if we have pages in the virtual book
@@ -952,63 +969,64 @@ if (tabInterior && tabCover) {
 // --- Data Model Logic ---
 
 async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = null) {
+    // [FIX] 1. Strip auto-blanks before adding content.
+    // This prevents "piling up" blanks. New content replaces the placeholders.
+    while (pages.length > 0 && pages[pages.length - 1].isAutoBlank) {
+        pages.pop();
+    }
+    
+    // Sanitize insert index in case stripping shifted bounds
+    if (insertAtIndex !== null && insertAtIndex > pages.length) {
+        insertAtIndex = pages.length;
+    }
+
     const newPages = [];
 
     for (const file of Array.from(files)) {
         const sourceId = Date.now() + Math.random().toString(16).slice(2);
 
-        // --- FIX: Strict Check for Browser-Supported Types ---
         const supportedImages = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp'];
         const isPDF = file.type === 'application/pdf';
         const isSupportedImage = supportedImages.includes(file.type);
-        
-        // Fallback: Check extension if mime type is generic or missing
         const isPsd = file.name.toLowerCase().endsWith('.psd');
         
-        // Only treat as local if it's a PDF or a supported web image (and NOT a PSD)
         const isLocal = (isPDF || isSupportedImage) && !isPsd;
 
         if (isLocal) {
             sourceFiles[sourceId] = file;
-
             let numPages = 1;
             if (file.type === 'application/pdf') {
                  try {
                     const fileUrl = URL.createObjectURL(file);
                     const pdf = await pdfjsLib.getDocument(fileUrl).promise;
                     numPages = pdf.numPages;
-                    // For caching/performance, we don't revoke immediately here in the loop
                  } catch (e) {
                      console.warn("Could not parse PDF", e);
                  }
             }
-
             addPagesToModel(newPages, sourceId, numPages, isSpreadUpload);
-
         } else {
-            // SERVER SIDE PROCESSING (PSD, AI)
             sourceFiles[sourceId] = { 
                 file: file, 
                 status: 'uploading', 
                 previewUrl: null,
-                isServer: true // Explicitly flag as server source
+                isServer: true 
             }; 
-
             addPagesToModel(newPages, sourceId, 1, isSpreadUpload);
-
-            // Start Background Process
             processServerFile(file, sourceId);
         }
     }
 
-    if (insertAtIndex !== null && insertAtIndex >= 0 && insertAtIndex <= pages.length) {
+    if (insertAtIndex !== null && insertAtIndex >= 0) {
         pages.splice(insertAtIndex, 0, ...newPages);
     } else {
         pages.push(...newPages);
     }
+    
     saveState();
-    renderBookViewer();
-    renderMinimap();
+    // [FIX] 2. Re-balance immediately. 
+    // If we added 1 page, and now have 3, this will add 1 auto-blank to reach 4.
+    balancePages();
     triggerAutosave();
 }
 
@@ -1229,8 +1247,9 @@ window.deletePage = (pageId) => {
     saveState();
     pages = pages.filter(p => p.id !== pageId);
     imageCache.delete(pageId); 
-    renderBookViewer();
-    renderMinimap();
+    
+    // [FIX] Re-balance after deletion
+    balancePages();
     triggerAutosave();
 };
 
@@ -1958,31 +1977,41 @@ window.triggerInsert = (index, type) => {
 };
 
 function addBlankPages(insertAtIndex, count = 1) {
+    // [FIX] 1. Strip auto-blanks first. 
+    // If you have [Content, AutoBlank] and add a Manual Blank, 
+    // we want [Content, ManualBlank], not [Content, AutoBlank, ManualBlank].
+    while (pages.length > 0 && pages[pages.length - 1].isAutoBlank) {
+        pages.pop();
+    }
+
+    if (insertAtIndex !== null && insertAtIndex > pages.length) {
+        insertAtIndex = pages.length;
+    }
+
     const newPages = [];
-
-    // For now, assume inserting SINGLE blank pages unless we want blank spreads?
-    // Let's just add standard single pages which will flow into spreads naturally.
     for (let i = 0; i < count; i++) {
-        // Use a special ID for blank pages or just null sourceFileId?
-        // We need a unique ID for the page itself.
-        const pageId = `blank_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-
+        const pageId = `manual_blank_${Date.now()}_${i}`;
         newPages.push({
             id: pageId,
-            sourceFileId: null, // Indicates blank
-            pageIndex: 1, // Irrelevant
+            sourceFileId: null,
+            pageIndex: 1,
             settings: { scaleMode: 'fit', alignment: 'center', panX: 0, panY: 0 },
-            isSpread: false
+            isSpread: false,
+            isAutoBlank: false // [Important] This is a REAL page now
         });
     }
 
-    if (insertAtIndex !== null && insertAtIndex >= 0 && insertAtIndex <= pages.length) {
+    if (insertAtIndex !== null && insertAtIndex >= 0) {
         pages.splice(insertAtIndex, 0, ...newPages);
     } else {
         pages.push(...newPages);
     }
 
-    renderBookViewer();
+    saveState();
+    // [FIX] 2. Re-balance immediately.
+    // If adding this manual blank made the total 3, this will add 1 auto-blank to fix it.
+    balancePages();
+    triggerAutosave();
 }
 
 insertFileInput.addEventListener('change', (e) => {
@@ -2368,7 +2397,6 @@ function drawBlankPage(page, canvas, view) {
     const height = projectSpecs.dimensions.height;
     const bleed = 0.125;
 
-    // Consistent Scaling Logic
     const visualScale = (250 * viewerScale) / ((width + bleed*2) * 96);
     const pixelsPerInch = 96 * visualScale;
     const pixelDensity = 1.5;
@@ -2381,16 +2409,10 @@ function drawBlankPage(page, canvas, view) {
 
     canvas.style.width = `${totalW * pixelsPerInch}px`;
     canvas.style.height = `${totalH * pixelsPerInch}px`;
-
-    // Position logic
     canvas.style.top = '0px';
     
-    // 'view' is now available here
-    if (view === 'right') {
-        canvas.style.left = `-${bleed * pixelsPerInch}px`;
-    } else {
-        canvas.style.left = '0px';
-    }
+    if (view === 'right') canvas.style.left = `-${bleed * pixelsPerInch}px`;
+    else canvas.style.left = '0px';
 
     ctx.setTransform(pixelDensity, 0, 0, pixelDensity, 0, 0);
     ctx.scale(pixelsPerInch, pixelsPerInch);
@@ -2411,7 +2433,16 @@ function drawBlankPage(page, canvas, view) {
     ctx.font = 'italic 0.4px sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText("Drop File Here", totalW / 2, totalH / 2);
+    
+    // [FIX] Updated text to indicate usability
+    if (page.isAutoBlank) {
+        ctx.fillText("Required Blank", totalW / 2, totalH / 2 - 0.4);
+        ctx.font = '0.25px sans-serif';
+        ctx.fillText("(Binding Requirement)", totalW / 2, totalH / 2 + 0.1);
+        ctx.fillText("Drag File Here to Replace", totalW / 2, totalH / 2 + 0.5);
+    } else {
+        ctx.fillText("Drop File Here", totalW / 2, totalH / 2);
+    }
 
     // Draw Guides
     const guideScale = pixelsPerInch / 72; 
@@ -3022,16 +3053,13 @@ specsForm.addEventListener('submit', async (e) => {
     saveSpecsBtn.textContent = 'Saving...';
 
     try {
-        // Get selected Project Type
         const selectedType = document.querySelector('input[name="projectType"]:checked');
-        if (!selectedType) {
-            throw new Error('Please select a project type.');
-        }
-        const typeValue = selectedType.value; // 'loose', 'saddleStitch', 'perfectBound'
+        if (!selectedType) throw new Error('Please select a project type.');
+        const typeValue = selectedType.value;
 
         const sizePreset = specSizePreset.value;
-        let dimensionsVal; // For Firestore
-        let localDimensions; // For local state
+        let dimensionsVal;
+        let localDimensions; 
 
         if (!sizePreset) throw new Error("Please select a finished size.");
 
@@ -3039,65 +3067,44 @@ specsForm.addEventListener('submit', async (e) => {
             const width = parseFloat(specWidth.value);
             const height = parseFloat(specHeight.value);
             const unit = specUnit.value;
-
-            if (isNaN(width) || width <= 0 || isNaN(height) || height <= 0) {
-                throw new Error('Invalid custom dimensions');
-            }
-
-            dimensionsVal = {
-                width: width,
-                height: height,
-                units: unit
-            };
+            if (isNaN(width) || width <= 0 || isNaN(height) || height <= 0) throw new Error('Invalid custom dimensions');
+            dimensionsVal = { width, height, units: unit };
         } else {
-            // Standard Size Key (e.g., 'A4') - Resolve to Object immediately for Backend Consistency
             dimensionsVal = resolveDimensions(sizePreset);
         }
-
-        // Local dimensions are now always the resolved object
         localDimensions = resolveDimensions(dimensionsVal);
 
         const specsUpdate = {
             'projectType': typeValue === 'loose' ? 'single' : 'booklet',
-            'specs.dimensions': dimensionsVal
+            'specs.dimensions': dimensionsVal,
+            'specs.binding': typeValue === 'loose' ? 'loose' : typeValue,
+            'specs.pageCount': 0, // Dynamic
+            // [FIX] Save paper type for ALL project types
+            'specs.paperType': specPaper.value 
         };
 
-        // Set Binding Logic
-        if (typeValue === 'loose') {
-            specsUpdate['specs.binding'] = 'loose';
+        if (typeValue !== 'loose') {
+            // Only save cover paper for booklets
+            specsUpdate['specs.coverPaperType'] = specCoverPaper.value;
         } else {
-            specsUpdate['specs.binding'] = typeValue; // 'saddleStitch' or 'perfectBound'
-            
-            // [FIX] Removed parseInt(specPageCount.value) because the input was removed.
-            // The builder now calculates pages dynamically.
-            specsUpdate['specs.pageCount'] = 0; 
-
-            if (typeValue === 'perfectBound') {
-                specsUpdate['specs.paperType'] = specPaper.value;
-                specsUpdate['specs.coverPaperType'] = specCoverPaper.value;
-            }
+            specsUpdate['specs.coverPaperType'] = null;
         }
 
         const projectRef = doc(db, 'projects', projectId);
         await updateDoc(projectRef, specsUpdate);
 
-        // Reload page or Update State locally to avoid reload
         projectSpecs = {
             dimensions: localDimensions,
             binding: specsUpdate['specs.binding'],
-            pageCount: specsUpdate['specs.pageCount'],
+            pageCount: 0,
             paperType: specsUpdate['specs.paperType'],
             coverPaperType: specsUpdate['specs.coverPaperType']
         };
         projectType = specsUpdate['projectType'];
 
-        // Hide modal and show upload UI
         specsModal.classList.add('hidden');
         uploadContainer.classList.remove('hidden');
-
-        // Refresh UI logic
         refreshBuilderUI();
-
         await initializeBuilder();
 
     } catch (err) {
@@ -3348,20 +3355,17 @@ async function drawWrapper(ctx, sourceEntry, targetX, targetY, targetW, targetH,
 
 // --- Main Initialization (Trust-Optimized) ---
 async function init() {
-    // FIX: Clear lingering inputs
+    // Clear lingering inputs
     if (insertFileInput) insertFileInput.value = '';
     if (hiddenInteriorInput) hiddenInteriorInput.value = '';
     if (fileInteriorDrop) fileInteriorDrop.value = '';
     
     populateSelects();
 
-    // 1. Show Loading State immediately with specific text
     loadingState.classList.remove('hidden');
     uploadContainer.classList.add('hidden');
     
-    // Optional: Update loading text to be more descriptive
     const loadingText = loadingState.querySelector('p') || loadingState;
-    // Store original text to revert later if needed, or just set it
     if(loadingText) loadingText.textContent = "Accessing secure upload portal...";
 
     const params = new URLSearchParams(window.location.search);
@@ -3374,9 +3378,6 @@ async function init() {
     }
 
     try {
-        // 2. Authenticate
-        // If guest token is present, we must use it to sign in as guest.
-        // If no token, we assume the user is already logged in (Admin/Owner via dashboard).
         if (guestToken) {
             const authenticateGuest = httpsCallable(functions, 'authenticateGuest');
             const authResult = await authenticateGuest({ projectId, guestToken });
@@ -3386,7 +3387,6 @@ async function init() {
             }
             await signInWithCustomToken(auth, authResult.data.token);
         } else {
-            // Wait for auth state to settle
             await new Promise((resolve, reject) => {
                 const unsubscribe = onAuthStateChanged(auth, (user) => {
                     unsubscribe();
@@ -3394,7 +3394,6 @@ async function init() {
                         currentUser = user;
                         resolve();
                     } else {
-                        // Redirect to login if not signed in
                         window.location.href = 'index.html';
                         reject(new Error("User not signed in"));
                     }
@@ -3402,36 +3401,26 @@ async function init() {
             });
         }
 
-        // Update current user ref after sign in
         currentUser = auth.currentUser;
 
-        // Check if Admin (for UI logic)
         if (currentUser) {
             try {
                 const userDoc = await getDoc(doc(db, "users", currentUser.uid));
                 if (userDoc.exists() && userDoc.data().role === 'admin') {
                     isAdmin = true;
                 }
-            } catch (e) {
-                // Guests can't read user docs, so this error is expected for them. Ignore.
-            }
+            } catch (e) {}
         }
 
-        // 3. Locking Mechanism
         const lockAcquired = await acquireLock();
         if (!lockAcquired) {
-            // UI is already handled in acquireLock (showing Locked State)
             loadingState.classList.add('hidden');
-            return; // STOP HERE
+            return;
         }
 
-        // Start Heartbeat
         startLockHeartbeat();
-
-        // Setup Exit Handlers
         window.addEventListener('beforeunload', releaseLock);
 
-        // 4. Fetch Project Data
         const projectRef = doc(db, 'projects', projectId);
         const projectSnap = await getDoc(projectRef);
 
@@ -3449,52 +3438,40 @@ async function init() {
             projectSpecs.dimensions = resolveDimensions(projectSpecs.dimensions);
         }
 
-        // 5. UI Setup
         bookletUploadSection.classList.remove('hidden');
         updateFileName('file-cover-front', 'file-name-cover-front');
         updateFileName('file-spine', 'file-name-spine');
         updateFileName('file-cover-back', 'file-name-cover-back');
 
-        // 6. Logic Check
         let specsMissing = false;
         let dimValid = false;
-
         if (projectSpecs && projectSpecs.dimensions) {
-             // Handle both object and legacy string formats if necessary, though resolveDimensions handles it earlier
              if (typeof projectSpecs.dimensions === 'object' && projectSpecs.dimensions.width > 0) dimValid = true;
         }
-        
         if (!dimValid || !projectSpecs.binding) specsMissing = true;
+
         if (specsMissing) {
-            // If specs are missing, we can lift the curtain immediately to show the form
             loadingState.classList.add('hidden');
             specsModal.classList.remove('hidden');
             populateSpecsForm();
         } else {
-            // 7. RESTORE STATE (Behind the curtain)
             if(loadingText) loadingText.textContent = "Restoring project files...";
             
-            // Refresh UI elements (Tabs, buttons)
             refreshBuilderUI();
 
-            // Await the FULL restoration (downloading URLs)
-            await restoreBuilderState(); 
-
-            // Initialize Builder (Creates the DOM elements for the viewer)
+            // [FIX] Removed explicit call to restoreBuilderState() here.
+            // It is called inside initializeBuilder(), so calling it here caused it to run twice.
+            
             await initializeBuilder();
 
-            // 8. CRITICAL: Force the first page to paint pixels
             if (pages.length > 0) {
                 if(loadingText) loadingText.textContent = "Rendering preview...";
-                // This now ACTUALLY renders the pixels, it doesn't just wait
                 await waitForFirstPageRender(); 
             }
 
-            // 9. REVEAL (The Perfect Frame)
             loadingState.classList.add('hidden');
             uploadContainer.classList.remove('hidden');
             
-            // Recalculate layout now that elements have dimension
             setTimeout(() => {
                 fitCoverToView();
                 renderMinimap();
@@ -3765,18 +3742,50 @@ async function handleSaveDraft() {
 async function handleUpload(e) {
     if (e) e.preventDefault();
 
+    const binding = projectSpecs?.binding;
+    const totalInteriorPages = pages.length;
+    const COVER_PAGES = 4; 
+
+    if (binding === 'saddleStitch') {
+        const MAX_TOTAL = 24;
+        const MAX_INTERIOR = MAX_TOTAL - COVER_PAGES; 
+
+        if (totalInteriorPages > MAX_INTERIOR) {
+            alert(`Page Count Limit Exceeded.\n\nSaddle Stitch books are limited to ${MAX_TOTAL} total pages (Cover + Interior).\n\nYou currently have ${totalInteriorPages} interior pages + 4 cover pages = ${totalInteriorPages + 4} Total.\n\nPlease remove ${totalInteriorPages - MAX_INTERIOR} pages.`);
+            return;
+        }
+    } 
+    
+    balancePages();
+
     submitButton.disabled = true;
     submitButton.textContent = 'Processing...';
 
     try {
-        // 1. Upload & Save State (Mark as processing)
         const allSourcePaths = await syncProjectState('submitted_processing');
         const progressText = document.getElementById('progress-text');
-
-        // 2. Construct Metadata for Backend
         const bookletMetadata = [];
 
-        // Pages
+        // 1. Calculate & Save Cover Dimensions (Fixes Guides)
+        const paperObj = HARDCODED_PAPER_TYPES.find(p => p.name === projectSpecs.paperType);
+        const caliper = paperObj ? paperObj.caliper : 0.004;
+        const totalSheets = Math.ceil((totalInteriorPages + 4) / 2);
+        let calcSpineW = totalSheets * caliper;
+        if (binding === 'saddleStitch' || binding === 'loose') calcSpineW = 0;
+
+        const trimW = projectSpecs.dimensions.width;
+        const trimH = projectSpecs.dimensions.height;
+        const totalCoverW = (trimW * 2) + calcSpineW;
+
+        await updateDoc(doc(db, 'projects', projectId), {
+            'specs.coverDimensions': {
+                width: totalCoverW,
+                height: trimH,
+                units: projectSpecs.dimensions.units
+            }
+        });
+
+        // 2. Build Metadata
         pages.forEach(p => {
             const safeSettings = {
                 scaleMode: p.settings.scaleMode || 'fit',
@@ -3786,7 +3795,7 @@ async function handleUpload(e) {
                 view: p.settings.view || 'full'
             };
 
-            if (p.sourceFileId === null) {
+            if (p.sourceFileId === null || p.isAutoBlank) { 
                  bookletMetadata.push({
                     storagePath: null, 
                     sourcePageIndex: 0,
@@ -3806,14 +3815,46 @@ async function handleUpload(e) {
             }
         });
 
-        // Covers
-        if (allSourcePaths['cover_front']) bookletMetadata.push({ storagePath: allSourcePaths['cover_front'], type: 'cover_front' });
-        if (allSourcePaths['cover_spine']) bookletMetadata.push({ storagePath: allSourcePaths['cover_spine'], type: 'cover_spine' });
-        if (allSourcePaths['cover_back']) bookletMetadata.push({ storagePath: allSourcePaths['cover_back'], type: 'cover_back' });
+        const addCoverMeta = (storageKey, settingsKey, type) => {
+            if (allSourcePaths[storageKey]) {
+                const settings = coverSettings[settingsKey] || { pageIndex: 1, scaleMode: 'fill' };
+                bookletMetadata.push({ 
+                    storagePath: allSourcePaths[storageKey], 
+                    type: type,
+                    sourcePageIndex: (settings.pageIndex || 1) - 1, 
+                    settings: settings
+                });
+            }
+        };
 
-        // 3. Call Backend to Generate Proof
+        addCoverMeta('cover_front', 'file-cover-front', 'cover_front');
+        addCoverMeta('cover_back', 'file-cover-back', 'cover_back');
+
+        const spineMode = window.currentSpineMode || 'file';
+        if (spineMode === 'file') {
+            addCoverMeta('cover_spine', 'file-spine', 'cover_spine');
+        } else {
+            let sourceKey = spineMode.includes('front') ? 'cover_front' : 'cover_back';
+            let settingsKey = spineMode.includes('front') ? 'file-cover-front' : 'file-cover-back';
+            
+            if (allSourcePaths[sourceKey]) {
+                let scaleMode = 'fill';
+                let flip = false;
+                if (spineMode.includes('stretch')) scaleMode = 'stretch';
+                if (spineMode.includes('wrap') || spineMode.includes('mirror')) flip = true;
+
+                const sourceSettings = coverSettings[settingsKey] || { pageIndex: 1 };
+
+                bookletMetadata.push({
+                    storagePath: allSourcePaths[sourceKey],
+                    type: 'cover_spine',
+                    sourcePageIndex: (sourceSettings.pageIndex || 1) - 1,
+                    settings: { scaleMode, flip }
+                });
+            }
+        }
+
         progressText.textContent = 'Generating Proof...';
-        
         const generateBooklet = httpsCallable(functions, 'generateBooklet');
         await generateBooklet({ projectId: projectId, files: bookletMetadata });
 
@@ -3821,12 +3862,21 @@ async function handleUpload(e) {
         const submitGuestUpload = httpsCallable(functions, 'submitGuestUpload');
         await submitGuestUpload({ projectId: projectId });
 
-        // 4. Update State to Complete
         await persistStateAfterSubmit(allSourcePaths, 'submitted_complete');
 
-        // 5. Show Success
         uploadContainer.classList.add('hidden');
         successState.classList.remove('hidden');
+
+        // [FIX] Conditional Redirect based on Role
+        setTimeout(() => {
+            if (isAdmin) {
+                window.location.href = `admin_project.html?id=${projectId}`;
+            } else {
+                let url = `proof.html?id=${projectId}`;
+                if (guestToken) url += `&guestToken=${guestToken}`;
+                window.location.href = url;
+            }
+        }, 3000);
 
     } catch (err) {
         console.error("Upload failed:", err);

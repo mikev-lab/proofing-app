@@ -741,8 +741,6 @@ export async function initializeSharedViewer(config) {
 
     /**
      * Handles the logic for loading a specific version, including checking its processing status.
-     * This function manipulates the DOM to show loading/error states or triggers the PDF load.
-     * @param {object | null} versionData - The version object from Firestore, or null if no version exists.
      */
     function loadVersion(versionData) {
         if (!versionData) {
@@ -773,6 +771,9 @@ export async function initializeSharedViewer(config) {
                     <p class="mt-3 text-gray-300 text-sm">Optimizing PDF for viewing, please wait...</p>
                 `;
                 renderingThrobber.classList.remove('hidden');
+                
+                // [FIX] Block clicks on the viewer while processing
+                if(pdfViewer) pdfViewer.style.pointerEvents = 'none';
             }
             if (pdfCanvas) pdfCanvas.classList.add('hidden');
             if (navigationControls) navigationControls.classList.add('hidden');
@@ -802,18 +803,23 @@ export async function initializeSharedViewer(config) {
 
         // Case 3: Status is 'complete' or missing (legacy). Proceed to load the PDF.
         if (pdfCanvas) pdfCanvas.classList.remove('hidden');
-        if (renderingThrobber) renderingThrobber.classList.add('hidden');
+        
+        if (renderingThrobber) {
+            renderingThrobber.classList.add('hidden');
+            // [FIX] Re-enable clicks/interaction
+            if(pdfViewer) pdfViewer.style.pointerEvents = 'auto';
+        }
 
         const urlToLoad = versionData.previewURL || versionData.fileURL;
 
         if (urlToLoad && urlToLoad !== currentlyLoadedURL) {
-            console.log(`Loading URL for version ${versionData.version}: ${urlToLoad.substring(0, 100)}...`);
+            console.log(`Loading URL for version ${versionData.versionNumber}: ${urlToLoad.substring(0, 100)}...`);
             loadPdf(urlToLoad);
         } else if (!urlToLoad) {
             // [FIX] Unload PDF
             pdfDoc = null;
 
-            console.error("No URL found for version:", versionData.version);
+            console.error("No URL found for version:", versionData.versionNumber);
             if (renderingThrobber) {
                 renderingThrobber.innerHTML = `
                     <div class="text-center p-4">
@@ -827,7 +833,7 @@ export async function initializeSharedViewer(config) {
             if (navigationControls) navigationControls.classList.add('hidden');
             if (guidesSection) guidesSection.classList.add('hidden');
         } else {
-            console.log(`Version ${versionData.version} selected, but URL is the same as currently loaded.`);
+            console.log(`Version ${versionData.versionNumber} selected, but URL is the same as currently loaded.`);
             if (!pageRendering && renderingThrobber) renderingThrobber.classList.add('hidden');
             if (pdfCanvas) pdfCanvas.classList.remove('hidden');
             if (navigationControls) navigationControls.classList.remove('hidden');
