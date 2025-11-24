@@ -3152,21 +3152,42 @@ async function renderCoverPreview() {
     let drawGlueArea = false;
     let skipMidDraw = false; // Flag to skip drawing the spine separately if it's merged
 
+    const isRTL = projectSpecs.readingDirection === 'rtl';
+
     if (coverPreviewMode === 'inside') {
-        leftSource = coverSources['file-cover-inside-front'];
-        leftSettings = coverSettings['file-cover-inside-front'] || { pageIndex: 1, scaleMode: 'fill' };
-        
-        rightSource = coverSources['file-cover-inside-back'];
-        rightSettings = coverSettings['file-cover-inside-back'] || { pageIndex: 1, scaleMode: 'fill' };
+        if (isRTL) {
+            // RTL Inside: Left=InsideBack, Right=InsideFront
+            leftSource = coverSources['file-cover-inside-back'];
+            leftSettings = coverSettings['file-cover-inside-back'] || { pageIndex: 1, scaleMode: 'fill' };
+
+            rightSource = coverSources['file-cover-inside-front'];
+            rightSettings = coverSettings['file-cover-inside-front'] || { pageIndex: 1, scaleMode: 'fill' };
+        } else {
+            leftSource = coverSources['file-cover-inside-front'];
+            leftSettings = coverSettings['file-cover-inside-front'] || { pageIndex: 1, scaleMode: 'fill' };
+
+            rightSource = coverSources['file-cover-inside-back'];
+            rightSettings = coverSettings['file-cover-inside-back'] || { pageIndex: 1, scaleMode: 'fill' };
+        }
         
         drawGlueArea = (projectSpecs.binding === 'perfectBound' && spineWidth > 0);
         midSource = null; 
     } else {
-        leftSource = coverSources['file-cover-back'];
-        leftSettings = coverSettings['file-cover-back'] || { pageIndex: 1, scaleMode: 'fill' };
-        
-        rightSource = coverSources['file-cover-front'];
-        rightSettings = coverSettings['file-cover-front'] || { pageIndex: 1, scaleMode: 'fill' };
+        // Outside
+        if (isRTL) {
+            // RTL Outside: Left=Front, Right=Back
+            leftSource = coverSources['file-cover-front'];
+            leftSettings = coverSettings['file-cover-front'] || { pageIndex: 1, scaleMode: 'fill' };
+
+            rightSource = coverSources['file-cover-back'];
+            rightSettings = coverSettings['file-cover-back'] || { pageIndex: 1, scaleMode: 'fill' };
+        } else {
+            leftSource = coverSources['file-cover-back'];
+            leftSettings = coverSettings['file-cover-back'] || { pageIndex: 1, scaleMode: 'fill' };
+
+            rightSource = coverSources['file-cover-front'];
+            rightSettings = coverSettings['file-cover-front'] || { pageIndex: 1, scaleMode: 'fill' };
+        }
         
         const spineMode = window.currentSpineMode || 'file';
 
@@ -4112,6 +4133,27 @@ async function restoreBuilderState() {
 
 
 // --- Upload Handler ---
+
+let progressInterval;
+function simulateProgress(start, end, durationMs) {
+    if(progressInterval) clearInterval(progressInterval);
+    let current = start;
+    // Update every 100ms
+    const steps = durationMs / 100;
+    const increment = (end - start) / steps;
+
+    progressInterval = setInterval(() => {
+        current += increment;
+        if (current >= end) {
+            current = end;
+            clearInterval(progressInterval);
+        }
+        if(progressBar) progressBar.style.width = `${current}%`;
+        if(progressPercent) progressPercent.textContent = `${Math.round(current)}%`;
+    }, 100);
+}
+function stopProgress() { if(progressInterval) clearInterval(progressInterval); }
+
 // --- NEW: Helper to Upload Files & Save State ---
 async function syncProjectState(statusLabel) {
     const progressBar = document.getElementById('progress-bar');
@@ -4382,13 +4424,21 @@ async function handleUpload(e) {
         }
 
         progressText.textContent = 'Generating Proof...';
+        simulateProgress(0, 80, 15000); // Fake 0-80% over 15s
+
         const generateBooklet = httpsCallable(functions, 'generateBooklet');
         // Pass spineMode to backend
         await generateBooklet({ projectId: projectId, files: bookletMetadata, spineMode: spineMode });
 
         progressText.textContent = 'Finalizing...';
+        simulateProgress(80, 95, 3000); // Fake 80-95% over 3s
+
         const submitGuestUpload = httpsCallable(functions, 'submitGuestUpload');
         await submitGuestUpload({ projectId: projectId });
+
+        stopProgress();
+        if(progressBar) progressBar.style.width = '100%';
+        if(progressPercent) progressPercent.textContent = '100%';
 
         await persistStateAfterSubmit(allSourcePaths, 'submitted_complete');
 

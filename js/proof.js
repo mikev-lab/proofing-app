@@ -149,7 +149,26 @@ function showApproveConfirmation(projectData) {
         }
     }
 
-    // 4. Reset the form
+    // 4. Reading Direction Acknowledgment
+    const readingDirContainer = document.getElementById('container-reading-direction');
+    const readingDirCheckbox = document.getElementById('check-reading-direction');
+    const readingDirText = document.getElementById('approval-reading-direction-text');
+
+    if (readingDirContainer && readingDirCheckbox) {
+        if (specs.binding === 'loose' || !specs.binding) {
+            readingDirContainer.classList.add('hidden');
+            readingDirCheckbox.disabled = true;
+            readingDirCheckbox.checked = true;
+        } else {
+            readingDirContainer.classList.remove('hidden');
+            readingDirCheckbox.disabled = false;
+            readingDirCheckbox.checked = false;
+            const dirText = specs.readingDirection === 'rtl' ? 'Right to Left' : 'Left to Right';
+            if (readingDirText) readingDirText.innerHTML = `I acknowledge the book reads <strong>${dirText}</strong>.`;
+        }
+    }
+
+    // 5. Reset the form
     approvalFormModal.reset();
     modalConfirmBtn.disabled = true;
     modalConfirmBtn.classList.add('opacity-50', 'cursor-not-allowed');
