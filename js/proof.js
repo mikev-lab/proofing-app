@@ -120,7 +120,11 @@ function showApproveConfirmation(projectData) {
     const interiorPaperEl = document.getElementById('approval-interior-paper-text');
     if (interiorPaperEl) {
         const paper = specs.paperType || "Standard";
-        interiorPaperEl.innerHTML = `Confirm Interior Paper: <span class="font-bold text-white">${paper}</span>`;
+        const direction = specs.readingDirection === 'rtl' ? 'Right to Left' : 'Left to Right';
+        interiorPaperEl.innerHTML = `
+            Confirm Interior Paper: <span class="font-bold text-white">${paper}</span>
+            <br/><span class="text-xs text-gray-300 block mt-1">Reading Direction: <span class="font-bold text-white">${direction}</span></span>
+        `;
     }
 
     // 3. Populate Cover Paper (Hide if not applicable)

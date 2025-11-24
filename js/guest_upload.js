@@ -630,10 +630,18 @@ Array.from(projectTypeRadios).forEach(radio => {
             // Hide Cover Paper specifically for loose sheets
             if(specCoverPaper.parentElement) specCoverPaper.parentElement.classList.add('hidden');
             specCoverPaper.required = false;
+            // Hide Reading Direction for loose sheets
+            if (specReadingDirection && specReadingDirection.parentElement) {
+                specReadingDirection.parentElement.classList.add('hidden');
+            }
         } else {
             // Show Cover Paper for Saddle Stitch & Perfect Bound
             if(specCoverPaper.parentElement) specCoverPaper.parentElement.classList.remove('hidden');
             specCoverPaper.required = true;
+            // Show Reading Direction
+            if (specReadingDirection && specReadingDirection.parentElement) {
+                specReadingDirection.parentElement.classList.remove('hidden');
+            }
         }
         
         // [NEW] Update Visuals
@@ -711,6 +719,12 @@ function populateSpecsForm() {
     
     // [NEW] Update Visuals to match restored state
     updateSelectionVisuals();
+
+    // [NEW] Trigger change on binding to ensure correct visibility of Reading Direction
+    const activeRadio = document.querySelector('input[name="projectType"]:checked');
+    if (activeRadio) {
+        activeRadio.dispatchEvent(new Event('change'));
+    }
 }
 
 // --- Back Button Logic ---
@@ -4526,8 +4540,7 @@ function createSpreadCard(leftPage, rightPage, index, width, height, bleed, pixe
         else rightContainer.appendChild(ph);
     });
 
-    // Scale Mode Settings (Applies to both?)
-    // If it's a spread upload, they are locked. We can show one set of controls.
+    // Scale Settings Overlay
     const settingsOverlay = document.createElement('div');
     settingsOverlay.className = "absolute bottom-0 inset-x-0 p-2 opacity-0 group-hover:opacity-100 transition-opacity bg-gradient-to-t from-slate-900/90 to-transparent flex justify-center gap-2 z-20";
 
@@ -4540,7 +4553,6 @@ function createSpreadCard(leftPage, rightPage, index, width, height, bleed, pixe
     modes.forEach(mode => {
         const btn = document.createElement('button');
         btn.type = 'button';
-        // Use left page setting as source of truth
         btn.className = `p-1.5 rounded border ${leftPage.settings.scaleMode === mode.id ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800/80 border-slate-600 text-gray-400 hover:bg-slate-700 hover:text-white'}`;
         btn.innerHTML = mode.icon;
         btn.title = mode.title;

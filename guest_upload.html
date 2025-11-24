@@ -443,12 +443,21 @@
                     </div>
 
                     <div class="bg-slate-800/50 p-5 rounded-xl border border-slate-700/50 space-y-4">
-                        <div>
-                            <label class="block text-sm font-medium text-indigo-300 mb-2 uppercase tracking-wider">Finished Size</label>
-                            <select id="spec-size-preset" class="w-full bg-slate-900 border border-slate-600 rounded-lg py-2.5 px-4 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 appearance-none">
-                                <option value="" disabled selected>Select a Size</option>
-                                <option value="custom">Custom Size</option>
-                            </select>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium text-indigo-300 mb-2 uppercase tracking-wider">Finished Size</label>
+                                <select id="spec-size-preset" class="w-full bg-slate-900 border border-slate-600 rounded-lg py-2.5 px-4 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 appearance-none">
+                                    <option value="" disabled selected>Select a Size</option>
+                                    <option value="custom">Custom Size</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-indigo-300 mb-2 uppercase tracking-wider">Reading Direction</label>
+                                <select id="spec-reading-direction" class="w-full bg-slate-900 border border-slate-600 rounded-lg py-2.5 px-4 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 appearance-none">
+                                    <option value="ltr" selected>Left to Right (Standard)</option>
+                                    <option value="rtl">Right to Left (RTL)</option>
+                                </select>
+                            </div>
                         </div>
 
                         <div id="custom-size-container" class="hidden pt-2 border-t border-slate-700 mt-2">

@@ -648,7 +648,9 @@ export async function initializeSharedViewer(config) {
                 let isLeft = false;
                 if (pages.length > 1) { // Only relevant for spreads
                     if (projectSpecs?.readingDirection === 'rtl') {
-                        isLeft = (i === 1); // In RTL, the second page in the array is the left one
+                        // In RTL spreads, the pages array is reversed by getPagesForView: [Odd, Even].
+                        // i=0 corresponds to the Odd page (visually Left in RTL spreads).
+                        isLeft = (i === 0);
                     } else {
                         isLeft = (i === 0); // In LTR, the first page is the left one
                     }
