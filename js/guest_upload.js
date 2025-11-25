@@ -3772,7 +3772,7 @@ specsForm.addEventListener('submit', async (e) => {
             'specs.dimensions': dimensionsVal,
             'specs.binding': typeValue === 'loose' ? 'loose' : typeValue,
             'specs.pageCount': 0, // Dynamic
-            'specs.paperType': specPaper.value
+            'specs.paperType': specPaper.value,
             'specs.bleedInches': 0.125
         };
 
