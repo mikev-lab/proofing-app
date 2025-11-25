@@ -1563,168 +1563,123 @@ async function storePageAsPdf({ pageBuffer, pageNum, tempId }) {
     };
 }
 
-exports.generatePreviews = onCall({
+// --- GENERATE PREVIEWS (Custom Container Version) ---
+// --- GENERATE PREVIEWS (Custom Container Version) ---
+// --- GENERATE PREVIEWS (Custom Container Version) ---
+const generatePreviewsLogic = onCall({
     region: 'us-central1',
-    memory: '4GiB', // Adjust as needed
-    timeoutSeconds: 540
+    memory: '4GiB',
+    cpu: 2,
+    timeoutSeconds: 540,
+    cors: true, // <--- CRITICAL FIX: Enables CORS headers
 }, async (request) => {
-    // No projectId needed here, get paths from request data
     const { filePath: originalFilePath, originalName: originalFileName } = request.data;
-
     if (!originalFilePath || !originalFileName) {
         throw new HttpsError('invalid-argument', 'Missing "filePath" or "originalName".');
     }
 
-    // Extract a temporary identifier from the path (e.g., the folder name after 'temp_uploads/')
-    const pathParts = originalFilePath.split('/'); // e.g., ['temp_uploads', tempId, filename]
-    const tempId = pathParts.length > 2 ? pathParts[1] : `unknown_${Date.now()}`; // Get tempId
+    const pathParts = originalFilePath.split('/');
+    const tempId = pathParts.length > 2 ? pathParts[1] : `unknown_${Date.now()}`;
+    const bucket = admin.storage().bucket();
+    
+    // Temp Directories
+    const tempDir = path.join(os.tmpdir(), tempId);
+    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+    
+    const sourceFilePath = path.join(tempDir, `source_${originalFileName}`);
 
-    logger.log(`Generating previews for temp upload: ${originalFilePath}`);
+    logger.log(`Processing: ${originalFilePath}`);
 
     try {
-        const bucket = admin.storage().bucket();
-        const authAxios = await getAuthenticatedClient();
-        const originalFile = bucket.file(originalFilePath);
+        // 1. Download Source
+        await bucket.file(originalFilePath).download({ destination: sourceFilePath });
 
-        let multiPagePdfBuffer;
-        let tempPdfPathForSplit = originalFilePath; // Default to the uploaded file path
-        const fileExtension = path.extname(originalFileName).toLowerCase();
-
-        // --- 1. Conversion or Direct Use ---
-        if (fileExtension === '.pdf') {
-            logger.log('File is already a PDF, proceeding directly.');
-            // We need the buffer to check page count later, but conversion is skipped.
-            [multiPagePdfBuffer] = await originalFile.download();
-            // tempPdfPathForSplit is already originalFilePath
-        } else {
-            logger.log(`File is '${fileExtension}', calling LibreOffice convert via Signed URL...`);
-            
-            // --- FIX 1: Use Signed URL + downloadFrom for Conversion ---
-            // This bypasses the 32MB Request Entity Too Large limit
-            
-            const [signedConvertUrl] = await originalFile.getSignedUrl({
-                action: 'read',
-                expires: Date.now() + 3600 * 1000 // 1 hour
-            });
-
-            const convertFormData = new FormData();
-            const downloadConfig = JSON.stringify([{ url: signedConvertUrl }]);
-            convertFormData.append('downloadFrom', downloadConfig);
-            
-            const convertResponse = await authAxios.post(`${GOTENBERG_URL}/forms/libreoffice/convert`, convertFormData, {
-                responseType: 'arraybuffer'
-            }).catch(err => { 
-                const gotenbergError = err.response?.data ? Buffer.from(err.response.data).toString() : err.message;
-                logger.error('Gotenberg LibreOffice conversion failed:', gotenbergError);
-                throw new HttpsError('internal', `LibreOffice conversion failed: ${gotenbergError}`); 
-            });
-            
-            multiPagePdfBuffer = convertResponse.data;
-            logger.log('LibreOffice conversion successful.');
-
-            // Upload the converted PDF back to storage temporarily to get a path for splitting
-            const convertedFileName = path.basename(originalFilePath).replace(fileExtension, '.pdf');
-            tempPdfPathForSplit = `temp_uploads/${tempId}/converted_${convertedFileName}`;
-            await bucket.file(tempPdfPathForSplit).save(multiPagePdfBuffer, { contentType: 'application/pdf' });
+        // 2. Get Page Count (using pdfinfo)
+        let pageCount = 1;
+        try {
+            const { spawn } = require('child-process-promise');
+            const result = await spawn('pdfinfo', [sourceFilePath], { capture: ['stdout'] });
+            const output = result.stdout.toString();
+            const match = output.match(/Pages:\s+(\d+)/);
+            if (match) pageCount = parseInt(match[1], 10);
+        } catch (e) {
+            logger.warn("Failed to get page count, defaulting to 1", e);
         }
 
+        logger.log(`Document has ${pageCount} pages. Starting batch processing...`);
 
-        const tempDoc = await PDFDocument.load(multiPagePdfBuffer);
-        const pageCount = tempDoc.getPageCount();
-
-        // --- 2. Handle Single Page Case (No Splitting) ---
-        if (pageCount <= 1) {
-            logger.log(`Document has only ${pageCount} page(s). Storing single PDF.`);
-            
-            // Store the single-page PDF, generate the preview, and get its metadata
-            const pageData = await storePageAsPdf({
-                pageBuffer: multiPagePdfBuffer, // Use the full buffer as the single page source
-                pageNum: 1,
-                tempId: tempId
-            });
-            
-            // Return the single page data array to the client
-            return { pages: [pageData] }; 
-        }
-
-        // --- 3. PDF Splitting (Runs ONLY if pageCount > 1) ---
-
-        const fileToSplit = bucket.file(tempPdfPathForSplit);
-        const [signedUrl] = await fileToSplit.getSignedUrl({
-             action: 'read',
-             expires: Date.now() + 3600 * 1000 // Expires in 1 hour
-        });
-        logger.log(`Generated signed URL for splitting: ${signedUrl}`);
-
-        const splitFormData = new FormData();
+        // 3. Parallel Processing Logic
+        const BATCH_SIZE = 4; // Concurrent processes
+        const pagesData = [];
         
-        // --- FIX 2: Use downloadFrom for Splitting as well ---
-        // Standard 'files' upload fails for large files or doesn't accept URLs correctly
-        const splitDownloadConfig = JSON.stringify([{ url: signedUrl }]);
-        splitFormData.append('downloadFrom', splitDownloadConfig);
+        const processPage = async (pageNum) => {
+            const thumbName = `thumb_${pageNum}.jpg`;
+            const thumbLocal = path.join(tempDir, thumbName);
+            const thumbStorage = `temp_previews/${tempId}/${thumbName}`;
 
-        splitFormData.append('splitMode', 'pages'); // Tell Gotenberg to split by page
-        splitFormData.append('splitSpan', '1-');   // Tell Gotenberg to split all pages (1-to-end)
-        logger.log('Calling PDF split using signed URL...');
-        
-        const splitResponse = await authAxios.post(`${GOTENBERG_URL}/forms/pdfengines/split`, splitFormData, {
-            responseType: 'arraybuffer',
-        }).catch(err => { 
-            const gotenbergError = err.response?.data ? Buffer.from(err.response.data).toString() : err.message;
-            logger.error('Gotenberg PDF splitting failed with URL:', gotenbergError);
-            throw new HttpsError('internal', `PDF splitting failed: ${gotenbergError}.`); 
-        });
-        logger.log('PDF splitting successful.');
+            await spawn('gs', [
+                '-sDEVICE=jpeg',
+                '-dTextAlphaBits=4',
+                '-dGraphicsAlphaBits=4',
+                '-r72', 
+                `-dFirstPage=${pageNum}`,
+                `-dLastPage=${pageNum}`,
+                '-dNOPAUSE', '-dQUIET', '-dBATCH',
+                `-sOutputFile=${thumbLocal}`,
+                sourceFilePath
+            ]);
 
-        const zip = await jszip.loadAsync(splitResponse.data);
-        const singlePagePdfBuffers = [];
-        const fileNames = Object.keys(zip.files).sort(); // Sort numerically (e.g., 1.pdf, 2.pdf ...)
-
-        // Process files in sorted order
-        for (const fileName of fileNames) {
-            const buffer = await zip.files[fileName].async('nodebuffer');
-            singlePagePdfBuffers.push(buffer);
-        }
-        logger.log(`Extracted ${singlePagePdfBuffers.length} pages from zip.`);
-
-        const processedPagesData = []; // Array to hold results for the client
-
-        // Multi-page processing now uses the helper function for efficiency
-        const processingPromises = singlePagePdfBuffers.map(async (pageBuffer, index) => {
-            const pageNum = index + 1;
-
-            // Use the helper to store the single-page PDF and return metadata
-            const pageData = await storePageAsPdf({
-                pageBuffer: pageBuffer, // Use the split page buffer
-                pageNum: pageNum,
-                tempId: tempId
+            await bucket.upload(thumbLocal, {
+                destination: thumbStorage,
+                contentType: 'image/jpeg',
+                metadata: { cacheControl: 'public, max-age=31536000' }
             });
 
-            processedPagesData.push(pageData);
-            return pageData;
-        });
+            try { fs.unlinkSync(thumbLocal); } catch(e){}
 
-        await Promise.all(processingPromises);
-        logger.log('All pages processed successfully.');
+            const [url] = await bucket.file(thumbStorage).getSignedUrl({
+                action: 'read', expires: '03-09-2491'
+            });
 
-        // Return the array of processed page data
-        processedPagesData.sort((a, b) => a.pageNumber - b.pageNumber);
-        return { pages: processedPagesData };
+            return {
+                pageNumber: pageNum,
+                previewUrl: url,
+                isThumbnail: true
+            };
+        };
+
+        for (let i = 1; i <= pageCount; i += BATCH_SIZE) {
+            const batchPromises = [];
+            const end = Math.min(i + BATCH_SIZE - 1, pageCount);
+            
+            for (let j = i; j <= end; j++) {
+                batchPromises.push(processPage(j));
+            }
+            
+            const batchResults = await Promise.all(batchPromises);
+            pagesData.push(...batchResults);
+            
+            logger.log(`Processed pages ${i} to ${end}`);
+        }
+
+        pagesData.sort((a, b) => a.pageNumber - b.pageNumber);
+
+        return {
+            pages: pagesData,
+            totalPageCount: pageCount
+        };
 
     } catch (error) {
-        
-        logger.error('Error in generatePreviews:', error.response?.data ? Buffer.from(error.response.data).toString() : error);
-        
-        // Extract error message from Gotenberg if available
-        const message = error.response?.data ? Buffer.from(error.response.data).toString() : (error.message || 'An internal error occurred during preview generation.');
-        
-        // If it's already an HttpsError, rethrow it, otherwise wrap it
-        if (error.code && error.httpErrorCode) {
-             throw error;
-        }
-        throw new HttpsError('internal', message);
+        logger.error('Error generating previews:', error);
+        throw new HttpsError('internal', error.message);
+    } finally {
+        try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch(e) {}
     }
 });
+
+if (process.env.FUNCTION_TARGET === 'generatePreviews') {
+    exports.generatePreviews = generatePreviewsLogic;
+}
 
 
 // HTTP Callable function for manual imposition

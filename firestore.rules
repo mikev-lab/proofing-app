@@ -37,6 +37,7 @@ service cloud.firestore {
     // --- NEW Guest Helper Functions ---
     function hasValidGuestDataAccess(projectId, permission) {
        // Secure Custom Claim Check with Safe Access (.get)
+       // We explicitly check for null to prevent compiler warnings/errors
        return request.auth != null &&
           request.auth.token.get('guestProjectId', '') == projectId &&
           (
