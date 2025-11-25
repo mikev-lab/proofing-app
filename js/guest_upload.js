@@ -2755,9 +2755,21 @@ function drawBlankPage(page, canvas, view) {
 async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW, targetH, mode, align, pageIndex = 1, pageId = null, viewMode = 'full', panX = 0, panY = 0, forceScale = null) {
     if (!sourceEntry) return null;
 
-    const isServer = sourceEntry.isServer;
-    const file = isServer ? null : sourceEntry.file; 
-    const status = sourceEntry.status || 'ready';
+    // --- FIX: Normalization Logic ---
+    let file, status, isServer, previewUrl, storagePath;
+    
+    if (sourceEntry instanceof File) {
+        file = sourceEntry;
+        status = 'ready';
+        isServer = false;
+    } else {
+        file = sourceEntry.file;
+        status = sourceEntry.status || 'ready';
+        isServer = sourceEntry.isServer;
+        previewUrl = sourceEntry.previewUrl;
+        storagePath = sourceEntry.storagePath;
+    }
+    // -------------------------------
 
     if (status === 'error') {
         ctx.fillStyle = '#fee2e2'; ctx.fillRect(targetX, targetY, targetW, targetH); return null;
@@ -2766,7 +2778,7 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
         drawProcessingState(ctx, targetX, targetY, targetW, targetH); return null;
     }
 
-    const fileKey = isServer ? (sourceEntry.storagePath || sourceEntry.previewUrl || 'server_url') : (file ? file.name : 'unknown_file');
+    const fileKey = isServer ? (storagePath || previewUrl || 'server_url') : (file ? file.name : 'unknown_file');
     const timestamp = (file && file.lastModified) ? file.lastModified : 'server_timestamp';
     
     const scaleKey = forceScale ? `_s${forceScale}` : '_full';
@@ -2784,10 +2796,10 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
                 const renderScale = forceScale || (isServer ? 1.5 : 1.0); 
 
                 if (isServer) {
-                    if (!sourceEntry.previewUrl) return null; 
+                    if (!previewUrl) return null; 
                     
                     // [FIX] Check if URL points to an image or PDF based on extension
-                    const pathToCheck = (sourceEntry.storagePath || sourceEntry.previewUrl || '').toLowerCase();
+                    const pathToCheck = (storagePath || previewUrl || '').toLowerCase();
                     // Remove query params if any for check
                     const cleanPath = pathToCheck.split('?')[0];
                     
@@ -2795,16 +2807,16 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
 
                     if (isImage) {
                         // --- Image Loader ---
-                        const resp = await fetch(sourceEntry.previewUrl);
+                        const resp = await fetch(previewUrl);
                         if (!resp.ok) throw new Error("Failed to fetch image");
                         const blob = await resp.blob();
                         return createImageBitmap(blob);
                     } else {
                         // --- PDF Loader ---
-                        const docCacheKey = sourceEntry.storagePath || sourceEntry.previewUrl;
+                        const docCacheKey = storagePath || previewUrl;
                         let pdfDocPromise = remotePdfDocCache.get(docCacheKey);
                         if (!pdfDocPromise) {
-                            const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
+                            const loadingTask = pdfjsLib.getDocument(previewUrl);
                             pdfDocPromise = loadingTask.promise;
                             remotePdfDocCache.set(docCacheKey, pdfDocPromise);
                         }
@@ -2873,7 +2885,7 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
         ctx.restore();
 
         if (!forceScale) {
-            const cleanPath = isServer ? (sourceEntry.storagePath || sourceEntry.previewUrl || '').toLowerCase().split('?')[0] : (file ? file.name.toLowerCase() : '');
+            const cleanPath = isServer ? (storagePath || previewUrl || '').toLowerCase().split('?')[0] : (file ? file.name.toLowerCase() : '');
             const isImg = /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(cleanPath) || (file && file.type.startsWith('image/'));
             return { srcW, drawW, isImage: isImg };
         }
@@ -2885,7 +2897,6 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
         return null;
     }
 }
-
 
 // --- Locking Logic ---
 
@@ -3397,19 +3408,21 @@ async function renderCoverPreview() {
 async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageIndex = 1, scaleMode = 'fill') {
     if (!sourceEntry) return;
 
-    let file, status, isServer, previewUrl;
+    // --- FIX: Normalization Logic ---
+    let file, status, isServer, previewUrl, storagePath;
     if (sourceEntry instanceof File) {
         file = sourceEntry; status = 'ready'; isServer = false;
     } else {
-        file = sourceEntry.file; status = sourceEntry.status; isServer = sourceEntry.isServer; previewUrl = sourceEntry.previewUrl;
+        file = sourceEntry.file; status = sourceEntry.status; isServer = sourceEntry.isServer; previewUrl = sourceEntry.previewUrl; storagePath = sourceEntry.storagePath;
     }
+    // -------------------------------
 
     if (!file && !isServer) return;
 
     if (status === 'processing' || status === 'uploading') { drawProcessingState(ctx, x, y, targetW, targetH); return; }
     if (status === 'error') { ctx.fillStyle = '#fee2e2'; ctx.fillRect(x, y, targetW, targetH); return; }
 
-    const fileKey = isServer ? (sourceEntry.storagePath || previewUrl || 'server_url') : (file ? file.name : 'unknown_file');
+    const fileKey = isServer ? (storagePath || previewUrl || 'server_url') : (file ? file.name : 'unknown_file');
     const timestamp = (file && file.lastModified) ? file.lastModified : 'server_timestamp';
     const cacheKey = `${fileKey}_${pageIndex}_${timestamp}_cover`;
 
@@ -3418,8 +3431,7 @@ async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageI
     try {
         imgBitmap = await fetchBitmapWithCache(cacheKey, async () => {
             if (isServer) {
-                // --- FIX: Remote Document Caching ---
-                const docCacheKey = sourceEntry.storagePath || previewUrl;
+                const docCacheKey = storagePath || previewUrl;
                 let pdfDocPromise = remotePdfDocCache.get(docCacheKey);
 
                 if (!pdfDocPromise) {
@@ -3428,7 +3440,6 @@ async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageI
                     remotePdfDocCache.set(docCacheKey, pdfDocPromise);
                 }
                 const pdf = await pdfDocPromise;
-                // --- END FIX ---
                 
                 const page = await pdf.getPage(pageIndex);
                 const viewport = page.getViewport({ scale: 2 });
@@ -4018,6 +4029,48 @@ async function init() {
             if(loadingText) loadingText.textContent = "Restoring project files...";
             
             refreshBuilderUI();
+
+            // --- EVENT LISTENERS FIX ---
+        // 1. Setup Drop Zone for Interior
+        setupDropZone('file-interior-drop');
+
+        // 2. Setup Drop Zones for Cover (if elements exist)
+        if (document.getElementById('file-cover-front')) setupDropZone('file-cover-front');
+        if (document.getElementById('file-spine')) setupDropZone('file-spine');
+        if (document.getElementById('file-cover-back')) setupDropZone('file-cover-back');
+        if (document.getElementById('file-cover-inside-front')) setupDropZone('file-cover-inside-front');
+        if (document.getElementById('file-cover-inside-back')) setupDropZone('file-cover-inside-back');
+
+        // 3. Connect "Add Pages" Button
+        if (addInteriorFileBtn) {
+            addInteriorFileBtn.addEventListener('click', () => {
+                 // Reset insert index to end
+                 window._insertIndex = pages.length; 
+                 hiddenInteriorInput.click();
+            });
+        }
+
+        // 4. Connect Hidden Input
+        if (hiddenInteriorInput) {
+            hiddenInteriorInput.addEventListener('change', (e) => {
+                if (e.target.files.length > 0) {
+                    addInteriorFiles(e.target.files, false, window._insertIndex);
+                    e.target.value = ''; // Reset
+                }
+            });
+        }
+        
+        // 5. Connect Main Drop Input
+        if (fileInteriorDrop) {
+             fileInteriorDrop.addEventListener('change', (e) => {
+                if (e.target.files.length > 0) {
+                    addInteriorFiles(e.target.files, false);
+                    e.target.value = '';
+                }
+             });
+        }
+        // ---------------------------
+
             await initializeBuilder();
 
             if (pages.length > 0) {
