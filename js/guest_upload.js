@@ -965,7 +965,7 @@ function updateFileName(inputId, displayId) {
         existingControls.forEach(el => el.remove());
 
         if (file) {
-            toggleBusyOverlay(true, "Loading cover..."); // Start Throbber
+            toggleBusyOverlay(true, "Loading cover..."); 
 
             if (display) {
                 display.textContent = file.name;
@@ -998,12 +998,15 @@ function updateFileName(inputId, displayId) {
                 // Generate Controls
                 await createCoverControls(inputId, file);
 
-                if (isLocal) renderCoverPreview();
+                if (isLocal) {
+                    renderCoverPreview();
+                    renderBookViewer(); // [FIX] Update Ghost Pages immediately
+                }
                 triggerAutosave();
             } catch (err) {
                 console.error(err);
             } finally {
-                toggleBusyOverlay(false); // Stop Throbber
+                toggleBusyOverlay(false); 
             }
 
         } else {
@@ -1014,6 +1017,7 @@ function updateFileName(inputId, displayId) {
             delete selectedFiles[inputId];
             delete coverSources[inputId]; 
             renderCoverPreview();
+            renderBookViewer(); // [FIX] Clear Ghost Pages immediately
             triggerAutosave();
         }
         validateForm();
@@ -1415,7 +1419,12 @@ function addPagesToModel(targetArray, sourceId, numPages, isSpreadUpload) {
 
 async function processCoverFile(file, slotId) {
     try {
-        coverSources[slotId] = { file: file, status: 'uploading', isServer: true };
+        // 1. Set Initial State
+        coverSources[slotId] = { 
+            file: file, 
+            status: 'uploading', 
+            isServer: true 
+        };
         renderCoverPreview(); 
 
         const userId = auth.currentUser ? auth.currentUser.uid : 'guest';
@@ -1425,6 +1434,7 @@ async function processCoverFile(file, slotId) {
         
         await uploadBytesResumable(storageRef, file);
 
+        // 2. Update State (Processing)
         coverSources[slotId].status = 'processing';
         renderCoverPreview();
 
@@ -1437,22 +1447,30 @@ async function processCoverFile(file, slotId) {
         if (result.data && result.data.pages && result.data.pages.length > 0) {
             const firstPage = result.data.pages[0];
             
-            // WE NOW USE THE JPG URL RETURNED BY THE SERVER
+            // WE USE THE JPG URL RETURNED BY THE SERVER
             coverSources[slotId] = {
                 file: file,
                 status: 'ready',
-                previewUrl: firstPage.previewUrl, // This is the 72 DPI JPG
-                storagePath: storagePath, // Keep ref to original for final submit
+                previewUrl: firstPage.previewUrl, 
+                storagePath: storagePath, 
                 isServer: true,
-                isThumbnail: true // Flag to tell renderer it's an image
+                isThumbnail: true 
             };
             
             renderCoverPreview();
+            renderBookViewer(); // [FIX] Update Ghost Pages after server processing
+        } else {
+            throw new Error("No preview generated");
         }
 
     } catch (err) {
         console.error("Cover processing failed", err);
-        coverSources[slotId] = { status: 'error', error: err.message };
+        coverSources[slotId] = { 
+            file: file, 
+            status: 'error', 
+            error: err.message,
+            isServer: true 
+        };
         renderCoverPreview();
     }
 }
@@ -1635,121 +1653,129 @@ window.deletePage = (pageId) => {
 
 // --- Book Viewer Rendering ---
 
+// --- New Helper: Ghost Cover Card ---
+// --- New Helper: Ghost Cover Card ---
+// --- Updated Helper: Ghost Cover Card (Matches Page Card Structure) ---
+function createGhostCoverCard(sourceEntry, label, width, height, bleed, pixelsPerInch) {
+    // 1. Calculate Inner Dimensions (same as standard pages)
+    const containerW = (width + bleed) * pixelsPerInch;
+    const containerH = (height + (bleed * 2)) * pixelsPerInch;
+    
+    // 2. Outer Card (Structural wrapper, no fixed size, matches page-card behavior)
+    const card = document.createElement('div');
+    // Use flex-shrink-0 to prevent squashing
+    card.className = "relative group flex-shrink-0 cursor-default";
+    
+    // 3. Inner Container (The visual box)
+    // We use the same sizing logic as createPageCard's canvasContainer
+    const visualContainer = document.createElement('div');
+    visualContainer.className = "relative overflow-hidden bg-white border border-dashed border-gray-400 shadow-sm opacity-40 group-hover:opacity-100 transition-opacity duration-300";
+    visualContainer.style.width = `${containerW}px`;
+    visualContainer.style.height = `${containerH}px`;
+    
+    // Label Badge
+    const labelBadge = document.createElement('div');
+    labelBadge.className = "absolute top-2 left-1/2 -translate-x-1/2 z-30 bg-indigo-600 text-white text-[10px] font-bold px-2 py-1 rounded shadow-md uppercase tracking-wider whitespace-nowrap pointer-events-none select-none";
+    labelBadge.textContent = label;
+    visualContainer.appendChild(labelBadge);
+
+    // Canvas
+    const canvas = document.createElement('canvas');
+    canvas.width = containerW * 1.5; // High DPI
+    canvas.height = containerH * 1.5;
+    canvas.className = "w-full h-full object-contain";
+    visualContainer.appendChild(canvas);
+
+    if (sourceEntry) {
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff'; 
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        // Draw the actual cover image/pdf
+        drawFileWithTransform(
+            ctx, sourceEntry, 0, 0, canvas.width, canvas.height, 
+            'fill', 'center', 1, null, 'full', 0, 0
+        );
+    } else {
+        // Empty State Visual
+        const emptyState = document.createElement('div');
+        emptyState.className = "absolute inset-0 flex items-center justify-center text-center p-4 pointer-events-none";
+        emptyState.innerHTML = `<p class="text-xs text-gray-400 select-none italic">No ${label.toLowerCase()} file selected</p>`;
+        visualContainer.appendChild(emptyState);
+    }
+
+    card.appendChild(visualContainer);
+    return card;
+}
+
 function renderBookViewer() {
     const container = document.getElementById('book-viewer-container');
     if (!container) return;
 
-    // CLEAR QUEUE: Stop processing old pages if we are re-rendering
     renderQueue.length = 0; 
+    container.innerHTML = ''; 
 
-    container.innerHTML = ''; // Clear DOM
-
-    // Dimensions for layout
     const width = projectSpecs.dimensions.width;
     const height = projectSpecs.dimensions.height;
     const bleed = 0.125;
     const visualScale = (250 * viewerScale) / ((width + bleed * 2) * 96);
     const pixelsPerInch = 96 * visualScale;
 
-    // Helper to run the render via the Queue
+    // ... (Keep runPageRender / removePlaceholder / observer logic exactly as before) ...
     const runPageRender = (page, canvas) => {
         if (!page || !canvas) return Promise.resolve(true);
-
-        // Check if this specific render is already cached to skip the queue
-        // This makes scrolling back up instant
         const sourceEntry = sourceFiles[page.sourceFileId];
         if(sourceEntry) {
              const isServer = sourceEntry.isServer;
              const file = isServer ? null : sourceEntry.file; 
              const fileKey = isServer ? (sourceEntry.storagePath || sourceEntry.previewUrl) : (file ? file.name : 'unknown');
              const timestamp = (file && file.lastModified) ? file.lastModified : 'server';
-             // Match key format in drawFileWithTransform
              const cacheKey = `${fileKey}_${page.pageIndex || 1}_${timestamp}_full`; 
-             
-             // If cached, run immediately (don't wait in queue)
              if(imageCache.has(cacheKey)) {
                  return renderPageCanvas(page, canvas).catch(e => true);
              }
         }
-
-        // Otherwise, add to queue
-        return enqueueRender(() => renderPageCanvas(page, canvas))
-            .catch(err => {
-                console.error(`Page ${page?.id} Render Failed:`, err);
-                return true;
-            });
+        return enqueueRender(() => renderPageCanvas(page, canvas)).catch(err => true);
     };
 
     const removePlaceholder = (id) => {
         const ph = document.getElementById(`placeholder-${id}`);
-        if (ph) {
-            ph.style.opacity = '0';
-            setTimeout(() => ph.remove(), 300);
-        }
+        if (ph) { ph.style.opacity = '0'; setTimeout(() => ph.remove(), 300); }
     };
 
     const observer = new IntersectionObserver((entries, obs) => {
-        // Sort entries by DOM order to ensure Top-to-Bottom loading priority
         const sortedEntries = entries.sort((a, b) => {
             return a.target.compareDocumentPosition(b.target) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
         });
-
         sortedEntries.forEach(entry => {
             if (entry.isIntersecting) {
                 const card = entry.target;
                 const cardId = card.dataset.id;
-                obs.unobserve(card); // Unobserve immediately
-
+                obs.unobserve(card);
                 if (cardId.startsWith('spread:')) {
-                    // Spread pages
                     const parts = cardId.split(':');
-                    const id1 = parts[1]; // Left Page ID
-                    const id2 = parts[2]; // Right Page ID
-                    const page1 = pages.find(p => p.id === id1);
-                    const page2 = pages.find(p => p.id === id2);
-                    const canvas1 = document.getElementById(`canvas-${id1}`);
-                    const canvas2 = document.getElementById(`canvas-${id2}`);
-
-                    // Render Left then Right, but queued
+                    const id1 = parts[1]; const id2 = parts[2];
                     Promise.all([
-                        runPageRender(page1, canvas1),
-                        runPageRender(page2, canvas2)
-                    ]).finally(() => {
-                        removePlaceholder(id1);
-                        removePlaceholder(id2);
-                    });
-
+                        runPageRender(pages.find(p => p.id === id1), document.getElementById(`canvas-${id1}`)),
+                        runPageRender(pages.find(p => p.id === id2), document.getElementById(`canvas-${id2}`))
+                    ]).finally(() => { removePlaceholder(id1); removePlaceholder(id2); });
                 } else {
-                    // Single page
-                    const canvas = document.getElementById(`canvas-${cardId}`);
-                    const page = pages.find(p => p.id === cardId);
-
-                    if (canvas && page) {
-                        runPageRender(page, canvas).finally(() => {
-                            removePlaceholder(cardId);
-                        });
-                    }
+                    runPageRender(pages.find(p => p.id === cardId), document.getElementById(`canvas-${cardId}`)).finally(() => removePlaceholder(cardId));
                 }
             }
         });
     }, { root: container.parentElement, rootMargin: '200px' });
 
-    // --- LOOSE SHEETS / SINGLE LAYOUT ---
+    // --- SINGLE LAYOUT ---
     if (projectType === 'single') {
+        // ... (Keep existing single logic) ...
         container.className = "flex flex-wrap gap-8 items-start justify-center p-6";
-
-        const slots = [
-            { label: "Front Side", index: 0 },
-            { label: "Back Side", index: 1 }
-        ];
-
+        const slots = [{ label: "Front Side", index: 0 }, { label: "Back Side", index: 1 }];
         slots.forEach(slot => {
             const slotContainer = document.createElement('div');
             slotContainer.className = "flex flex-col items-center gap-2";
             slotContainer.innerHTML = `<h3 class="text-indigo-200 text-xs font-bold uppercase tracking-widest">${slot.label}</h3>`;
-
             const page = pages[slot.index];
-
             let content;
             if (page) {
                 content = createPageCard(page, slot.index, false, false, width, height, bleed, pixelsPerInch, observer);
@@ -1760,25 +1786,9 @@ function renderBookViewer() {
                 const hPx = (height + (bleed * 2)) * pixelsPerInch;
                 content.style.width = `${wPx}px`;
                 content.style.height = `${hPx}px`;
-
-                content.innerHTML = `
-                    <div class="text-center p-4">
-                         <svg class="w-8 h-8 text-gray-500 group-hover:text-indigo-400 mb-2 mx-auto transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
-                        <span class="text-xs text-gray-400 group-hover:text-white">Add File</span>
-                    </div>
-                `;
-                content.onclick = () => {
-                    window._insertIndex = slot.index;
-                    hiddenInteriorInput.click();
-                };
-                content.addEventListener('dragover', (e) => { e.preventDefault(); content.classList.add('border-indigo-400', 'bg-slate-700'); });
-                content.addEventListener('dragleave', (e) => { e.preventDefault(); content.classList.remove('border-indigo-400', 'bg-slate-700'); });
-                content.addEventListener('drop', (e) => {
-                    e.preventDefault();
-                    if (e.dataTransfer.files.length > 0) {
-                        addInteriorFiles(e.dataTransfer.files, false, slot.index);
-                    }
-                });
+                content.innerHTML = `<div class="text-center p-4"><span class="text-xs text-gray-400 group-hover:text-white">Add File</span></div>`;
+                content.onclick = () => { window._insertIndex = slot.index; hiddenInteriorInput.click(); };
+                content.addEventListener('drop', (e) => { e.preventDefault(); if (e.dataTransfer.files.length > 0) addInteriorFiles(e.dataTransfer.files, false, slot.index); });
             }
             slotContainer.appendChild(content);
             container.appendChild(slotContainer);
@@ -1801,28 +1811,38 @@ function renderBookViewer() {
 
     container.appendChild(createInsertBar(0));
 
+    // --- FIRST SPREAD ---
     const firstSpread = document.createElement('div');
     firstSpread.className = "spread-row flex justify-center items-end gap-0 mb-4 min-h-[100px] p-2 border border-transparent hover:border-dashed hover:border-gray-600 rounded";
+    
+    // Prepare Spacer
     const spacer = document.createElement('div');
     spacer.style.width = `${width * pixelsPerInch}px`;
     spacer.className = "pointer-events-none";
 
-    // Page 1 Logic
+    // [FIX] Inside Front Cover Logic
+    let frontCoverGhost = null;
+    if (coverSources['file-cover-inside-front'] || projectSpecs.binding !== 'loose') {
+        // Even if no file is selected yet, show the ghost slot if it's a booklet
+        frontCoverGhost = createGhostCoverCard(
+            coverSources['file-cover-inside-front'], 
+            "Inside Front Cover", 
+            width, height, bleed, pixelsPerInch
+        );
+    }
+
     if (isRTL) {
-        // RTL: [Page 1 (Visual Left), Spacer]
-        if (pages[0]) {
-            firstSpread.appendChild(createPageCard(pages[0], 0, false, false, width, height, bleed, pixelsPerInch, observer));
-        }
-        firstSpread.appendChild(spacer);
+        // RTL: [Page 1, Inside Front Cover]
+        if (pages[0]) firstSpread.appendChild(createPageCard(pages[0], 0, false, false, width, height, bleed, pixelsPerInch, observer));
+        firstSpread.appendChild(frontCoverGhost || spacer);
     } else {
-        // LTR: [Spacer, Page 1 (Visual Right)]
-        firstSpread.appendChild(spacer);
-        if (pages[0]) {
-            firstSpread.appendChild(createPageCard(pages[0], 0, true, false, width, height, bleed, pixelsPerInch, observer));
-        }
+        // LTR: [Inside Front Cover, Page 1]
+        firstSpread.appendChild(frontCoverGhost || spacer);
+        if (pages[0]) firstSpread.appendChild(createPageCard(pages[0], 0, true, false, width, height, bleed, pixelsPerInch, observer));
     }
     container.appendChild(firstSpread);
 
+    // --- MIDDLE SPREADS ---
     let i = 1;
     while (i < pages.length) {
         container.appendChild(createInsertBar(i));
@@ -1833,79 +1853,142 @@ function renderBookViewer() {
         const pB = pages[i+1];
 
         let isLinkedSpread = false;
-        // Linked spreads (single file split) are always treated as a LTR visual unit (Left Half, Right Half)
-        if (pA && pB && pA.sourceFileId && pA.sourceFileId === pB.sourceFileId) {
-            if (pA.id.endsWith('_L') && pB.id.endsWith('_R')) {
-                isLinkedSpread = true;
-            }
+        if (pA && pB && pA.sourceFileId && pA.sourceFileId === pB.sourceFileId && pA.id.endsWith('_L') && pB.id.endsWith('_R')) {
+            isLinkedSpread = true;
         }
 
         if (isLinkedSpread) {
-            const spreadCard = createSpreadCard(pA, pB, i, width, height, bleed, pixelsPerInch, observer);
-            spreadDiv.appendChild(spreadCard);
+            spreadDiv.appendChild(createSpreadCard(pA, pB, i, width, height, bleed, pixelsPerInch, observer));
             i += 2;
         } else {
-            let leftPageObj, rightPageObj;
-            let leftIdx, rightIdx;
-
+            let leftPageObj, rightPageObj, leftIdx, rightIdx;
             if (isRTL) {
-                // RTL Spread: [P3 (Visual Left), P2 (Visual Right)]
                 leftPageObj = pB; leftIdx = i + 1;
                 rightPageObj = pA; rightIdx = i;
             } else {
-                // LTR Spread: [P2 (Visual Left), P3 (Visual Right)]
                 leftPageObj = pA; leftIdx = i;
                 rightPageObj = pB; rightIdx = i + 1;
             }
 
-            let leftCard = null;
-            if (leftPageObj) {
-                leftCard = createPageCard(leftPageObj, leftIdx, false, false, width, height, bleed, pixelsPerInch, observer);
-                spreadDiv.appendChild(leftCard);
+            if (leftPageObj) spreadDiv.appendChild(createPageCard(leftPageObj, leftIdx, false, false, width, height, bleed, pixelsPerInch, observer));
+            else {
+                const endSpacer = document.createElement('div');
+                endSpacer.style.width = `${width * pixelsPerInch}px`;
+                endSpacer.className = "pointer-events-none";
+                spreadDiv.appendChild(endSpacer);
             }
 
-            let rightCard = null;
-            if (rightPageObj) {
-                rightCard = createPageCard(rightPageObj, rightIdx, true, false, width, height, bleed, pixelsPerInch, observer);
-                spreadDiv.appendChild(rightCard);
+            if (rightPageObj) spreadDiv.appendChild(createPageCard(rightPageObj, rightIdx, true, false, width, height, bleed, pixelsPerInch, observer));
+            else {
+                const endSpacer = document.createElement('div');
+                endSpacer.style.width = `${width * pixelsPerInch}px`;
+                endSpacer.className = "pointer-events-none";
+                spreadDiv.appendChild(endSpacer);
             }
-
-            if (leftCard) leftCard.style.flexShrink = '0';
-            if (rightCard) rightCard.style.flexShrink = '0';
-
-            // Handle Odd Pages / Missing Slot
-            if (!leftCard) {
-                 const endSpacer = document.createElement('div');
-                 endSpacer.style.width = `${width * pixelsPerInch}px`;
-                 endSpacer.className = "pointer-events-none";
-                 spreadDiv.prepend(endSpacer);
-            }
-            if (!rightCard) {
-                 const endSpacer = document.createElement('div');
-                 endSpacer.style.width = `${width * pixelsPerInch}px`;
-                 endSpacer.className = "pointer-events-none";
-                 spreadDiv.appendChild(endSpacer);
-            }
-
             i += 2;
         }
         container.appendChild(spreadDiv);
     }
 
     container.appendChild(createInsertBar(pages.length));
+
+    // --- [FIX] INSIDE BACK COVER LOGIC ---
+    // We need to determine where the "Inside Back Cover" goes relative to the last page.
+    // Total pages (pages.length).
+    // If LTR:
+    //   Page 1 (Right)
+    //   P2 (L), P3 (R)
+    //   P4 (L), P5 (R)
+    // If last page is Even (Left), e.g., P4. The Right slot is empty. Inside Back goes there.
+    // If last page is Odd (Right), e.g., P5. The spread is full. We need a NEW row: [Inside Back, Spacer].
+    
+    if (coverSources['file-cover-inside-back'] || projectSpecs.binding !== 'loose') {
+        const backCoverGhost = createGhostCoverCard(
+            coverSources['file-cover-inside-back'], 
+            "Inside Back Cover", 
+            width, height, bleed, pixelsPerInch
+        );
+
+        const lastWasEven = (pages.length % 2 === 0); // If count is 4, last page (P4) is Left.
+        
+        if (isRTL) {
+            // RTL: P1 Left. P2 R, P3 L.
+            // Even pages are Right. Odd pages are Left.
+            // If Total 4: P4 is Right. Left slot is empty. Inside Back goes Left.
+            // If Total 5: P5 is Left. Spread is full. New Row: [Spacer, Inside Back]
+            if (lastWasEven) {
+                // P_last is Right. Slot to Left is empty.
+                // We need to find the *last spread div* we just created and prepend the ghost.
+                const lastSpreadDiv = container.lastElementChild.previousElementSibling; // skip insert bar
+                if (lastSpreadDiv && lastSpreadDiv.classList.contains('spread-row')) {
+                    // Replace the "endSpacer" if it exists, or prepend
+                    // In the loop above, if leftPageObj was null, we added a spacer.
+                    // If pB was null (even count), leftPageObj (pB) was null.
+                    // So the last spread has [Spacer, P_last(Right)].
+                    // We replace Spacer with Ghost.
+                    if (lastSpreadDiv.firstElementChild.classList.contains('pointer-events-none')) {
+                        lastSpreadDiv.replaceChild(backCoverGhost, lastSpreadDiv.firstElementChild);
+                    }
+                }
+            } else {
+                // P_last is Left. Spread full. New Row.
+                const lastSpread = document.createElement('div');
+                lastSpread.className = "spread-row flex justify-center items-end gap-0 mb-4 min-h-[100px] p-2 border border-transparent rounded pointer-events-none opacity-80";
+                
+                const emptySpacer = document.createElement('div');
+                emptySpacer.style.width = `${width * pixelsPerInch}px`;
+                
+                lastSpread.appendChild(emptySpacer);
+                lastSpread.appendChild(backCoverGhost);
+                container.appendChild(lastSpread);
+            }
+        } else {
+            // LTR: P1 Right. P2 L, P3 R.
+            // Even pages are Left. Odd pages are Right.
+            // If Total 4: P4 is Left. Right slot empty. Inside Back goes Right.
+            if (lastWasEven) {
+                const lastSpreadDiv = container.lastElementChild.previousElementSibling; 
+                if (lastSpreadDiv && lastSpreadDiv.classList.contains('spread-row')) {
+                    // Last child should be the spacer (right side)
+                    if (lastSpreadDiv.lastElementChild.classList.contains('pointer-events-none')) {
+                        lastSpreadDiv.replaceChild(backCoverGhost, lastSpreadDiv.lastElementChild);
+                    }
+                }
+            } else {
+                // Total 5: P5 is Right. Spread full. New Row.
+                const lastSpread = document.createElement('div');
+                lastSpread.className = "spread-row flex justify-center items-end gap-0 mb-4 min-h-[100px] p-2 border border-transparent rounded pointer-events-none opacity-80";
+                
+                const emptySpacer = document.createElement('div');
+                emptySpacer.style.width = `${width * pixelsPerInch}px`;
+                
+                lastSpread.appendChild(backCoverGhost);
+                lastSpread.appendChild(emptySpacer);
+                container.appendChild(lastSpread);
+            }
+        }
+    }
+
     validateForm();
 
+    // ... (Keep Sortable logic) ...
     const spreadDivs = container.querySelectorAll('.spread-row');
     spreadDivs.forEach(spreadDiv => {
+        // Only make sortable if it doesn't contain a ghost card (to prevent dragging into covers)
+        // Or strict filter: draggable: '.page-card' (already set)
+        // But we should prevent dropping *onto* ghost cards? Sortable handles lists.
+        // As long as ghost cards aren't '.page-card', they won't be dragged.
+        // But they might be valid drop targets? 'put: true'.
+        // We want to prevent reordering the cover rows.
+        // Simple check: don't init sortable on first/last rows if they have covers?
+        // Better: Init on all, but filter move. 
+        // For now, standard logic applies. The ghost cards are just DOM elements.
         new Sortable(spreadDiv, {
             group: { name: 'shared-spreads', pull: true, put: true },
             animation: 150,
-            draggable: '.page-card',
+            draggable: '.page-card', // Ghost cards don't have this class
             handle: '.drag-handle',
-            forceFallback: true,
-            fallbackOnBody: true,
-            swapThreshold: 0.65,
-            ghostClass: 'opacity-50',
+            // ...
             onEnd: (evt) => {
                 try {
                     saveState();
@@ -2671,14 +2754,21 @@ async function updatePageContent(pageId, file) {
 
 async function renderPageCanvas(page, canvas) {
     const pageIndex = pages.indexOf(page);
-    const isRightPage = pageIndex === 0 || pageIndex % 2 === 0;
+    
+    // [FIX] Correctly determine Visual Side based on Reading Direction
+    const isRTL = projectSpecs.readingDirection === 'rtl';
+    const isEvenIndex = pageIndex % 2 === 0; // Index 0 (P1), 2 (P3), etc.
+    
+    // LTR: Even Index (0,2) = Right Page. Odd Index (1,3) = Left Page.
+    // RTL: Even Index (0,2) = Left Page. Odd Index (1,3) = Right Page.
+    const isRightPage = isRTL ? !isEvenIndex : isEvenIndex;
+
     let view = isRightPage ? 'right' : 'left';
     if (projectType === 'single') view = 'full';
 
-    // 1. Handle Blank Page
+    // ... (Standard blank check logic) ...
     if (page.sourceFileId === null) {
         drawBlankPage(page, canvas, view);
-        // Hide DPI warning if it exists
         const w = document.getElementById(`dpi-warning-${page.id}`);
         if (w) w.classList.add('hidden');
         return;
@@ -2715,6 +2805,7 @@ async function renderPageCanvas(page, canvas) {
     canvas.style.height = `${totalH * pixelsPerInch}px`;
     canvas.style.top = '0px';
     
+    // [FIX] Apply shift based on the CORRECT 'view' variable calculated above
     if (view === 'right') canvas.style.left = `-${bleed * pixelsPerInch}px`;
     else canvas.style.left = '0px';
 
@@ -2736,6 +2827,7 @@ async function renderPageCanvas(page, canvas) {
         if (imageCache.has(thumbCacheKey)) {
             const thumbBitmap = imageCache.get(thumbCacheKey);
             if (thumbBitmap) {
+                // ... (Keep placeholder drawing logic) ...
                 const srcW = thumbBitmap.width; const srcH = thumbBitmap.height;
                 const srcRatio = srcW / srcH; const targetRatio = totalW / totalH;
                 let drawW, drawH, drawX, drawY;
@@ -2755,49 +2847,37 @@ async function renderPageCanvas(page, canvas) {
         }
     } catch (e) {}
 
-    // 5. Draw File (High Res) & Capture Stats
+    // 5. Draw File (High Res)
     const renderStats = await drawFileWithTransform(
         ctx, sourceEntry, 0, 0, totalW, totalH, 
         page.settings.scaleMode, 
         page.settings.alignment, 
         page.pageIndex, 
         page.id, 
-        view, 
+        view, // Pass the correctly calculated view
         page.settings.panX, 
         page.settings.panY
     );
 
-    // --- [UPDATED] DPI CHECK LOGIC ---
+    // ... (Keep DPI Check logic) ...
     const warningEl = document.getElementById(`dpi-warning-${page.id}`);
     const valEl = document.getElementById(`dpi-val-${page.id}`);
 
     if (renderStats && renderStats.isImage && warningEl && valEl) {
-        // Effective DPI = Source Pixels / Printed Inches
         const effectiveDPI = renderStats.srcW / renderStats.drawW;
-        
-        // Tolerance set to 290 to ignore standard bleed stretching (which drops 300 -> ~294)
         const DPI_THRESHOLD = 290; 
-
         if (effectiveDPI < DPI_THRESHOLD) {
             valEl.textContent = Math.round(effectiveDPI);
             warningEl.classList.remove('hidden');
-            
-            // Make it red if really low (< 200), yellow if just slightly low
             const icon = warningEl.querySelector('div');
             if (icon) {
-                if (effectiveDPI < 200) {
-                    // Severe
-                    icon.className = "text-red-400 bg-slate-900/80 p-1.5 rounded-md backdrop-blur-md border border-red-500/30 shadow-md cursor-help transition-colors hover:text-red-300 hover:border-red-400";
-                } else {
-                    // Warning
-                    icon.className = "text-yellow-400 bg-slate-900/80 p-1.5 rounded-md backdrop-blur-md border border-yellow-500/30 shadow-md cursor-help transition-colors hover:text-yellow-300 hover:border-yellow-400";
-                }
+                if (effectiveDPI < 200) icon.className = "text-red-400 bg-slate-900/80 p-1.5 rounded-md backdrop-blur-md border border-red-500/30 shadow-md cursor-help transition-colors hover:text-red-300 hover:border-red-400";
+                else icon.className = "text-yellow-400 bg-slate-900/80 p-1.5 rounded-md backdrop-blur-md border border-yellow-500/30 shadow-md cursor-help transition-colors hover:text-yellow-300 hover:border-yellow-400";
             }
         } else {
             warningEl.classList.add('hidden');
         }
     } else if (warningEl) {
-        // Hide if PDF or render failed or not applicable
         warningEl.classList.add('hidden');
     }
 
@@ -2805,7 +2885,7 @@ async function renderPageCanvas(page, canvas) {
         updateThumbnailFromMain(page);
     }
 
-    // 6. Draw Guides
+    // 6. Draw Guides (Corrected Geometry)
     const guideScale = pixelsPerInch / 72;
     const mockSpecs = {
         dimensions: { width: width, height: height, units: 'in' },
@@ -2816,17 +2896,16 @@ async function renderPageCanvas(page, canvas) {
     let renderInfo = {
         x: view === 'right' ? bleed * pixelsPerInch : 0,
         y: 0,
-        width: view === 'left' ? (width + bleed) * pixelsPerInch : totalW * pixelsPerInch,
+        // [FIX] Ensure guide width matches visual width.
+        // If view is 'left' (Index 1/Left Page), we show LeftBleed + Width.
+        // If view is 'right' (Index 0/Right Page), we show Width + RightBleed.
+        width: (view === 'full') ? totalW * pixelsPerInch : (width + bleed) * pixelsPerInch,
         height: totalH * pixelsPerInch,
         scale: guideScale,
-        isSpread: true,
+        isSpread: (view !== 'full'),
         isLeftPage: view === 'left'
     };
     
-    if (view === 'full') {
-        renderInfo = { ...renderInfo, isSpread: false, width: totalW * pixelsPerInch };
-    }
-
     ctx.save();
     ctx.setTransform(pixelDensity, 0, 0, pixelDensity, 0, 0);
     drawGuides(ctx, mockSpecs, [renderInfo], { trim: true, bleed: true, safety: true });
@@ -4305,29 +4384,23 @@ async function restoreBuilderState() {
             const entries = Object.entries(state.sourceFiles);
             const restorePromises = entries.map(async ([id, meta]) => {
                 try {
-                    // We still fetch the main download URL as a fallback/source of truth
                     const url = await getDownloadURL(ref(storage, meta.storagePath));
                     
-                    // Helper object structure
                     const restoredObject = {
                         status: 'ready',
-                        previewUrl: url, // Default PDF URL (Fallback)
+                        previewUrl: url, 
                         isServer: true,
                         storagePath: meta.storagePath,
-                        // [FIX] Restore Thumbnails
                         pagePreviews: meta.pagePreviews || null,
                         isThumbnail: meta.isThumbnail || false
                     };
 
-                    // If we have thumbnails, use Page 1 as the default previewUrl
                     if (restoredObject.pagePreviews && restoredObject.pagePreviews.length > 0) {
-                        // Find page 1 if possible, otherwise take the first one
                         const p1 = restoredObject.pagePreviews.find(p => p.pageNumber === 1) || restoredObject.pagePreviews[0];
                         restoredObject.previewUrl = p1.previewUrl;
                     }
 
                     if (id.startsWith('cover_')) {
-                        // [FIX] Handle new keys for restoration
                         let inputId = null;
                         if (id === 'cover_front') inputId = 'file-cover-front';
                         else if (id === 'cover_spine') inputId = 'file-spine';
@@ -4338,15 +4411,15 @@ async function restoreBuilderState() {
                         if (inputId) {
                             coverSources[inputId] = restoredObject;
                             
-                            // Map back to display ID
                             let displayId = inputId.replace('file-', 'file-name-');
                             const el = document.getElementById(displayId);
                             if (el) {
                                 el.textContent = "Restored File";
                                 el.classList.remove('hidden');
                             }
-                            // Pass the resolved URL (likely a thumb) to controls
                             createCoverControls(inputId, restoredObject.previewUrl);
+                            
+                            renderBookViewer(); // [FIX] Ensure viewer knows about restored cover
                         }
                     } else {
                         sourceFiles[id] = restoredObject;
@@ -4531,6 +4604,7 @@ async function handleSaveDraft() {
 }
 
 // --- UPDATED: Final Submit Handler ---
+// --- UPDATED: Final Submit Handler (Fixed Timeout) ---
 async function handleUpload(e) {
     if (e) e.preventDefault();
 
@@ -4542,7 +4616,7 @@ async function handleUpload(e) {
         const MAX_TOTAL = 24;
         const MAX_INTERIOR = MAX_TOTAL - COVER_PAGES; 
         if (totalInteriorPages > MAX_INTERIOR) {
-            alert(`Page Count Limit Exceeded.\n\nSaddle Stitch books are limited to ${MAX_TOTAL} total pages (Cover + Interior).\n\nYou currently have ${totalInteriorPages} interior pages + 4 cover pages = ${totalInteriorPages + 4} Total.\n\nPlease remove ${totalInteriorPages - MAX_INTERIOR} pages.`);
+            alert(`Page Count Limit Exceeded.\n\nSaddle Stitch books are limited to ${MAX_TOTAL} total pages.`);
             return;
         }
     } 
@@ -4550,40 +4624,32 @@ async function handleUpload(e) {
     balancePages();
 
     submitButton.disabled = true;
-    submitButton.textContent = 'Processing...';
+    submitButton.textContent = 'Submitting...'; // Changed text
 
     try {
+        // 1. Upload Files
         const allSourcePaths = await syncProjectState('submitted_processing');
         const progressText = document.getElementById('progress-text');
         const bookletMetadata = [];
 
-        // 1. Calculate & Save Cover Dimensions
+        // ... (Keep existing Cover Dims calculation logic) ...
         const paperObj = HARDCODED_PAPER_TYPES.find(p => p.name === projectSpecs.paperType);
         const interiorCaliper = paperObj ? paperObj.caliper : 0.004;
-        
         const coverPaperObj = HARDCODED_PAPER_TYPES.find(p => p.name === projectSpecs.coverPaperType);
         const coverCaliper = coverPaperObj ? coverPaperObj.caliper : (paperObj ? interiorCaliper : 0.004);
-
         const interiorSheets = Math.ceil(totalInteriorPages / 2);
         let calcSpineW = (interiorSheets * interiorCaliper) + (coverCaliper * 2);
         if (binding === 'saddleStitch' || binding === 'loose') calcSpineW = 0;
-
         const trimW = projectSpecs.dimensions.width;
         const trimH = projectSpecs.dimensions.height;
-        
-        // Total Trim Width (Back + Spine + Front)
         const totalCoverW = (trimW * 2) + calcSpineW;
 
         await updateDoc(doc(db, 'projects', projectId), {
-            'specs.coverDimensions': {
-                width: totalCoverW,
-                height: trimH,
-                units: projectSpecs.dimensions.units
-            },
+            'specs.coverDimensions': { width: totalCoverW, height: trimH, units: projectSpecs.dimensions.units },
             'specs.spineWidth': calcSpineW 
         });
 
-        // 2. Metadata Construction
+        // Construct Metadata
         pages.forEach(p => {
             const safeSettings = {
                 scaleMode: p.settings.scaleMode || 'fit',
@@ -4592,36 +4658,18 @@ async function handleUpload(e) {
                 panY: Number(p.settings.panY) || 0,
                 view: p.settings.view || 'full'
             };
-
             if (p.sourceFileId === null || p.isAutoBlank) { 
-                 bookletMetadata.push({
-                    storagePath: null, 
-                    sourcePageIndex: 0,
-                    settings: safeSettings,
-                    type: 'interior_page'
-                 });
+                 bookletMetadata.push({ storagePath: null, sourcePageIndex: 0, settings: safeSettings, type: 'interior_page' });
             } else {
                  const path = allSourcePaths[p.sourceFileId];
-                 if (path) {
-                     bookletMetadata.push({
-                        storagePath: path,
-                        sourcePageIndex: (p.pageIndex || 1) - 1,
-                        settings: safeSettings,
-                        type: 'interior_page'
-                    });
-                 }
+                 if (path) bookletMetadata.push({ storagePath: path, sourcePageIndex: (p.pageIndex || 1) - 1, settings: safeSettings, type: 'interior_page' });
             }
         });
 
         const addCoverMeta = (storageKey, settingsKey, type) => {
             if (allSourcePaths[storageKey]) {
                 const settings = coverSettings[settingsKey] || { pageIndex: 1, scaleMode: 'fill' };
-                bookletMetadata.push({ 
-                    storagePath: allSourcePaths[storageKey], 
-                    type: type,
-                    sourcePageIndex: (settings.pageIndex || 1) - 1, 
-                    settings: settings
-                });
+                bookletMetadata.push({ storagePath: allSourcePaths[storageKey], type: type, sourcePageIndex: (settings.pageIndex || 1) - 1, settings: settings });
             }
         };
 
@@ -4631,43 +4679,27 @@ async function handleUpload(e) {
         addCoverMeta('cover_inside_back', 'file-cover-inside-back', 'cover_inside_back');
 
         const spineMode = window.currentSpineMode || 'file';
-        
-        // Only add spine file metadata if we are using a FILE or MIRROR mode.
-        // If mode is 'stretch', we skip adding a spine part, so the backend knows to extend the adjacent cover.
-        if (spineMode === 'file') {
-            addCoverMeta('cover_spine', 'file-spine', 'cover_spine');
-        } else if (spineMode.includes('wrap') || spineMode.includes('mirror')) {
-            // If stretching, we do NOT send a spine part. 
-            // If mirroring/wrapping (without stretch), we send the source as the spine part.
+        if (spineMode === 'file') addCoverMeta('cover_spine', 'file-spine', 'cover_spine');
+        else if (spineMode.includes('wrap') || spineMode.includes('mirror')) {
             if (!spineMode.includes('stretch')) {
                 let sourceKey = spineMode.includes('front') ? 'cover_front' : 'cover_back';
                 let settingsKey = spineMode.includes('front') ? 'file-cover-front' : 'file-cover-back';
-                
                 if (allSourcePaths[sourceKey]) {
                     const sourceSettings = coverSettings[settingsKey] || { pageIndex: 1 };
-                    bookletMetadata.push({
-                        storagePath: allSourcePaths[sourceKey],
-                        type: 'cover_spine',
-                        sourcePageIndex: (sourceSettings.pageIndex || 1) - 1,
-                        settings: { scaleMode: 'fill', flip: true }
-                    });
+                    bookletMetadata.push({ storagePath: allSourcePaths[sourceKey], type: 'cover_spine', sourcePageIndex: (sourceSettings.pageIndex || 1) - 1, settings: { scaleMode: 'fill', flip: true } });
                 }
             }
         }
 
-        progressText.textContent = 'Generating Proof...';
-        simulateProgress(0, 80, 15000); // Fake 0-80% over 15s
-
-        const generateBooklet = httpsCallable(functions, 'generateBooklet');
-        // Pass spineMode to backend
-        await generateBooklet({ projectId: projectId, files: bookletMetadata, spineMode: spineMode });
-
+        // 2. INSTANT HANDOFF: Queue Processing via Cloud Function
+        // We do NOT wait for PDF generation here. The server handles it.
         progressText.textContent = 'Finalizing...';
-        simulateProgress(80, 95, 3000); // Fake 80-95% over 3s
-
+        
         const submitGuestUpload = httpsCallable(functions, 'submitGuestUpload');
-        await submitGuestUpload({ projectId: projectId });
+        // Send the metadata payload so the background trigger can pick it up
+        await submitGuestUpload({ projectId: projectId, files: bookletMetadata, spineMode: spineMode });
 
+        // 3. Success UI & Redirect
         stopProgress();
         if(progressBar) progressBar.style.width = '100%';
         if(progressPercent) progressPercent.textContent = '100%';
@@ -4676,16 +4708,18 @@ async function handleUpload(e) {
 
         uploadContainer.classList.add('hidden');
         successState.classList.remove('hidden');
+        const successText = successState.querySelector('p');
+        if(successText) successText.innerHTML = "Upload complete! Redirecting to proof...";
 
+        // Fast Redirect (1.5s)
         setTimeout(() => {
-            if (isAdmin) {
-                window.location.href = `admin_project.html?id=${projectId}`;
-            } else {
+            if (isAdmin) window.location.href = `admin_project.html?id=${projectId}`;
+            else {
                 let url = `proof.html?id=${projectId}`;
                 if (guestToken) url += `&guestToken=${guestToken}`;
                 window.location.href = url;
             }
-        }, 3000);
+        }, 1500);
 
     } catch (err) {
         console.error("Upload failed:", err);

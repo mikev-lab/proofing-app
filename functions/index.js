@@ -7,6 +7,7 @@
 const { onObjectFinalized } = require('firebase-functions/v2/storage');
 const { onCall, HttpsError } = require('firebase-functions/v2/https'); // <-- Import for callable function
 const { onSchedule } = require("firebase-functions/v2/scheduler");
+const { onDocumentUpdated, onDocumentCreated } = require('firebase-functions/v2/firestore');
 const logger = require('firebase-functions/logger');
 const crypto = require('crypto'); // <-- Import for token generation
 const { GoogleAuth } = require('google-auth-library');
@@ -1373,45 +1374,347 @@ exports.createFileRequest = onCall({ region: 'us-central1' }, async (request) =>
   }
 });
 
-// --- NEW Callable Function for Submitting Guest Upload ---
+// --- SHARED: Core Booklet Generation Logic ---
+async function createBookletPdf(projectId, files, spineMode) {
+    const { PDFDocument, cmyk, pushGraphicsState, popGraphicsState, clip, endPath, moveTo, lineTo } = require('pdf-lib');
+    
+    const bucket = admin.storage().bucket();
+    const authAxios = await getAuthenticatedClient();
+    const fileCache = {}; 
+    const pdfDocCache = {}; 
+    const tempFiles = []; 
+
+    // Helper: Prepare File
+    async function prepareFileForEmbedding(storagePath) {
+        if (fileCache[storagePath]) return fileCache[storagePath];
+        const ext = path.extname(storagePath).toLowerCase();
+        const tempFileName = `temp_${Date.now()}_${Math.random().toString(36).substring(7)}${ext}`;
+        const tempPath = path.join(os.tmpdir(), tempFileName);
+        
+        await bucket.file(storagePath).download({ destination: tempPath });
+        tempFiles.push(tempPath);
+
+        let isPdf = false;
+        if (ext === '.pdf') isPdf = true;
+        else if (ext === '.jpg' || ext === '.jpeg' || ext === '.png') isPdf = false;
+        else {
+            const convertFormData = new FormData();
+            convertFormData.append('files', fs.createReadStream(tempPath), path.basename(storagePath));
+            const response = await authAxios.post(`${GOTENBERG_URL}/forms/libreoffice/convert`, convertFormData, { responseType: 'arraybuffer' });
+            fs.writeFileSync(tempPath, response.data);
+            isPdf = true;
+        }
+        const result = { path: tempPath, isPdf };
+        fileCache[storagePath] = result;
+        return result;
+    }
+
+    // Fetch Project Specs
+    const projectRef = db.collection('projects').doc(projectId);
+    const projectDoc = await projectRef.get();
+    if (!projectDoc.exists) throw new Error('Project not found.');
+    const specs = projectDoc.data().specs || {};
+
+    const resolvedDims = resolveDimensions(specs.dimensions);
+    const trimWidth = resolvedDims.width || 8.5;
+    const trimHeight = resolvedDims.height || 11;
+    const bleed = 0.125;
+
+    const interiorDoc = await PDFDocument.create();
+    let coverDoc = null;
+
+    const interiorFiles = files.filter(f => f.type.startsWith('interior'));
+    const coverFiles = {
+        front: files.find(f => f.type === 'cover_front'),
+        spine: files.find(f => f.type === 'cover_spine'),
+        back: files.find(f => f.type === 'cover_back'),
+        inside_front: files.find(f => f.type === 'cover_inside_front'),
+        inside_back: files.find(f => f.type === 'cover_inside_back')
+    };
+
+    // --- 1. Build Interior ---
+    // [Helper] Draw on Sheet
+    function drawOnSheet(doc, embeddable, trimW, trimH, bleed, settings, isPdfPage) {
+        const sheetW = trimW + (bleed * 2);
+        const sheetH = trimH + (bleed * 2);
+        const page = doc.addPage([sheetW * 72, sheetH * 72]);
+        const targetW = sheetW * 72;
+        const targetH = sheetH * 72;
+
+        let srcW = 0, srcH = 0;
+        if (embeddable.isBlank) { srcW = targetW; srcH = targetH; }
+        else {
+            srcW = embeddable.width || embeddable.scale(1).width;
+            srcH = embeddable.height || embeddable.scale(1).height;
+        }
+
+        let drawW, drawH;
+        const srcRatio = srcW / srcH;
+        const targetRatio = targetW / targetH;
+
+        if (settings.scaleMode === 'fit') {
+            if (srcRatio > targetRatio) { drawW = targetW; drawH = targetW / srcRatio; }
+            else { drawH = targetH; drawW = targetH * srcRatio; }
+        } else if (settings.scaleMode === 'stretch') {
+            drawW = targetW; drawH = targetH;
+        } else { // Fill
+            if (srcRatio > targetRatio) { drawH = targetH; drawW = targetH * srcRatio; }
+            else { drawW = targetW; drawH = targetW / srcRatio; }
+        }
+
+        const panX = Number.isFinite(settings.panX) ? settings.panX : 0;
+        const panY = Number.isFinite(settings.panY) ? settings.panY : 0;
+        const validDrawW = Number.isFinite(drawW) ? drawW : 0;
+        const validDrawH = Number.isFinite(drawH) ? drawH : 0;
+
+        if (validDrawW <= 0 || validDrawH <= 0) return;
+
+        const offsetX = panX * targetW;
+        const offsetY = panY * targetH;
+        const x = ((targetW - validDrawW) / 2) + offsetX;
+        const y = ((targetH - validDrawH) / 2) - offsetY;
+
+        if (!embeddable.isBlank) {
+            if (isPdfPage) page.drawPage(embeddable, { x, y, width: validDrawW, height: validDrawH });
+            else page.drawImage(embeddable, { x, y, width: validDrawW, height: validDrawH });
+        }
+    }
+
+    for (const fileMeta of interiorFiles) {
+        if (!fileMeta.storagePath) {
+            drawOnSheet(interiorDoc, { isBlank: true }, trimWidth, trimHeight, bleed, fileMeta.settings || {}, false);
+            continue;
+        }
+        const { path: localPath, isPdf } = await prepareFileForEmbedding(fileMeta.storagePath);
+        const settings = fileMeta.settings || { scaleMode: 'fit', alignment: 'center' };
+
+        if (isPdf) {
+            let srcDoc;
+            if (pdfDocCache[localPath]) srcDoc = pdfDocCache[localPath];
+            else {
+                const pdfBytes = fs.readFileSync(localPath);
+                srcDoc = await PDFDocument.load(pdfBytes);
+                pdfDocCache[localPath] = srcDoc;
+            }
+            const pageIndex = fileMeta.sourcePageIndex || 0;
+            if (pageIndex < srcDoc.getPageCount()) {
+                const [embeddedPage] = await interiorDoc.embedPages([srcDoc.getPage(pageIndex)]);
+                drawOnSheet(interiorDoc, embeddedPage, trimWidth, trimHeight, bleed, settings, true);
+            }
+        } else {
+            const imgBytes = fs.readFileSync(localPath);
+            let embeddedImage;
+            if (localPath.toLowerCase().endsWith('.png')) embeddedImage = await interiorDoc.embedPng(imgBytes);
+            else embeddedImage = await interiorDoc.embedJpg(imgBytes);
+            drawOnSheet(interiorDoc, embeddedImage, trimWidth, trimHeight, bleed, settings, false);
+        }
+    }
+
+    // --- 2. Build Cover ---
+    if (coverFiles.front || coverFiles.back || coverFiles.spine || coverFiles.inside_front || coverFiles.inside_back) {
+        coverDoc = await PDFDocument.create();
+        const paperType = specs.paperType || '';
+        const interiorPaperObj = HARDCODED_PAPER_TYPES.find(p => p.name === paperType);
+        const interiorCaliper = interiorPaperObj ? interiorPaperObj.caliper : 0.004;
+        const coverPaperType = specs.coverPaperType || '';
+        const coverPaperObj = HARDCODED_PAPER_TYPES.find(p => p.name === coverPaperType);
+        const coverCaliper = coverPaperObj ? coverPaperObj.caliper : (interiorPaperObj ? interiorCaliper : 0.004);
+        const interiorSheets = Math.ceil(interiorFiles.length / 2);
+        let spineWidth = (interiorSheets * interiorCaliper) + (coverCaliper * 2);
+        if (specs.binding === 'saddleStitch' || specs.binding === 'loose') spineWidth = 0;
+
+        const totalWidth = (trimWidth * 2) + spineWidth + (bleed * 2);
+        const totalHeight = trimHeight + (bleed * 2);
+        
+        // Page 1: Outer Cover
+        const coverPage1 = coverDoc.addPage([totalWidth * 72, totalHeight * 72]); 
+
+        async function drawPart(page, fileMeta, x, y, w, h) {
+            if (!fileMeta) return;
+            const { path: localPath, isPdf } = await prepareFileForEmbedding(fileMeta.storagePath);
+            let embeddable;
+            if (isPdf) {
+                const srcDoc = await PDFDocument.load(fs.readFileSync(localPath));
+                let idx = fileMeta.sourcePageIndex || 0;
+                if (idx < 0 || idx >= srcDoc.getPageCount()) idx = 0;
+                const [embedded] = await coverDoc.embedPages([srcDoc.getPage(idx)]);
+                embeddable = embedded;
+            } else {
+                const imgBytes = fs.readFileSync(localPath);
+                if (localPath.toLowerCase().endsWith('.png')) embeddable = await coverDoc.embedPng(imgBytes);
+                else embeddable = await coverDoc.embedJpg(imgBytes);
+            }
+
+            const targetW = w * 72; const targetH = h * 72;
+            const targetX = x * 72; const targetY = y * 72;
+            const srcW = embeddable.width; const srcH = embeddable.height;
+            const srcRatio = srcW / srcH; const targetRatio = targetW / targetH;
+            
+            let drawW, drawH, drawX, drawY;
+            const mode = fileMeta.settings?.scaleMode || 'fill';
+            const isFlipped = fileMeta.settings?.flip || false;
+
+            if (mode === 'stretch') { drawW = targetW; drawH = targetH; drawX = targetX; drawY = targetY; } 
+            else if (mode === 'fit') {
+                if (srcRatio > targetRatio) { drawW = targetW; drawH = targetW / srcRatio; }
+                else { drawH = targetH; drawW = targetH * srcRatio; }
+                drawX = targetX + (targetW - drawW) / 2;
+                drawY = targetY + (targetH - drawH) / 2;
+            } else { 
+                if (srcRatio > targetRatio) { drawH = targetH; drawW = targetH * srcRatio; }
+                else { drawW = targetW; drawH = targetW / srcRatio; }
+                drawX = targetX - (drawW - targetW) / 2;
+                drawY = targetY - (drawH - targetH) / 2;
+            }
+
+            page.pushOperators(pushGraphicsState());
+            page.pushOperators(moveTo(targetX, targetY), lineTo(targetX + targetW, targetY), lineTo(targetX + targetW, targetY + targetH), lineTo(targetX, targetY + targetH), lineTo(targetX, targetY), clip(), endPath());
+
+            if (isFlipped) {
+                const cx = targetX + targetW / 2;
+                page.translateContent(cx, 0); page.scaleContent(-1, 1); page.translateContent(-cx, 0);
+            }
+            if (isPdf) page.drawPage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
+            else page.drawImage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
+            if (isFlipped) {
+                const cx = targetX + targetW / 2;
+                page.translateContent(cx, 0); page.scaleContent(-1, 1); page.translateContent(-cx, 0);
+            }
+            page.pushOperators(popGraphicsState());
+        }
+
+        let zoneLeft = { x: 0, y: 0, w: trimWidth + bleed, h: totalHeight }; 
+        let zoneMid = { x: trimWidth + bleed, y: 0, w: spineWidth, h: totalHeight }; 
+        let zoneRight = { x: trimWidth + bleed + spineWidth, y: 0, w: trimWidth + bleed, h: totalHeight }; 
+
+        let drawSpine = true;
+        if (spineMode === 'wrap-front-stretch') { zoneRight.x = zoneMid.x; zoneRight.w = zoneRight.w + zoneMid.w; drawSpine = false; } 
+        else if (spineMode === 'wrap-back-stretch') { zoneLeft.w = zoneLeft.w + zoneMid.w; drawSpine = false; }
+
+        await drawPart(coverPage1, coverFiles.back, zoneLeft.x, zoneLeft.y, zoneLeft.w, zoneLeft.h); 
+        if (drawSpine) await drawPart(coverPage1, coverFiles.spine, zoneMid.x, zoneMid.y, zoneMid.w, zoneMid.h);
+        await drawPart(coverPage1, coverFiles.front, zoneRight.x, zoneRight.y, zoneRight.w, zoneRight.h);
+
+        // Page 2: Inner Cover
+        if (coverFiles.inside_front || coverFiles.inside_back || (specs.binding === 'perfectBound' && spineWidth > 0)) {
+            const coverPage2 = coverDoc.addPage([totalWidth * 72, totalHeight * 72]);
+            await drawPart(coverPage2, coverFiles.inside_front, 0, 0, trimWidth + bleed, totalHeight);
+            await drawPart(coverPage2, coverFiles.inside_back, trimWidth + bleed + spineWidth, 0, trimWidth + bleed, totalHeight);
+            if (specs.binding === 'perfectBound' && spineWidth > 0) {
+                const glueW = (spineWidth + 0.25) * 72; 
+                const centerX = ((trimWidth + bleed) * 72) + ((spineWidth * 72) / 2);
+                const glueX = centerX - (glueW / 2);
+                coverPage2.drawRectangle({ x: glueX, y: 0, width: glueW, height: totalHeight * 72, color: cmyk(0, 0, 0, 0) });
+            }
+        }
+    }
+
+    // Cleanup Cache
+    for (const key in pdfDocCache) { delete pdfDocCache[key]; }
+
+    // Save Files
+    if (interiorFiles.length > 0) {
+        const pdfBytes = await interiorDoc.save();
+        const fileName = `${Date.now()}_interior_built.pdf`;
+        const storagePath = `proofs/${projectId}/${fileName}`;
+        await bucket.file(storagePath).save(pdfBytes, { contentType: 'application/pdf' });
+    }
+
+    if (coverDoc) {
+        const pdfBytes = await coverDoc.save();
+        const fileName = `${Date.now()}_cover_built.pdf`;
+        const storagePath = `proofs/${projectId}/${fileName}`;
+        await bucket.file(storagePath).save(pdfBytes, { contentType: 'application/pdf' });
+    }
+
+    tempFiles.forEach(p => { try { fs.unlinkSync(p); } catch (e) {} });
+}
+
+// --- EXPORT 1: Updated submitGuestUpload (Async Queue) ---
 exports.submitGuestUpload = onCall({ region: 'us-central1' }, async (request) => {
-    if (!request.auth) {
-        throw new HttpsError('unauthenticated', 'User must be authenticated.');
-    }
-
-    const { projectId } = request.data;
-
-    if (!projectId) {
-        throw new HttpsError('invalid-argument', 'Missing projectId.');
-    }
+    if (!request.auth) throw new HttpsError('unauthenticated', 'User must be authenticated.');
+    const { projectId, files, spineMode } = request.data; // [FIX] Accept Build Data
+    if (!projectId) throw new HttpsError('invalid-argument', 'Missing projectId.');
 
     try {
         const projectRef = db.collection('projects').doc(projectId);
 
-        // [FIX] Set status to 'Waiting Admin Review' so client page hides buttons
+        // Update status to 'Queued' and save the build instruction
         await projectRef.update({
-            status: 'Waiting Admin Review', 
+            status: 'Processing Upload', // Temporary status for client feedback
+            guestUploadStatus: 'queued',
+            guestBuildData: { files: files || [], spineMode: spineMode || 'file' },
             lastUploadAt: admin.firestore.FieldValue.serverTimestamp()
         });
 
-        // Notify Admins
+        // Notify Admins (Optimistic Notification)
         const projectDoc = await projectRef.get();
         const projectName = projectDoc.data().projectName;
-
         const adminSnapshot = await db.collection('users').where('role', '==', 'admin').get();
         for (const adminDoc of adminSnapshot.docs) {
             await createNotification(adminDoc.id, {
                 title: "New Guest Upload",
-                message: `Files have been uploaded for "${projectName}".`,
+                message: `Files have been uploaded for "${projectName}" and are processing.`,
                 link: `admin_project.html?id=${projectId}`
             });
         }
 
         return { success: true };
-
     } catch (error) {
         logger.error('Error submitting guest upload:', error);
         throw new HttpsError('internal', 'Failed to submit upload.');
+    }
+});
+
+// --- EXPORT 2: Background Trigger for Processing ---
+exports.processGuestBuild = onDocumentUpdated({
+    document: 'projects/{projectId}',
+    memory: '8GiB',
+    cpu: 2,
+    timeoutSeconds: 540
+}, async (event) => {
+    const before = event.data.before.data();
+    const after = event.data.after.data();
+    const projectId = event.params.projectId;
+
+    // Trigger only when status changes to 'queued'
+    if (before.guestUploadStatus !== 'queued' && after.guestUploadStatus === 'queued') {
+        logger.log(`Starting background booklet generation for ${projectId}`);
+        
+        try {
+            const { files, spineMode } = after.guestBuildData || {};
+            if (files && files.length > 0) {
+                await createBookletPdf(projectId, files, spineMode);
+            }
+
+            // Success: Update status
+            await db.collection('projects').doc(projectId).update({
+                status: 'Waiting Admin Review',
+                guestUploadStatus: 'complete'
+            });
+            logger.log(`Booklet generation complete for ${projectId}`);
+
+        } catch (error) {
+            logger.error(`Background generation failed for ${projectId}`, error);
+            await db.collection('projects').doc(projectId).update({
+                status: 'Error', // Or 'Upload Failed'
+                guestUploadStatus: 'error',
+                processingError: error.message
+            });
+        }
+    }
+});
+
+// --- EXPORT 3: Legacy Generate Booklet (For Pro Upload Form) ---
+exports.generateBooklet = onCall({ region: 'us-central1', memory: '8GiB', timeoutSeconds: 540 }, async (request) => {
+    // Re-uses the shared logic for direct calls (like from Pro Upload form)
+    if (!request.auth) throw new HttpsError('unauthenticated', 'User must be authenticated.');
+    const { projectId, files, spineMode } = request.data;
+    try {
+        await createBookletPdf(projectId, files, spineMode);
+        return { success: true };
+    } catch (err) {
+        throw new HttpsError('internal', err.message);
     }
 });
 
@@ -1479,7 +1782,6 @@ const axios = require('axios');
 const { PDFDocument } = require('pdf-lib');
 const FormData = require('form-data');
 const jszip = require('jszip');
-const { onDocumentUpdated, onDocumentCreated } = require('firebase-functions/v2/firestore');
 
 const GOTENBERG_URL = 'https://gotenberg-service-452256252711.us-central1.run.app'; //gotenberg service
 const GOTENBERG_AUDIENCE = GOTENBERG_URL; // Audience must be the base URL
