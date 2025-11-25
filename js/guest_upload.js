@@ -1458,9 +1458,13 @@ async function processCoverFile(file, slotId) {
 }
 
 async function processServerFile(file, sourceId) {
+    let progressUnsubscribe = null;
+    const userId = auth.currentUser ? auth.currentUser.uid : 'guest';
+    const tempId = Date.now().toString();
+    // Create a secure ID for the progress document
+    const progressDocId = `${userId}_${tempId}`; 
+
     try {
-        const userId = auth.currentUser ? auth.currentUser.uid : 'guest';
-        const tempId = Date.now().toString();
         const storagePath = `temp_uploads/${userId}/${tempId}/${file.name}`;
         const storageRef = ref(storage, storagePath);
 
@@ -1491,36 +1495,49 @@ async function processServerFile(file, sourceId) {
         uploadTask.on('state_changed', (snapshot) => {
             const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
             const p = Math.round(progress);
-            
-            // Update Global Throbber
             updateBusyMessage(`Uploading file... ${p}%`);
-            // Update On-Page Placeholder
             updateStatus(`Uploading ${p}%`);
         });
 
         await uploadTask;
 
-        // 2. Call Generate Previews (Optimizing)
-        updateStatus("Optimizing...");
-        updateBusyMessage("Verifying & Creating Previews...");
+        // 2. Setup Firestore Listener for Real-time Server Progress
+        updateStatus("Queued...");
+        updateBusyMessage("Waiting for server...");
 
+        const progressRef = doc(db, "temp_processing", progressDocId);
+        
+        // Initialize the doc so we can listen to it
+        await setDoc(progressRef, { status: "Initializing...", createdAt: serverTimestamp() });
+
+        progressUnsubscribe = onSnapshot(progressRef, (doc) => {
+            if (doc.exists()) {
+                const data = doc.data();
+                if (data.status) {
+                    updateBusyMessage(data.status);
+                    updateStatus(data.status.split('...')[0]); // Short version for card
+                }
+            }
+        });
+
+        // 3. Call Generate Previews (Optimizing)
         // USE THE SPECIFIC URL FOR THE CUSTOM CONTAINER
-        // If GENERATE_PREVIEWS_URL is not set, warn the user
         if (GENERATE_PREVIEWS_URL.includes("YOUR_CLOUD_RUN")) {
             console.error("Please set the GENERATE_PREVIEWS_URL in guest_upload.js");
             throw new Error("Configuration Error: Missing Server URL");
         }
 
-        const generatePreviews = httpsCallableFromURL(functions, GENERATE_PREVIEWS_URL);
+        const generatePreviews = httpsCallableFromURL(functions, GENERATE_PREVIEWS_URL, { 
+            timeout: 540000 // [FIX] 9 Minute Timeout (Client Side)
+        });
         
         const result = await generatePreviews({
             filePath: storagePath,
-            originalName: file.name
+            originalName: file.name,
+            progressDocId: progressDocId // [FIX] Pass ID to server
         });
 
-        updateBusyMessage("Finalizing...");
-
-        // 3. Handle Results
+        // 4. Handle Results
         if (result.data && result.data.pages) {
             const generatedPages = result.data.pages;
             
@@ -1539,16 +1556,15 @@ async function processServerFile(file, sourceId) {
 
     } catch (err) {
         console.error("Server file processing failed", err);
-        // Update local state to error
         sourceFiles[sourceId] = { file: file, status: 'error', error: err.message };
-        
-        // Force re-render to show the red error state
         renderBookViewer();
-        
-        // Re-throw so the caller knows it failed
         throw err; 
+    } finally {
+        // Cleanup listener
+        if (progressUnsubscribe) progressUnsubscribe();
     }
 }
+
 window.updatePageSetting = (pageId, setting, value) => {
     const page = pages.find(p => p.id === pageId);
     if (page) {
@@ -2352,6 +2368,18 @@ document.addEventListener('pointerup', () => {
     if (activePageId) {
         const card = document.querySelector(`[data-id="${activePageId}"]`);
         if (card) card.classList.remove('cursor-grabbing');
+
+        // [FIX] Update the thumbnail now that the drag operation is complete
+        const page = pages.find(p => p.id === activePageId);
+        if (page && typeof updateThumbnailFromMain === 'function') {
+            // Use requestAnimationFrame to ensure the main canvas has finished its last paint
+            requestAnimationFrame(() => {
+                updateThumbnailFromMain(page);
+            });
+        }
+        
+        // Sync changes
+        triggerAutosave();
     }
     isDragging = false;
     activePageId = null;

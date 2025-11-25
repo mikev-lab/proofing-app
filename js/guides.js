@@ -105,8 +105,13 @@ function calculatePageGuideGeometries(specs, pageRenderInfo) {
     const trimDimensions = getTrimDimensions(specs.dimensions);
     if (!trimDimensions || trimDimensions.width <= 0 || trimDimensions.height <= 0) return null;
 
-    const bleedPt = Math.max(0, specs.bleedInches ? specs.bleedInches * INCH_TO_POINTS : 0);
-    const safetyPt = Math.max(0, specs.safetyInches ? specs.safetyInches * INCH_TO_POINTS : 0);
+    // [FIX] Default to 0.125 if undefined/null. Only use 0 if explicitly set to 0.
+    const bleedInches = (specs.bleedInches !== undefined && specs.bleedInches !== null) ? specs.bleedInches : 0.125;
+    const safetyInches = (specs.safetyInches !== undefined && specs.safetyInches !== null) ? specs.safetyInches : 0.125;
+
+    const bleedPt = Math.max(0, bleedInches * INCH_TO_POINTS);
+    const safetyPt = Math.max(0, safetyInches * INCH_TO_POINTS);
+    
     const scale = pageRenderInfo.scale;
     const { isSpread, isLeftPage, x: renderX, y: renderY, width: renderWidth, height: renderHeight } = pageRenderInfo;
 
@@ -138,24 +143,19 @@ function calculatePageGuideGeometries(specs, pageRenderInfo) {
     const trimBox = { x: trimX, y: trimY, width: trimWidth, height: trimHeight };
 
     // 2. Bleed Box
-    // Standard calculation first
     let bleedX = trimX - scaledBleed;
     let bleedY = trimY - scaledBleed;
     let bleedWidth = trimWidth + 2 * scaledBleed;
     let bleedHeight = trimHeight + 2 * scaledBleed;
 
-    // Handle Spread Clipping for Bleed (The "U" shape)
-    // We define the *visible* bleed box area.
-    // Hit detection will need to know which side is clipped.
-    let clippedSide = null; // 'right' or 'left' or null
+    // Handle Spread Clipping for Bleed
+    let clippedSide = null; 
     if (isSpread) {
         if (isLeftPage) {
-            // Clip right side to spine (align with trim right)
             const maxX = trimX + trimWidth;
             bleedWidth = maxX - bleedX;
             clippedSide = 'right';
         } else {
-            // Clip left side to spine (align with trim left)
             const minX = trimX;
             const originalRight = bleedX + bleedWidth;
             bleedX = minX;

@@ -1564,16 +1564,14 @@ async function storePageAsPdf({ pageBuffer, pageNum, tempId }) {
 }
 
 // --- GENERATE PREVIEWS (Custom Container Version) ---
-// --- GENERATE PREVIEWS (Custom Container Version) ---
-// --- GENERATE PREVIEWS (Custom Container Version) ---
 const generatePreviewsLogic = onCall({
     region: 'us-central1',
     memory: '4GiB',
     cpu: 2,
     timeoutSeconds: 540,
-    cors: true, // <--- CRITICAL FIX: Enables CORS headers
+    cors: true,
 }, async (request) => {
-    const { filePath: originalFilePath, originalName: originalFileName } = request.data;
+    const { filePath: originalFilePath, originalName: originalFileName, progressDocId } = request.data; // [FIX] Accept progressDocId
     if (!originalFilePath || !originalFileName) {
         throw new HttpsError('invalid-argument', 'Missing "filePath" or "originalName".');
     }
@@ -1590,11 +1588,23 @@ const generatePreviewsLogic = onCall({
 
     logger.log(`Processing: ${originalFilePath}`);
 
+    // Helper to update progress
+    const updateProgress = async (msg) => {
+        if (progressDocId) {
+            try {
+                await db.collection('temp_processing').doc(progressDocId).set({
+                    status: msg,
+                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                }, { merge: true });
+            } catch (e) { console.warn("Failed to update progress doc", e); }
+        }
+    };
+
     try {
-        // 1. Download Source
+        await updateProgress("Downloading file...");
         await bucket.file(originalFilePath).download({ destination: sourceFilePath });
 
-        // 2. Get Page Count (using pdfinfo)
+        // 2. Get Page Count
         let pageCount = 1;
         try {
             const { spawn } = require('child-process-promise');
@@ -1606,10 +1616,11 @@ const generatePreviewsLogic = onCall({
             logger.warn("Failed to get page count, defaulting to 1", e);
         }
 
+        await updateProgress(`Analyzing ${pageCount} pages...`);
         logger.log(`Document has ${pageCount} pages. Starting batch processing...`);
 
         // 3. Parallel Processing Logic
-        const BATCH_SIZE = 4; // Concurrent processes
+        const BATCH_SIZE = 4; 
         const pagesData = [];
         
         const processPage = async (pageNum) => {
@@ -1649,9 +1660,12 @@ const generatePreviewsLogic = onCall({
         };
 
         for (let i = 1; i <= pageCount; i += BATCH_SIZE) {
-            const batchPromises = [];
             const end = Math.min(i + BATCH_SIZE - 1, pageCount);
             
+            // [FIX] Update Progress
+            await updateProgress(`Processing pages ${i}-${end} of ${pageCount}...`);
+            
+            const batchPromises = [];
             for (let j = i; j <= end; j++) {
                 batchPromises.push(processPage(j));
             }
@@ -1662,6 +1676,7 @@ const generatePreviewsLogic = onCall({
             logger.log(`Processed pages ${i} to ${end}`);
         }
 
+        await updateProgress("Finalizing...");
         pagesData.sort((a, b) => a.pageNumber - b.pageNumber);
 
         return {
@@ -1671,6 +1686,7 @@ const generatePreviewsLogic = onCall({
 
     } catch (error) {
         logger.error('Error generating previews:', error);
+        await updateProgress(`Error: ${error.message}`);
         throw new HttpsError('internal', error.message);
     } finally {
         try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch(e) {}
@@ -2193,73 +2209,71 @@ function drawOnSheet(doc, embeddable, trimW, trimH, bleed, settings, isPdf) {
 
 exports.imposePdf = onCall({
   region: 'us-central1',
-  memory: '8GiB', // Imposition can be memory intensive
+  memory: '8GiB',
   timeoutSeconds: 540
 }, async (request) => {
-  // 1. Authentication Check
-  if (!request.auth || !request.auth.token) {
-    throw new HttpsError('unauthenticated', 'The function must be called while authenticated.');
-  }
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Auth required.');
+  
+  // 1. Admin Check
   const userUid = request.auth.uid;
-  try {
-    const userDoc = await db.collection('users').doc(userUid).get();
-    if (!userDoc.exists || userDoc.data().role !== 'admin') {
-      throw new HttpsError('permission-denied', 'You must be an admin to perform this action.');
-    }
-  } catch (error) {
-    logger.error('Admin check failed', error);
-    throw new HttpsError('internal', 'An error occurred while verifying admin status.');
+  const userDoc = await db.collection('users').doc(userUid).get();
+  if (!userDoc.exists || userDoc.data().role !== 'admin') {
+      throw new HttpsError('permission-denied', 'Admin only.');
   }
 
-  // 2. Data Validation (ensure projectId and settings are passed)
   const { projectId, settings } = request.data;
-  if (!projectId || !settings) {
-    throw new HttpsError('invalid-argument', 'Missing "projectId" or "settings".');
-  }
+  if (!projectId || !settings) throw new HttpsError('invalid-argument', 'Missing inputs.');
 
-  logger.log(`Manual imposition triggered for project ${projectId} by user ${userUid}`);
+  logger.log(`Manual imposition for ${projectId} by ${userUid}`);
 
   try {
     const projectRef = db.collection('projects').doc(projectId);
     const projectDoc = await projectRef.get();
-    if (!projectDoc.exists) {
-      throw new HttpsError('not-found', `Project ${projectId} not found.`);
-    }
+    if (!projectDoc.exists) throw new HttpsError('not-found', 'Project not found.');
     const projectData = projectDoc.data();
 
     const latestVersion = projectData.versions.reduce((latest, v) => (v.versionNumber > latest.versionNumber ? v : latest), projectData.versions[0]);
-    if (!latestVersion || !latestVersion.fileURL) {
-      throw new HttpsError('not-found', 'No file found for the latest version.');
-    }
+    if (!latestVersion || !latestVersion.fileURL) throw new HttpsError('not-found', 'No file found.');
 
     const bucket = admin.storage().bucket();
-    const filePath = new URL(latestVersion.fileURL).pathname.split('/o/')[1].replace(/%2F/g, '/');
+    
+    // --- FIX: Robust URL Parsing (Copied from onProjectApprove) ---
+    let filePath;
+    const urlObj = new URL(latestVersion.fileURL);
+
+    if (urlObj.protocol === 'gs:') {
+        filePath = urlObj.pathname.startsWith('/') ? urlObj.pathname.slice(1) : urlObj.pathname;
+    } else {
+        const parts = urlObj.pathname.split('/o/');
+        if (parts.length > 1) {
+            filePath = parts[1].replace(/%2F/g, '/');
+        } else {
+            filePath = urlObj.pathname.startsWith('/') ? urlObj.pathname.slice(1) : urlObj.pathname;
+        }
+    }
+    // -------------------------------------------------------------
+
     const file = bucket.file(decodeURIComponent(filePath));
 
-    // 3. Call main imposition logic (Now returns a file path)
     const { filePath: localImposedPath } = await imposePdfLogic({
       inputFile: file,
       settings: settings,
       jobInfo: projectData,
     });
 
-    // 4. Upload result to storage (Stream from disk)
     const imposedFileName = `imposed_manual_${Date.now()}.pdf`;
     const imposedFilePath = `imposed/${projectId}/${imposedFileName}`;
     const imposedFile = bucket.file(imposedFilePath);
     
-    // Use upload() instead of save() to handle large files
     await bucket.upload(localImposedPath, {
         destination: imposedFilePath,
         contentType: 'application/pdf'
     });
 
-    // Clean up local file
     try { require('fs').unlinkSync(localImposedPath); } catch(e) {}
     
     const [imposedFileUrl] = await imposedFile.getSignedUrl({ action: 'read', expires: '03-09-2491' });
 
-    // 5. Update Firestore
     await projectRef.update({
       impositions: admin.firestore.FieldValue.arrayUnion({
         createdAt: admin.firestore.Timestamp.now(),
@@ -2270,21 +2284,19 @@ exports.imposePdf = onCall({
       }),
     });
 
-    logger.log(`Successfully created manual imposition for project ${projectId}`);
-
-    // Add Notification for the admin who triggered the action
+    // Notify Admin
     await createNotification(userUid, {
         title: "Imposition Ready",
         message: `Manual imposition for "${projectData.projectName}" is complete.`,
         link: imposedFileUrl,
-        isExternalLink: true // Make the notification a direct download link
+        isExternalLink: true
     });
 
     return { success: true, url: imposedFileUrl };
 
   } catch (error) {
-    logger.error(`Error during manual imposition for project ${projectId}:`, error);
-    throw new HttpsError('internal', error.message || 'An internal error occurred.');
+    logger.error(`Error during manual imposition:`, error);
+    throw new HttpsError('internal', error.message);
   }
 });
 

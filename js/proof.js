@@ -375,10 +375,10 @@ async function updateProjectStatus(status) {
 
 
 // --- Project Data Loader ---
-// --- Project Data Loader ---
 // Keep track of previous state to prevent unnecessary re-renders
 let lastVersionCount = 0;
 let lastStatus = null;
+let lastProcessingStatus = null;
 
 function loadProjectForUser(user) {
     // Use currentProjectId (which should be set from initialProjectId)
@@ -459,16 +459,26 @@ function loadProjectForUser(user) {
         if (docSnap.exists()) {
             const projectData = docSnap.data();
             
-            // [FIX] Smart Update Check
-            const currentVersionCount = projectData.versions ? projectData.versions.length : 0;
+            const currentVersions = projectData.versions || [];
+            // Get the latest version
+            const latestVersion = currentVersions.length > 0 
+                ? currentVersions.reduce((prev, current) => (prev.versionNumber > current.versionNumber) ? prev : current) 
+                : null;
+
+            const currentVersionCount = currentVersions.length;
             const currentStatus = projectData.status;
             
-            // If only guestBuilderState changed (draft saving), do NOT re-init viewer
-            // Only re-init if version count changed or status changed
-            const shouldReInit = (currentVersionCount !== lastVersionCount) || (currentStatus !== lastStatus);
+            // [FIX] Get processing status of the latest version
+            const currentProcessingStatus = latestVersion ? latestVersion.processingStatus : 'complete';
+            
+            // [FIX] Re-init if version count changes OR status changes OR processing finishes
+            const shouldReInit = (currentVersionCount !== lastVersionCount) || 
+                                 (currentStatus !== lastStatus) ||
+                                 (lastProcessingStatus === 'processing' && currentProcessingStatus === 'complete');
             
             lastVersionCount = currentVersionCount;
             lastStatus = currentStatus;
+            lastProcessingStatus = currentProcessingStatus; // Update tracker
 
             console.log('[Load Project] Project data received:', projectData);
 
@@ -589,19 +599,34 @@ function loadProjectForUser(user) {
                  }
             }
 
+            // --- [FIX] OPTIMIZING STATE HANDLING ---
+            if (currentProcessingStatus === 'processing') {
+                loadingSpinner.classList.remove('hidden');
+                proofContent.classList.add('hidden');
+                
+                // Custom message for optimization
+                loadingSpinner.innerHTML = `
+                    <div class="flex flex-col items-center gap-4">
+                        <div class="w-12 h-12 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div>
+                        <div class="text-center">
+                            <p class="text-indigo-400 font-bold text-lg animate-pulse">Optimizing PDF for Viewing...</p>
+                            <p class="text-gray-400 text-sm mt-1">This may take a moment.</p>
+                        </div>
+                    </div>
+                `;
+                return; // STOP HERE. Do not initialize viewer yet.
+            } 
+            // ---------------------------------------
+
             if (shouldReInit) {
                 console.log('[Load Project] Significant change detected. Re-initializing viewer.');
                 
                 // Auto-Update Logic for Viewer
                 const versionSelector = document.getElementById('version-selector');
-                const currentVersions = projectData.versions || [];
-                const maxVersion = currentVersions.length > 0
-                    ? Math.max(...currentVersions.map(v => v.versionNumber))
-                    : 0;
                 const selectedVersion = versionSelector ? parseInt(versionSelector.value, 10) : null;
                 
-                // If user is on older version and new one arrives, switch
-                if (selectedVersion && maxVersion > selectedVersion) {
+                // If user is on older version and new one arrives (which is now default), ensure selector reflects that
+                if (selectedVersion && latestVersion && latestVersion.versionNumber > selectedVersion) {
                      if (versionSelector) versionSelector.value = ""; 
                 }
 

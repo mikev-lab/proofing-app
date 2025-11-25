@@ -15,6 +15,13 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(userId)).data;
     }
 
+    // --- Rules for 'temp_processing' Collection (For Upload Progress) ---
+    // Allow users to read/write their own progress documents
+    // Document ID format: "{userId}_{timestamp}"
+    match /temp_processing/{docId} {
+      allow read, write: if request.auth != null && docId.matches(request.auth.uid + '_.*');
+    }
+
     function getProject(projectId) {
       // Get the data document for a specific project ID
       return get(/databases/$(database)/documents/projects/$(projectId)).data;
