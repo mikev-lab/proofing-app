@@ -27,12 +27,12 @@ const db = admin.firestore();
 
 const optimizePdfLogic = onObjectFinalized({
   region: 'us-central1',
-  memory: '8GiB',
+  memory: '8GiB', // Ensure this matches your deployment command
   cpu: 2,
   timeoutSeconds: 540,
   minInstances: 0,
   maxInstances: 10,
-  retry: false,
+  retry: false, // We handle retries manually via Firestore logic
   concurrency: 1
 }, async (event) => {
 
@@ -41,7 +41,7 @@ const optimizePdfLogic = onObjectFinalized({
   const contentType = file.contentType;
   const fileBucket = file.bucket;
 
-  // --- Circuit Breakers ---
+  // --- Circuit Breakers (File Type) ---
   if (filePath.includes('/sources/') || 
       filePath.includes('/temp_sources/') || 
       filePath.includes('guest_uploads/') || 
@@ -60,32 +60,111 @@ const optimizePdfLogic = onObjectFinalized({
 
   logger.log(`Processing: ${fullFileName} (Project: ${projectId})`);
 
+  const projectRef = db.collection('projects').doc(projectId);
+  
+  // --- CRITICAL: FIRESTORE IDEMPOTENCY & CIRCUIT BREAKER ---
+  // We check status BEFORE doing any heavy lifting (downloading/processing)
+  // to prevent OOM retry loops.
+  let shouldProceed = true;
+  let currentRetries = 0;
+
+  try {
+      await db.runTransaction(async (t) => {
+          const doc = await t.get(projectRef);
+          if (!doc.exists) { shouldProceed = false; return; }
+          
+          const data = doc.data();
+          
+          if (isCover) {
+              const cData = data.cover || {};
+              const status = cData.processingStatus;
+              currentRetries = cData.processingRetries || 0;
+
+              if (status === 'complete') { shouldProceed = false; return; }
+              if (status === 'error') { shouldProceed = false; return; } // Already dead
+              
+              if (status === 'processing') {
+                  if (currentRetries >= 2) {
+                      // Too many crashes. Kill it.
+                      logger.error(`Cover processing failed after ${currentRetries} retries. Aborting loop.`);
+                      t.update(projectRef, { 
+                          'cover.processingStatus': 'error',
+                          'cover.processingError': 'System Error: File too complex or corrupted (OOM).'
+                      });
+                      shouldProceed = false;
+                      return;
+                  }
+                  // Increment retry count
+                  t.update(projectRef, { 'cover.processingRetries': currentRetries + 1 });
+              } else {
+                  // First run
+                  t.update(projectRef, { 
+                      'cover.processingStatus': 'processing',
+                      'cover.processingRetries': 0,
+                      'cover.uploadedAt': admin.firestore.FieldValue.serverTimestamp()
+                  });
+              }
+          } else {
+              const versions = data.versions || [];
+              const idx = versions.findIndex(v => v.filePath === filePath);
+
+              if (idx !== -1) {
+                  const v = versions[idx];
+                  const status = v.processingStatus;
+                  currentRetries = v.processingRetries || 0;
+
+                  if (status === 'complete') { shouldProceed = false; return; }
+                  if (status === 'error') { shouldProceed = false; return; }
+
+                  if (status === 'processing') {
+                      if (currentRetries >= 2) {
+                          logger.error(`Version processing failed after ${currentRetries} retries. Aborting loop.`);
+                          versions[idx].processingStatus = 'error';
+                          versions[idx].processingError = 'System Error: File too complex or corrupted (OOM).';
+                          t.update(projectRef, { versions });
+                          shouldProceed = false;
+                          return;
+                      }
+                      versions[idx].processingRetries = currentRetries + 1;
+                      t.update(projectRef, { versions });
+                  } else {
+                      // First run or 'pending'
+                      versions[idx].processingStatus = 'processing';
+                      versions[idx].processingRetries = 0;
+                      t.update(projectRef, { versions });
+                  }
+              } else {
+                  // New entry (likely concurrent or race condition with upload)
+                  versions.push({
+                      versionNumber: versions.length + 1,
+                      fileURL: `gs://${fileBucket}/${filePath}`,
+                      filePath,
+                      createdAt: admin.firestore.Timestamp.now(),
+                      processingStatus: 'processing',
+                      processingRetries: 0,
+                      type: fullFileName.includes('interior') ? 'interior_build' : 'upload'
+                  });
+                  t.update(projectRef, { versions });
+              }
+          }
+      });
+  } catch (e) {
+      logger.error("Idempotency transaction failed:", e);
+      // If DB fails, we stop to avoid hammering
+      return;
+  }
+
+  if (!shouldProceed) {
+      logger.log(`Skipping job for ${fullFileName} (Already complete, failed, or retry limit reached).`);
+      return;
+  }
+
+  // --- END IDEMPOTENCY CHECK ---
+
   const bucket = storage.bucket(fileBucket);
   const previewFileName = `${path.basename(fullFileName, '.pdf')}_preview.pdf`;
   const destination = filePath.replace(path.basename(filePath), previewFileName);
-  const previewFile = bucket.file(destination);
-
-  // --- IDEMPOTENCY CHECK: Stop Runaway Loops ---
-  try {
-      const [exists] = await previewFile.exists();
-      if (exists) {
-          const [metadata] = await previewFile.getMetadata();
-          const previewTime = new Date(metadata.timeCreated).getTime();
-          const sourceTime = new Date(file.timeCreated).getTime();
-
-          // If the preview was created AFTER the source file, we are done.
-          // This catches duplicate events and prevents re-processing.
-          if (previewTime > sourceTime) {
-              logger.log(`Idempotency Check: Preview ${previewFileName} is newer than source. Skipping.`);
-              return;
-          }
-      }
-  } catch (checkErr) {
-      logger.warn("Idempotency check failed, proceeding anyway:", checkErr);
-  }
-  // ----------------------------------------------
-
-  const projectRef = db.collection('projects').doc(projectId);
+  
   const tempId = crypto.randomUUID(); 
   const tempFilePath = path.join(os.tmpdir(), `${tempId}_source.pdf`);
   const repairedFilePath = path.join(os.tmpdir(), `${tempId}_repaired.pdf`);
@@ -99,11 +178,12 @@ const optimizePdfLogic = onObjectFinalized({
     // 2. Repair (QPDF)
     let useRepairedFile = false;
     try {
-        const { spawn } = require('child-process-promise');
         await spawn('qpdf', [tempFilePath, repairedFilePath]);
         if (fs.existsSync(repairedFilePath)) {
              useRepairedFile = true;
              logger.log('QPDF repair completed.');
+             // [MEMORY OPTIMIZATION] Delete original immediately
+             try { if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath); } catch(e) {}
         }
     } catch (e) {
         logger.warn('QPDF repair failed, will continue with original.', e);
@@ -112,50 +192,43 @@ const optimizePdfLogic = onObjectFinalized({
     const sourceForProcessing = useRepairedFile ? repairedFilePath : tempFilePath;
 
     // 3. Preflight Checks
+    // We run this, but we update Firestore in a separate transaction to avoid locking issues or heavy writes during processing
     const { preflightStatus, preflightResults, dimensions } = await runPreflightChecks(sourceForProcessing, logger);
-    logger.log('Preflight checks completed.');
-
-    // Update Firestore
-    await db.runTransaction(async (transaction) => {
-        const projectDoc = await transaction.get(projectRef);
-        if (!projectDoc.exists) return;
-
-        if (isCover) {
-            const coverData = {
-                filePath, preflightStatus, preflightResults, processingStatus: 'processing',
-                uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
-                specs: dimensions ? { dimensions } : {}
-            };
-            transaction.update(projectRef, { cover: coverData });
-        } else {
-            const data = projectDoc.data();
-            const versions = data.versions || [];
-            const idx = versions.findIndex(v => v.filePath === filePath);
-
-            if (idx === -1) {
-                versions.push({
-                    versionNumber: versions.length + 1,
-                    fileURL: `gs://${fileBucket}/${filePath}`,
-                    filePath,
-                    createdAt: admin.firestore.Timestamp.now(),
-                    processingStatus: 'processing',
-                    preflightStatus, preflightResults,
-                    type: fullFileName.includes('interior') ? 'interior_build' : 'upload'
+    
+    // Update Preflight Data (Optimistic - doesn't block processing if fails)
+    try {
+        await db.runTransaction(async (t) => {
+            const pDoc = await t.get(projectRef);
+            if (!pDoc.exists) return;
+            const pData = pDoc.data();
+            if (isCover) {
+                t.update(projectRef, { 
+                    'cover.preflightStatus': preflightStatus,
+                    'cover.preflightResults': preflightResults,
+                    'cover.specs': dimensions ? { dimensions } : (pData.cover?.specs || {})
                 });
-                transaction.update(projectRef, { versions });
             } else {
-                versions[idx].processingStatus = 'processing';
-                versions[idx].preflightStatus = preflightStatus;
-                versions[idx].preflightResults = preflightResults;
-                transaction.update(projectRef, { versions });
+                const vList = pData.versions || [];
+                const vIdx = vList.findIndex(v => v.filePath === filePath);
+                if (vIdx !== -1) {
+                    vList[vIdx].preflightStatus = preflightStatus;
+                    vList[vIdx].preflightResults = preflightResults;
+                    t.update(projectRef, { versions: vList });
+                }
             }
-        }
-    });
+        });
+    } catch(e) { logger.warn("Failed to update preflight stats (non-fatal)", e); }
 
     // 4. Optimize (Ghostscript)
     let optimizationFailed = false;
     try {
-        const { spawn } = require('child-process-promise');
+        // [NEW] SAFE MODE: If we have retried, it means the previous attempt likely crashed (OOM).
+        // Skip Ghostscript to ensure the pipeline finishes.
+        if (currentRetries > 0) {
+            logger.warn(`Optimization skipped due to previous failure (Retry ${currentRetries}). Entering Safe Mode.`);
+            throw new Error("Skipping optimization (Safe Mode active)");
+        }
+
         // Check if input file exists before running GS
         if (!fs.existsSync(sourceForProcessing)) {
              throw new Error(`Source file missing at ${sourceForProcessing}`);
@@ -174,11 +247,15 @@ const optimizePdfLogic = onObjectFinalized({
         logger.log('Optimization successful.');
 
     } catch (error) {
-        logger.error('Optimization failed. Attempting fallbacks.', error);
+        // Only log as error if it's NOT our intentional Safe Mode skip
+        if (error.message.includes("Safe Mode")) {
+            logger.log('Safe Mode: Skipping optimization to prevent crash.');
+        } else {
+            logger.error('Optimization failed. Attempting fallbacks.', error);
+        }
+        
         optimizationFailed = true;
         
-        // Force ensure destination directory exists (though tmpdir should exist)
-        const path = require('path');
         const dir = path.dirname(tempPreviewPath);
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
@@ -211,14 +288,15 @@ const optimizePdfLogic = onObjectFinalized({
             const pDoc = await transaction.get(projectRef);
             if (!pDoc.exists) return;
 
-            const processingError = optimizationFailed ? 'Preview is unoptimized.' : null;
+            const processingError = optimizationFailed ? 'Preview is unoptimized (Fallback used).' : null;
 
             if (isCover) {
-                const cData = pDoc.data().cover || {};
-                cData.previewURL = signedUrl;
-                cData.processingStatus = 'complete';
-                cData.processingError = processingError;
-                transaction.update(projectRef, { cover: cData });
+                transaction.update(projectRef, { 
+                    'cover.previewURL': signedUrl,
+                    'cover.processingStatus': 'complete',
+                    'cover.processingError': processingError,
+                    'cover.processingRetries': 0 // Reset on success
+                });
             } else {
                 const vList = pDoc.data().versions || [];
                 const vIdx = vList.findIndex(v => v.filePath === filePath);
@@ -226,22 +304,29 @@ const optimizePdfLogic = onObjectFinalized({
                     vList[vIdx].previewURL = signedUrl;
                     vList[vIdx].processingStatus = 'complete';
                     vList[vIdx].processingError = processingError;
+                    vList[vIdx].processingRetries = 0; // Reset on success
                     transaction.update(projectRef, { versions: vList });
                 }
             }
         });
         logger.log(`Job complete for ${fullFileName}`);
     } else {
-        throw new Error(`Final preview file missing at ${tempPreviewPath} after optimization and fallback attempts.`);
+        throw new Error("Final preview file missing.");
     }
 
   } catch (err) {
+    // Catch-all for fatal errors (Network, OOM, Disk)
     logger.error("Fatal error processing PDF:", err);
+    
+    // We attempt to write the error status, but if this was OOM, this block might not finish.
+    // However, the Circuit Breaker at the top will catch it on the next retry (Retry count > 2).
     try {
         await db.runTransaction(async (t) => {
             const doc = await t.get(projectRef);
             if (!doc.exists) return;
 
+            // We DO NOT increment retry here, we just log the error.
+            // The circuit breaker increments it on the NEXT start.
             if (isCover) {
                 t.update(projectRef, {
                     'cover.processingStatus': 'error',

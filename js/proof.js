@@ -381,14 +381,12 @@ let lastStatus = null;
 let lastProcessingStatus = null;
 
 function loadProjectForUser(user) {
-    // ... (Keep existing logging/auth/history listener setup from previous turn) ...
     console.log(`[Load Project] Starting for user: ${user?.uid || 'anonymous/unknown'}, projectId: ${currentProjectId}`);
     const projectRef = doc(db, "projects", currentProjectId);
 
     if (unsubscribeHistoryListener) { unsubscribeHistoryListener(); unsubscribeHistoryListener = null; }
     const historyQuery = query(collection(db, "projects", currentProjectId, "history"), orderBy("timestamp", "desc"));
     unsubscribeHistoryListener = onSnapshot(historyQuery, (snapshot) => {
-        // ... (Keep history render logic) ...
         const historyList = document.getElementById('project-history-list');
         if (historyList) {
             historyList.innerHTML = '';
@@ -431,13 +429,11 @@ function loadProjectForUser(user) {
 
             if(projectName) projectName.textContent = projectData.projectName;
 
-            // ... (Keep Approval/Banner Logic) ...
-            // (Paste existing actionPanel, commentTool, approvalBanner logic here)
+            // --- Actions Panel Logic ---
             const actionPanel = document.querySelector('#approval-form')?.parentElement;
             const commentTool = document.getElementById('tool-comment');
             const approvalBanner = document.getElementById('approval-banner');
             if (actionPanel && commentTool && approvalBanner) {
-                 // ... (Existing logic for creating buttons/banners) ...
                  actionPanel.innerHTML = `<h3 class="text-xl font-semibold text-white mb-4">Actions</h3><form id="approval-form"><div id="decision-buttons"><button type="button" id="approve-button" class="w-full text-center rounded-lg bg-green-600 px-4 py-3 text-sm font-semibold leading-6 text-white shadow-md hover:bg-green-500 transition-all duration-150 ease-in-out">Approve</button><button type="button" id="request-changes-button" class="mt-3 w-full text-center rounded-lg bg-red-600 px-4 py-3 text-sm font-semibold leading-6 text-white shadow-md hover:bg-red-500 transition-all duration-150 ease-in-out">Request Changes</button></div><div id="confirmation-section" class="hidden mt-4"><p id="confirmation-message" class="text-center text-gray-300 mb-4"></p><button type="submit" id="confirm-action-button" class="w-full text-center rounded-lg px-4 py-3 text-sm font-semibold text-white shadow-md transition-all duration-150 ease-in-out">Confirm</button><button type="button" id="cancel-action-button" class="mt-3 w-full text-center rounded-lg bg-gray-600 px-4 py-3 text-sm font-semibold text-white shadow-md hover:bg-gray-500 transition-all duration-150 ease-in-out">Cancel</button></div></form>`;
                  const newApprovalForm = document.getElementById('approval-form');
                  if(newApprovalForm) { newApprovalForm.addEventListener('submit', (e) => { e.preventDefault(); const confirmBtn = document.getElementById('confirm-action-button'); if (actionToConfirm && confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = 'Processing...'; updateProjectStatus(actionToConfirm === 'approve' ? 'approved' : 'changes_requested'); } else { hideConfirmation(); } }); }
@@ -490,24 +486,37 @@ function loadProjectForUser(user) {
                  }
             }
 
-            // --- [FIX] OPTIMIZING STATE HANDLING (Non-Blocking) ---
-            // Only block if it's PROCESSING AND we have NO file URL to show yet.
-            if (currentProcessingStatus === 'processing' && (!latestVersion || !latestVersion.fileURL)) {
+            // --- [FIX] LOADING STATE HANDLING (Async Gap Protection) ---
+            // We show the spinner if:
+            // 1. Status is explicitly 'Processing Upload' (set by guest_upload.js)
+            // 2. A new upload happened (lastUploadAt) but the latest version in 'versions' array is OLDER than that (backend hasn't finished optimizing yet).
+            // 3. The latest version exists but is marked as 'processing'.
+            
+            const isProcessingStatus = currentStatus === 'Processing Upload';
+            
+            let isNewVersionPending = false;
+            if (projectData.lastUploadAt && latestVersion && latestVersion.createdAt) {
+                // If the latest version on file is OLDER than the last upload timestamp, the new one isn't ready yet.
+                // Note: seconds comparison is usually sufficient.
+                isNewVersionPending = latestVersion.createdAt.seconds < projectData.lastUploadAt.seconds;
+            }
+
+            const isOptimizationRunning = currentProcessingStatus === 'processing' && (!latestVersion || !latestVersion.fileURL);
+
+            if (isProcessingStatus || isNewVersionPending || isOptimizationRunning) {
                 loadingSpinner.classList.remove('hidden');
                 proofContent.classList.add('hidden');
                 loadingSpinner.innerHTML = `
                     <div class="flex flex-col items-center gap-4">
                         <div class="w-12 h-12 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div>
                         <div class="text-center">
-                            <p class="text-indigo-400 font-bold text-lg animate-pulse">Processing PDF...</p>
-                            <p class="text-gray-400 text-sm mt-1">This may take a moment.</p>
+                            <p class="text-indigo-400 font-bold text-lg animate-pulse">Optimizing PDF for viewing...</p>
+                            <p class="text-gray-400 text-sm mt-1">This may take a minute.</p>
                         </div>
                     </div>
                 `;
                 return; 
             }
-            // If processing but we HAVE a file (or it's just optimization updating), show the content
-            // Optional: Add a non-blocking toast here if desired
             // ---------------------------------------
 
             if (shouldReInit) {

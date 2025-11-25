@@ -2558,12 +2558,12 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     const card = document.createElement('div');
     card.dataset.id = page.id;
 
-    // [FIX] Removed 'overflow-hidden' from here so tooltips can extend outside
     let classes = "page-card relative group bg-slate-800 shadow-lg border border-slate-700 transition-all hover:border-indigo-500 cursor-grab active:cursor-grabbing flex-shrink-0";
 
     if (projectType === 'single') {
         classes += " border-2";
     } else {
+        // Visually separate the spine
         if (isFirstPage) {
             classes += " border-l-2 border-l-slate-900";
         } else if (isRightPage) {
@@ -2577,27 +2577,37 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
 
     // Layout Logic
     const bleedPx = bleed * pixelsPerInch;
+    
+    // The canvas (the full image) has size: (Trim + 2*Bleed) x (Height + 2*Bleed)
+    // We need to determine the Viewport Size (containerW/H) and the Shift (canvasLeft/Top)
+
     let containerW, containerH;
     let canvasLeft, canvasTop;
 
     if (projectType === 'single') {
+        // Show Everything
         containerW = (width + (bleed * 2)) * pixelsPerInch;
         containerH = (height + (bleed * 2)) * pixelsPerInch;
         canvasLeft = 0;
         canvasTop = 0;
     } else {
-        if (isRightPage) {
-            containerW = (width + bleed) * pixelsPerInch;
-            canvasLeft = -bleedPx;
-        } else {
-            containerW = (width + bleed) * pixelsPerInch;
-            canvasLeft = 0;
-        }
+        // Booklet Mode:
+        // Width displayed is always (Trim + 1 Bleed)
+        containerW = (width + bleed) * pixelsPerInch;
         containerH = (height + (bleed*2)) * pixelsPerInch;
         canvasTop = 0;
+
+        if (isRightPage) {
+            // RIGHT PAGE: Show [Trim][Right Bleed]. Hide [Left Bleed].
+            // Shift canvas LEFT by bleedPx to hide the left bleed.
+            canvasLeft = -bleedPx;
+        } else {
+            // LEFT PAGE: Show [Left Bleed][Trim]. Hide [Right Bleed].
+            // Canvas starts at 0. The container width cuts off the Right Bleed.
+            canvasLeft = 0;
+        }
     }
 
-    // [FIX] 'overflow-hidden' stays here to clip the canvas/image content
     const canvasContainer = document.createElement('div');
     canvasContainer.className = "relative overflow-hidden bg-white shadow-sm mx-auto";
     canvasContainer.style.width = `${containerW}px`;
@@ -2618,10 +2628,9 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
     dragHandle.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>';
     card.appendChild(dragHandle);
 
-    // [FIX] Compact Icon-Only Warning with Solid SVG
+    // [FIX] Compact Icon-Only Warning
     const dpiWarning = document.createElement('div');
     dpiWarning.id = `dpi-warning-${page.id}`;
-    // Position: Left side, next to drag handle. Z-40 to sit above overlays.
     dpiWarning.className = "hidden absolute top-2 left-9 z-40 group/dpi";
     dpiWarning.innerHTML = `
         <div class="text-yellow-400 bg-slate-900/80 p-1.5 rounded-md backdrop-blur-md border border-yellow-500/30 shadow-md cursor-help transition-colors hover:text-yellow-300 hover:border-yellow-400">
@@ -3167,16 +3176,19 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
 // --- Locking Logic ---
 
 async function acquireLock() {
-    const projectRef = doc(db, 'projects', projectId);
+    // CHANGE: Use specific lock document in sub-collection
+    const lockRef = doc(db, 'projects', projectId, 'locks', 'main');
     const LOCK_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
 
     try {
         const acquired = await runTransaction(db, async (transaction) => {
-            const sfDoc = await transaction.get(projectRef);
-            if (!sfDoc.exists()) throw "Project does not exist!";
+            const lockDoc = await transaction.get(lockRef);
+            
+            let lock = null;
+            if (lockDoc.exists()) {
+                lock = lockDoc.data();
+            }
 
-            const data = sfDoc.data();
-            const lock = data.editorLock;
             const now = Date.now();
 
             // Identification
@@ -3189,19 +3201,19 @@ async function acquireLock() {
                 const lockTime = lock.timestamp ? lock.timestamp.toMillis() : 0;
                 if (now - lockTime < LOCK_TIMEOUT_MS) {
                     // LOCKED and ACTIVE
+                    // Pass the lock data explicitly since it's no longer on the project doc
                     showLockedScreen(lock);
                     return false; // Failed to acquire
                 }
             }
 
             // Acquire or Renew Lock
-            transaction.update(projectRef, {
-                editorLock: {
-                    userId: userId,
-                    userDisplay: userEmail,
-                    timestamp: serverTimestamp() // Use server time
-                }
-            });
+            // We use set() with merge for the sub-collection doc
+            transaction.set(lockRef, {
+                userId: userId,
+                userDisplay: userEmail,
+                timestamp: serverTimestamp()
+            }, { merge: true });
 
             return true; // Acquired
         });
@@ -3213,7 +3225,9 @@ async function acquireLock() {
 
     } catch (e) {
         console.error("Transaction failed: ", e);
-        showError("Failed to acquire edit lock. Please try again.");
+        // Don't show error UI for lock contention, just return false (or handle gracefully)
+        // But if it's a permission/network error, maybe alert.
+        if (e.message !== "Lock lost") console.warn("Lock acquisition error", e);
         return false;
     }
 }
@@ -3223,23 +3237,25 @@ function startLockHeartbeat() {
     const intervalId = setInterval(async () => {
         if (!projectId || !currentUser) return;
         try {
-            const projectRef = doc(db, 'projects', projectId);
+            // CHANGE: Point to the lock document
+            const lockRef = doc(db, 'projects', projectId, 'locks', 'main');
 
             // Use transaction to safely renew ONLY if we still own the lock
             await runTransaction(db, async (transaction) => {
-                const sfDoc = await transaction.get(projectRef);
-                if (!sfDoc.exists()) throw "Project does not exist!";
+                const lockDoc = await transaction.get(lockRef);
+                
+                // If doc doesn't exist, we lost the lock (deleted by admin or expired/GC'd)
+                if (!lockDoc.exists()) throw new Error("Lock lost");
 
-                const data = sfDoc.data();
-                const lock = data.editorLock;
+                const lock = lockDoc.data();
 
-                // If lock is gone or belongs to someone else, stop heartbeat
-                if (!lock || lock.userId !== currentUser.uid) {
+                // If lock belongs to someone else, stop heartbeat
+                if (lock.userId !== currentUser.uid) {
                     throw new Error("Lock lost");
                 }
 
-                transaction.update(projectRef, {
-                    "editorLock.timestamp": serverTimestamp()
+                transaction.update(lockRef, {
+                    timestamp: serverTimestamp()
                 });
             });
             console.log("Lock heartbeat sent.");
@@ -3261,24 +3277,21 @@ async function releaseLock() {
     if (!projectId || !currentUser || !hasActiveLock) return;
 
     try {
-        const projectRef = doc(db, 'projects', projectId);
+        // CHANGE: Point to lock document
+        const lockRef = doc(db, 'projects', projectId, 'locks', 'main');
 
-        // Use a transaction to ensure we only delete OUR lock
         await runTransaction(db, async (transaction) => {
-            const sfDoc = await transaction.get(projectRef);
-            if (!sfDoc.exists()) return;
+            const lockDoc = await transaction.get(lockRef);
+            if (!lockDoc.exists()) return;
 
-            const data = sfDoc.data();
-            const lock = data.editorLock;
+            const lock = lockDoc.data();
 
-            // If lock matches our user ID, clear it
+            // If lock matches our user ID, delete the lock document
             if (lock && lock.userId === currentUser.uid) {
-                transaction.update(projectRef, {
-                    editorLock: null
-                });
+                transaction.delete(lockRef);
             }
         });
-        hasActiveLock = false; // Clear local flag
+        hasActiveLock = false; 
     } catch (e) {
         console.warn("Failed to release lock:", e);
     }
@@ -3299,8 +3312,11 @@ function showLockedScreen(lock) {
             if (confirm(`Are you sure you want to force unlock this project?\n\nUser "${name}" may lose unsaved work.`)) {
                 // Break lock
                 try {
-                    const projectRef = doc(db, 'projects', projectId);
-                    await updateDoc(projectRef, { editorLock: null });
+                    // CHANGE: Delete the lock document instead of updating project
+                    const lockRef = doc(db, 'projects', projectId, 'locks', 'main');
+                    const { deleteDoc } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js");
+                    await deleteDoc(lockRef);
+                    
                     window.location.reload();
                 } catch (e) {
                     alert("Failed to force unlock: " + e.message);
@@ -3756,7 +3772,8 @@ specsForm.addEventListener('submit', async (e) => {
             'specs.dimensions': dimensionsVal,
             'specs.binding': typeValue === 'loose' ? 'loose' : typeValue,
             'specs.pageCount': 0, // Dynamic
-            'specs.paperType': specPaper.value 
+            'specs.paperType': specPaper.value
+            'specs.bleedInches': 0.125
         };
 
         if (typeValue === 'loose') {

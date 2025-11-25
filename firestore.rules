@@ -111,6 +111,14 @@ service cloud.firestore {
       // Write is simpler, keep it separate.
       allow read: if isAdmin();  // Admins can read anything.
       
+      // --- Rules for 'locks' Sub-collection (New) ---
+      match /locks/{lockId} {
+        // Allow admins, company members, or valid guests (uploaders/owners) to manage locks
+        allow read, write: if isAdmin() ||
+           (request.auth != null && getUserData(request.auth.uid).companyId == getProject(projectId).companyId) ||
+           (hasValidGuestDataAccess(projectId, 'canUpload') || hasValidGuestDataAccess(projectId, 'isOwner'));
+      }
+      
       // ** Client & Guest Access for GET (reading a single document) **
       allow get: if (
           // 1. REGULAR CLIENT ACCESS (Skip if Anonymous)
