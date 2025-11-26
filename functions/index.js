@@ -265,7 +265,7 @@ const optimizePdfLogic = onObjectFinalized({
         await spawn('gs', [
             '-sDEVICE=pdfwrite',
             '-dCompatibilityLevel=1.4',
-            '-dPDFSETTINGS=/screen',
+            '-dPDFSETTINGS=/ebook',
             '-dNOPAUSE', '-dQUIET', '-dBATCH',
             `-sOutputFile=${tempPreviewPath}`,
             sourceForProcessing

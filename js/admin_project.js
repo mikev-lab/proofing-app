@@ -425,7 +425,6 @@ onAuthStateChanged(auth, async (user) => {
                         isNewVersionPending = latestVersion.createdAt.seconds < currentProjectData.lastUploadAt.seconds;
                     }
 
-                    // Optional: Check if the version itself is still processing
                     const isVersionProcessing = latestVersion && latestVersion.processingStatus === 'processing';
 
                     if (isProcessingStatus || isNewVersionPending || isVersionProcessing) {
@@ -460,7 +459,9 @@ onAuthStateChanged(auth, async (user) => {
                     // Populate the manual cover specs form
                     populateCoverForm(currentProjectData.cover);
 
-                    renderImpositions(currentProjectData.impositions);
+                    if (typeof renderImpositions === 'function') {
+                        renderImpositions(currentProjectData.impositions);
+                    }
 
                     // --- Real-time Update Logic (Smart Version Switching) ---
                     const versionSelector = document.getElementById('version-selector');
