@@ -500,22 +500,25 @@ function loadProjectForUser(user) {
             
             let isNewVersionPending = false;
             if (projectData.lastUploadAt && latestVersion && latestVersion.createdAt) {
-                // If the latest version on file is OLDER than the last upload timestamp, the new one isn't ready yet.
-                // Note: seconds comparison is usually sufficient.
                 isNewVersionPending = latestVersion.createdAt.seconds < projectData.lastUploadAt.seconds;
             }
 
             const isOptimizationRunning = currentProcessingStatus === 'processing' && (!latestVersion || !latestVersion.fileURL);
 
-            if (isProcessingStatus || isNewVersionPending || isOptimizationRunning) {
+            const cover = projectData.cover || {};
+            const isCoverProcessing = cover.processingStatus === 'processing';
+
+            if (isProcessingStatus || isNewVersionPending || isOptimizationRunning || isCoverProcessing) {
                 loadingSpinner.classList.remove('hidden');
                 proofContent.classList.add('hidden');
                 loadingSpinner.innerHTML = `
                     <div class="flex flex-col items-center gap-4">
                         <div class="w-12 h-12 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div>
                         <div class="text-center">
-                            <p class="text-indigo-400 font-bold text-lg animate-pulse">Optimizing PDF for viewing...</p>
-                            <p class="text-gray-400 text-sm mt-1">This may take a minute.</p>
+                            <p class="text-indigo-400 font-bold text-lg animate-pulse">Processing Files...</p>
+                            <p class="text-gray-400 text-sm mt-1">
+                                ${isCoverProcessing ? 'Generating cover preview...' : 'Optimizing PDF for viewing...'}
+                            </p>
                         </div>
                     </div>
                 `;

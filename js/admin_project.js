@@ -422,24 +422,31 @@ onAuthStateChanged(auth, async (user) => {
                     
                     let isNewVersionPending = false;
                     if (currentProjectData.lastUploadAt && latestVersion && latestVersion.createdAt) {
+                        // If the latest version on file is OLDER than the last upload timestamp, we are waiting for new files.
                         isNewVersionPending = latestVersion.createdAt.seconds < currentProjectData.lastUploadAt.seconds;
                     }
 
                     const isVersionProcessing = latestVersion && latestVersion.processingStatus === 'processing';
+                    
+                    // [NEW] Also check if the Cover is processing
+                    const cover = currentProjectData.cover || {};
+                    const isCoverProcessing = cover.processingStatus === 'processing';
 
-                    if (isProcessingStatus || isNewVersionPending || isVersionProcessing) {
+                    if (isProcessingStatus || isNewVersionPending || isVersionProcessing || isCoverProcessing) {
                         loadingSpinner.classList.remove('hidden');
                         proofContent.classList.add('hidden');
                         loadingSpinner.innerHTML = `
                             <div class="flex flex-col items-center gap-4">
                                 <div class="w-12 h-12 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div>
                                 <div class="text-center">
-                                    <p class="text-indigo-400 font-bold text-lg animate-pulse">Processing Guest Files...</p>
-                                    <p class="text-gray-400 text-sm mt-1">Generating proof PDF.</p>
+                                    <p class="text-indigo-400 font-bold text-lg animate-pulse">Processing Files...</p>
+                                    <p class="text-gray-400 text-sm mt-1">
+                                        ${isCoverProcessing ? 'Generating cover preview...' : 'Generating proof PDF...'}
+                                    </p>
                                 </div>
                             </div>
                         `;
-                        return; // Stop rendering the rest until status changes
+                        return; // Stop rendering until EVERYTHING is complete
                     }
                     // ------------------------------------
 

@@ -62,7 +62,7 @@ const optimizePdfLogic = onObjectFinalized({
 
   const projectRef = db.collection('projects').doc(projectId);
   
-  // --- 2. IDEMPOTENCY CHECK (FIXED TIMESTAMP) ---
+  // --- 2. IDEMPOTENCY CHECK ---
   let shouldProceed = true;
   let currentRetries = 0;
 
@@ -73,6 +73,7 @@ const optimizePdfLogic = onObjectFinalized({
           
           const data = doc.data();
           let status, lastUpdated, retries;
+          let isNewFile = false; // [FIX] Track if this is a fresh file
 
           const versions = data.versions || [];
           const vIdx = versions.findIndex(v => v.filePath === filePath);
@@ -81,29 +82,38 @@ const optimizePdfLogic = onObjectFinalized({
               const cData = data.cover || {};
               status = cData.processingStatus;
               retries = cData.processingRetries || 0;
-              lastUpdated = cData.uploadedAt; 
+              lastUpdated = cData.uploadedAt;
+              
+              // [FIX] If the existing cover file path doesn't match this new one, 
+              // treat it as a NEW job even if the old one was 'complete'.
+              if (cData.filePath !== filePath) {
+                  isNewFile = true;
+                  status = null; // Reset status to force processing
+              }
           } else {
               if (vIdx !== -1) {
                   status = versions[vIdx].processingStatus;
                   retries = versions[vIdx].processingRetries || 0;
                   lastUpdated = versions[vIdx].createdAt; 
+              } else {
+                  isNewFile = true; // Interior not in array yet
               }
           }
 
-          // Case A: Already Done
-          if (status === 'complete') { 
+          // Case A: Already Done (Only if it's the SAME file)
+          if (!isNewFile && status === 'complete') { 
               shouldProceed = false; 
               return; 
           }
 
-          // Case B: Already Failed
-          if (status === 'error') { 
+          // Case B: Already Failed (Only if it's the SAME file)
+          if (!isNewFile && status === 'error') { 
              shouldProceed = false; 
              return; 
           }
           
           // Case C: Currently Processing?
-          if (status === 'processing') {
+          if (!isNewFile && status === 'processing') {
               const now = Date.now();
               const lastTime = lastUpdated ? lastUpdated.toMillis() : 0; 
               const minutesSinceStart = (now - lastTime) / 1000 / 60;
@@ -140,7 +150,6 @@ const optimizePdfLogic = onObjectFinalized({
               const retryUpdate = {
                   processingStatus: 'processing',
                   processingRetries: currentRetries,
-                  // FIX: Use Timestamp.now() instead of serverTimestamp()
                   uploadedAt: admin.firestore.Timestamp.now() 
               };
 
@@ -156,22 +165,21 @@ const optimizePdfLogic = onObjectFinalized({
               }
           
           } else {
-              // Case D: First Run
+              // Case D: First Run (New File or Reset)
               const initUpdate = {
                   processingStatus: 'processing',
                   processingRetries: 0,
-                  // FIX: Use Timestamp.now() instead of serverTimestamp()
                   uploadedAt: admin.firestore.Timestamp.now() 
               };
 
               if (isCover) {
-                  // [FIX] Save the fileURL and filePath so the frontend can find it!
+                  // [FIX] Ensure fileURL and filePath are saved!
                   t.update(projectRef, { 
                       'cover.processingStatus': 'processing', 
                       'cover.processingRetries': 0, 
                       'cover.uploadedAt': initUpdate.uploadedAt,
-                      'cover.fileURL': `gs://${fileBucket}/${filePath}`, // <--- Added
-                      'cover.filePath': filePath                         // <--- Added
+                      'cover.fileURL': `gs://${fileBucket}/${filePath}`, // Save Storage URL
+                      'cover.filePath': filePath                         // Save Path
                   });
               } else if (vIdx !== -1) {
                   versions[vIdx] = { ...versions[vIdx], ...initUpdate };
@@ -181,7 +189,7 @@ const optimizePdfLogic = onObjectFinalized({
                       versionNumber: versions.length + 1,
                       fileURL: `gs://${fileBucket}/${filePath}`,
                       filePath,
-                      createdAt: admin.firestore.Timestamp.now(), // Already correct
+                      createdAt: admin.firestore.Timestamp.now(), 
                       type: fullFileName.includes('interior') ? 'interior_build' : 'upload',
                       ...initUpdate
                   });
@@ -307,24 +315,27 @@ const optimizePdfLogic = onObjectFinalized({
             const pData = pDoc.data();
 
             const processingError = optimizationFailed ? 'Preview is unoptimized (Fallback used).' : null;
-            const successUpdate = {
-                previewURL: signedUrl,
-                processingStatus: 'complete',
-                processingError: processingError,
-                processingRetries: 0 
-            };
-
+            
             if (isCover) {
                 transaction.update(projectRef, { 
                     'cover.previewURL': signedUrl,
                     'cover.processingStatus': 'complete',
                     'cover.processingError': processingError,
-                    'cover.processingRetries': 0
+                    'cover.processingRetries': 0,
+                    // [FIX] Re-assert fileURL here just in case
+                    'cover.fileURL': `gs://${fileBucket}/${filePath}`,
+                    'cover.filePath': filePath
                 });
             } else {
                 const vList = pData.versions || [];
                 const vIdx = vList.findIndex(v => v.filePath === filePath);
                 if (vIdx !== -1) {
+                    const successUpdate = {
+                        previewURL: signedUrl,
+                        processingStatus: 'complete',
+                        processingError: processingError,
+                        processingRetries: 0 
+                    };
                     vList[vIdx] = { ...vList[vIdx], ...successUpdate };
                     transaction.update(projectRef, { versions: vList });
                 }
