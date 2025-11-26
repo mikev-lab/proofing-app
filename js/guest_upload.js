@@ -4183,6 +4183,12 @@ async function init() {
                     isAdmin = true;
                 }
             } catch (e) {}
+            currentUser.getIdTokenResult(true).then((idTokenResult) => {
+        console.log("👇 YOUR CUSTOM CLAIMS 👇");
+        console.log(idTokenResult.claims);
+        console.log("guestProjectId:", idTokenResult.claims.guestProjectId);
+        console.log("guestPermissions:", idTokenResult.claims.guestPermissions);
+        });
         }
 
         const lockAcquired = await acquireLock();
