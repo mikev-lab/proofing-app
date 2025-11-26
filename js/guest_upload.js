@@ -859,15 +859,27 @@ async function createCoverControls(inputId, fileOrUrl) {
     let isPDF = false;
     let localObjectURL; 
 
+    // [FIX] Improved Detection Logic
     if (typeof fileOrUrl === 'string') {
         pdfSourceUrl = fileOrUrl;
-        isPDF = pdfSourceUrl.toLowerCase().endsWith('.pdf') || true;
+        // Only treat as PDF if extension matches OR it's NOT an image URL
+        // We remove the "|| true" which was causing the crash
+        const lower = pdfSourceUrl.toLowerCase().split('?')[0];
+        if (lower.endsWith('.pdf')) {
+            isPDF = true;
+        } else if (/\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(lower)) {
+            isPDF = false;
+        } else {
+            // Fallback: If no extension, assume PDF only if not explicitly identified as image
+            isPDF = false; 
+        }
     } else if (fileOrUrl && fileOrUrl.type === 'application/pdf') {
         pdfSourceUrl = URL.createObjectURL(fileOrUrl);
         localObjectURL = pdfSourceUrl;
         isPDF = true;
     }
     
+    // Only attempt to load with PDF.js if we are sure it is a PDF
     if (isPDF && pdfSourceUrl) {
         try {
             let docPromise;
@@ -879,7 +891,7 @@ async function createCoverControls(inputId, fileOrUrl) {
 
             const pdf = await docPromise; 
 
-            // [FIX] Check for duplicates AGAIN after await
+            // Check for duplicates AGAIN after await (in case user changed file fast)
             const reCheck = container.querySelectorAll('.custom-controls');
             reCheck.forEach(el => el.remove());
 
@@ -922,11 +934,12 @@ async function createCoverControls(inputId, fileOrUrl) {
             }
             if (localObjectURL) URL.revokeObjectURL(localObjectURL);
         } catch (e) { 
-            console.warn("Error loading PDF for controls", e);
+            console.warn("Error loading PDF for controls (skipping page controls):", e);
             if (localObjectURL) URL.revokeObjectURL(localObjectURL);
         }
     }
 
+    // Always render Scale Controls (Fit/Fill/Stretch) even for Images
     const scaleCtrl = document.createElement('div');
     scaleCtrl.className = "flex justify-center gap-1 mt-1";
     ['fit', 'fill', 'stretch'].forEach(mode => {
@@ -947,6 +960,8 @@ async function createCoverControls(inputId, fileOrUrl) {
         scaleCtrl.appendChild(btn);
     });
     controls.appendChild(scaleCtrl);
+    
+    // Append to DOM
     container.appendChild(controls);
 }
 
@@ -1308,96 +1323,163 @@ if (tabInterior && tabCover) {
         });
 }
 
+// --- NEW: File Processing Queue Helper ---
+async function processQueue(items, limit, asyncFn) {
+    let index = 0;
+    const results = [];
+    const runNext = () => {
+        if (index >= items.length) return Promise.resolve();
+        const item = items[index++];
+        return asyncFn(item)
+            .then(res => results.push(res))
+            .catch(err => results.push({ error: err }))
+            .finally(() => runNext());
+    };
+    const workers = Array(Math.min(limit, items.length)).fill().map(() => runNext());
+    await Promise.all(workers);
+    return results;
+}
 
-// --- Data Model Logic ---
+// --- REWRITTEN: addInteriorFiles (Concurrent Version) ---
 async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = null) {
-    // 1. Capture files immediately to prevent GC of DataTransferItems
     const fileArray = Array.from(files);
+    
+    // 1. Setup Phase (Synchronous-ish) - Quick Feedback
+    toggleBusyOverlay(true, "Preparing uploads...");
+    await new Promise(r => setTimeout(r, 50)); // Allow UI update
 
-    // 2. Show Overlay & Force Paint
-    toggleBusyOverlay(true, "Analyzing files...");
-    await new Promise(r => setTimeout(r, 50));
-
-    // 3. Cleanup Blanks
+    // Cleanup Auto Blanks before adding
     while (pages.length > 0 && pages[pages.length - 1].isAutoBlank) {
         pages.pop();
     }
-    
-    if (insertAtIndex !== null && insertAtIndex > pages.length) {
-        insertAtIndex = pages.length;
+
+    // Determine Insertion Point
+    let insertionIndex = (insertAtIndex !== null && insertAtIndex >= 0) ? insertAtIndex : pages.length;
+
+    const tasks = [];
+
+    // 2. Create ALL Placeholders Immediately
+    // This loop runs synchronously to populate the UI instantly
+    for (const file of fileArray) {
+        const sourceId = Date.now() + Math.random().toString(16).slice(2);
+        
+        // Setup Source File Entry
+        const name = file.name.toLowerCase();
+        const type = file.type.toLowerCase();
+        
+        const isComplexFormat = /\.(psd|ai|tiff|tif)$/i.test(name);
+        const isWebImage = type.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(name);
+        const isPDF = type === 'application/pdf' || name.endsWith('.pdf');
+        
+        // Large file check (> 20MB) -> Force server processing
+        const isLargeFile = file.size > 20 * 1024 * 1024;
+        const isLocal = (isPDF || isWebImage) && !isComplexFormat && !isLargeFile;
+
+        sourceFiles[sourceId] = { 
+            file: file, 
+            status: isLocal ? 'processing' : 'uploading', // Initial status
+            previewUrl: null, 
+            isServer: !isLocal 
+        };
+
+        // Create 1 Placeholder Page (or Spread Pair)
+        // We assume 1 page initially. If the file has more, we expand later.
+        if (isSpreadUpload) {
+            const pL = { id: `${sourceId}_p0_L`, sourceFileId: sourceId, pageIndex: 1, settings: { scaleMode: 'fill', alignment: 'center', view: 'left', panX: 0.5, panY: 0 }, isSpread: false };
+            const pR = { id: `${sourceId}_p0_R`, sourceFileId: sourceId, pageIndex: 1, settings: { scaleMode: 'fill', alignment: 'center', view: 'right', panX: -0.5, panY: 0 }, isSpread: false };
+            pages.splice(insertionIndex, 0, pL, pR);
+            insertionIndex += 2;
+        } else {
+            const p = { id: `${sourceId}_p0`, sourceFileId: sourceId, pageIndex: 1, settings: { scaleMode: 'fit', alignment: 'center', panX: 0, panY: 0 }, isSpread: false };
+            pages.splice(insertionIndex, 0, p);
+            insertionIndex++;
+        }
+
+        // Add Task to Queue
+        tasks.push({ file, sourceId, isLocal, isPDF, isSpreadUpload });
     }
 
-    const newPages = [];
+    // Update UI to show all placeholders immediately
+    saveState();
+    renderBookViewer();
+    renderMinimap();
+    toggleBusyOverlay(false); // Hide global overlay, rely on placeholder spinners
 
-    try {
-        for (const file of fileArray) {
-            updateBusyMessage(`Processing ${file.name}...`);
-
-            const sourceId = Date.now() + Math.random().toString(16).slice(2);
-            const name = file.name.toLowerCase();
-            const type = file.type.toLowerCase();
-
-            const isPDF = type === 'application/pdf' || name.endsWith('.pdf');
-            const isComplexFormat = /\.(psd|ai|tiff|tif)$/i.test(name);
-            const isWebImage = type.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(name);
-            
-            // Large File Check (20MB)
-            const isLargeFile = file.size > 20 * 1024 * 1024; 
-            const isLocal = (isPDF || isWebImage) && !isComplexFormat && !isLargeFile;
+    // 3. Process Concurrently (Limit 3 at a time)
+    // This processes the heavy lifting (uploading/converting) in parallel
+    await processQueue(tasks, 3, async (task) => {
+        const { file, sourceId, isLocal, isPDF, isSpreadUpload } = task;
+        
+        try {
+            let numPages = 1;
 
             if (isLocal) {
-                sourceFiles[sourceId] = file;
-                let numPages = 1;
+                // Local Processing
                 if (isPDF) {
-                     try {
+                    try {
                         const fileUrl = URL.createObjectURL(file);
                         const pdf = await pdfjsLib.getDocument(fileUrl).promise;
                         numPages = pdf.numPages;
                         URL.revokeObjectURL(fileUrl);
-                     } catch (e) { console.warn("Could not parse PDF", e); }
+                    } catch (e) { console.warn("PDF Parse Error", e); }
                 }
-                addPagesToModel(newPages, sourceId, numPages, isSpreadUpload);
+                sourceFiles[sourceId].status = 'ready';
             } else {
                 // Server Processing
-                sourceFiles[sourceId] = { file: file, status: 'uploading', previewUrl: null, isServer: true }; 
-                
-                // Add 1 placeholder
-                addPagesToModel(newPages, sourceId, 1, isSpreadUpload);
-                
-                // Process and wait for results
+                // processServerFile handles status updates (uploading -> processing) via DOM placeholders
                 const generatedPages = await processServerFile(file, sourceId);
+                if (generatedPages) numPages = generatedPages.length;
+            }
+
+            // 4. Dynamic Expansion: If file has > 1 page, insert the rest
+            if (numPages > 1) {
+                // Find where our placeholder currently lives (it might have moved if user dragged things)
+                // We look for the first page associated with this sourceId
+                const baseIndex = pages.findIndex(p => p.sourceFileId === sourceId);
                 
-                // Add remaining pages
-                if (generatedPages && generatedPages.length > 1) {
-                    for(let k=1; k < generatedPages.length; k++) {
-                        newPages.push({
-                            id: `${sourceId}_p${k}`,
-                            sourceFileId: sourceId,
-                            pageIndex: k + 1,
-                            settings: { scaleMode: 'fit', alignment: 'center', panX: 0, panY: 0 },
-                            isSpread: false
-                        });
+                if (baseIndex !== -1) {
+                    const newPagesToAdd = [];
+                    // We already have Page 1 (index 0). We need to add pages 2..N (index 1..N-1)
+                    for (let k = 1; k < numPages; k++) {
+                        const pageIndex = k + 1; // 1-based index for UI
+                        if (isSpreadUpload) {
+                            newPagesToAdd.push({
+                                id: `${sourceId}_p${k}_L`, sourceFileId: sourceId, pageIndex: pageIndex,
+                                settings: { scaleMode: 'fill', alignment: 'center', view: 'left', panX: 0.5, panY: 0 }, isSpread: false
+                            });
+                            newPagesToAdd.push({
+                                id: `${sourceId}_p${k}_R`, sourceFileId: sourceId, pageIndex: pageIndex,
+                                settings: { scaleMode: 'fill', alignment: 'center', view: 'right', panX: -0.5, panY: 0 }, isSpread: false
+                            });
+                        } else {
+                            newPagesToAdd.push({
+                                id: `${sourceId}_p${k}`, sourceFileId: sourceId, pageIndex: pageIndex,
+                                settings: { scaleMode: 'fit', alignment: 'center', panX: 0, panY: 0 }, isSpread: false
+                            });
+                        }
                     }
+
+                    // Insert after the initial placeholder(s)
+                    const insertOffset = isSpreadUpload ? 2 : 1;
+                    pages.splice(baseIndex + insertOffset, 0, ...newPagesToAdd);
                 }
             }
-        }
 
-        if (insertAtIndex !== null && insertAtIndex >= 0) {
-            pages.splice(insertAtIndex, 0, ...newPages);
-        } else {
-            pages.push(...newPages);
-        }
-        
-        saveState();
-        balancePages();
-        triggerAutosave();
+            // Refresh Views per file completion so user sees progress
+            renderBookViewer();
+            triggerAutosave();
 
-    } catch (e) {
-        console.error("Error adding files:", e);
-        alert("Failed to add files: " + e.message);
-    } finally {
-        toggleBusyOverlay(false);
-    }
+        } catch (e) {
+            console.error(`Failed to process ${file.name}`, e);
+            // Mark as error so UI shows red
+            if (isLocal) sourceFiles[sourceId].status = 'error';
+            renderBookViewer();
+        }
+    });
+
+    // Final cleanup and balance
+    balancePages();
+    triggerAutosave();
 }
 
 function addPagesToModel(targetArray, sourceId, numPages, isSpreadUpload) {
@@ -1438,8 +1520,13 @@ function addPagesToModel(targetArray, sourceId, numPages, isSpreadUpload) {
 }
 
 async function processCoverFile(file, slotId) {
+    let progressUnsubscribe = null;
+    const userId = auth.currentUser ? auth.currentUser.uid : 'guest';
+    const tempId = Date.now().toString();
+    const progressDocId = `${userId}_cover_${slotId}_${tempId}`;
+
     try {
-        // 1. Set Initial State
+        // 1. Set Initial UI State
         coverSources[slotId] = { 
             file: file, 
             status: 'uploading', 
@@ -1447,51 +1534,89 @@ async function processCoverFile(file, slotId) {
         };
         renderCoverPreview(); 
 
-        const userId = auth.currentUser ? auth.currentUser.uid : 'guest';
-        const tempId = Date.now().toString();
+        // 2. Upload to Storage
         const storagePath = `temp_uploads/${userId}/${tempId}/${file.name}`;
         const storageRef = ref(storage, storagePath);
         
         await uploadBytesResumable(storageRef, file);
 
-        // 2. Update State (Processing)
+        // Check if still active (user might have deleted while uploading)
+        if (!coverSources[slotId]) return;
+
+        // 3. Update State to Processing
         coverSources[slotId].status = 'processing';
         renderCoverPreview();
 
-        const generatePreviews = httpsCallable(functions, 'generatePreviews');
-        const result = await generatePreviews({
-            filePath: storagePath,
-            originalName: file.name
+        // 4. Setup Progress Listener
+        const progressRef = doc(db, "temp_processing", progressDocId);
+        await setDoc(progressRef, { status: "Initializing...", createdAt: serverTimestamp() });
+
+        progressUnsubscribe = onSnapshot(progressRef, (doc) => {
+            if (doc.exists()) {
+                const data = doc.data();
+                if (data.status) {
+                    console.log(`[Cover ${slotId}] Server Status:`, data.status);
+                }
+            }
         });
 
+        // 5. Call Server
+        if (GENERATE_PREVIEWS_URL.includes("YOUR_CLOUD_RUN")) {
+            throw new Error("Configuration Error: Missing Server URL");
+        }
+
+        const generatePreviews = httpsCallableFromURL(functions, GENERATE_PREVIEWS_URL, { 
+            timeout: 540000 
+        });
+        
+        const result = await generatePreviews({
+            filePath: storagePath,
+            originalName: file.name,
+            progressDocId: progressDocId 
+        });
+
+        if (!coverSources[slotId]) return;
+
+        // 6. Handle Success
         if (result.data && result.data.pages && result.data.pages.length > 0) {
             const firstPage = result.data.pages[0];
             
-            // WE USE THE JPG URL RETURNED BY THE SERVER
+            // Update memory state
             coverSources[slotId] = {
                 file: file,
                 status: 'ready',
                 previewUrl: firstPage.previewUrl, 
                 storagePath: storagePath, 
                 isServer: true,
-                isThumbnail: true 
+                isThumbnail: true,
+                pagePreviews: result.data.pages 
             };
             
             renderCoverPreview();
-            renderBookViewer(); // [FIX] Update Ghost Pages after server processing
+            renderBookViewer(); 
+            
+            // [CRITICAL FIX] Force immediate save to persist the new thumbnail data.
+            // This prevents data loss if the user refreshes before the debounced autosave fires.
+            console.log(`[Cover ${slotId}] Processing complete. Saving state immediately.`);
+            await syncProjectState('draft');
+
         } else {
             throw new Error("No preview generated");
         }
 
     } catch (err) {
         console.error("Cover processing failed", err);
-        coverSources[slotId] = { 
-            file: file, 
-            status: 'error', 
-            error: err.message,
-            isServer: true 
-        };
-        renderCoverPreview();
+        if (coverSources[slotId]) {
+            coverSources[slotId] = { 
+                file: file, 
+                status: 'error', 
+                error: err.message,
+                isServer: true 
+            };
+            renderCoverPreview();
+        }
+    } finally {
+        if (progressUnsubscribe) progressUnsubscribe();
     }
 }
 
@@ -3027,7 +3152,6 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
 
     let file, status, isServer, previewUrl, storagePath;
     
-    // Normalization Logic
     if (sourceEntry instanceof File) {
         file = sourceEntry;
         status = 'ready';
@@ -3040,14 +3164,18 @@ async function drawFileWithTransform(ctx, sourceEntry, targetX, targetY, targetW
         storagePath = sourceEntry.storagePath;
     }
 
+    // --- CHECK STATUS ---
     if (status === 'error') {
         ctx.fillStyle = '#fee2e2'; 
         ctx.fillRect(targetX, targetY, targetW, targetH); 
+        // Optional: Draw error text
         return null;
     }
+    
+    // [UPDATE] If processing/uploading, draw the throbber
     if (status === 'processing' || status === 'uploading') {
         drawProcessingState(ctx, targetX, targetY, targetW, targetH); 
-        return null;
+        return { isProcessing: true };
     }
 
     const fileKey = isServer ? (storagePath || previewUrl || 'server_url') : (file ? file.name : 'unknown_file');
@@ -3411,10 +3539,45 @@ function fitCoverToView() {
 }
 
 function drawProcessingState(ctx, x, y, w, h) {
-    // Just fill white so the background is clean behind the DOM spinner
     ctx.save();
-    ctx.fillStyle = '#ffffff'; 
+    
+    // 1. Background
+    ctx.fillStyle = '#f8fafc'; 
     ctx.fillRect(x, y, w, h);
+
+    // 2. Text
+    ctx.fillStyle = '#64748b'; // Slate-500
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    
+    const fontSize = Math.min(w, h) * 0.1; 
+    ctx.font = `bold ${fontSize}px sans-serif`;
+    
+    const centerX = x + w / 2;
+    const centerY = y + h / 2;
+
+    ctx.fillText("PROCESSING...", centerX, centerY);
+    
+    // 3. Simple "Throbber" Bar
+    // Use Date.now() so it moves on every redraw
+    const time = Date.now() / 500;
+    const barW = w * 0.6;
+    const barH = h * 0.05;
+    const barX = centerX - barW / 2;
+    const barY = centerY + fontSize;
+
+    // Background bar
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillRect(barX, barY, barW, barH);
+
+    // Moving indicator
+    const indW = barW * 0.3;
+    const offset = (Math.sin(time) + 1) / 2; // 0 to 1
+    const indX = barX + (barW - indW) * offset;
+    
+    ctx.fillStyle = '#6366f1'; // Indigo-500
+    ctx.fillRect(indX, barY, indW, barH);
+
     ctx.restore();
 }
 
@@ -3673,7 +3836,7 @@ async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageI
 
     if (!file && !isServer) return;
 
-    if (status === 'processing' || status === 'uploading') { drawProcessingState(ctx, x, y, targetW, targetH); return; }
+    if (status === 'processing' || status === 'uploading') { drawProcessingState(ctx, x, y, targetW, targetH); return { isProcessing: true }; }
     if (status === 'error') { ctx.fillStyle = '#fee2e2'; ctx.fillRect(x, y, targetW, targetH); return; }
 
     const fileKey = isServer ? (storagePath || previewUrl || 'server_url') : (file ? file.name : 'unknown_file');
@@ -3685,15 +3848,28 @@ async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageI
     try {
         imgBitmap = await fetchBitmapWithCache(cacheKey, async () => {
             if (isServer) {
-                // --- USE SHARED LOADER ---
-                const pdf = await getSharedPdfDoc(previewUrl, storagePath);
-                // ------------------------
-                const page = await pdf.getPage(pageIndex);
-                const viewport = page.getViewport({ scale: 2 });
-                const cvs = document.createElement('canvas');
-                cvs.width = viewport.width; cvs.height = viewport.height;
-                await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
-                return createImageBitmap(cvs);
+                const pathToCheck = (previewUrl || storagePath || '').toLowerCase().split('?')[0];
+                const isImage = sourceEntry.isThumbnail || /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(pathToCheck);
+                const isPdf = pathToCheck.endsWith('.pdf');
+
+                if (isImage) {
+                    const resp = await fetch(previewUrl);
+                    if (!resp.ok) throw new Error("Failed to fetch image");
+                    const blob = await resp.blob();
+                    return createImageBitmap(blob);
+                } else if (isPdf) {
+                    const pdf = await getSharedPdfDoc(previewUrl, storagePath);
+                    const page = await pdf.getPage(pageIndex);
+                    const viewport = page.getViewport({ scale: 2 });
+                    const cvs = document.createElement('canvas');
+                    cvs.width = viewport.width; cvs.height = viewport.height;
+                    await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+                    return createImageBitmap(cvs);
+                } else {
+                    // [FIX] Unsupported format (e.g. raw PSD with missing thumbnail). Return null to skip render.
+                    console.warn(`Skipping render for unsupported server file: ${pathToCheck}`);
+                    return null;
+                }
 
             } else if (file && file.type === 'application/pdf') {
                 let pdfDoc = pdfDocCache.get(file);
@@ -3716,13 +3892,22 @@ async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageI
             return null;
         });
 
-        if (!imgBitmap) return;
+        if (!imgBitmap) {
+            // Fallback for missing/unsupported content
+            ctx.fillStyle = '#e2e8f0'; 
+            ctx.fillRect(x, y, targetW, targetH);
+            ctx.fillStyle = '#94a3b8';
+            ctx.font = '10px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText("Preview Unavailable", x + targetW/2, y + targetH/2);
+            return null;
+        }
 
         const srcW = imgBitmap.width;
         const srcH = imgBitmap.height;
         const srcRatio = srcW / srcH;
         const targetRatio = targetW / targetH;
-
+        
         let drawW, drawH, drawX, drawY;
 
         if (scaleMode === 'stretch') { drawW = targetW; drawH = targetH; drawX = x; drawY = y; }
@@ -3745,6 +3930,7 @@ async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageI
 
     } catch (e) {
         console.error("Error rendering cover image:", e);
+        ctx.fillStyle = '#fee2e2'; ctx.fillRect(x, y, targetW, targetH);
     }
 }
 
@@ -4012,7 +4198,7 @@ async function drawWrapper(ctx, sourceEntry, targetX, targetY, targetW, targetH,
     const status = sourceEntry.status || 'ready';
     if (status === 'processing' || status === 'uploading') {
         drawProcessingState(ctx, targetX, targetY, targetW, targetH);
-        return;
+        return { isProcessing: true };
     }
     if (status === 'error') {
         ctx.fillStyle = '#fee2e2';
@@ -4034,19 +4220,33 @@ async function drawWrapper(ctx, sourceEntry, targetX, targetY, targetW, targetH,
             if (isServer) {
                 if (!sourceEntry.previewUrl) return null;
 
-                let pdfDocPromise = remotePdfDocCache.get(fileKey);
-                if (!pdfDocPromise) {
-                    const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
-                    pdfDocPromise = loadingTask.promise;
-                    remotePdfDocCache.set(fileKey, pdfDocPromise);
+                const pathToCheck = (sourceEntry.previewUrl || sourceEntry.storagePath || '').toLowerCase().split('?')[0];
+                const isImage = sourceEntry.isThumbnail || /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(pathToCheck);
+                const isPdf = pathToCheck.endsWith('.pdf');
+
+                if (isImage) {
+                    const resp = await fetch(sourceEntry.previewUrl);
+                    if (!resp.ok) throw new Error("Failed to fetch image");
+                    const blob = await resp.blob();
+                    return createImageBitmap(blob);
+                } else if (isPdf) {
+                    let pdfDocPromise = remotePdfDocCache.get(fileKey);
+                    if (!pdfDocPromise) {
+                        const loadingTask = pdfjsLib.getDocument(sourceEntry.previewUrl);
+                        pdfDocPromise = loadingTask.promise;
+                        remotePdfDocCache.set(fileKey, pdfDocPromise);
+                    }
+                    const pdf = await pdfDocPromise;
+                    const page = await pdf.getPage(pageIndex);
+                    const viewport = page.getViewport({ scale: 2 });
+                    const cvs = document.createElement('canvas');
+                    cvs.width = viewport.width; cvs.height = viewport.height;
+                    await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
+                    return createImageBitmap(cvs);
+                } else {
+                    // [FIX] Unsupported format
+                    return null;
                 }
-                const pdf = await pdfDocPromise;
-                const page = await pdf.getPage(pageIndex);
-                const viewport = page.getViewport({ scale: 2 });
-                const cvs = document.createElement('canvas');
-                cvs.width = viewport.width; cvs.height = viewport.height;
-                await page.render({ canvasContext: cvs.getContext('2d'), viewport }).promise;
-                return createImageBitmap(cvs);
 
             } else if (file && file.type === 'application/pdf') {
                 let pdfDoc = pdfDocCache.get(file);
@@ -4075,7 +4275,6 @@ async function drawWrapper(ctx, sourceEntry, targetX, targetY, targetW, targetH,
 
     if (!imgBitmap) return;
 
-    // --- Draw Logic ---
     ctx.save();
     ctx.beginPath();
     ctx.rect(targetX, targetY, targetW, targetH);
@@ -4085,17 +4284,12 @@ async function drawWrapper(ctx, sourceEntry, targetX, targetY, targetW, targetH,
     const scaledW = imgBitmap.width * scale;
     
     if (isFrontSource) { 
-        // Mirror Front: Flip horizontally, draw from right edge
         ctx.translate(targetX + targetW, targetY);
         ctx.scale(-1, 1); 
-        // Draw image so the "spine" part (left edge of front cover) meets the actual spine
         ctx.drawImage(imgBitmap, 0, 0, imgBitmap.width, imgBitmap.height, 0, 0, scaledW, targetH);
     } else { 
-        // Mirror Back: Flip horizontally, draw from left edge
         ctx.translate(targetX, targetY);
         ctx.scale(-1, 1);
-        // Draw image so the "spine" part (right edge of back cover) meets the actual spine
-        // We draw at negative width because we want the rightmost part of the image to be at x=0 (after flip)
         ctx.drawImage(imgBitmap, 0, 0, imgBitmap.width, imgBitmap.height, -scaledW, 0, scaledW, targetH);
     }
     ctx.restore();
@@ -4445,6 +4639,7 @@ async function restoreBuilderState() {
             const entries = Object.entries(state.sourceFiles);
             const restorePromises = entries.map(async ([id, meta]) => {
                 try {
+                    // Get the raw file URL (PSD/PDF)
                     const url = await getDownloadURL(ref(storage, meta.storagePath));
                     
                     const restoredObject = {
@@ -4456,9 +4651,17 @@ async function restoreBuilderState() {
                         isThumbnail: meta.isThumbnail || false
                     };
 
-                    if (restoredObject.pagePreviews && restoredObject.pagePreviews.length > 0) {
-                        const p1 = restoredObject.pagePreviews.find(p => p.pageNumber === 1) || restoredObject.pagePreviews[0];
-                        restoredObject.previewUrl = p1.previewUrl;
+                    // [FIX] Robust Thumbnail Restoration
+                    if (restoredObject.isThumbnail) {
+                        if (restoredObject.pagePreviews && restoredObject.pagePreviews.length > 0) {
+                            const p1 = restoredObject.pagePreviews.find(p => p.pageNumber === 1) || restoredObject.pagePreviews[0];
+                            restoredObject.previewUrl = p1.previewUrl;
+                        } else {
+                            // Safety: We have the flag but NO thumbnails. 
+                            // Turn off flag to prevent 'InvalidStateError' when trying to decode PSD as Image.
+                            console.warn(`[Restore] Missing thumbnails for ${id}. Reverting to raw file mode.`);
+                            restoredObject.isThumbnail = false;
+                        }
                     }
 
                     if (id.startsWith('cover_')) {
@@ -4479,8 +4682,7 @@ async function restoreBuilderState() {
                                 el.classList.remove('hidden');
                             }
                             createCoverControls(inputId, restoredObject.previewUrl);
-                            
-                            renderBookViewer(); // [FIX] Ensure viewer knows about restored cover
+                            renderBookViewer(); 
                         }
                     } else {
                         sourceFiles[id] = restoredObject;

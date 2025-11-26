@@ -1,6 +1,8 @@
+// js/notifications.js
 import { auth, db, functions } from './firebase.js';
 import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-import { collection, query, where, getDocs, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+// [UPDATE] Added 'doc' and 'updateDoc' to the imports below
+import { collection, query, where, getDocs, writeBatch, doc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 import { httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js";
 
 async function initializeNotifications() {
@@ -48,8 +50,10 @@ async function initializeNotifications() {
     // --- NEW: Standalone function to mark as read without navigating ---
     async function markAsRead(notification) {
         try {
+            // This line was failing because 'doc' wasn't imported
             const notifRef = doc(db, "notifications", notification.id);
             await updateDoc(notifRef, { read: true });
+            
             // Refresh the list to update UI (remove badge/button)
             fetchAndRenderNotifications();
         } catch (error) {

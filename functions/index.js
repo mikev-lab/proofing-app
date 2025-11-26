@@ -1972,24 +1972,38 @@ const generatePreviewsLogic = onCall({
     timeoutSeconds: 540,
     cors: true,
 }, async (request) => {
-    const { filePath: originalFilePath, originalName: originalFileName, progressDocId } = request.data; // [FIX] Accept progressDocId
+    const { filePath: originalFilePath, originalName: originalFileName, progressDocId } = request.data;
+    
     if (!originalFilePath || !originalFileName) {
         throw new HttpsError('invalid-argument', 'Missing "filePath" or "originalName".');
     }
 
+    // 1. Unique Temp Directory (Local)
+    const processId = crypto.randomUUID();
+    const tempDir = path.join(os.tmpdir(), `proc_${processId}`);
+    
+    // 2. Unique Storage Path (Cloud)
+    // Path structure: temp_uploads / USER_ID / TIMESTAMP / FILENAME
     const pathParts = originalFilePath.split('/');
-    const tempId = pathParts.length > 2 ? pathParts[1] : `unknown_${Date.now()}`;
+    
+    // [FIX] Use USER_ID + TIMESTAMP to make the folder unique per file upload
+    // If path is: temp_uploads/guest_123/1764159/file.psd
+    // pathParts[1] = guest_123
+    // pathParts[2] = 1764159 (Unique Timestamp ID)
+    let storageFolderId = `unknown_${Date.now()}`;
+    if (pathParts.length > 2) {
+        storageFolderId = `${pathParts[1]}/${pathParts[2]}`;
+    }
+
     const bucket = admin.storage().bucket();
     
-    // Temp Directories
-    const tempDir = path.join(os.tmpdir(), tempId);
+    // Ensure temp directory exists
     if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
     
-    const sourceFilePath = path.join(tempDir, `source_${originalFileName}`);
+    let sourceFilePath = path.join(tempDir, `source_${originalFileName}`);
+    
+    logger.log(`[Preview] Start: ${originalFilePath} | StorageFolder: ${storageFolderId}`);
 
-    logger.log(`Processing: ${originalFilePath}`);
-
-    // Helper to update progress
     const updateProgress = async (msg) => {
         if (progressDocId) {
             try {
@@ -2005,29 +2019,58 @@ const generatePreviewsLogic = onCall({
         await updateProgress("Downloading file...");
         await bucket.file(originalFilePath).download({ destination: sourceFilePath });
 
-        // 2. Get Page Count
+        // --- Conversion Logic ---
+        const isPdf = originalFileName.toLowerCase().endsWith('.pdf');
+        const ext = path.extname(originalFileName).toLowerCase();
+
+        if (!isPdf) {
+            await updateProgress(`Converting ${ext.toUpperCase()} to PDF...`);
+            logger.log(`[Preview] Converting ${ext} using Gotenberg...`);
+            
+            try {
+                const authAxios = await getAuthenticatedClient();
+                const convertFormData = new FormData();
+                convertFormData.append('files', fs.createReadStream(sourceFilePath), originalFileName);
+                
+                const response = await authAxios.post(`${GOTENBERG_URL}/forms/libreoffice/convert`, convertFormData, { 
+                    responseType: 'arraybuffer' 
+                });
+                
+                const newPdfPath = path.join(tempDir, `converted_${Date.now()}.pdf`);
+                fs.writeFileSync(newPdfPath, response.data);
+                
+                try { fs.unlinkSync(sourceFilePath); } catch(e) {}
+                sourceFilePath = newPdfPath;
+                
+                logger.log(`[Preview] Conversion successful.`);
+            } catch (e) {
+                logger.error("[Preview] Gotenberg conversion failed:", e);
+                throw new HttpsError('internal', `Failed to convert ${ext}.`);
+            }
+        }
+
+        // --- Page Count ---
         let pageCount = 1;
         try {
             const { spawn } = require('child-process-promise');
             const result = await spawn('pdfinfo', [sourceFilePath], { capture: ['stdout'] });
-            const output = result.stdout.toString();
-            const match = output.match(/Pages:\s+(\d+)/);
+            const match = result.stdout.toString().match(/Pages:\s+(\d+)/);
             if (match) pageCount = parseInt(match[1], 10);
         } catch (e) {
-            logger.warn("Failed to get page count, defaulting to 1", e);
+            logger.warn("[Preview] Failed to get page count, defaulting to 1");
         }
 
-        await updateProgress(`Analyzing ${pageCount} pages...`);
-        logger.log(`Document has ${pageCount} pages. Starting batch processing...`);
+        await updateProgress(`Processing ${pageCount} pages...`);
 
-        // 3. Parallel Processing Logic
+        // --- Generate Thumbnails ---
         const BATCH_SIZE = 4; 
         const pagesData = [];
         
         const processPage = async (pageNum) => {
             const thumbName = `thumb_${pageNum}.jpg`;
             const thumbLocal = path.join(tempDir, thumbName);
-            const thumbStorage = `temp_previews/${tempId}/${thumbName}`;
+            // [FIX] Use the unique storageFolderId here
+            const thumbStorage = `temp_previews/${storageFolderId}/${thumbName}`;
 
             await spawn('gs', [
                 '-sDEVICE=jpeg',
@@ -2038,7 +2081,7 @@ const generatePreviewsLogic = onCall({
                 `-dLastPage=${pageNum}`,
                 '-dNOPAUSE', '-dQUIET', '-dBATCH',
                 `-sOutputFile=${thumbLocal}`,
-                sourceFilePath
+                sourceFilePath 
             ]);
 
             await bucket.upload(thumbLocal, {
@@ -2046,8 +2089,6 @@ const generatePreviewsLogic = onCall({
                 contentType: 'image/jpeg',
                 metadata: { cacheControl: 'public, max-age=31536000' }
             });
-
-            try { fs.unlinkSync(thumbLocal); } catch(e){}
 
             const [url] = await bucket.file(thumbStorage).getSignedUrl({
                 action: 'read', expires: '03-09-2491'
@@ -2062,19 +2103,12 @@ const generatePreviewsLogic = onCall({
 
         for (let i = 1; i <= pageCount; i += BATCH_SIZE) {
             const end = Math.min(i + BATCH_SIZE - 1, pageCount);
-            
-            // [FIX] Update Progress
-            await updateProgress(`Processing pages ${i}-${end} of ${pageCount}...`);
-            
             const batchPromises = [];
             for (let j = i; j <= end; j++) {
                 batchPromises.push(processPage(j));
             }
-            
             const batchResults = await Promise.all(batchPromises);
             pagesData.push(...batchResults);
-            
-            logger.log(`Processed pages ${i} to ${end}`);
         }
 
         await updateProgress("Finalizing...");
@@ -2086,7 +2120,7 @@ const generatePreviewsLogic = onCall({
         };
 
     } catch (error) {
-        logger.error('Error generating previews:', error);
+        logger.error('[Preview] Fatal Error:', error);
         await updateProgress(`Error: ${error.message}`);
         throw new HttpsError('internal', error.message);
     } finally {
