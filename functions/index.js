@@ -1407,10 +1407,11 @@ exports.createFileRequest = onCall({ region: 'us-central1' }, async (request) =>
     throw new HttpsError('internal', 'An error occurred while verifying admin status.');
   }
 
-  const { projectName, projectType, clientEmail } = request.data;
+  // [UPDATE] Accept companyId, remove mandatory projectType check
+  const { projectName, clientEmail, companyId } = request.data;
 
-  if (!projectName || !projectType) {
-    throw new HttpsError('invalid-argument', 'Missing required fields: projectName, projectType.');
+  if (!projectName) {
+    throw new HttpsError('invalid-argument', 'Missing required field: projectName.');
   }
 
   try {
@@ -1420,10 +1421,12 @@ exports.createFileRequest = onCall({ region: 'us-central1' }, async (request) =>
 
       const newProjectData = {
           projectName: projectName,
-          projectType: projectType, // 'single' or 'booklet'
+          // [UPDATE] Default to 'guest_mode' or similar since builder handles it
+          projectType: 'guest_mode', 
           status: 'Awaiting Client Upload',
-          companyId: 'GUEST_CLIENT', // Or handle creating a temporary company if needed
-          clientId: null, // No registered client yet
+          // [UPDATE] Use provided companyId or default to GUEST_CLIENT
+          companyId: companyId || 'GUEST_CLIENT', 
+          clientId: null, 
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
           createdBy: userUid,
           clientEmail: clientEmail || null,
@@ -1436,17 +1439,17 @@ exports.createFileRequest = onCall({ region: 'us-central1' }, async (request) =>
 
       // 3. Generate Guest Link with 'canUpload' permission
       const permissions = {
-          canApprove: false,
-          canAnnotate: false,
-          canSeeComments: false,
+          canApprove: true,
+          canAnnotate: true,
+          canSeeComments: true,
           canUpload: true,
-          isOwner: true // Allow them to manage uploads
+          isOwner: true 
       };
 
       const token = crypto.randomBytes(20).toString('hex');
       const createdAt = admin.firestore.FieldValue.serverTimestamp();
       const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + 30); // 30 Days expiry
+      expiresAt.setDate(expiresAt.getDate() + 30); 
       const expiresAtTimestamp = admin.firestore.Timestamp.fromDate(expiresAt);
 
       const guestLinkRef = projectRef.collection('guestLinks').doc(token);
@@ -1459,7 +1462,6 @@ exports.createFileRequest = onCall({ region: 'us-central1' }, async (request) =>
       });
 
       // 4. Return the Guest Upload URL
-      // Note: This points to the NEW guest_upload.html page
       const baseUrl = 'https://your-app-domain.com/guest_upload.html';
       const guestUrl = `${baseUrl}?projectId=${projectId}&guestToken=${token}`;
 

@@ -421,7 +421,11 @@ function loadProjectForUser(user) {
             const currentProcessingStatus = latestVersion ? latestVersion.processingStatus : 'complete';
             
             // Detect Changes
-            const shouldReInit = (currentVersionCount !== lastVersionCount) || (currentStatus !== lastStatus);
+            // [UPDATE] Added check for (currentProcessingStatus !== lastProcessingStatus)
+            // This ensures we re-init when optimization finishes.
+            const shouldReInit = (currentVersionCount !== lastVersionCount) || 
+                                 (currentStatus !== lastStatus) || 
+                                 (currentProcessingStatus !== lastProcessingStatus);
             
             lastVersionCount = currentVersionCount;
             lastStatus = currentStatus;
