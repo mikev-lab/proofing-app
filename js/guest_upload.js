@@ -1144,43 +1144,63 @@ async function drawStretched(ctx, sourceEntry, targetZone, totalZone, anchor, pa
 function setupDropZone(inputId) {
     const input = document.getElementById(inputId);
     if(!input) return;
+    
+    // Find the closest visual container (the drop zone)
     const dropZone = input.closest('.drop-zone');
+    if(!dropZone) return;
 
-    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-        dropZone.addEventListener(eventName, preventDefaults, false);
-    });
+    // Use a counter to handle child element events properly
+    let dragCounter = 0;
 
-    function preventDefaults(e) {
-        e.preventDefault();
-        e.stopPropagation();
-    }
-
-    ['dragenter', 'dragover'].forEach(eventName => {
-        dropZone.addEventListener(eventName, highlight, false);
-    });
-
-    ['dragleave', 'drop'].forEach(eventName => {
-        dropZone.addEventListener(eventName, unhighlight, false);
-    });
-
-    function highlight(e) {
+    const highlight = () => {
         dropZone.classList.add('dragover');
         dropZone.classList.add('border-indigo-500');
-    }
+        dropZone.classList.add('bg-indigo-900/20'); // Added bg tint for visibility
+    };
 
-    function unhighlight(e) {
+    const unhighlight = () => {
         dropZone.classList.remove('dragover');
         dropZone.classList.remove('border-indigo-500');
-    }
+        dropZone.classList.remove('bg-indigo-900/20');
+    };
 
-    dropZone.addEventListener('drop', handleDrop, false);
+    dropZone.addEventListener('dragenter', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dragCounter++;
+        highlight();
+    }, false);
 
-    function handleDrop(e) {
+    dropZone.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dragCounter--;
+        if (dragCounter === 0) {
+            unhighlight();
+        }
+    }, false);
+
+    dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        // Ensure highlight stays on during hover
+        highlight(); 
+    }, false);
+
+    dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        unhighlight();
+        dragCounter = 0; // Reset
+
         const dt = e.dataTransfer;
         const files = dt.files;
-        input.files = files;
-        input.dispatchEvent(new Event('change'));
-    }
+        
+        if (files && files.length > 0) {
+            input.files = files;
+            input.dispatchEvent(new Event('change'));
+        }
+    }, false);
 }
 
 // [NEW] Helper to enforce binding constraints (Multiples of 4 or 2)
@@ -1721,7 +1741,7 @@ function renderBookViewer() {
     const visualScale = (250 * viewerScale) / ((width + bleed * 2) * 96);
     const pixelsPerInch = 96 * visualScale;
 
-    // ... (Keep runPageRender / removePlaceholder / observer logic exactly as before) ...
+    // ... (Keep runPageRender / removePlaceholder / observer logic) ...
     const runPageRender = (page, canvas) => {
         if (!page || !canvas) return Promise.resolve(true);
         const sourceEntry = sourceFiles[page.sourceFileId];
@@ -1768,7 +1788,6 @@ function renderBookViewer() {
 
     // --- SINGLE LAYOUT ---
     if (projectType === 'single') {
-        // ... (Keep existing single logic) ...
         container.className = "flex flex-wrap gap-8 items-start justify-center p-6";
         const slots = [{ label: "Front Side", index: 0 }, { label: "Back Side", index: 1 }];
         slots.forEach(slot => {
@@ -1815,28 +1834,21 @@ function renderBookViewer() {
     const firstSpread = document.createElement('div');
     firstSpread.className = "spread-row flex justify-center items-end gap-0 mb-4 min-h-[100px] p-2 border border-transparent hover:border-dashed hover:border-gray-600 rounded";
     
-    // Prepare Spacer
     const spacer = document.createElement('div');
     spacer.style.width = `${width * pixelsPerInch}px`;
     spacer.className = "pointer-events-none";
 
-    // [FIX] Inside Front Cover Logic
     let frontCoverGhost = null;
     if (coverSources['file-cover-inside-front'] || projectSpecs.binding !== 'loose') {
-        // Even if no file is selected yet, show the ghost slot if it's a booklet
         frontCoverGhost = createGhostCoverCard(
-            coverSources['file-cover-inside-front'], 
-            "Inside Front Cover", 
-            width, height, bleed, pixelsPerInch
+            coverSources['file-cover-inside-front'], "Inside Front Cover", width, height, bleed, pixelsPerInch
         );
     }
 
     if (isRTL) {
-        // RTL: [Page 1, Inside Front Cover]
         if (pages[0]) firstSpread.appendChild(createPageCard(pages[0], 0, false, false, width, height, bleed, pixelsPerInch, observer));
         firstSpread.appendChild(frontCoverGhost || spacer);
     } else {
-        // LTR: [Inside Front Cover, Page 1]
         firstSpread.appendChild(frontCoverGhost || spacer);
         if (pages[0]) firstSpread.appendChild(createPageCard(pages[0], 0, true, false, width, height, bleed, pixelsPerInch, observer));
     }
@@ -1847,13 +1859,21 @@ function renderBookViewer() {
     while (i < pages.length) {
         container.appendChild(createInsertBar(i));
         const spreadDiv = document.createElement('div');
-        spreadDiv.className = "spread-row flex justify-center items-end gap-0 mb-4 min-h-[100px] p-2 border border-transparent hover:border-dashed hover:border-gray-600 rounded";
+        // gap-0 is crucial here for touching pages
+        spreadDiv.className = "spread-row relative flex justify-center items-end gap-0 mb-4 min-h-[100px] p-2 border border-transparent hover:border-dashed hover:border-gray-600 rounded group/spread";
 
         const pA = pages[i];
         const pB = pages[i+1];
 
+        // LOGIC: Check if implicitly linked (file split) OR manually linked
         let isLinkedSpread = false;
+        
+        // Implicit check (L/R naming convention)
         if (pA && pB && pA.sourceFileId && pA.sourceFileId === pB.sourceFileId && pA.id.endsWith('_L') && pB.id.endsWith('_R')) {
+            isLinkedSpread = true;
+        }
+        // Manual check
+        if (pA && pB && pA.manuallyLinked) {
             isLinkedSpread = true;
         }
 
@@ -1878,6 +1898,24 @@ function renderBookViewer() {
                 spreadDiv.appendChild(endSpacer);
             }
 
+            // [FIXED] Insert Link Button ABSOLUTELY positioned so it doesn't break flex gap
+            if (leftPageObj && rightPageObj) {
+                const linkBtn = document.createElement('button');
+                linkBtn.type = 'button';
+                // Absolute positioning centers it over the spine seam
+                linkBtn.className = "absolute bottom-8 left-1/2 -translate-x-1/2 z-20 p-1.5 rounded-full bg-slate-700 text-gray-400 border border-slate-600 hover:bg-indigo-600 hover:text-white hover:border-indigo-500 transition-all opacity-0 group-hover/spread:opacity-100 shadow-lg transform scale-90 hover:scale-100";
+                linkBtn.title = "Link Pages as Spread";
+                linkBtn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"></path></svg>`;
+                linkBtn.onclick = () => {
+                    // Set manual link on the Left page of the logic pair (pA)
+                    if (pA) pA.manuallyLinked = true;
+                    saveState();
+                    renderBookViewer();
+                    triggerAutosave();
+                };
+                spreadDiv.appendChild(linkBtn);
+            }
+
             if (rightPageObj) spreadDiv.appendChild(createPageCard(rightPageObj, rightIdx, true, false, width, height, bleed, pixelsPerInch, observer));
             else {
                 const endSpacer = document.createElement('div');
@@ -1892,76 +1930,44 @@ function renderBookViewer() {
 
     container.appendChild(createInsertBar(pages.length));
 
-    // --- [FIX] INSIDE BACK COVER LOGIC ---
-    // We need to determine where the "Inside Back Cover" goes relative to the last page.
-    // Total pages (pages.length).
-    // If LTR:
-    //   Page 1 (Right)
-    //   P2 (L), P3 (R)
-    //   P4 (L), P5 (R)
-    // If last page is Even (Left), e.g., P4. The Right slot is empty. Inside Back goes there.
-    // If last page is Odd (Right), e.g., P5. The spread is full. We need a NEW row: [Inside Back, Spacer].
-    
+    // --- INSIDE BACK COVER ---
     if (coverSources['file-cover-inside-back'] || projectSpecs.binding !== 'loose') {
         const backCoverGhost = createGhostCoverCard(
-            coverSources['file-cover-inside-back'], 
-            "Inside Back Cover", 
-            width, height, bleed, pixelsPerInch
+            coverSources['file-cover-inside-back'], "Inside Back Cover", width, height, bleed, pixelsPerInch
         );
 
-        const lastWasEven = (pages.length % 2 === 0); // If count is 4, last page (P4) is Left.
+        const lastWasEven = (pages.length % 2 === 0);
         
         if (isRTL) {
-            // RTL: P1 Left. P2 R, P3 L.
-            // Even pages are Right. Odd pages are Left.
-            // If Total 4: P4 is Right. Left slot is empty. Inside Back goes Left.
-            // If Total 5: P5 is Left. Spread is full. New Row: [Spacer, Inside Back]
             if (lastWasEven) {
-                // P_last is Right. Slot to Left is empty.
-                // We need to find the *last spread div* we just created and prepend the ghost.
-                const lastSpreadDiv = container.lastElementChild.previousElementSibling; // skip insert bar
+                const lastSpreadDiv = container.lastElementChild.previousElementSibling; 
                 if (lastSpreadDiv && lastSpreadDiv.classList.contains('spread-row')) {
-                    // Replace the "endSpacer" if it exists, or prepend
-                    // In the loop above, if leftPageObj was null, we added a spacer.
-                    // If pB was null (even count), leftPageObj (pB) was null.
-                    // So the last spread has [Spacer, P_last(Right)].
-                    // We replace Spacer with Ghost.
                     if (lastSpreadDiv.firstElementChild.classList.contains('pointer-events-none')) {
                         lastSpreadDiv.replaceChild(backCoverGhost, lastSpreadDiv.firstElementChild);
                     }
                 }
             } else {
-                // P_last is Left. Spread full. New Row.
                 const lastSpread = document.createElement('div');
                 lastSpread.className = "spread-row flex justify-center items-end gap-0 mb-4 min-h-[100px] p-2 border border-transparent rounded pointer-events-none opacity-80";
-                
                 const emptySpacer = document.createElement('div');
                 emptySpacer.style.width = `${width * pixelsPerInch}px`;
-                
                 lastSpread.appendChild(emptySpacer);
                 lastSpread.appendChild(backCoverGhost);
                 container.appendChild(lastSpread);
             }
         } else {
-            // LTR: P1 Right. P2 L, P3 R.
-            // Even pages are Left. Odd pages are Right.
-            // If Total 4: P4 is Left. Right slot empty. Inside Back goes Right.
             if (lastWasEven) {
                 const lastSpreadDiv = container.lastElementChild.previousElementSibling; 
                 if (lastSpreadDiv && lastSpreadDiv.classList.contains('spread-row')) {
-                    // Last child should be the spacer (right side)
                     if (lastSpreadDiv.lastElementChild.classList.contains('pointer-events-none')) {
                         lastSpreadDiv.replaceChild(backCoverGhost, lastSpreadDiv.lastElementChild);
                     }
                 }
             } else {
-                // Total 5: P5 is Right. Spread full. New Row.
                 const lastSpread = document.createElement('div');
                 lastSpread.className = "spread-row flex justify-center items-end gap-0 mb-4 min-h-[100px] p-2 border border-transparent rounded pointer-events-none opacity-80";
-                
                 const emptySpacer = document.createElement('div');
                 emptySpacer.style.width = `${width * pixelsPerInch}px`;
-                
                 lastSpread.appendChild(backCoverGhost);
                 lastSpread.appendChild(emptySpacer);
                 container.appendChild(lastSpread);
@@ -1971,24 +1977,13 @@ function renderBookViewer() {
 
     validateForm();
 
-    // ... (Keep Sortable logic) ...
     const spreadDivs = container.querySelectorAll('.spread-row');
     spreadDivs.forEach(spreadDiv => {
-        // Only make sortable if it doesn't contain a ghost card (to prevent dragging into covers)
-        // Or strict filter: draggable: '.page-card' (already set)
-        // But we should prevent dropping *onto* ghost cards? Sortable handles lists.
-        // As long as ghost cards aren't '.page-card', they won't be dragged.
-        // But they might be valid drop targets? 'put: true'.
-        // We want to prevent reordering the cover rows.
-        // Simple check: don't init sortable on first/last rows if they have covers?
-        // Better: Init on all, but filter move. 
-        // For now, standard logic applies. The ghost cards are just DOM elements.
         new Sortable(spreadDiv, {
             group: { name: 'shared-spreads', pull: true, put: true },
             animation: 150,
-            draggable: '.page-card', // Ghost cards don't have this class
+            draggable: '.page-card',
             handle: '.drag-handle',
-            // ...
             onEnd: (evt) => {
                 try {
                     saveState();
@@ -2348,14 +2343,11 @@ document.addEventListener('pointerdown', (e) => {
     // Only allow panning if target is canvas (Image)
     if (e.target.tagName.toLowerCase() !== 'canvas') return;
 
-    // Resolve the actual page ID from the Canvas element ID
-    // because card.dataset.id might be a composite spread ID (e.g. spread:p1:p2)
     const clickedPageId = e.target.id.replace('canvas-', '');
     const page = pages.find(p => p.id === clickedPageId);
 
-    // Only allow panning if scaleMode is 'fill'
     if (page && page.settings.scaleMode === 'fill') {
-        saveState(); // <--- Add this line to enable Undo
+        saveState(); 
 
         activePageId = clickedPageId;
         isDragging = true;
@@ -2364,8 +2356,10 @@ document.addEventListener('pointerdown', (e) => {
         startPanX = page.settings.panX || 0;
         startPanY = page.settings.panY || 0;
 
-        // Identify Partner Page immediately
+        // Identify Partner Page
         partnerPageId = null;
+        
+        // Case 1: Implicit Spread (Uploaded Split File)
         if (activePageId.endsWith('_L') || activePageId.endsWith('_R')) {
             const isLeft = activePageId.endsWith('_L');
             const pId = isLeft
@@ -2373,15 +2367,40 @@ document.addEventListener('pointerdown', (e) => {
                 : activePageId.slice(0, -2) + '_L';
 
             const partnerPage = pages.find(p => p.id === pId);
-            if (partnerPage && partnerPage.sourceFileId === page.sourceFileId) {
+            // Only sync if they share source (implicit) OR are manually linked
+            if (partnerPage && (partnerPage.sourceFileId === page.sourceFileId || page.manuallyLinked)) {
                 partnerPageId = pId;
                 partnerStartPanX = partnerPage.settings.panX || 0;
                 partnerStartPanY = partnerPage.settings.panY || 0;
             }
+        } 
+        // Case 2: Manually Linked Spread
+        else if (page.manuallyLinked) {
+            const index = pages.indexOf(page);
+            // Standard spreads are (1,2), (3,4)... so (Odd, Even)
+            // If index is Odd (1,3..), partner is index+1 (Right)
+            // If index is Even (2,4..), partner is index-1 (Left)
+            // Note: index 0 is first page (usually single).
+            
+            let partnerIndex = -1;
+            if (index % 2 !== 0) partnerIndex = index + 1;
+            else partnerIndex = index - 1;
+
+            if (partnerIndex > 0 && partnerIndex < pages.length) {
+                const partnerPage = pages[partnerIndex];
+                // Partner must also be manuallyLinked (it's a shared state usually, but safe to check)
+                // Actually, if we set manuallyLinked on the PAIR (left page), we should check the logic.
+                // But for robust panning, if they are rendered in a spread, they are neighbors.
+                if (partnerPage) {
+                    partnerPageId = partnerPage.id;
+                    partnerStartPanX = partnerPage.settings.panX || 0;
+                    partnerStartPanY = partnerPage.settings.panY || 0;
+                }
+            }
         }
 
         card.classList.add('cursor-grabbing');
-        e.preventDefault(); // Prevent text selection and default drag
+        e.preventDefault(); 
     }
 });
 
@@ -4127,11 +4146,16 @@ function updateSelectionVisuals() {
 }
 
 // --- Main Initialization (Trust-Optimized) ---
+// --- Main Initialization (Trust-Optimized) ---
 async function init() {
     if (insertFileInput) insertFileInput.value = '';
     if (hiddenInteriorInput) hiddenInteriorInput.value = '';
     if (fileInteriorDrop) fileInteriorDrop.value = '';
     
+    // [FIX] Reset Spread Input
+    const spreadInput = document.getElementById('upload-spread-input');
+    if (spreadInput) spreadInput.value = '';
+
     populateSelects();
 
     loadingState.classList.remove('hidden');
@@ -4143,6 +4167,10 @@ async function init() {
     const params = new URLSearchParams(window.location.search);
     projectId = params.get('projectId') || params.get('id');
     guestToken = params.get('guestToken');
+
+    // [FIX] Global Drag & Drop Protection (Prevents opening file in browser)
+    window.addEventListener('dragover', (e) => e.preventDefault(), false);
+    window.addEventListener('drop', (e) => e.preventDefault(), false);
 
     if (!projectId) {
         showError('Missing project ID.');
@@ -4184,11 +4212,11 @@ async function init() {
                 }
             } catch (e) {}
             currentUser.getIdTokenResult(true).then((idTokenResult) => {
-        console.log("👇 YOUR CUSTOM CLAIMS 👇");
-        console.log(idTokenResult.claims);
-        console.log("guestProjectId:", idTokenResult.claims.guestProjectId);
-        console.log("guestPermissions:", idTokenResult.claims.guestPermissions);
-        });
+                console.log("👇 YOUR CUSTOM CLAIMS 👇");
+                console.log(idTokenResult.claims);
+                console.log("guestProjectId:", idTokenResult.claims.guestProjectId);
+                console.log("guestPermissions:", idTokenResult.claims.guestPermissions);
+            });
         }
 
         const lockAcquired = await acquireLock();
@@ -4243,7 +4271,6 @@ async function init() {
         updateFileName('file-cover-front', 'file-name-cover-front');
         updateFileName('file-spine', 'file-name-spine');
         updateFileName('file-cover-back', 'file-name-cover-back');
-        // [FIX] Wire up new inputs
         updateFileName('file-cover-inside-front', 'file-name-cover-inside-front');
         updateFileName('file-cover-inside-back', 'file-name-cover-inside-back');
 
@@ -4264,45 +4291,56 @@ async function init() {
             refreshBuilderUI();
 
             // --- EVENT LISTENERS FIX ---
-        // 1. Setup Drop Zone for Interior
-        setupDropZone('file-interior-drop');
+            // 1. Setup Drop Zone for Interior
+            setupDropZone('file-interior-drop');
 
-        // 2. Setup Drop Zones for Cover (if elements exist)
-        if (document.getElementById('file-cover-front')) setupDropZone('file-cover-front');
-        if (document.getElementById('file-spine')) setupDropZone('file-spine');
-        if (document.getElementById('file-cover-back')) setupDropZone('file-cover-back');
-        if (document.getElementById('file-cover-inside-front')) setupDropZone('file-cover-inside-front');
-        if (document.getElementById('file-cover-inside-back')) setupDropZone('file-cover-inside-back');
+            // 2. Setup Drop Zones for Cover
+            if (document.getElementById('file-cover-front')) setupDropZone('file-cover-front');
+            if (document.getElementById('file-spine')) setupDropZone('file-spine');
+            if (document.getElementById('file-cover-back')) setupDropZone('file-cover-back');
+            if (document.getElementById('file-cover-inside-front')) setupDropZone('file-cover-inside-front');
+            if (document.getElementById('file-cover-inside-back')) setupDropZone('file-cover-inside-back');
 
-        // 3. Connect "Add Pages" Button
-        if (addInteriorFileBtn) {
-            addInteriorFileBtn.addEventListener('click', () => {
-                 // Reset insert index to end
-                 window._insertIndex = pages.length; 
-                 hiddenInteriorInput.click();
-            });
-        }
+            // 3. Connect "Add Pages" Button (Wait for DOM stability)
+            if (addInteriorFileBtn) {
+                addInteriorFileBtn.onclick = (e) => {
+                    e.preventDefault(); // Prevent bubbling issues
+                    window._insertIndex = pages.length; 
+                    if(hiddenInteriorInput) hiddenInteriorInput.click();
+                };
+            }
 
-        // 4. Connect Hidden Input
-        if (hiddenInteriorInput) {
-            hiddenInteriorInput.addEventListener('change', (e) => {
-                if (e.target.files.length > 0) {
-                    addInteriorFiles(e.target.files, false, window._insertIndex);
-                    e.target.value = ''; // Reset
-                }
-            });
-        }
-        
-        // 5. Connect Main Drop Input
-        if (fileInteriorDrop) {
-             fileInteriorDrop.addEventListener('change', (e) => {
-                if (e.target.files.length > 0) {
-                    addInteriorFiles(e.target.files, false);
-                    e.target.value = '';
-                }
-             });
-        }
-        // ---------------------------
+            // 4. Connect Hidden Interior Input
+            if (hiddenInteriorInput) {
+                hiddenInteriorInput.onchange = (e) => {
+                    if (e.target.files.length > 0) {
+                        addInteriorFiles(e.target.files, false, window._insertIndex);
+                        e.target.value = ''; 
+                    }
+                };
+            }
+
+            // 5. [FIX] Connect Spread Upload Input
+            if (spreadInput) {
+                spreadInput.onchange = (e) => {
+                    if (e.target.files.length > 0) {
+                        // Pass true for isSpreadUpload
+                        addInteriorFiles(e.target.files, true, pages.length);
+                        e.target.value = '';
+                    }
+                };
+            }
+            
+            // 6. Connect Main Drop Input (Backup)
+            if (fileInteriorDrop) {
+                 fileInteriorDrop.onchange = (e) => {
+                    if (e.target.files.length > 0) {
+                        addInteriorFiles(e.target.files, false);
+                        e.target.value = '';
+                    }
+                 };
+            }
+            // ---------------------------
 
             await initializeBuilder();
 
@@ -4873,6 +4911,7 @@ async function waitForFirstPageRender() {
 // Initialize
 init();
 // Helper to create a merged card for a spread
+// Helper to create a merged card for a spread
 function createSpreadCard(leftPage, rightPage, index, width, height, bleed, pixelsPerInch, observer) {
     const card = document.createElement('div');
     // Use a composite ID for Sortable tracking
@@ -4882,31 +4921,18 @@ function createSpreadCard(leftPage, rightPage, index, width, height, bleed, pixe
     card.className = classes;
 
     const bleedPx = bleed * pixelsPerInch;
-    // Total Spread Width = (Width * 2) + (Bleed * 2)
-    // But we display as two cropped viewports side-by-side
-
-    // Viewport Width per page = Width + Bleed
     const singlePageW = (width + bleed) * pixelsPerInch;
     const singlePageH = (height + (bleed * 2)) * pixelsPerInch;
-
-    // Total Container Width = 2 * singlePageW
-    // Actually, visual logic:
-    // Left Page: [Bleed, Width, 0] (Right edge clipped/flush)
-    // Right Page: [0, Width, Bleed] (Left edge clipped/flush)
-    // Total Visual Width = (Width + Bleed) + (Width + Bleed) = 2 * Width + 2 * Bleed
-
     const totalW = singlePageW * 2;
 
-    // Wrapper for side-by-side
     const wrapper = document.createElement('div');
-    wrapper.className = "flex pointer-events-none"; // pointer-events-none to let drag handle work, but re-enable for canvas?
-    // Actually, if wrapper is none, we can't pan.
-    // Let's make individual canvas containers interactive.
+    wrapper.className = "flex pointer-events-none"; 
     wrapper.style.pointerEvents = "auto";
 
     // --- LEFT PAGE RENDER ---
     const leftContainer = document.createElement('div');
-    leftContainer.className = "relative overflow-hidden bg-white border-r border-gray-200"; // divider
+    // [FIX] Removed 'border-r border-gray-200' to eliminate the white line
+    leftContainer.className = "relative overflow-hidden bg-white"; 
     leftContainer.style.width = `${singlePageW}px`;
     leftContainer.style.height = `${singlePageH}px`;
 
@@ -4914,7 +4940,7 @@ function createSpreadCard(leftPage, rightPage, index, width, height, bleed, pixe
     leftCanvas.id = `canvas-${leftPage.id}`;
     leftCanvas.style.position = "absolute";
     leftCanvas.style.top = "0";
-    leftCanvas.style.left = "0"; // Left page shows left bleed
+    leftCanvas.style.left = "0"; 
     leftContainer.appendChild(leftCanvas);
 
     // --- RIGHT PAGE RENDER ---
@@ -4927,28 +4953,48 @@ function createSpreadCard(leftPage, rightPage, index, width, height, bleed, pixe
     rightCanvas.id = `canvas-${rightPage.id}`;
     rightCanvas.style.position = "absolute";
     rightCanvas.style.top = "0";
-    rightCanvas.style.left = `-${bleedPx}px`; // Right page hides left bleed (spine)
+    rightCanvas.style.left = `-${bleedPx}px`; 
     rightContainer.appendChild(rightCanvas);
 
     wrapper.appendChild(leftContainer);
     wrapper.appendChild(rightContainer);
     card.appendChild(wrapper);
 
-    // Drag Handle (Shared)
+    // Drag Handle
     const dragHandle = document.createElement('div');
     dragHandle.className = "drag-handle absolute top-2 left-2 p-1.5 bg-slate-900/80 text-white rounded cursor-move opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-sm z-30 hover:bg-indigo-600 shadow-sm";
     dragHandle.title = "Drag Spread";
     dragHandle.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>';
     card.appendChild(dragHandle);
 
-    // Controls (Delete)
+    // Controls (Delete & Unlink)
     const controls = document.createElement('div');
     controls.className = "absolute top-2 right-2 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-900/80 p-1 rounded backdrop-blur-sm z-20";
-    controls.innerHTML = `
-        <button type="button" onclick="deletePage('${leftPage.id}'); deletePage('${rightPage.id}')" class="text-red-400 hover:text-white p-1" title="Delete Spread">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-        </button>
-    `;
+    
+    // Unlink Button (Only if manually linked)
+    if (leftPage.manuallyLinked) {
+        const unlinkBtn = document.createElement('button');
+        unlinkBtn.type = 'button';
+        unlinkBtn.className = "text-indigo-300 hover:text-white p-1";
+        unlinkBtn.title = "Unlink Pages";
+        unlinkBtn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>`;
+        unlinkBtn.onclick = () => {
+             leftPage.manuallyLinked = false;
+             saveState();
+             renderBookViewer();
+             triggerAutosave();
+        };
+        controls.appendChild(unlinkBtn);
+    }
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = "text-red-400 hover:text-white p-1";
+    delBtn.title = "Delete Spread";
+    delBtn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>';
+    delBtn.onclick = () => { deletePage(leftPage.id); deletePage(rightPage.id); };
+    controls.appendChild(delBtn);
+
     card.appendChild(controls);
 
     // Page Numbers
@@ -4963,10 +5009,6 @@ function createSpreadCard(leftPage, rightPage, index, width, height, bleed, pixe
         ph.className = "absolute inset-0 flex items-center justify-center text-gray-600 bg-slate-200 z-10 transition-opacity duration-300 pointer-events-none";
         ph.innerHTML = '<div class="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>';
         ph.id = `placeholder-${p.id}`;
-        // Only show if needed (logic in observer usually hides it)
-        // We need to append to the specific container?
-        // Placeholders usually overlay the canvas.
-        // Let's append to left/right containers respectively.
         if (p === leftPage) leftContainer.appendChild(ph);
         else rightContainer.appendChild(ph);
     });
