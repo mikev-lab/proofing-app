@@ -4340,7 +4340,6 @@ function updateSelectionVisuals() {
 }
 
 // --- Main Initialization (Trust-Optimized) ---
-// --- Main Initialization (Trust-Optimized) ---
 async function init() {
     if (insertFileInput) insertFileInput.value = '';
     if (hiddenInteriorInput) hiddenInteriorInput.value = '';
@@ -4362,7 +4361,7 @@ async function init() {
     projectId = params.get('projectId') || params.get('id');
     guestToken = params.get('guestToken');
 
-    // [FIX] Global Drag & Drop Protection (Prevents opening file in browser)
+    // [FIX] Global Drag & Drop Protection
     window.addEventListener('dragover', (e) => e.preventDefault(), false);
     window.addEventListener('drop', (e) => e.preventDefault(), false);
 
@@ -4371,17 +4370,28 @@ async function init() {
         return;
     }
 
-
     try {
         if (guestToken) {
+            // [CRITICAL FIX] Force Sign Out first to prevent session conflicts
+            // This ensures we don't try to access Project B with Project A's credentials
+            // if multiple tabs are open in the same incognito session.
+            if (auth.currentUser) {
+                console.log("[Init] Clearing existing session...");
+                await auth.signOut();
+            }
+
             const authenticateGuest = httpsCallable(functions, 'authenticateGuest');
             const authResult = await authenticateGuest({ projectId, guestToken });
 
             if (!authResult.data || !authResult.data.token) {
                 throw new Error("Failed to obtain access token.");
             }
+            
+            // Sign in as the NEW guest
             await signInWithCustomToken(auth, authResult.data.token);
+            
         } else {
+            // Standard flow (Wait for existing auth)
             await new Promise((resolve, reject) => {
                 const unsubscribe = onAuthStateChanged(auth, (user) => {
                     unsubscribe();
@@ -4398,19 +4408,29 @@ async function init() {
 
         currentUser = auth.currentUser;
 
+        // [FIX] Verify Claims Match URL Project
+        // This acts as a final safety check. If we are somehow still signed in as the wrong guest,
+        // we force a reload to try again.
         if (currentUser) {
             try {
+                const idTokenResult = await currentUser.getIdTokenResult(true);
+                
+                // If this is a guest user, ensure they are authorized for THIS project
+                if (idTokenResult.claims.guestProjectId && idTokenResult.claims.guestProjectId !== projectId) {
+                    console.warn("[Init] Guest token mismatch! Signing out and reloading.");
+                    await auth.signOut();
+                    window.location.reload(); 
+                    return;
+                }
+
+                // Check for Admin
                 const userDoc = await getDoc(doc(db, "users", currentUser.uid));
                 if (userDoc.exists() && userDoc.data().role === 'admin') {
                     isAdmin = true;
                 }
-            } catch (e) {}
-            currentUser.getIdTokenResult(true).then((idTokenResult) => {
-                console.log("👇 YOUR CUSTOM CLAIMS 👇");
-                console.log(idTokenResult.claims);
-                console.log("guestProjectId:", idTokenResult.claims.guestProjectId);
-                console.log("guestPermissions:", idTokenResult.claims.guestPermissions);
-            });
+            } catch (e) {
+                console.warn("[Init] Claim check warning:", e);
+            }
         }
 
         const lockAcquired = await acquireLock();
@@ -4495,10 +4515,10 @@ async function init() {
             if (document.getElementById('file-cover-inside-front')) setupDropZone('file-cover-inside-front');
             if (document.getElementById('file-cover-inside-back')) setupDropZone('file-cover-inside-back');
 
-            // 3. Connect "Add Pages" Button (Wait for DOM stability)
+            // 3. Connect "Add Pages" Button
             if (addInteriorFileBtn) {
                 addInteriorFileBtn.onclick = (e) => {
-                    e.preventDefault(); // Prevent bubbling issues
+                    e.preventDefault(); 
                     window._insertIndex = pages.length; 
                     if(hiddenInteriorInput) hiddenInteriorInput.click();
                 };
@@ -4514,18 +4534,17 @@ async function init() {
                 };
             }
 
-            // 5. [FIX] Connect Spread Upload Input
+            // 5. Connect Spread Upload Input
             if (spreadInput) {
                 spreadInput.onchange = (e) => {
                     if (e.target.files.length > 0) {
-                        // Pass true for isSpreadUpload
                         addInteriorFiles(e.target.files, true, pages.length);
                         e.target.value = '';
                     }
                 };
             }
             
-            // 6. Connect Main Drop Input (Backup)
+            // 6. Connect Main Drop Input
             if (fileInteriorDrop) {
                  fileInteriorDrop.onchange = (e) => {
                     if (e.target.files.length > 0) {
@@ -4534,7 +4553,6 @@ async function init() {
                     }
                  };
             }
-            // ---------------------------
 
             await initializeBuilder();
 

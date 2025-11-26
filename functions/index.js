@@ -165,10 +165,13 @@ const optimizePdfLogic = onObjectFinalized({
               };
 
               if (isCover) {
+                  // [FIX] Save the fileURL and filePath so the frontend can find it!
                   t.update(projectRef, { 
                       'cover.processingStatus': 'processing', 
                       'cover.processingRetries': 0, 
-                      'cover.uploadedAt': initUpdate.uploadedAt 
+                      'cover.uploadedAt': initUpdate.uploadedAt,
+                      'cover.fileURL': `gs://${fileBucket}/${filePath}`, // <--- Added
+                      'cover.filePath': filePath                         // <--- Added
                   });
               } else if (vIdx !== -1) {
                   versions[vIdx] = { ...versions[vIdx], ...initUpdate };
