@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCE Printing - Reports</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style> body { font-family: 'Inter', sans-serif; } </style>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-[#0f172a] to-[#334155] text-gray-100">
+
+    <div class="flex h-full">
+        <div class="flex flex-col w-64 bg-slate-900/70 backdrop-blur-sm border-r border-slate-700/50">
+            <div class="flex items-center justify-center h-16 border-b border-slate-700/50">
+                <h1 class="text-2xl font-bold text-white">MCE Admin</h1>
+            </div>
+            <div class="flex-grow">
+                <nav class="flex-grow md:block px-4 pb-4 md:pb-0 md:overflow-y-auto">
+                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="admin.html">All Projects</a>
+                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="admin_client_management.html">Clients</a>
+                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="admin_production.html">Production</a>
+                    <a href="admin_inventory.html" class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50">Inventory</a>
+                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-200 bg-slate-700/50 rounded-lg hover:bg-slate-600/50" href="admin_reports.html">Reports</a>
+                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="admin_settings.html">Settings</a>
+                </nav>
+            </div>
+        </div>
+
+        <div class="flex flex-col flex-1">
+            <header class="flex justify-between items-center h-16 px-6 bg-slate-800/60 backdrop-blur-sm border-b border-slate-700/50">
+                <h2 class="text-xl font-semibold text-white">Productivity Dashboard</h2>
+                <div class="flex items-center space-x-4">
+                    <span id="user-email" class="text-sm text-gray-300 hidden sm:block"></span>
+                    <button id="logout-button" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm">Sign Out</button>
+                </div>
+            </header>
+
+            <main class="flex-1 p-6 overflow-y-auto">
+
+                <!-- KPI Cards -->
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+                    <div class="bg-slate-800/60 p-6 rounded-lg border border-slate-700/50">
+                        <h3 class="text-gray-400 text-sm font-medium uppercase">Jobs Completed (Today)</h3>
+                        <p class="text-3xl font-bold text-white mt-2" id="kpi-completed-today">-</p>
+                    </div>
+                    <div class="bg-slate-800/60 p-6 rounded-lg border border-slate-700/50">
+                        <h3 class="text-gray-400 text-sm font-medium uppercase">New Projects (Week)</h3>
+                        <p class="text-3xl font-bold text-white mt-2" id="kpi-new-week">-</p>
+                    </div>
+                    <div class="bg-slate-800/60 p-6 rounded-lg border border-slate-700/50">
+                        <h3 class="text-gray-400 text-sm font-medium uppercase">Active Pipeline</h3>
+                        <p class="text-3xl font-bold text-white mt-2" id="kpi-pipeline">-</p>
+                    </div>
+                    <div class="bg-slate-800/60 p-6 rounded-lg border border-slate-700/50">
+                        <h3 class="text-gray-400 text-sm font-medium uppercase">On-Time Rate</h3>
+                        <p class="text-3xl font-bold text-green-400 mt-2" id="kpi-ontime">--%</p>
+                    </div>
+                </div>
+
+                <!-- Charts Row 1 -->
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+                    <div class="bg-slate-800/60 p-6 rounded-lg border border-slate-700/50">
+                        <h3 class="text-white font-semibold mb-4">Throughput (Jobs Completed)</h3>
+                        <div class="h-64"><canvas id="chart-throughput"></canvas></div>
+                    </div>
+                    <div class="bg-slate-800/60 p-6 rounded-lg border border-slate-700/50">
+                        <h3 class="text-white font-semibold mb-4">New Project Volume</h3>
+                        <div class="h-64"><canvas id="chart-volume"></canvas></div>
+                    </div>
+                </div>
+
+            </main>
+        </div>
+    </div>
+
+    <script type="module" src="js/admin_reports.js"></script>
+</body>
+</html>
