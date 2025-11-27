@@ -5,3 +5,4 @@ js/firebase-config.js
 *.yaml
 .firebase/hosting..cache
 .firebase/hosting..cache
+firebase-debug.log

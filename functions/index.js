@@ -7,13 +7,14 @@
 const { onObjectFinalized } = require('firebase-functions/v2/storage');
 const { onCall, HttpsError } = require('firebase-functions/v2/https'); // <-- Import for callable function
 const { onSchedule } = require("firebase-functions/v2/scheduler");
+const { onDocumentUpdated, onDocumentCreated } = require('firebase-functions/v2/firestore');
 const logger = require('firebase-functions/logger');
 const crypto = require('crypto'); // <-- Import for token generation
 const { GoogleAuth } = require('google-auth-library');
 const auth = new GoogleAuth();
 
 // Your existing imports
-const admin =require('firebase-admin');
+const admin = require('firebase-admin');
 const { Storage } = require('@google-cloud/storage');
 const path = require('path');
 const os = require('os');
@@ -31,7 +32,7 @@ const optimizePdfLogic = onObjectFinalized({
   timeoutSeconds: 540,
   minInstances: 0,
   maxInstances: 10,
-  retry: false,
+  retry: false, 
   concurrency: 1
 }, async (event) => {
 
@@ -40,7 +41,7 @@ const optimizePdfLogic = onObjectFinalized({
   const contentType = file.contentType;
   const fileBucket = file.bucket;
 
-  // --- Circuit Breakers ---
+  // --- 1. Circuit Breakers (Fast Fail) ---
   if (filePath.includes('/sources/') || 
       filePath.includes('/temp_sources/') || 
       filePath.includes('guest_uploads/') || 
@@ -59,50 +60,173 @@ const optimizePdfLogic = onObjectFinalized({
 
   logger.log(`Processing: ${fullFileName} (Project: ${projectId})`);
 
+  const projectRef = db.collection('projects').doc(projectId);
+  
+  // --- 2. IDEMPOTENCY CHECK ---
+  let shouldProceed = true;
+  let currentRetries = 0;
+
+  try {
+      await db.runTransaction(async (t) => {
+          const doc = await t.get(projectRef);
+          if (!doc.exists) { shouldProceed = false; return; }
+          
+          const data = doc.data();
+          let status, lastUpdated, retries;
+          let isNewFile = false; // [FIX] Track if this is a fresh file
+
+          const versions = data.versions || [];
+          const vIdx = versions.findIndex(v => v.filePath === filePath);
+
+          if (isCover) {
+              const cData = data.cover || {};
+              status = cData.processingStatus;
+              retries = cData.processingRetries || 0;
+              lastUpdated = cData.uploadedAt;
+              
+              // [FIX] If the existing cover file path doesn't match this new one, 
+              // treat it as a NEW job even if the old one was 'complete'.
+              if (cData.filePath !== filePath) {
+                  isNewFile = true;
+                  status = null; // Reset status to force processing
+              }
+          } else {
+              if (vIdx !== -1) {
+                  status = versions[vIdx].processingStatus;
+                  retries = versions[vIdx].processingRetries || 0;
+                  lastUpdated = versions[vIdx].createdAt; 
+              } else {
+                  isNewFile = true; // Interior not in array yet
+              }
+          }
+
+          // Case A: Already Done (Only if it's the SAME file)
+          if (!isNewFile && status === 'complete') { 
+              shouldProceed = false; 
+              return; 
+          }
+
+          // Case B: Already Failed (Only if it's the SAME file)
+          if (!isNewFile && status === 'error') { 
+             shouldProceed = false; 
+             return; 
+          }
+          
+          // Case C: Currently Processing?
+          if (!isNewFile && status === 'processing') {
+              const now = Date.now();
+              const lastTime = lastUpdated ? lastUpdated.toMillis() : 0; 
+              const minutesSinceStart = (now - lastTime) / 1000 / 60;
+
+              if (minutesSinceStart < 15) {
+                  logger.log(`Skipping duplicate trigger. Job active for ${minutesSinceStart.toFixed(1)} mins.`);
+                  shouldProceed = false;
+                  return;
+              }
+
+              if (retries >= 2) {
+                  logger.error(`Processing failed after ${retries} retries. Aborting.`);
+                  const errorUpdate = { 
+                      processingStatus: 'error', 
+                      processingError: 'System Error: File too complex or corrupted (OOM).' 
+                  };
+
+                  if (isCover) {
+                      t.update(projectRef, { 
+                          'cover.processingStatus': 'error', 
+                          'cover.processingError': errorUpdate.processingError 
+                      });
+                  } else if (vIdx !== -1) {
+                      versions[vIdx] = { ...versions[vIdx], ...errorUpdate };
+                      t.update(projectRef, { versions });
+                  }
+                  shouldProceed = false;
+                  return;
+              }
+
+              // Recover Stale Job
+              logger.log(`Stale job detected (Age: ${minutesSinceStart.toFixed(1)}m). Retrying...`);
+              currentRetries = retries + 1;
+              const retryUpdate = {
+                  processingStatus: 'processing',
+                  processingRetries: currentRetries,
+                  uploadedAt: admin.firestore.Timestamp.now() 
+              };
+
+              if (isCover) {
+                  t.update(projectRef, { 
+                      'cover.processingStatus': 'processing', 
+                      'cover.processingRetries': currentRetries, 
+                      'cover.uploadedAt': retryUpdate.uploadedAt 
+                  });
+              } else if (vIdx !== -1) {
+                  versions[vIdx] = { ...versions[vIdx], ...retryUpdate };
+                  t.update(projectRef, { versions });
+              }
+          
+          } else {
+              // Case D: First Run (New File or Reset)
+              const initUpdate = {
+                  processingStatus: 'processing',
+                  processingRetries: 0,
+                  uploadedAt: admin.firestore.Timestamp.now() 
+              };
+
+              if (isCover) {
+                  // [FIX] Ensure fileURL and filePath are saved!
+                  t.update(projectRef, { 
+                      'cover.processingStatus': 'processing', 
+                      'cover.processingRetries': 0, 
+                      'cover.uploadedAt': initUpdate.uploadedAt,
+                      'cover.fileURL': `gs://${fileBucket}/${filePath}`, // Save Storage URL
+                      'cover.filePath': filePath                         // Save Path
+                  });
+              } else if (vIdx !== -1) {
+                  versions[vIdx] = { ...versions[vIdx], ...initUpdate };
+                  t.update(projectRef, { versions });
+              } else {
+                  versions.push({
+                      versionNumber: versions.length + 1,
+                      fileURL: `gs://${fileBucket}/${filePath}`,
+                      filePath,
+                      createdAt: admin.firestore.Timestamp.now(), 
+                      type: fullFileName.includes('interior') ? 'interior_build' : 'upload',
+                      ...initUpdate
+                  });
+                  t.update(projectRef, { versions });
+              }
+          }
+      });
+  } catch (e) {
+      logger.error("Idempotency transaction failed:", e);
+      return;
+  }
+
+  if (!shouldProceed) return;
+
+  // --- 3. HEAVY LIFTING ---
+
   const bucket = storage.bucket(fileBucket);
   const previewFileName = `${path.basename(fullFileName, '.pdf')}_preview.pdf`;
   const destination = filePath.replace(path.basename(filePath), previewFileName);
-  const previewFile = bucket.file(destination);
-
-  // --- IDEMPOTENCY CHECK: Stop Runaway Loops ---
-  try {
-      const [exists] = await previewFile.exists();
-      if (exists) {
-          const [metadata] = await previewFile.getMetadata();
-          const previewTime = new Date(metadata.timeCreated).getTime();
-          const sourceTime = new Date(file.timeCreated).getTime();
-
-          // If the preview was created AFTER the source file, we are done.
-          // This catches duplicate events and prevents re-processing.
-          if (previewTime > sourceTime) {
-              logger.log(`Idempotency Check: Preview ${previewFileName} is newer than source. Skipping.`);
-              return;
-          }
-      }
-  } catch (checkErr) {
-      logger.warn("Idempotency check failed, proceeding anyway:", checkErr);
-  }
-  // ----------------------------------------------
-
-  const projectRef = db.collection('projects').doc(projectId);
+  
   const tempId = crypto.randomUUID(); 
   const tempFilePath = path.join(os.tmpdir(), `${tempId}_source.pdf`);
   const repairedFilePath = path.join(os.tmpdir(), `${tempId}_repaired.pdf`);
   const tempPreviewPath = path.join(os.tmpdir(), `${tempId}_preview.pdf`);
 
   try {
-    // 1. Download Original
+    // A. Download
     await bucket.file(filePath).download({ destination: tempFilePath });
-    if (!fs.existsSync(tempFilePath)) throw new Error("Download failed: File not found locally.");
 
-    // 2. Repair (QPDF)
+    // B. Repair (QPDF)
     let useRepairedFile = false;
     try {
-        const { spawn } = require('child-process-promise');
         await spawn('qpdf', [tempFilePath, repairedFilePath]);
         if (fs.existsSync(repairedFilePath)) {
              useRepairedFile = true;
              logger.log('QPDF repair completed.');
+             try { if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath); } catch(e) {}
         }
     } catch (e) {
         logger.warn('QPDF repair failed, will continue with original.', e);
@@ -110,60 +234,49 @@ const optimizePdfLogic = onObjectFinalized({
 
     const sourceForProcessing = useRepairedFile ? repairedFilePath : tempFilePath;
 
-    // 3. Preflight Checks
-    const { preflightStatus, preflightResults, dimensions } = await runPreflightChecks(sourceForProcessing, logger);
-    logger.log('Preflight checks completed.');
-
-    // Update Firestore
-    await db.runTransaction(async (transaction) => {
-        const projectDoc = await transaction.get(projectRef);
-        if (!projectDoc.exists) return;
-
-        if (isCover) {
-            const coverData = {
-                filePath, preflightStatus, preflightResults, processingStatus: 'processing',
-                uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
-                specs: dimensions ? { dimensions } : {}
-            };
-            transaction.update(projectRef, { cover: coverData });
-        } else {
-            const data = projectDoc.data();
-            const versions = data.versions || [];
-            const idx = versions.findIndex(v => v.filePath === filePath);
-
-            if (idx === -1) {
-                versions.push({
-                    versionNumber: versions.length + 1,
-                    fileURL: `gs://${fileBucket}/${filePath}`,
-                    filePath,
-                    createdAt: admin.firestore.Timestamp.now(),
-                    processingStatus: 'processing',
-                    preflightStatus, preflightResults,
-                    type: fullFileName.includes('interior') ? 'interior_build' : 'upload'
-                });
-                transaction.update(projectRef, { versions });
-            } else {
-                versions[idx].processingStatus = 'processing';
-                versions[idx].preflightStatus = preflightStatus;
-                versions[idx].preflightResults = preflightResults;
-                transaction.update(projectRef, { versions });
-            }
+    // C. Preflight Checks
+    try {
+        if (typeof runPreflightChecks !== 'undefined') {
+            const { preflightStatus, preflightResults, dimensions } = await runPreflightChecks(sourceForProcessing, logger);
+            
+            await db.runTransaction(async (t) => {
+                const pDoc = await t.get(projectRef);
+                if (!pDoc.exists) return;
+                const pData = pDoc.data();
+                
+                if (isCover) {
+                    t.update(projectRef, { 
+                        'cover.preflightStatus': preflightStatus,
+                        'cover.preflightResults': preflightResults,
+                        'cover.specs': dimensions ? { dimensions } : (pData.cover?.specs || {})
+                    });
+                } else {
+                    const vList = pData.versions || [];
+                    const vIdx = vList.findIndex(v => v.filePath === filePath);
+                    if (vIdx !== -1) {
+                        vList[vIdx].preflightStatus = preflightStatus;
+                        vList[vIdx].preflightResults = preflightResults;
+                        t.update(projectRef, { versions: vList });
+                    }
+                }
+            });
         }
-    });
+    } catch (e) {
+        logger.warn("Preflight checks failed or function not found:", e);
+    }
 
-    // 4. Optimize (Ghostscript)
+    // D. Optimize (Ghostscript)
     let optimizationFailed = false;
     try {
-        const { spawn } = require('child-process-promise');
-        // Check if input file exists before running GS
-        if (!fs.existsSync(sourceForProcessing)) {
-             throw new Error(`Source file missing at ${sourceForProcessing}`);
+        if (currentRetries > 0) {
+            logger.warn(`Optimization skipped (Safe Mode) due to Retry ${currentRetries}.`);
+            throw new Error("Safe Mode: Skipping optimization");
         }
 
         await spawn('gs', [
             '-sDEVICE=pdfwrite',
             '-dCompatibilityLevel=1.4',
-            '-dPDFSETTINGS=/screen',
+            '-dPDFSETTINGS=/ebook',
             '-dNOPAUSE', '-dQUIET', '-dBATCH',
             `-sOutputFile=${tempPreviewPath}`,
             sourceForProcessing
@@ -173,31 +286,21 @@ const optimizePdfLogic = onObjectFinalized({
         logger.log('Optimization successful.');
 
     } catch (error) {
-        logger.error('Optimization failed. Attempting fallbacks.', error);
         optimizationFailed = true;
-        
-        // Force ensure destination directory exists (though tmpdir should exist)
-        const path = require('path');
-        const dir = path.dirname(tempPreviewPath);
-        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-        // Safer Copy Logic
         try {
             if (useRepairedFile && fs.existsSync(repairedFilePath)) {
                 fs.copyFileSync(repairedFilePath, tempPreviewPath);
-                logger.log('Fallback: Copied repaired file to preview path.');
             } else if (fs.existsSync(tempFilePath)) {
                 fs.copyFileSync(tempFilePath, tempPreviewPath);
-                logger.log('Fallback: Copied original source file to preview path.');
             } else {
-                throw new Error("Fatal: All files (Original and Repaired) are missing.");
+                 if (fs.existsSync(sourceForProcessing)) fs.copyFileSync(sourceForProcessing, tempPreviewPath);
             }
         } catch (copyErr) {
-             throw new Error(`Fallback copy failed: ${copyErr.message}`);
+             throw new Error(`Fallback failed: ${copyErr.message}`);
         }
     }
 
-    // 5. Upload Preview
+    // E. Upload
     if (fs.existsSync(tempPreviewPath)) {
         await bucket.upload(tempPreviewPath, { destination: destination });
         
@@ -205,33 +308,42 @@ const optimizePdfLogic = onObjectFinalized({
             action: 'read', expires: '03-09-2491'
         });
 
-        // 6. Final Success Update
+        // F. Final Success Update
         await db.runTransaction(async (transaction) => {
             const pDoc = await transaction.get(projectRef);
             if (!pDoc.exists) return;
+            const pData = pDoc.data();
 
-            const processingError = optimizationFailed ? 'Preview is unoptimized.' : null;
-
+            const processingError = optimizationFailed ? 'Preview is unoptimized (Fallback used).' : null;
+            
             if (isCover) {
-                const cData = pDoc.data().cover || {};
-                cData.previewURL = signedUrl;
-                cData.processingStatus = 'complete';
-                cData.processingError = processingError;
-                transaction.update(projectRef, { cover: cData });
+                transaction.update(projectRef, { 
+                    'cover.previewURL': signedUrl,
+                    'cover.processingStatus': 'complete',
+                    'cover.processingError': processingError,
+                    'cover.processingRetries': 0,
+                    // [FIX] Re-assert fileURL here just in case
+                    'cover.fileURL': `gs://${fileBucket}/${filePath}`,
+                    'cover.filePath': filePath
+                });
             } else {
-                const vList = pDoc.data().versions || [];
+                const vList = pData.versions || [];
                 const vIdx = vList.findIndex(v => v.filePath === filePath);
                 if (vIdx !== -1) {
-                    vList[vIdx].previewURL = signedUrl;
-                    vList[vIdx].processingStatus = 'complete';
-                    vList[vIdx].processingError = processingError;
+                    const successUpdate = {
+                        previewURL: signedUrl,
+                        processingStatus: 'complete',
+                        processingError: processingError,
+                        processingRetries: 0 
+                    };
+                    vList[vIdx] = { ...vList[vIdx], ...successUpdate };
                     transaction.update(projectRef, { versions: vList });
                 }
             }
         });
         logger.log(`Job complete for ${fullFileName}`);
     } else {
-        throw new Error(`Final preview file missing at ${tempPreviewPath} after optimization and fallback attempts.`);
+        throw new Error("Final preview file missing.");
     }
 
   } catch (err) {
@@ -240,34 +352,34 @@ const optimizePdfLogic = onObjectFinalized({
         await db.runTransaction(async (t) => {
             const doc = await t.get(projectRef);
             if (!doc.exists) return;
+            const d = doc.data();
+
+            const failUpdate = {
+                processingStatus: 'error',
+                processingError: err.message
+            };
 
             if (isCover) {
-                t.update(projectRef, {
-                    'cover.processingStatus': 'error',
-                    'cover.processingError': err.message
-                });
+                t.update(projectRef, { 'cover.processingStatus': 'error', 'cover.processingError': err.message });
             } else {
-                const data = doc.data();
-                const versions = data.versions || [];
-                const idx = versions.findIndex(v => v.filePath === filePath);
+                const vList = d.versions || [];
+                const idx = vList.findIndex(v => v.filePath === filePath);
                 if (idx !== -1) {
-                    versions[idx].processingStatus = 'error';
-                    versions[idx].processingError = err.message;
-                    t.update(projectRef, { versions });
+                    vList[idx] = { ...vList[idx], ...failUpdate };
+                    t.update(projectRef, { versions: vList });
                 }
             }
         });
-    } catch(e) {
-        logger.error("Failed to write error status to Firestore:", e);
-    }
+    } catch(e) { logger.error("Failed to update error status", e); }
+
   } finally {
-    // Cleanup
     [tempFilePath, tempPreviewPath, repairedFilePath].forEach(p => {
         if (fs.existsSync(p)) try { fs.unlinkSync(p); } catch(e) {}
     });
   }
 });
 
+// --- Container Deployment Wrapper ---
 if (process.env.FUNCTION_TARGET === 'optimizePdf' || process.env.FUNCTIONS_EMULATOR === 'true') {
     exports.optimizePdf = optimizePdfLogic;
 }
@@ -1309,10 +1421,11 @@ exports.createFileRequest = onCall({ region: 'us-central1' }, async (request) =>
     throw new HttpsError('internal', 'An error occurred while verifying admin status.');
   }
 
-  const { projectName, projectType, clientEmail } = request.data;
+  // [UPDATE] Accept companyId, remove mandatory projectType check
+  const { projectName, clientEmail, companyId } = request.data;
 
-  if (!projectName || !projectType) {
-    throw new HttpsError('invalid-argument', 'Missing required fields: projectName, projectType.');
+  if (!projectName) {
+    throw new HttpsError('invalid-argument', 'Missing required field: projectName.');
   }
 
   try {
@@ -1322,10 +1435,12 @@ exports.createFileRequest = onCall({ region: 'us-central1' }, async (request) =>
 
       const newProjectData = {
           projectName: projectName,
-          projectType: projectType, // 'single' or 'booklet'
+          // [UPDATE] Default to 'guest_mode' or similar since builder handles it
+          projectType: 'guest_mode', 
           status: 'Awaiting Client Upload',
-          companyId: 'GUEST_CLIENT', // Or handle creating a temporary company if needed
-          clientId: null, // No registered client yet
+          // [UPDATE] Use provided companyId or default to GUEST_CLIENT
+          companyId: companyId || 'GUEST_CLIENT', 
+          clientId: null, 
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
           createdBy: userUid,
           clientEmail: clientEmail || null,
@@ -1338,17 +1453,17 @@ exports.createFileRequest = onCall({ region: 'us-central1' }, async (request) =>
 
       // 3. Generate Guest Link with 'canUpload' permission
       const permissions = {
-          canApprove: false,
-          canAnnotate: false,
-          canSeeComments: false,
+          canApprove: true,
+          canAnnotate: true,
+          canSeeComments: true,
           canUpload: true,
-          isOwner: true // Allow them to manage uploads
+          isOwner: true 
       };
 
       const token = crypto.randomBytes(20).toString('hex');
       const createdAt = admin.firestore.FieldValue.serverTimestamp();
       const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + 30); // 30 Days expiry
+      expiresAt.setDate(expiresAt.getDate() + 30); 
       const expiresAtTimestamp = admin.firestore.Timestamp.fromDate(expiresAt);
 
       const guestLinkRef = projectRef.collection('guestLinks').doc(token);
@@ -1361,7 +1476,6 @@ exports.createFileRequest = onCall({ region: 'us-central1' }, async (request) =>
       });
 
       // 4. Return the Guest Upload URL
-      // Note: This points to the NEW guest_upload.html page
       const baseUrl = 'https://your-app-domain.com/guest_upload.html';
       const guestUrl = `${baseUrl}?projectId=${projectId}&guestToken=${token}`;
 
@@ -1373,45 +1487,367 @@ exports.createFileRequest = onCall({ region: 'us-central1' }, async (request) =>
   }
 });
 
-// --- NEW Callable Function for Submitting Guest Upload ---
+// --- SHARED: Core Booklet Generation Logic ---
+async function createBookletPdf(projectId, files, spineMode) {
+    const { PDFDocument, cmyk, pushGraphicsState, popGraphicsState, clip, endPath, moveTo, lineTo } = require('pdf-lib');
+    
+    const bucket = admin.storage().bucket();
+    const authAxios = await getAuthenticatedClient();
+    const fileCache = {}; 
+    const pdfDocCache = {}; 
+    const tempFiles = []; 
+
+    // Helper: Prepare File
+    async function prepareFileForEmbedding(storagePath) {
+        if (fileCache[storagePath]) return fileCache[storagePath];
+        const ext = path.extname(storagePath).toLowerCase();
+        const tempFileName = `temp_${Date.now()}_${Math.random().toString(36).substring(7)}${ext}`;
+        const tempPath = path.join(os.tmpdir(), tempFileName);
+        
+        await bucket.file(storagePath).download({ destination: tempPath });
+        tempFiles.push(tempPath);
+
+        let isPdf = false;
+        if (ext === '.pdf') isPdf = true;
+        else if (ext === '.jpg' || ext === '.jpeg' || ext === '.png') isPdf = false;
+        else {
+            const convertFormData = new FormData();
+            convertFormData.append('files', fs.createReadStream(tempPath), path.basename(storagePath));
+            const response = await authAxios.post(`${GOTENBERG_URL}/forms/libreoffice/convert`, convertFormData, { responseType: 'arraybuffer' });
+            fs.writeFileSync(tempPath, response.data);
+            isPdf = true;
+        }
+        const result = { path: tempPath, isPdf };
+        fileCache[storagePath] = result;
+        return result;
+    }
+
+    // Fetch Project Specs
+    const projectRef = db.collection('projects').doc(projectId);
+    const projectDoc = await projectRef.get();
+    if (!projectDoc.exists) throw new Error('Project not found.');
+    const specs = projectDoc.data().specs || {};
+
+    const resolvedDims = resolveDimensions(specs.dimensions);
+    const trimWidth = resolvedDims.width || 8.5;
+    const trimHeight = resolvedDims.height || 11;
+    const bleed = 0.125;
+
+    const interiorDoc = await PDFDocument.create();
+    let coverDoc = null;
+
+    const interiorFiles = files.filter(f => f.type.startsWith('interior'));
+    const coverFiles = {
+        front: files.find(f => f.type === 'cover_front'),
+        spine: files.find(f => f.type === 'cover_spine'),
+        back: files.find(f => f.type === 'cover_back'),
+        inside_front: files.find(f => f.type === 'cover_inside_front'),
+        inside_back: files.find(f => f.type === 'cover_inside_back')
+    };
+
+    // --- 1. Build Interior ---
+    // [Helper] Draw on Sheet
+    function drawOnSheet(doc, embeddable, trimW, trimH, bleed, settings, isPdfPage) {
+        const sheetW = trimW + (bleed * 2);
+        const sheetH = trimH + (bleed * 2);
+        const page = doc.addPage([sheetW * 72, sheetH * 72]);
+        const targetW = sheetW * 72;
+        const targetH = sheetH * 72;
+
+        let srcW = 0, srcH = 0;
+        if (embeddable.isBlank) { srcW = targetW; srcH = targetH; }
+        else {
+            srcW = embeddable.width || embeddable.scale(1).width;
+            srcH = embeddable.height || embeddable.scale(1).height;
+        }
+
+        let drawW, drawH;
+        const srcRatio = srcW / srcH;
+        const targetRatio = targetW / targetH;
+
+        if (settings.scaleMode === 'fit') {
+            if (srcRatio > targetRatio) { drawW = targetW; drawH = targetW / srcRatio; }
+            else { drawH = targetH; drawW = targetH * srcRatio; }
+        } else if (settings.scaleMode === 'stretch') {
+            drawW = targetW; drawH = targetH;
+        } else { // Fill
+            if (srcRatio > targetRatio) { drawH = targetH; drawW = targetH * srcRatio; }
+            else { drawW = targetW; drawH = targetW / srcRatio; }
+        }
+
+        const panX = Number.isFinite(settings.panX) ? settings.panX : 0;
+        const panY = Number.isFinite(settings.panY) ? settings.panY : 0;
+        const validDrawW = Number.isFinite(drawW) ? drawW : 0;
+        const validDrawH = Number.isFinite(drawH) ? drawH : 0;
+
+        if (validDrawW <= 0 || validDrawH <= 0) return;
+
+        const offsetX = panX * targetW;
+        const offsetY = panY * targetH;
+        const x = ((targetW - validDrawW) / 2) + offsetX;
+        const y = ((targetH - validDrawH) / 2) - offsetY;
+
+        if (!embeddable.isBlank) {
+            if (isPdfPage) page.drawPage(embeddable, { x, y, width: validDrawW, height: validDrawH });
+            else page.drawImage(embeddable, { x, y, width: validDrawW, height: validDrawH });
+        }
+    }
+
+    for (const fileMeta of interiorFiles) {
+        if (!fileMeta.storagePath) {
+            drawOnSheet(interiorDoc, { isBlank: true }, trimWidth, trimHeight, bleed, fileMeta.settings || {}, false);
+            continue;
+        }
+        const { path: localPath, isPdf } = await prepareFileForEmbedding(fileMeta.storagePath);
+        const settings = fileMeta.settings || { scaleMode: 'fit', alignment: 'center' };
+
+        if (isPdf) {
+            let srcDoc;
+            if (pdfDocCache[localPath]) srcDoc = pdfDocCache[localPath];
+            else {
+                const pdfBytes = fs.readFileSync(localPath);
+                srcDoc = await PDFDocument.load(pdfBytes);
+                pdfDocCache[localPath] = srcDoc;
+            }
+            const pageIndex = fileMeta.sourcePageIndex || 0;
+            if (pageIndex < srcDoc.getPageCount()) {
+                const [embeddedPage] = await interiorDoc.embedPages([srcDoc.getPage(pageIndex)]);
+                drawOnSheet(interiorDoc, embeddedPage, trimWidth, trimHeight, bleed, settings, true);
+            }
+        } else {
+            const imgBytes = fs.readFileSync(localPath);
+            let embeddedImage;
+            if (localPath.toLowerCase().endsWith('.png')) embeddedImage = await interiorDoc.embedPng(imgBytes);
+            else embeddedImage = await interiorDoc.embedJpg(imgBytes);
+            drawOnSheet(interiorDoc, embeddedImage, trimWidth, trimHeight, bleed, settings, false);
+        }
+    }
+
+    // --- 2. Build Cover ---
+    if (coverFiles.front || coverFiles.back || coverFiles.spine || coverFiles.inside_front || coverFiles.inside_back) {
+        coverDoc = await PDFDocument.create();
+        const paperType = specs.paperType || '';
+        const interiorPaperObj = HARDCODED_PAPER_TYPES.find(p => p.name === paperType);
+        const interiorCaliper = interiorPaperObj ? interiorPaperObj.caliper : 0.004;
+        const coverPaperType = specs.coverPaperType || '';
+        const coverPaperObj = HARDCODED_PAPER_TYPES.find(p => p.name === coverPaperType);
+        const coverCaliper = coverPaperObj ? coverPaperObj.caliper : (interiorPaperObj ? interiorCaliper : 0.004);
+        const interiorSheets = Math.ceil(interiorFiles.length / 2);
+        let spineWidth = (interiorSheets * interiorCaliper) + (coverCaliper * 2);
+        if (specs.binding === 'saddleStitch' || specs.binding === 'loose') spineWidth = 0;
+
+        const totalWidth = (trimWidth * 2) + spineWidth + (bleed * 2);
+        const totalHeight = trimHeight + (bleed * 2);
+        
+        // Page 1: Outer Cover
+        const coverPage1 = coverDoc.addPage([totalWidth * 72, totalHeight * 72]); 
+
+        async function drawPart(page, fileMeta, x, y, w, h) {
+            if (!fileMeta) return;
+            const { path: localPath, isPdf } = await prepareFileForEmbedding(fileMeta.storagePath);
+            let embeddable;
+            if (isPdf) {
+                const srcDoc = await PDFDocument.load(fs.readFileSync(localPath));
+                let idx = fileMeta.sourcePageIndex || 0;
+                if (idx < 0 || idx >= srcDoc.getPageCount()) idx = 0;
+                const [embedded] = await coverDoc.embedPages([srcDoc.getPage(idx)]);
+                embeddable = embedded;
+            } else {
+                const imgBytes = fs.readFileSync(localPath);
+                if (localPath.toLowerCase().endsWith('.png')) embeddable = await coverDoc.embedPng(imgBytes);
+                else embeddable = await coverDoc.embedJpg(imgBytes);
+            }
+
+            const targetW = w * 72; const targetH = h * 72;
+            const targetX = x * 72; const targetY = y * 72;
+            const srcW = embeddable.width; const srcH = embeddable.height;
+            const srcRatio = srcW / srcH; const targetRatio = targetW / targetH;
+            
+            let drawW, drawH, drawX, drawY;
+            const mode = fileMeta.settings?.scaleMode || 'fill';
+            const isFlipped = fileMeta.settings?.flip || false;
+
+            if (mode === 'stretch') { drawW = targetW; drawH = targetH; drawX = targetX; drawY = targetY; } 
+            else if (mode === 'fit') {
+                if (srcRatio > targetRatio) { drawW = targetW; drawH = targetW / srcRatio; }
+                else { drawH = targetH; drawW = targetH * srcRatio; }
+                drawX = targetX + (targetW - drawW) / 2;
+                drawY = targetY + (targetH - drawH) / 2;
+            } else { 
+                if (srcRatio > targetRatio) { drawH = targetH; drawW = targetH * srcRatio; }
+                else { drawW = targetW; drawH = targetW / srcRatio; }
+                drawX = targetX - (drawW - targetW) / 2;
+                drawY = targetY - (drawH - targetH) / 2;
+            }
+
+            page.pushOperators(pushGraphicsState());
+            page.pushOperators(moveTo(targetX, targetY), lineTo(targetX + targetW, targetY), lineTo(targetX + targetW, targetY + targetH), lineTo(targetX, targetY + targetH), lineTo(targetX, targetY), clip(), endPath());
+
+            if (isFlipped) {
+                const cx = targetX + targetW / 2;
+                page.translateContent(cx, 0); page.scaleContent(-1, 1); page.translateContent(-cx, 0);
+            }
+            if (isPdf) page.drawPage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
+            else page.drawImage(embeddable, { x: drawX, y: drawY, width: drawW, height: drawH });
+            if (isFlipped) {
+                const cx = targetX + targetW / 2;
+                page.translateContent(cx, 0); page.scaleContent(-1, 1); page.translateContent(-cx, 0);
+            }
+            page.pushOperators(popGraphicsState());
+        }
+
+        let zoneLeft = { x: 0, y: 0, w: trimWidth + bleed, h: totalHeight }; 
+        let zoneMid = { x: trimWidth + bleed, y: 0, w: spineWidth, h: totalHeight }; 
+        let zoneRight = { x: trimWidth + bleed + spineWidth, y: 0, w: trimWidth + bleed, h: totalHeight }; 
+
+        // [FIX] SEAM OVERLAP: Add 0.02 inches of overlap to hide white lines
+        const seamOverlap = 0.005; 
+
+        let drawSpine = true;
+        
+        if (spineMode === 'wrap-front-stretch') { 
+            zoneRight.x = zoneMid.x; 
+            zoneRight.w = zoneRight.w + zoneMid.w; 
+            drawSpine = false; 
+        } else if (spineMode === 'wrap-back-stretch') { 
+            zoneLeft.w = zoneLeft.w + zoneMid.w; 
+            drawSpine = false; 
+        } else if (spineMode === 'meet-middle') {
+            // [FIX] Extend both sides to the middle PLUS overlap
+            // Left Zone expands to the right
+            zoneLeft.w = zoneLeft.w + (spineWidth / 2) + seamOverlap;
+            
+            // Right Zone starts earlier (to the left) and expands width to match
+            zoneRight.x = zoneRight.x - (spineWidth / 2) - seamOverlap;
+            zoneRight.w = zoneRight.w + (spineWidth / 2) + seamOverlap;
+            
+            drawSpine = false;
+        }
+
+        await drawPart(coverPage1, coverFiles.back, zoneLeft.x, zoneLeft.y, zoneLeft.w, zoneLeft.h); 
+        if (drawSpine) await drawPart(coverPage1, coverFiles.spine, zoneMid.x, zoneMid.y, zoneMid.w, zoneMid.h);
+        await drawPart(coverPage1, coverFiles.front, zoneRight.x, zoneRight.y, zoneRight.w, zoneRight.h);
+
+        // Page 2: Inner Cover
+        if (coverFiles.inside_front || coverFiles.inside_back || (specs.binding === 'perfectBound' && spineWidth > 0)) {
+            const coverPage2 = coverDoc.addPage([totalWidth * 72, totalHeight * 72]);
+            await drawPart(coverPage2, coverFiles.inside_front, 0, 0, trimWidth + bleed, totalHeight);
+            await drawPart(coverPage2, coverFiles.inside_back, trimWidth + bleed + spineWidth, 0, trimWidth + bleed, totalHeight);
+            if (specs.binding === 'perfectBound' && spineWidth > 0) {
+                const glueW = (spineWidth + 0.25) * 72; 
+                const centerX = ((trimWidth + bleed) * 72) + ((spineWidth * 72) / 2);
+                const glueX = centerX - (glueW / 2);
+                coverPage2.drawRectangle({ x: glueX, y: 0, width: glueW, height: totalHeight * 72, color: cmyk(0, 0, 0, 0) });
+            }
+        }
+    }
+
+    // Cleanup Cache
+    for (const key in pdfDocCache) { delete pdfDocCache[key]; }
+
+    // Save Files
+    if (interiorFiles.length > 0) {
+        const pdfBytes = await interiorDoc.save();
+        const fileName = `${Date.now()}_interior_built.pdf`;
+        const storagePath = `proofs/${projectId}/${fileName}`;
+        await bucket.file(storagePath).save(pdfBytes, { contentType: 'application/pdf' });
+    }
+
+    if (coverDoc) {
+        const pdfBytes = await coverDoc.save();
+        const fileName = `${Date.now()}_cover_built.pdf`;
+        const storagePath = `proofs/${projectId}/${fileName}`;
+        await bucket.file(storagePath).save(pdfBytes, { contentType: 'application/pdf' });
+    }
+
+    tempFiles.forEach(p => { try { fs.unlinkSync(p); } catch (e) {} });
+}
+
+// --- EXPORT 1: Updated submitGuestUpload (Async Queue) ---
 exports.submitGuestUpload = onCall({ region: 'us-central1' }, async (request) => {
-    if (!request.auth) {
-        throw new HttpsError('unauthenticated', 'User must be authenticated.');
-    }
-
-    const { projectId } = request.data;
-
-    if (!projectId) {
-        throw new HttpsError('invalid-argument', 'Missing projectId.');
-    }
+    if (!request.auth) throw new HttpsError('unauthenticated', 'User must be authenticated.');
+    const { projectId, files, spineMode } = request.data; // [FIX] Accept Build Data
+    if (!projectId) throw new HttpsError('invalid-argument', 'Missing projectId.');
 
     try {
         const projectRef = db.collection('projects').doc(projectId);
 
-        // [FIX] Set status to 'Waiting Admin Review' so client page hides buttons
+        // Update status to 'Queued' and save the build instruction
         await projectRef.update({
-            status: 'Waiting Admin Review', 
+            status: 'Processing Upload', // Temporary status for client feedback
+            guestUploadStatus: 'queued',
+            guestBuildData: { files: files || [], spineMode: spineMode || 'file' },
             lastUploadAt: admin.firestore.FieldValue.serverTimestamp()
         });
 
-        // Notify Admins
+        // Notify Admins (Optimistic Notification)
         const projectDoc = await projectRef.get();
         const projectName = projectDoc.data().projectName;
-
         const adminSnapshot = await db.collection('users').where('role', '==', 'admin').get();
         for (const adminDoc of adminSnapshot.docs) {
             await createNotification(adminDoc.id, {
                 title: "New Guest Upload",
-                message: `Files have been uploaded for "${projectName}".`,
+                message: `Files have been uploaded for "${projectName}" and are processing.`,
                 link: `admin_project.html?id=${projectId}`
             });
         }
 
         return { success: true };
-
     } catch (error) {
         logger.error('Error submitting guest upload:', error);
         throw new HttpsError('internal', 'Failed to submit upload.');
+    }
+});
+
+// --- EXPORT 2: Background Trigger for Processing ---
+exports.processGuestBuild = onDocumentUpdated({
+    document: 'projects/{projectId}',
+    memory: '8GiB',
+    cpu: 2,
+    timeoutSeconds: 540
+}, async (event) => {
+    const before = event.data.before.data();
+    const after = event.data.after.data();
+    const projectId = event.params.projectId;
+
+    // Trigger only when status changes to 'queued'
+    if (before.guestUploadStatus !== 'queued' && after.guestUploadStatus === 'queued') {
+        logger.log(`Starting background booklet generation for ${projectId}`);
+        
+        try {
+            const { files, spineMode } = after.guestBuildData || {};
+            if (files && files.length > 0) {
+                await createBookletPdf(projectId, files, spineMode);
+            }
+
+            // Success: Update status
+            await db.collection('projects').doc(projectId).update({
+                status: 'Waiting Admin Review',
+                guestUploadStatus: 'complete'
+            });
+            logger.log(`Booklet generation complete for ${projectId}`);
+
+        } catch (error) {
+            logger.error(`Background generation failed for ${projectId}`, error);
+            await db.collection('projects').doc(projectId).update({
+                status: 'Error', // Or 'Upload Failed'
+                guestUploadStatus: 'error',
+                processingError: error.message
+            });
+        }
+    }
+});
+
+// --- EXPORT 3: Legacy Generate Booklet (For Pro Upload Form) ---
+exports.generateBooklet = onCall({ region: 'us-central1', memory: '8GiB', timeoutSeconds: 540 }, async (request) => {
+    // Re-uses the shared logic for direct calls (like from Pro Upload form)
+    if (!request.auth) throw new HttpsError('unauthenticated', 'User must be authenticated.');
+    const { projectId, files, spineMode } = request.data;
+    try {
+        await createBookletPdf(projectId, files, spineMode);
+        return { success: true };
+    } catch (err) {
+        throw new HttpsError('internal', err.message);
     }
 });
 
@@ -1479,7 +1915,6 @@ const axios = require('axios');
 const { PDFDocument } = require('pdf-lib');
 const FormData = require('form-data');
 const jszip = require('jszip');
-const { onDocumentUpdated, onDocumentCreated } = require('firebase-functions/v2/firestore');
 
 const GOTENBERG_URL = 'https://gotenberg-service-452256252711.us-central1.run.app'; //gotenberg service
 const GOTENBERG_AUDIENCE = GOTENBERG_URL; // Audience must be the base URL
@@ -1563,168 +1998,173 @@ async function storePageAsPdf({ pageBuffer, pageNum, tempId }) {
     };
 }
 
-exports.generatePreviews = onCall({
+// --- GENERATE PREVIEWS (Custom Container Version) ---
+const generatePreviewsLogic = onCall({
     region: 'us-central1',
-    memory: '4GiB', // Adjust as needed
-    timeoutSeconds: 540
+    memory: '4GiB',
+    cpu: 2,
+    timeoutSeconds: 540,
+    cors: true,
 }, async (request) => {
-    // No projectId needed here, get paths from request data
-    const { filePath: originalFilePath, originalName: originalFileName } = request.data;
-
+    const { filePath: originalFilePath, originalName: originalFileName, progressDocId } = request.data;
+    
     if (!originalFilePath || !originalFileName) {
         throw new HttpsError('invalid-argument', 'Missing "filePath" or "originalName".');
     }
 
-    // Extract a temporary identifier from the path (e.g., the folder name after 'temp_uploads/')
-    const pathParts = originalFilePath.split('/'); // e.g., ['temp_uploads', tempId, filename]
-    const tempId = pathParts.length > 2 ? pathParts[1] : `unknown_${Date.now()}`; // Get tempId
+    // 1. Unique Temp Directory (Local)
+    const processId = crypto.randomUUID();
+    const tempDir = path.join(os.tmpdir(), `proc_${processId}`);
+    
+    // 2. Unique Storage Path (Cloud)
+    // Path structure: temp_uploads / USER_ID / TIMESTAMP / FILENAME
+    const pathParts = originalFilePath.split('/');
+    
+    // [FIX] Use USER_ID + TIMESTAMP to make the folder unique per file upload
+    // If path is: temp_uploads/guest_123/1764159/file.psd
+    // pathParts[1] = guest_123
+    // pathParts[2] = 1764159 (Unique Timestamp ID)
+    let storageFolderId = `unknown_${Date.now()}`;
+    if (pathParts.length > 2) {
+        storageFolderId = `${pathParts[1]}/${pathParts[2]}`;
+    }
 
-    logger.log(`Generating previews for temp upload: ${originalFilePath}`);
+    const bucket = admin.storage().bucket();
+    
+    // Ensure temp directory exists
+    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+    
+    let sourceFilePath = path.join(tempDir, `source_${originalFileName}`);
+    
+    logger.log(`[Preview] Start: ${originalFilePath} | StorageFolder: ${storageFolderId}`);
+
+    const updateProgress = async (msg) => {
+        if (progressDocId) {
+            try {
+                await db.collection('temp_processing').doc(progressDocId).set({
+                    status: msg,
+                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                }, { merge: true });
+            } catch (e) { console.warn("Failed to update progress doc", e); }
+        }
+    };
 
     try {
-        const bucket = admin.storage().bucket();
-        const authAxios = await getAuthenticatedClient();
-        const originalFile = bucket.file(originalFilePath);
+        await updateProgress("Downloading file...");
+        await bucket.file(originalFilePath).download({ destination: sourceFilePath });
 
-        let multiPagePdfBuffer;
-        let tempPdfPathForSplit = originalFilePath; // Default to the uploaded file path
-        const fileExtension = path.extname(originalFileName).toLowerCase();
+        // --- Conversion Logic ---
+        const isPdf = originalFileName.toLowerCase().endsWith('.pdf');
+        const ext = path.extname(originalFileName).toLowerCase();
 
-        // --- 1. Conversion or Direct Use ---
-        if (fileExtension === '.pdf') {
-            logger.log('File is already a PDF, proceeding directly.');
-            // We need the buffer to check page count later, but conversion is skipped.
-            [multiPagePdfBuffer] = await originalFile.download();
-            // tempPdfPathForSplit is already originalFilePath
-        } else {
-            logger.log(`File is '${fileExtension}', calling LibreOffice convert via Signed URL...`);
+        if (!isPdf) {
+            await updateProgress(`Converting ${ext.toUpperCase()} to PDF...`);
+            logger.log(`[Preview] Converting ${ext} using Gotenberg...`);
             
-            // --- FIX 1: Use Signed URL + downloadFrom for Conversion ---
-            // This bypasses the 32MB Request Entity Too Large limit
-            
-            const [signedConvertUrl] = await originalFile.getSignedUrl({
-                action: 'read',
-                expires: Date.now() + 3600 * 1000 // 1 hour
-            });
-
-            const convertFormData = new FormData();
-            const downloadConfig = JSON.stringify([{ url: signedConvertUrl }]);
-            convertFormData.append('downloadFrom', downloadConfig);
-            
-            const convertResponse = await authAxios.post(`${GOTENBERG_URL}/forms/libreoffice/convert`, convertFormData, {
-                responseType: 'arraybuffer'
-            }).catch(err => { 
-                const gotenbergError = err.response?.data ? Buffer.from(err.response.data).toString() : err.message;
-                logger.error('Gotenberg LibreOffice conversion failed:', gotenbergError);
-                throw new HttpsError('internal', `LibreOffice conversion failed: ${gotenbergError}`); 
-            });
-            
-            multiPagePdfBuffer = convertResponse.data;
-            logger.log('LibreOffice conversion successful.');
-
-            // Upload the converted PDF back to storage temporarily to get a path for splitting
-            const convertedFileName = path.basename(originalFilePath).replace(fileExtension, '.pdf');
-            tempPdfPathForSplit = `temp_uploads/${tempId}/converted_${convertedFileName}`;
-            await bucket.file(tempPdfPathForSplit).save(multiPagePdfBuffer, { contentType: 'application/pdf' });
+            try {
+                const authAxios = await getAuthenticatedClient();
+                const convertFormData = new FormData();
+                convertFormData.append('files', fs.createReadStream(sourceFilePath), originalFileName);
+                
+                const response = await authAxios.post(`${GOTENBERG_URL}/forms/libreoffice/convert`, convertFormData, { 
+                    responseType: 'arraybuffer' 
+                });
+                
+                const newPdfPath = path.join(tempDir, `converted_${Date.now()}.pdf`);
+                fs.writeFileSync(newPdfPath, response.data);
+                
+                try { fs.unlinkSync(sourceFilePath); } catch(e) {}
+                sourceFilePath = newPdfPath;
+                
+                logger.log(`[Preview] Conversion successful.`);
+            } catch (e) {
+                logger.error("[Preview] Gotenberg conversion failed:", e);
+                throw new HttpsError('internal', `Failed to convert ${ext}.`);
+            }
         }
 
-
-        const tempDoc = await PDFDocument.load(multiPagePdfBuffer);
-        const pageCount = tempDoc.getPageCount();
-
-        // --- 2. Handle Single Page Case (No Splitting) ---
-        if (pageCount <= 1) {
-            logger.log(`Document has only ${pageCount} page(s). Storing single PDF.`);
-            
-            // Store the single-page PDF, generate the preview, and get its metadata
-            const pageData = await storePageAsPdf({
-                pageBuffer: multiPagePdfBuffer, // Use the full buffer as the single page source
-                pageNum: 1,
-                tempId: tempId
-            });
-            
-            // Return the single page data array to the client
-            return { pages: [pageData] }; 
+        // --- Page Count ---
+        let pageCount = 1;
+        try {
+            const { spawn } = require('child-process-promise');
+            const result = await spawn('pdfinfo', [sourceFilePath], { capture: ['stdout'] });
+            const match = result.stdout.toString().match(/Pages:\s+(\d+)/);
+            if (match) pageCount = parseInt(match[1], 10);
+        } catch (e) {
+            logger.warn("[Preview] Failed to get page count, defaulting to 1");
         }
 
-        // --- 3. PDF Splitting (Runs ONLY if pageCount > 1) ---
+        await updateProgress(`Processing ${pageCount} pages...`);
 
-        const fileToSplit = bucket.file(tempPdfPathForSplit);
-        const [signedUrl] = await fileToSplit.getSignedUrl({
-             action: 'read',
-             expires: Date.now() + 3600 * 1000 // Expires in 1 hour
-        });
-        logger.log(`Generated signed URL for splitting: ${signedUrl}`);
-
-        const splitFormData = new FormData();
+        // --- Generate Thumbnails ---
+        const BATCH_SIZE = 4; 
+        const pagesData = [];
         
-        // --- FIX 2: Use downloadFrom for Splitting as well ---
-        // Standard 'files' upload fails for large files or doesn't accept URLs correctly
-        const splitDownloadConfig = JSON.stringify([{ url: signedUrl }]);
-        splitFormData.append('downloadFrom', splitDownloadConfig);
+        const processPage = async (pageNum) => {
+            const thumbName = `thumb_${pageNum}.jpg`;
+            const thumbLocal = path.join(tempDir, thumbName);
+            // [FIX] Use the unique storageFolderId here
+            const thumbStorage = `temp_previews/${storageFolderId}/${thumbName}`;
 
-        splitFormData.append('splitMode', 'pages'); // Tell Gotenberg to split by page
-        splitFormData.append('splitSpan', '1-');   // Tell Gotenberg to split all pages (1-to-end)
-        logger.log('Calling PDF split using signed URL...');
-        
-        const splitResponse = await authAxios.post(`${GOTENBERG_URL}/forms/pdfengines/split`, splitFormData, {
-            responseType: 'arraybuffer',
-        }).catch(err => { 
-            const gotenbergError = err.response?.data ? Buffer.from(err.response.data).toString() : err.message;
-            logger.error('Gotenberg PDF splitting failed with URL:', gotenbergError);
-            throw new HttpsError('internal', `PDF splitting failed: ${gotenbergError}.`); 
-        });
-        logger.log('PDF splitting successful.');
+            await spawn('gs', [
+                '-sDEVICE=jpeg',
+                '-dTextAlphaBits=4',
+                '-dGraphicsAlphaBits=4',
+                '-r72', 
+                `-dFirstPage=${pageNum}`,
+                `-dLastPage=${pageNum}`,
+                '-dNOPAUSE', '-dQUIET', '-dBATCH',
+                `-sOutputFile=${thumbLocal}`,
+                sourceFilePath 
+            ]);
 
-        const zip = await jszip.loadAsync(splitResponse.data);
-        const singlePagePdfBuffers = [];
-        const fileNames = Object.keys(zip.files).sort(); // Sort numerically (e.g., 1.pdf, 2.pdf ...)
-
-        // Process files in sorted order
-        for (const fileName of fileNames) {
-            const buffer = await zip.files[fileName].async('nodebuffer');
-            singlePagePdfBuffers.push(buffer);
-        }
-        logger.log(`Extracted ${singlePagePdfBuffers.length} pages from zip.`);
-
-        const processedPagesData = []; // Array to hold results for the client
-
-        // Multi-page processing now uses the helper function for efficiency
-        const processingPromises = singlePagePdfBuffers.map(async (pageBuffer, index) => {
-            const pageNum = index + 1;
-
-            // Use the helper to store the single-page PDF and return metadata
-            const pageData = await storePageAsPdf({
-                pageBuffer: pageBuffer, // Use the split page buffer
-                pageNum: pageNum,
-                tempId: tempId
+            await bucket.upload(thumbLocal, {
+                destination: thumbStorage,
+                contentType: 'image/jpeg',
+                metadata: { cacheControl: 'public, max-age=31536000' }
             });
 
-            processedPagesData.push(pageData);
-            return pageData;
-        });
+            const [url] = await bucket.file(thumbStorage).getSignedUrl({
+                action: 'read', expires: '03-09-2491'
+            });
 
-        await Promise.all(processingPromises);
-        logger.log('All pages processed successfully.');
+            return {
+                pageNumber: pageNum,
+                previewUrl: url,
+                isThumbnail: true
+            };
+        };
 
-        // Return the array of processed page data
-        processedPagesData.sort((a, b) => a.pageNumber - b.pageNumber);
-        return { pages: processedPagesData };
+        for (let i = 1; i <= pageCount; i += BATCH_SIZE) {
+            const end = Math.min(i + BATCH_SIZE - 1, pageCount);
+            const batchPromises = [];
+            for (let j = i; j <= end; j++) {
+                batchPromises.push(processPage(j));
+            }
+            const batchResults = await Promise.all(batchPromises);
+            pagesData.push(...batchResults);
+        }
+
+        await updateProgress("Finalizing...");
+        pagesData.sort((a, b) => a.pageNumber - b.pageNumber);
+
+        return {
+            pages: pagesData,
+            totalPageCount: pageCount
+        };
 
     } catch (error) {
-        
-        logger.error('Error in generatePreviews:', error.response?.data ? Buffer.from(error.response.data).toString() : error);
-        
-        // Extract error message from Gotenberg if available
-        const message = error.response?.data ? Buffer.from(error.response.data).toString() : (error.message || 'An internal error occurred during preview generation.');
-        
-        // If it's already an HttpsError, rethrow it, otherwise wrap it
-        if (error.code && error.httpErrorCode) {
-             throw error;
-        }
-        throw new HttpsError('internal', message);
+        logger.error('[Preview] Fatal Error:', error);
+        await updateProgress(`Error: ${error.message}`);
+        throw new HttpsError('internal', error.message);
+    } finally {
+        try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch(e) {}
     }
 });
+
+if (process.env.FUNCTION_TARGET === 'generatePreviews') {
+    exports.generatePreviews = generatePreviewsLogic;
+}
 
 
 // HTTP Callable function for manual imposition
@@ -2238,73 +2678,71 @@ function drawOnSheet(doc, embeddable, trimW, trimH, bleed, settings, isPdf) {
 
 exports.imposePdf = onCall({
   region: 'us-central1',
-  memory: '8GiB', // Imposition can be memory intensive
+  memory: '8GiB',
   timeoutSeconds: 540
 }, async (request) => {
-  // 1. Authentication Check
-  if (!request.auth || !request.auth.token) {
-    throw new HttpsError('unauthenticated', 'The function must be called while authenticated.');
-  }
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Auth required.');
+  
+  // 1. Admin Check
   const userUid = request.auth.uid;
-  try {
-    const userDoc = await db.collection('users').doc(userUid).get();
-    if (!userDoc.exists || userDoc.data().role !== 'admin') {
-      throw new HttpsError('permission-denied', 'You must be an admin to perform this action.');
-    }
-  } catch (error) {
-    logger.error('Admin check failed', error);
-    throw new HttpsError('internal', 'An error occurred while verifying admin status.');
+  const userDoc = await db.collection('users').doc(userUid).get();
+  if (!userDoc.exists || userDoc.data().role !== 'admin') {
+      throw new HttpsError('permission-denied', 'Admin only.');
   }
 
-  // 2. Data Validation (ensure projectId and settings are passed)
   const { projectId, settings } = request.data;
-  if (!projectId || !settings) {
-    throw new HttpsError('invalid-argument', 'Missing "projectId" or "settings".');
-  }
+  if (!projectId || !settings) throw new HttpsError('invalid-argument', 'Missing inputs.');
 
-  logger.log(`Manual imposition triggered for project ${projectId} by user ${userUid}`);
+  logger.log(`Manual imposition for ${projectId} by ${userUid}`);
 
   try {
     const projectRef = db.collection('projects').doc(projectId);
     const projectDoc = await projectRef.get();
-    if (!projectDoc.exists) {
-      throw new HttpsError('not-found', `Project ${projectId} not found.`);
-    }
+    if (!projectDoc.exists) throw new HttpsError('not-found', 'Project not found.');
     const projectData = projectDoc.data();
 
     const latestVersion = projectData.versions.reduce((latest, v) => (v.versionNumber > latest.versionNumber ? v : latest), projectData.versions[0]);
-    if (!latestVersion || !latestVersion.fileURL) {
-      throw new HttpsError('not-found', 'No file found for the latest version.');
-    }
+    if (!latestVersion || !latestVersion.fileURL) throw new HttpsError('not-found', 'No file found.');
 
     const bucket = admin.storage().bucket();
-    const filePath = new URL(latestVersion.fileURL).pathname.split('/o/')[1].replace(/%2F/g, '/');
+    
+    // --- FIX: Robust URL Parsing (Copied from onProjectApprove) ---
+    let filePath;
+    const urlObj = new URL(latestVersion.fileURL);
+
+    if (urlObj.protocol === 'gs:') {
+        filePath = urlObj.pathname.startsWith('/') ? urlObj.pathname.slice(1) : urlObj.pathname;
+    } else {
+        const parts = urlObj.pathname.split('/o/');
+        if (parts.length > 1) {
+            filePath = parts[1].replace(/%2F/g, '/');
+        } else {
+            filePath = urlObj.pathname.startsWith('/') ? urlObj.pathname.slice(1) : urlObj.pathname;
+        }
+    }
+    // -------------------------------------------------------------
+
     const file = bucket.file(decodeURIComponent(filePath));
 
-    // 3. Call main imposition logic (Now returns a file path)
     const { filePath: localImposedPath } = await imposePdfLogic({
       inputFile: file,
       settings: settings,
       jobInfo: projectData,
     });
 
-    // 4. Upload result to storage (Stream from disk)
     const imposedFileName = `imposed_manual_${Date.now()}.pdf`;
     const imposedFilePath = `imposed/${projectId}/${imposedFileName}`;
     const imposedFile = bucket.file(imposedFilePath);
     
-    // Use upload() instead of save() to handle large files
     await bucket.upload(localImposedPath, {
         destination: imposedFilePath,
         contentType: 'application/pdf'
     });
 
-    // Clean up local file
     try { require('fs').unlinkSync(localImposedPath); } catch(e) {}
     
     const [imposedFileUrl] = await imposedFile.getSignedUrl({ action: 'read', expires: '03-09-2491' });
 
-    // 5. Update Firestore
     await projectRef.update({
       impositions: admin.firestore.FieldValue.arrayUnion({
         createdAt: admin.firestore.Timestamp.now(),
@@ -2315,21 +2753,19 @@ exports.imposePdf = onCall({
       }),
     });
 
-    logger.log(`Successfully created manual imposition for project ${projectId}`);
-
-    // Add Notification for the admin who triggered the action
+    // Notify Admin
     await createNotification(userUid, {
         title: "Imposition Ready",
         message: `Manual imposition for "${projectData.projectName}" is complete.`,
         link: imposedFileUrl,
-        isExternalLink: true // Make the notification a direct download link
+        isExternalLink: true
     });
 
     return { success: true, url: imposedFileUrl };
 
   } catch (error) {
-    logger.error(`Error during manual imposition for project ${projectId}:`, error);
-    throw new HttpsError('internal', error.message || 'An internal error occurred.');
+    logger.error(`Error during manual imposition:`, error);
+    throw new HttpsError('internal', error.message);
   }
 });
 
@@ -2358,8 +2794,30 @@ exports.onProjectApprove = onDocumentUpdated({
       }
 
       const bucket = admin.storage().bucket();
-      const filePath = new URL(latestVersion.fileURL).pathname.split('/o/')[1].replace(/%2F/g, '/');
+      
+      // --- FIX START: Robust URL Parsing ---
+      let filePath;
+      const urlObj = new URL(latestVersion.fileURL);
+
+      if (urlObj.protocol === 'gs:') {
+          // Handle gs://bucket/path/to/file
+          // pathname comes out as "/path/to/file", so we remove the leading slash
+          filePath = urlObj.pathname.startsWith('/') ? urlObj.pathname.slice(1) : urlObj.pathname;
+      } else {
+          // Handle standard Firebase HTTP URLs which typically contain /o/
+          const parts = urlObj.pathname.split('/o/');
+          if (parts.length > 1) {
+              filePath = parts[1].replace(/%2F/g, '/');
+          } else {
+              // Fallback: If it's a direct link or different format, try using pathname directly
+              // stripping leading slash if necessary
+              filePath = urlObj.pathname.startsWith('/') ? urlObj.pathname.slice(1) : urlObj.pathname;
+              logger.warn(`Unusual URL format: ${latestVersion.fileURL}. Attempting to use path: ${filePath}`);
+          }
+      }
+      
       const file = bucket.file(decodeURIComponent(filePath));
+      // --- FIX END ---
 
       // 2. Download to temp file
       const os = require('os');
@@ -2426,12 +2884,11 @@ exports.onProjectApprove = onDocumentUpdated({
 
       try { fs.unlinkSync(localImposedPath); } catch(e) {}
 
-      // --- FIX START: Get Signed URL correctly ---
+      // Get Signed URL
       const [signedImposedUrl] = await imposedFile.getSignedUrl({ 
           action: 'read', 
           expires: '03-09-2491' 
       });
-      // --- FIX END ---
 
       // 7. Update Firestore
       const projectRef = db.collection('projects').doc(projectId);

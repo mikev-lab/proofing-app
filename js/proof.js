@@ -5,10 +5,10 @@ import { initializeSharedViewer } from './viewer.js';
 import { STANDARD_PAPER_SIZES } from './guides.js';
 // [UPDATE] Added 'query' and 'orderBy' to the imports
 import { doc, onSnapshot, updateDoc, collection, getDocs, Timestamp, addDoc, getDoc, arrayUnion, serverTimestamp, setDoc, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-import * as pdfjsLib from "https://mozilla.github.io/pdf.js/build/pdf.mjs";
+import * as pdfjsLib from "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.2.67/build/pdf.mjs";
 
 // Set worker source for PDF.js
-pdfjsLib.GlobalWorkerOptions.workerSrc = "https://mozilla.github.io/pdf.js/build/pdf.worker.mjs";
+pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.2.67/build/pdf.worker.mjs";
 
 // --- PARSE URL PARAMS ONCE AT SCRIPT LOAD ---
 const urlParams = new URLSearchParams(window.location.search);
@@ -120,7 +120,11 @@ function showApproveConfirmation(projectData) {
     const interiorPaperEl = document.getElementById('approval-interior-paper-text');
     if (interiorPaperEl) {
         const paper = specs.paperType || "Standard";
-        interiorPaperEl.innerHTML = `Confirm Interior Paper: <span class="font-bold text-white">${paper}</span>`;
+        const direction = specs.readingDirection === 'rtl' ? 'Right to Left' : 'Left to Right';
+        interiorPaperEl.innerHTML = `
+            Confirm Interior Paper: <span class="font-bold text-white">${paper}</span>
+            <br/><span class="text-xs text-gray-300 block mt-1">Reading Direction: <span class="font-bold text-white">${direction}</span></span>
+        `;
     }
 
     // 3. Populate Cover Paper (Hide if not applicable)
@@ -145,7 +149,26 @@ function showApproveConfirmation(projectData) {
         }
     }
 
-    // 4. Reset the form
+    // 4. Reading Direction Acknowledgment
+    const readingDirContainer = document.getElementById('container-reading-direction');
+    const readingDirCheckbox = document.getElementById('check-reading-direction');
+    const readingDirText = document.getElementById('approval-reading-direction-text');
+
+    if (readingDirContainer && readingDirCheckbox) {
+        if (specs.binding === 'loose' || !specs.binding) {
+            readingDirContainer.classList.add('hidden');
+            readingDirCheckbox.disabled = true;
+            readingDirCheckbox.checked = true;
+        } else {
+            readingDirContainer.classList.remove('hidden');
+            readingDirCheckbox.disabled = false;
+            readingDirCheckbox.checked = false;
+            const dirText = specs.readingDirection === 'rtl' ? 'Right to Left' : 'Left to Right';
+            if (readingDirText) readingDirText.innerHTML = `I acknowledge the book reads <strong>${dirText}</strong>.`;
+        }
+    }
+
+    // 5. Reset the form
     approvalFormModal.reset();
     modalConfirmBtn.disabled = true;
     modalConfirmBtn.classList.add('opacity-50', 'cursor-not-allowed');
@@ -352,202 +375,104 @@ async function updateProjectStatus(status) {
 
 
 // --- Project Data Loader ---
-// --- Project Data Loader ---
 // Keep track of previous state to prevent unnecessary re-renders
 let lastVersionCount = 0;
 let lastStatus = null;
+let lastProcessingStatus = null;
 
 function loadProjectForUser(user) {
-    // Use currentProjectId (which should be set from initialProjectId)
-    console.log(`[Load Project] Starting for user: ${user?.uid || 'anonymous/unknown'}, projectId: ${currentProjectId}, isGuest: ${isGuest}`);
-
-    if (!currentProjectId) {
-        console.error('[Load Project] No project ID available.');
-        loadingSpinner.innerHTML = '<p class="text-red-400">Error: No project ID specified in URL.</p>';
-        return;
-    }
-
-    if (user && !isGuest) {
-         userEmailSpan.textContent = user.email;
-         userEmailSpan.classList.remove('hidden');
-         if(logoutButton) logoutButton.classList.remove('hidden');
-    } else if (isGuest && user) {
-         userEmailSpan.textContent = "Guest User";
-         userEmailSpan.classList.remove('hidden');
-         if(logoutButton) logoutButton.classList.add('hidden');
-    } else {
-        console.warn('[Load Project] loadProjectForUser called with null user.');
-    }
-
-    console.log(`[Load Project] Setting up Firestore listener for project: ${currentProjectId}`);
+    console.log(`[Load Project] Starting for user: ${user?.uid || 'anonymous/unknown'}, projectId: ${currentProjectId}`);
     const projectRef = doc(db, "projects", currentProjectId);
 
-    // --- Setup History Listener ---
-    if (unsubscribeHistoryListener) {
-        unsubscribeHistoryListener();
-        unsubscribeHistoryListener = null;
-    }
-
+    if (unsubscribeHistoryListener) { unsubscribeHistoryListener(); unsubscribeHistoryListener = null; }
     const historyQuery = query(collection(db, "projects", currentProjectId, "history"), orderBy("timestamp", "desc"));
-
     unsubscribeHistoryListener = onSnapshot(historyQuery, (snapshot) => {
         const historyList = document.getElementById('project-history-list');
         if (historyList) {
             historyList.innerHTML = '';
-            if (snapshot.empty) {
-                historyList.innerHTML = '<p class="text-gray-400">No history events found.</p>';
-                return;
-            }
+            if (snapshot.empty) { historyList.innerHTML = '<p class="text-gray-400">No history events found.</p>'; return; }
             snapshot.forEach(doc => {
                 const event = doc.data();
                 const eventTime = event.timestamp ? new Date(event.timestamp.seconds * 1000).toLocaleString() : 'N/A';
                 const signature = event.details && event.details.signature ? `<span class="italic text-gray-400"> - E-Signature: ${event.details.signature}</span>` : '';
-                
                 let actionText = event.action ? event.action.replace(/_/g, ' ') : 'Unknown Action';
                 actionText = actionText.charAt(0).toUpperCase() + actionText.slice(1);
-
                 const item = document.createElement('div');
                 item.className = 'p-3 bg-slate-700/50 rounded-md text-sm border border-slate-600/30';
-                item.innerHTML = `
-                    <div class="flex justify-between items-start">
-                        <p class="font-semibold text-white">${actionText}</p>
-                        <span class="text-[10px] text-gray-500">${eventTime}</span>
-                    </div>
-                    <p class="text-gray-300 text-xs mt-1">by <span class="font-medium text-indigo-300">${event.userDisplay || 'System'}</span>${signature}</p>
-                `;
+                item.innerHTML = `<div class="flex justify-between items-start"><p class="font-semibold text-white">${actionText}</p><span class="text-[10px] text-gray-500">${eventTime}</span></div><p class="text-gray-300 text-xs mt-1">by <span class="font-medium text-indigo-300">${event.userDisplay || 'System'}</span>${signature}</p>`;
                 historyList.appendChild(item);
             });
         }
-    }, (error) => {
-        console.error("[Load Project] Error fetching history:", error);
-        const historyList = document.getElementById('project-history-list');
-        if(historyList) historyList.innerHTML = '<p class="text-red-400 text-xs">Unable to load history.</p>';
-    });
+    }, (error) => { console.error("[Load Project] Error fetching history:", error); });
 
-    // --- Setup Project Listener ---
-    if (unsubscribeProjectListener) {
-        console.log('[Load Project] Unsubscribing previous listener.');
-        unsubscribeProjectListener();
-        unsubscribeProjectListener = null;
-    }
+    if (unsubscribeProjectListener) { unsubscribeProjectListener(); unsubscribeProjectListener = null; }
 
     unsubscribeProjectListener = onSnapshot(projectRef, (docSnap) => {
-        console.log(`[Load Project] onSnapshot triggered. docSnap exists: ${docSnap.exists()}`);
         if (docSnap.exists()) {
             const projectData = docSnap.data();
             
-            // [FIX] Smart Update Check
-            const currentVersionCount = projectData.versions ? projectData.versions.length : 0;
+            const currentVersions = projectData.versions || [];
+            const latestVersion = currentVersions.length > 0 
+                ? currentVersions.reduce((prev, current) => (prev.versionNumber > current.versionNumber) ? prev : current) 
+                : null;
+
+            const currentVersionCount = currentVersions.length;
             const currentStatus = projectData.status;
+            const currentProcessingStatus = latestVersion ? latestVersion.processingStatus : 'complete';
             
-            // If only guestBuilderState changed (draft saving), do NOT re-init viewer
-            // Only re-init if version count changed or status changed
-            const shouldReInit = (currentVersionCount !== lastVersionCount) || (currentStatus !== lastStatus);
+            // Detect Changes
+            // [UPDATE] Added check for (currentProcessingStatus !== lastProcessingStatus)
+            // This ensures we re-init when optimization finishes.
+            const shouldReInit = (currentVersionCount !== lastVersionCount) || 
+                                 (currentStatus !== lastStatus) || 
+                                 (currentProcessingStatus !== lastProcessingStatus);
             
             lastVersionCount = currentVersionCount;
             lastStatus = currentStatus;
-
-            console.log('[Load Project] Project data received:', projectData);
+            lastProcessingStatus = currentProcessingStatus;
 
             if(projectName) projectName.textContent = projectData.projectName;
 
+            // --- Actions Panel Logic ---
             const actionPanel = document.querySelector('#approval-form')?.parentElement;
             const commentTool = document.getElementById('tool-comment');
             const approvalBanner = document.getElementById('approval-banner');
-
             if (actionPanel && commentTool && approvalBanner) {
-                // Reset action panel HTML to prevent duplicate buttons and stale state
-                actionPanel.innerHTML = `
-                    <h3 class="text-xl font-semibold text-white mb-4">Actions</h3>
-                    <form id="approval-form">
-                        <div id="decision-buttons">
-                            <button type="button" id="approve-button" class="w-full text-center rounded-lg bg-green-600 px-4 py-3 text-sm font-semibold leading-6 text-white shadow-md hover:bg-green-500 transition-all duration-150 ease-in-out">
-                                Approve
-                            </button>
-                            <button type="button" id="request-changes-button" class="mt-3 w-full text-center rounded-lg bg-red-600 px-4 py-3 text-sm font-semibold leading-6 text-white shadow-md hover:bg-red-500 transition-all duration-150 ease-in-out">
-                                Request Changes
-                            </button>
-                        </div>
-                        <div id="confirmation-section" class="hidden mt-4">
-                             <p id="confirmation-message" class="text-center text-gray-300 mb-4"></p>
-                             <button type="submit" id="confirm-action-button" class="w-full text-center rounded-lg px-4 py-3 text-sm font-semibold text-white shadow-md transition-all duration-150 ease-in-out">
-                                 Confirm
-                             </button>
-                             <button type="button" id="cancel-action-button" class="mt-3 w-full text-center rounded-lg bg-gray-600 px-4 py-3 text-sm font-semibold text-white shadow-md hover:bg-gray-500 transition-all duration-150 ease-in-out">
-                                 Cancel
-                             </button>
-                        </div>
-                    </form>`;
-
+                 actionPanel.innerHTML = `<h3 class="text-xl font-semibold text-white mb-4">Actions</h3><form id="approval-form"><div id="decision-buttons"><button type="button" id="approve-button" class="w-full text-center rounded-lg bg-green-600 px-4 py-3 text-sm font-semibold leading-6 text-white shadow-md hover:bg-green-500 transition-all duration-150 ease-in-out">Approve</button><button type="button" id="request-changes-button" class="mt-3 w-full text-center rounded-lg bg-red-600 px-4 py-3 text-sm font-semibold leading-6 text-white shadow-md hover:bg-red-500 transition-all duration-150 ease-in-out">Request Changes</button></div><div id="confirmation-section" class="hidden mt-4"><p id="confirmation-message" class="text-center text-gray-300 mb-4"></p><button type="submit" id="confirm-action-button" class="w-full text-center rounded-lg px-4 py-3 text-sm font-semibold text-white shadow-md transition-all duration-150 ease-in-out">Confirm</button><button type="button" id="cancel-action-button" class="mt-3 w-full text-center rounded-lg bg-gray-600 px-4 py-3 text-sm font-semibold text-white shadow-md hover:bg-gray-500 transition-all duration-150 ease-in-out">Cancel</button></div></form>`;
                  const newApprovalForm = document.getElementById('approval-form');
-                 if(newApprovalForm) {
-                    newApprovalForm.addEventListener('submit', (e) => {
-                        e.preventDefault();
-                        const confirmBtn = document.getElementById('confirm-action-button');
-                        if (actionToConfirm && confirmBtn) {
-                            confirmBtn.disabled = true;
-                            confirmBtn.textContent = 'Processing...';
-                            updateProjectStatus(actionToConfirm === 'approve' ? 'approved' : 'changes_requested');
-                        } else {
-                             hideConfirmation();
-                        }
-                    });
-                 }
-
-                let isEditor = false;
-                if (isGuest) {
-                    if (guestPermissions.isOwner) isEditor = true;
-                } else {
-                    isEditor = true;
-                }
-
-                if (isGuest) {
+                 if(newApprovalForm) { newApprovalForm.addEventListener('submit', (e) => { e.preventDefault(); const confirmBtn = document.getElementById('confirm-action-button'); if (actionToConfirm && confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = 'Processing...'; updateProjectStatus(actionToConfirm === 'approve' ? 'approved' : 'changes_requested'); } else { hideConfirmation(); } }); }
+                 
+                 let isEditor = !isGuest || (isGuest && guestPermissions.isOwner);
+                 if (isGuest) {
                     actionPanel.style.display = guestPermissions.canApprove ? 'block' : 'none';
                     commentTool.style.display = guestPermissions.canAnnotate ? 'block' : 'none';
-                    if (guestPermissions.isOwner && headerShareButton) {
-                        headerShareButton.classList.remove('hidden');
-                    }
-                } else {
-                    actionPanel.style.display = 'block';
-                    commentTool.style.display = 'block';
-                }
+                    if (guestPermissions.isOwner && headerShareButton) headerShareButton.classList.remove('hidden');
+                 } else { actionPanel.style.display = 'block'; commentTool.style.display = 'block'; }
 
-                // [FIX] Re-query the button from the DOM to ensure we have the live element
-                const currentBuilderBtn = document.getElementById('nav-edit-builder-button');
-                
-                if (isEditor && currentBuilderBtn) {
+                 const currentBuilderBtn = document.getElementById('nav-edit-builder-button');
+                 if (isEditor && currentBuilderBtn) {
                     currentBuilderBtn.classList.remove('hidden');
-
-                    // Clone to strip old listeners, then replace
                     const newBtn = currentBuilderBtn.cloneNode(true);
-                    
                     if (currentBuilderBtn.parentNode) {
                         currentBuilderBtn.parentNode.replaceChild(newBtn, currentBuilderBtn);
-
                         newBtn.addEventListener('click', () => {
                             let url = `guest_upload.html?projectId=${currentProjectId}`;
-                            if (isGuest && initialGuestToken) {
-                                url += `&guestToken=${initialGuestToken}`;
-                            }
+                            if (isGuest && initialGuestToken) url += `&guestToken=${initialGuestToken}`;
                             window.location.href = url;
                         });
                     }
-                } else if (currentBuilderBtn) {
-                    currentBuilderBtn.classList.add('hidden');
-                }
+                 } else if (currentBuilderBtn) { currentBuilderBtn.classList.add('hidden'); }
 
                  if (approvedStatuses.includes(projectData.status)) {
                      approvalBanner.classList.remove('hidden');
                      approvalBanner.className = "mb-6 bg-green-800/50 border border-green-500 text-green-200 px-4 py-3 rounded-lg relative";
                      approvalBanner.innerHTML = '<strong class="font-bold">Proof Approved!</strong> <span class="block sm:inline">This project is locked for printing and cannot be modified.</span>';
-                     
                      actionPanel.innerHTML = `<p class="text-center text-lg font-semibold text-green-400">Proof Approved</p>`;
                      commentTool.style.display = 'none';
                  } else if (projectData.status === 'Waiting Admin Review') {
                      approvalBanner.classList.remove('hidden');
                      approvalBanner.className = "mb-6 bg-blue-900/50 border border-blue-500 text-blue-200 px-4 py-3 rounded-lg relative";
-                     approvalBanner.innerHTML = '<strong class="font-bold">Under Review.</strong> <span class="block sm:inline">An administrator is reviewing your submission. You will be notified when the proof is ready for approval.</span>';
-                     
+                     approvalBanner.innerHTML = '<strong class="font-bold">Under Review.</strong> <span class="block sm:inline">An administrator is reviewing your submission.</span>';
                      actionPanel.innerHTML = `<p class="text-center text-lg font-semibold text-blue-400">Waiting for Review</p>`;
                      commentTool.style.display = 'none'; 
                  } else if (projectData.status === 'changes_requested') {
@@ -559,57 +484,72 @@ function loadProjectForUser(user) {
                      const approveButton = document.getElementById('approve-button');
                      const requestChangesButton = document.getElementById('request-changes-button');
                      const cancelActionButton = document.getElementById('cancel-action-button');
-
                      if (approveButton) approveButton.addEventListener('click', () => showApproveConfirmation(projectData));
                      if (requestChangesButton) requestChangesButton.addEventListener('click', showRequestChangesConfirmation);
                      if (cancelActionButton) cancelActionButton.addEventListener('click', hideConfirmation);
                  }
             }
 
+            // --- [FIX] LOADING STATE HANDLING (Async Gap Protection) ---
+            // We show the spinner if:
+            // 1. Status is explicitly 'Processing Upload' (set by guest_upload.js)
+            // 2. A new upload happened (lastUploadAt) but the latest version in 'versions' array is OLDER than that (backend hasn't finished optimizing yet).
+            // 3. The latest version exists but is marked as 'processing'.
+            
+            const isProcessingStatus = currentStatus === 'Processing Upload';
+            
+            let isNewVersionPending = false;
+            if (projectData.lastUploadAt && latestVersion && latestVersion.createdAt) {
+                isNewVersionPending = latestVersion.createdAt.seconds < projectData.lastUploadAt.seconds;
+            }
+
+            const isOptimizationRunning = currentProcessingStatus === 'processing' && (!latestVersion || !latestVersion.fileURL);
+
+            const cover = projectData.cover || {};
+            const isCoverProcessing = cover.processingStatus === 'processing';
+
+            if (isProcessingStatus || isNewVersionPending || isOptimizationRunning || isCoverProcessing) {
+                loadingSpinner.classList.remove('hidden');
+                proofContent.classList.add('hidden');
+                loadingSpinner.innerHTML = `
+                    <div class="flex flex-col items-center gap-4">
+                        <div class="w-12 h-12 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div>
+                        <div class="text-center">
+                            <p class="text-indigo-400 font-bold text-lg animate-pulse">Processing Files...</p>
+                            <p class="text-gray-400 text-sm mt-1">
+                                ${isCoverProcessing ? 'Generating cover preview...' : 'Optimizing PDF for viewing...'}
+                            </p>
+                        </div>
+                    </div>
+                `;
+                return; 
+            }
+            // ---------------------------------------
+
             if (shouldReInit) {
-                console.log('[Load Project] Significant change detected. Re-initializing viewer.');
+                console.log('[Load Project] Update detected. Initializing viewer.');
                 
-                // Auto-Update Logic for Viewer
                 const versionSelector = document.getElementById('version-selector');
-                const currentVersions = projectData.versions || [];
-                const maxVersion = currentVersions.length > 0
-                    ? Math.max(...currentVersions.map(v => v.versionNumber))
-                    : 0;
                 const selectedVersion = versionSelector ? parseInt(versionSelector.value, 10) : null;
+                const maxVersion = latestVersion ? latestVersion.versionNumber : 0;
                 
-                // If user is on older version and new one arrives, switch
                 if (selectedVersion && maxVersion > selectedVersion) {
                      if (versionSelector) versionSelector.value = ""; 
                 }
 
                 initializeSharedViewer({
-                    db,
-                    auth,
-                    projectId: currentProjectId,
+                    db, auth, projectId: currentProjectId,
                     projectData: projectData,
-                    isAdmin: false,
-                    isGuest: isGuest,
-                    guestPermissions: guestPermissions
+                    isAdmin: false, isGuest: isGuest, guestPermissions: guestPermissions
                 });
-            } else {
-                console.log('[Load Project] Skipping viewer re-init (only draft state changed).');
             }
 
             loadingSpinner.classList.add('hidden');
             proofContent.classList.remove('hidden');
         } else {
-             console.error(`[Load Project] Project document ${currentProjectId} not found.`);
             loadingSpinner.innerHTML = '<p class="text-red-400">Error: Project not found.</p>';
         }
-    }, (error) => {
-        console.error("[Load Project] Firestore listener error:", error);
-        loadingSpinner.innerHTML = `<p class="text-red-400">Error loading project data: ${error.message}</p>`;
-         if (unsubscribeProjectListener) {
-             unsubscribeProjectListener();
-             unsubscribeProjectListener = null;
-         }
-    });
-     console.log('[Load Project] Firestore listener attached.');
+    }, (error) => { console.error("[Load Project] Error:", error); });
 }
 // --- End loadProjectForUser ---
 

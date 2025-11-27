@@ -229,13 +229,21 @@ async function imposePdfLogic(params) {
     let currentBatchFont = await currentBatchDoc.embedFont(StandardFonts.Helvetica);
     let batchPageCache = new Map(); 
     
+    // [FIX] Refactored to catch "Missing Contents" error
     const embedPageForBatch = async (pageIndex) => {
-        if (pageIndex >= numInputPages) return null;
+        if (pageIndex >= numInputPages) return 'OUT_OF_BOUNDS'; // Special sentinel for non-existent pages
         if (batchPageCache.has(pageIndex)) return batchPageCache.get(pageIndex);
         const sourcePage = inputPdfDoc.getPages()[pageIndex];
-        const embeddedPage = await currentBatchDoc.embedPage(sourcePage);
-        batchPageCache.set(pageIndex, embeddedPage);
-        return embeddedPage;
+        try {
+            const embeddedPage = await currentBatchDoc.embedPage(sourcePage);
+            batchPageCache.set(pageIndex, embeddedPage);
+            return embeddedPage;
+        } catch (e) {
+            console.warn(`Failed to embed page ${pageIndex}: ${e.message}`);
+            // Return null to signal "blank page", but valid slot
+            batchPageCache.set(pageIndex, null);
+            return null;
+        }
     };
 
     for (let physicalSheetIndex = 0; physicalSheetIndex < totalPhysicalSheets; physicalSheetIndex++) {
@@ -274,14 +282,20 @@ async function imposePdfLogic(params) {
             if (pIndex === undefined) continue;
             
             const embeddedPage = await embedPageForBatch(pIndex);
-            if (!embeddedPage) continue;
+            
+            // [FIX] Check for OUT_OF_BOUNDS (skip slot) vs NULL (draw empty with crop marks)
+            if (embeddedPage === 'OUT_OF_BOUNDS') continue; 
 
             const { x, y } = slotPositions[slotIndex];
             const row = Math.floor(slotIndex / columns);
             const col = slotIndex % columns;
 
-            outputSheetFront.drawPage(embeddedPage, { x, y, width: pageContentWidth, height: pageContentHeight });
+            // Only draw content if page is valid (not null)
+            if (embeddedPage) {
+                outputSheetFront.drawPage(embeddedPage, { x, y, width: pageContentWidth, height: pageContentHeight });
+            }
 
+            // Always draw crop marks for valid slots (even if content is missing/blank)
             const trimAreaX = x + bleedPoints;
             const trimAreaY = y + bleedPoints;
             const trimAreaW = pageContentWidth - (2 * bleedPoints);
@@ -308,14 +322,17 @@ async function imposePdfLogic(params) {
             for (let slotIndex = 0; slotIndex < slotsPerSheet; slotIndex++) {
                 const pIndex = pagesForBackIndices[slotIndex];
                 if (pIndex === undefined) continue;
-                const embeddedPage = await embedPageForBatch(pIndex);
-                if (!embeddedPage) continue;
                 
+                const embeddedPage = await embedPageForBatch(pIndex);
+                if (embeddedPage === 'OUT_OF_BOUNDS') continue;
+
                 const { x, y } = slotPositions[slotIndex]; 
                 const row = Math.floor(slotIndex / columns);
                 const col = slotIndex % columns;
 
-                outputSheetBack.drawPage(embeddedPage, { x, y, width: pageContentWidth, height: pageContentHeight });
+                if (embeddedPage) {
+                    outputSheetBack.drawPage(embeddedPage, { x, y, width: pageContentWidth, height: pageContentHeight });
+                }
 
                 const trimAreaX = x + bleedPoints;
                 const trimAreaY = y + bleedPoints;

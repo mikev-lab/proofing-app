@@ -1,7 +1,7 @@
 // js/admin.js
 import { auth, db, functions } from './firebase.js';
 import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-import { collection, getDocs, doc, getDoc, Timestamp, query, where, orderBy, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { collection, getDocs, doc, getDoc, Timestamp, query, where, orderBy, updateDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 import { httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js";
 
 const userEmailSpan = document.getElementById('user-email');
@@ -24,7 +24,15 @@ const shareModalResult = document.getElementById('share-modal-result');
 const generatedLinkUrlInput = document.getElementById('generated-link-url');
 const copyLinkButton = document.getElementById('copy-link-button');
 const copyStatusMessage = document.getElementById('copy-status-message');
+const deleteModal = document.getElementById('delete-modal');
+const deleteModalCancel = document.getElementById('delete-modal-cancel');
+const deleteModalConfirm = document.getElementById('delete-modal-confirm');
+const deleteInput = document.getElementById('delete-confirmation-input');
+const deleteMatchNameSpan = document.getElementById('delete-match-name');
 let currentProjectId = null;
+let projectToDeleteId = null;
+let projectToDeleteName = null;
+let cachedCompanies = [];
 
 // ... (getStatusBadge, formatTimestamp, fetchNotifications, fetchAllProjects, renderProjects functions remain unchanged) ...
 function formatTimestamp(fbTimestamp) {
@@ -120,7 +128,7 @@ async function fetchAllProjects() {
 
         const statusValueMap = {
             "Changes Requested": "changes_requested",
-            "Awaiting Upload": "awaiting_upload"
+            "Awaiting Upload": "Awaiting Client Upload"
         };
         const dbStatus = statusValueMap[selectedStatus] || (selectedStatus !== "All" ? selectedStatus.toLowerCase() : null);
 
@@ -137,19 +145,13 @@ async function fetchAllProjects() {
 
         q = query(projectsRef, ...queries);
 
+        const companiesSnap = await getDocs(collection(db, 'companies'));
+        cachedCompanies = companiesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        const companyMap = cachedCompanies.reduce((acc, c) => { acc[c.id] = c.companyName; return acc; }, {});
+
         const querySnapshot = await getDocs(q);
 
         let projects = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-
-        const companyIds = [...new Set(projects.map(p => p.companyId).filter(id => id))];
-        const companyPromises = companyIds.map(id => getDoc(doc(db, "companies", id)));
-        const companySnapshots = await Promise.all(companyPromises);
-        const companyMap = companySnapshots.reduce((map, snap) => {
-            if (snap.exists()) {
-                map[snap.id] = snap.data().companyName;
-            }
-            return map;
-        }, {});
 
         projects.forEach(p => {
             if (p.companyId && companyMap[p.companyId]) {
@@ -249,7 +251,10 @@ function renderProjects(projects, companyMap) {
                     `<button class="recover-btn text-green-400 hover:text-green-300" data-id="${project.id}">Recover</button>` :
                     `<button class="archive-btn text-yellow-400 hover:text-yellow-300" data-id="${project.id}">Archive</button>`
                 }
-                <button class="delete-btn text-red-400 hover:text-red-300" data-id="${project.id}">Delete</button>
+                <button class="delete-btn text-red-400 hover:text-red-300" 
+                    data-id="${project.id}" 
+                    data-status="${project.status}" 
+                    data-name="${project.projectName}">Delete</button>
             </td>
         `;
         projectsList.appendChild(row);
@@ -299,12 +304,38 @@ projectsList.addEventListener('click', async (e) => {
     }
 
     if (target.classList.contains('delete-btn')) {
-        if (confirm('Are you sure you want to delete this project? It will be permanently deleted in 30 days.')) {
-            const projectRef = doc(db, "projects", projectId);
-            const deleteAt = new Date();
-            deleteAt.setDate(deleteAt.getDate() + 30);
-            await updateDoc(projectRef, { status: 'archived', deleteAt: Timestamp.fromDate(deleteAt) });
-            fetchAllProjects();
+        const currentStatus = target.dataset.status;
+        const projectName = target.dataset.name;
+
+        if (currentStatus === 'archived') {
+            // [UPDATE] Already archived? Show Permanent Delete Modal
+            projectToDeleteId = projectId;
+            projectToDeleteName = projectName;
+            
+            deleteMatchNameSpan.textContent = projectName;
+            deleteInput.value = '';
+            deleteModalConfirm.disabled = true;
+            deleteModal.classList.remove('hidden');
+        } else {
+            // [UPDATE] Active? Use Double-Tap to Archive logic
+            if (target.dataset.confirming === 'true') {
+                const projectRef = doc(db, "projects", projectId);
+                const deleteAt = new Date();
+                deleteAt.setDate(deleteAt.getDate() + 30);
+                await updateDoc(projectRef, { status: 'archived', deleteAt: Timestamp.fromDate(deleteAt) });
+                fetchAllProjects();
+            } else {
+                const originalText = target.textContent;
+                target.dataset.confirming = 'true';
+                target.textContent = 'Are you sure?';
+                target.classList.add('font-bold', 'underline');
+                
+                setTimeout(() => {
+                    target.dataset.confirming = 'false';
+                    target.textContent = originalText;
+                    target.classList.remove('font-bold', 'underline');
+                }, 3000);
+            }
         }
     }
 
@@ -319,6 +350,44 @@ projectsList.addEventListener('click', async (e) => {
         openShareModal();
     }
 });
+
+// [UPDATE] Delete Modal Logic
+if (deleteInput) {
+    deleteInput.addEventListener('input', () => {
+        if (deleteInput.value === projectToDeleteName) {
+            deleteModalConfirm.disabled = false;
+            deleteModalConfirm.classList.remove('opacity-50', 'cursor-not-allowed');
+        } else {
+            deleteModalConfirm.disabled = true;
+            deleteModalConfirm.classList.add('opacity-50', 'cursor-not-allowed');
+        }
+    });
+}
+
+if (deleteModalCancel) {
+    deleteModalCancel.addEventListener('click', () => {
+        deleteModal.classList.add('hidden');
+        projectToDeleteId = null;
+    });
+}
+
+if (deleteModalConfirm) {
+    deleteModalConfirm.addEventListener('click', async () => {
+        if (!projectToDeleteId) return;
+        
+        deleteModalConfirm.textContent = "Deleting...";
+        try {
+            await deleteDoc(doc(db, "projects", projectToDeleteId));
+            deleteModal.classList.add('hidden');
+            fetchAllProjects();
+        } catch (err) {
+            console.error("Failed to delete project:", err);
+            alert("Error deleting project. check console.");
+        } finally {
+            deleteModalConfirm.textContent = "Delete Forever";
+        }
+    });
+}
 
 // --- Share Modal Logic ---
 const permissionOwnerCheckbox = document.getElementById('permission-owner');
@@ -440,6 +509,7 @@ const reqGeneratedLinkInput = document.getElementById('req-generated-link');
 const reqCopyLinkButton = document.getElementById('req-copy-link-button');
 const reqCopyMessage = document.getElementById('req-copy-message');
 const reqDoneButton = document.getElementById('req-done-button');
+const reqCompanySelect = document.getElementById('req-company-select');
 
 function openRequestModal() {
     requestFilesModal.classList.remove('hidden');
@@ -449,8 +519,16 @@ function openRequestModal() {
     createRequestButton.disabled = false;
     createRequestButton.textContent = 'Create & Get Link';
     reqCopyMessage.textContent = '';
-}
 
+    // [UPDATE] Populate Company Dropdown
+    reqCompanySelect.innerHTML = '<option value="">-- No Company --</option>';
+    cachedCompanies.forEach(company => {
+        const option = document.createElement('option');
+        option.value = company.id;
+        option.textContent = company.companyName;
+        reqCompanySelect.appendChild(option);
+    });
+}
 function closeRequestModal() {
     requestFilesModal.classList.add('hidden');
 }
@@ -471,26 +549,18 @@ if (requestFilesButton) {
         createRequestButton.textContent = 'Creating...';
 
         const projectName = document.getElementById('req-project-name').value;
-        const projectType = document.querySelector('input[name="req-project-type"]:checked').value;
+        const companyId = reqCompanySelect.value;
         const clientEmail = document.getElementById('req-client-email').value;
 
         try {
             const createFileRequest = httpsCallable(functions, 'createFileRequest');
             const result = await createFileRequest({
                 projectName,
-                projectType,
+                companyId,
                 clientEmail
             });
 
             if (result.data.success) {
-                // URL in result.data.url is from the backend (which might be placeholder)
-                // We should construct it properly using window.location.origin + backend path
-                // But backend returns a full URL currently (likely with placeholder domain).
-                // Let's just use the path + search from the result.
-
-                // The backend returns: 'https://your-app-domain.com/guest_upload.html?projectId=...&guestToken=...'
-                // We need: window.location.origin + '/guest_upload.html?projectId=...&guestToken=...'
-
                 const resultUrl = new URL(result.data.url);
                 const finalUrl = `${window.location.origin}${resultUrl.pathname}${resultUrl.search}`;
 

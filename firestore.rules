@@ -2,273 +2,221 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // --- Helper Functions ---
+    // --- 1. Helper Functions ---
     function isAdmin() {
-      // Check if user is authenticated AND their role is 'admin' in their user document
       return request.auth != null &&
         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
     }
 
     function getUserData(userId) {
-      // Get the data document for a specific user ID
       return get(/databases/$(database)/documents/users/$(userId)).data;
     }
 
+    function userExists(userId) {
+      return exists(/databases/$(database)/documents/users/$(userId));
+    }
+
     function getProject(projectId) {
-      // Get the data document for a specific project ID
       return get(/databases/$(database)/documents/projects/$(projectId)).data;
     }
 
     function isCompanyMember(companyId) {
-      // Check if the requesting user exists and belongs to the specified company
       return request.auth != null &&
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        userExists(request.auth.uid) &&
         getUserData(request.auth.uid).companyId == companyId;
     }
-    
-    // --- Rules for 'admin_notifications' Collection ---
-    match /admin_notifications/{notificationId} {
-      // Only Admins can read or write these from the client-side
-      // (The Cloud Function writes via Admin SDK, which bypasses this, but the frontend needs this to READ it)
-      allow read, write: if isAdmin();
-    }
 
-    // --- NEW Guest Helper Functions ---
+    // --- FIXED Guest Helper Function ---
+    // Uses .get() for robust safety checking of custom claims.
+    // This prevents runtime errors if the engine misinterprets the claim types.
     function hasValidGuestDataAccess(projectId, permission) {
-       // Secure Custom Claim Check with Safe Access (.get)
-       // Checks if 'guestProjectId' matches, and if permission is either null (any access) or explicitly true
-       // We use default values '' and {} to prevent "Invalid type" warnings when claims are missing
        return request.auth != null &&
+          // Check if guestProjectId exists and matches
           request.auth.token.get('guestProjectId', '') == projectId &&
           (
-            permission == null ||
+            // If we just need basic access (permission is empty string), allow it
+            permission == '' || 
+            // Otherwise, safely check the nested permissions map
             request.auth.token.get('guestPermissions', {}).get(permission, false) == true
           );
     }
 
-
-    // --- Rules for 'users' Collection ---
+    // --- 2. Users Collection ---
     match /users/{userId} {
-      // Allow creation for:
-      // 1. A user creating their own doc (register.html)
-      // 2. An MCE Admin (admin_client_management.html)
-      // 3. A Company Admin adding a user *to their own company* (account.html)
-      allow create: if request.auth.uid == userId ||
-        isAdmin() ||
+      // Allow User to create own, Admin to create any, OR Company Admin creating staff
+      allow create: if request.auth.uid == userId || 
+        isAdmin() || 
         (
           request.auth != null &&
-          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          userExists(request.auth.uid) &&
           getUserData(request.auth.uid).companyRole == 'admin' &&
           request.resource.data.companyId == getUserData(request.auth.uid).companyId &&
           request.resource.data.role == 'client_user'
         );
-      // User can read/update their own doc, Admin can read/update any
-      allow read, update: if request.auth.uid == userId ||
-        isAdmin();
-      // Only Admin can delete
+
+      allow read, update: if request.auth.uid == userId || isAdmin();
       allow delete: if isAdmin();
     }
 
-    // --- Rules for 'companies' Collection ---
+    // --- 3. Companies Collection ---
     match /companies/{companyId} {
-      // Allow authenticated user to create if they are the owner specified in the new doc
-      allow create: if request.auth != null &&
-        request.resource.data.ownerUid == request.auth.uid;
-      // Allow read if user is a member of the company or an Admin
-      allow read: if isCompanyMember(companyId) ||
-        isAdmin();
-
-      // Allow update if user is owner, a company admin, or an MCE Admin
-      allow update: if request.auth != null && (
-        request.auth.uid == resource.data.ownerUid ||
-        (isCompanyMember(companyId) && getUserData(request.auth.uid).companyRole == 'admin') ||
-        isAdmin()
+      // Allow owner to create
+      allow create: if request.auth != null && request.resource.data.ownerUid == request.auth.uid;
+      
+      allow read: if isCompanyMember(companyId) || isAdmin();
+      
+      // Allow Owner/Company Admin to update
+      allow update: if isAdmin() || (
+        request.auth != null && (
+          request.auth.uid == resource.data.ownerUid ||
+          (isCompanyMember(companyId) && getUserData(request.auth.uid).companyRole == 'admin')
+        )
       );
-      // Only Admin can delete
+      
       allow delete: if isAdmin();
     }
 
-    // --- Rules for 'notifications' Collection (NEW) ---
-    match /notifications/{notificationId} {
-          // Allow read, update (mark as read), and delete (clear) if the user owns the notification
-          allow read, update, delete: if request.auth != null && request.auth.uid == resource.data.recipientUid;
-          
-          // Disallow client-side creation (server only)
-          allow create: if false;
-        }
-
-    // --- Rules for 'projects' Collection ---
+    // --- 4. Projects Collection ---
     match /projects/{projectId} {
-      // ** Admins have full access **
-      allow write: if isAdmin();
-      // Write is simpler, keep it separate.
-      allow read: if isAdmin();  // Admins can read anything.
+      // Admin Override
+      allow read, write: if isAdmin();
       
-      // ** Client & Guest Access for GET (reading a single document) **
-      allow get: if (
-          // 1. REGULAR CLIENT ACCESS (Skip if Anonymous)
-          (request.auth != null &&
-          request.auth.token.firebase.sign_in_provider != 'anonymous' 
-          && 
-          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-          (
-            getUserData(request.auth.uid).companyId == resource.data.companyId ||
-            request.auth.uid == resource.data.clientId 
-            // Backward Compatibility
-          ))
-          // 2. OR GUEST READ ACCESS
-          // CHANGE: Pass 'null' to check for ANY valid guest link
-          || hasValidGuestDataAccess(projectId, null)
-        );
-        
-      // ** Client & Guest Access for LIST (querying documents) **
+      // --- Locks Sub-collection ---
+      match /locks/{lockId} {
+         // Allow ANY valid guest (even viewers) to SEE if the project is locked
+         allow read: if 
+           isAdmin() ||
+           hasValidGuestDataAccess(projectId, '') || 
+           (request.auth != null && userExists(request.auth.uid) && getUserData(request.auth.uid).companyId == getProject(projectId).companyId);
+
+         // Only allow Editors (canUpload/isOwner) to actually LOCK/UNLOCK
+         allow write: if 
+           isAdmin() ||
+           hasValidGuestDataAccess(projectId, 'canUpload') || 
+           hasValidGuestDataAccess(projectId, 'isOwner') || 
+           (request.auth != null && userExists(request.auth.uid) && getUserData(request.auth.uid).companyId == getProject(projectId).companyId);
+      }
+
+      // GET (Single Doc) - Keep '' here (View access is fine for any valid guest)
+      allow get: if 
+         isAdmin() ||
+         hasValidGuestDataAccess(projectId, '') || 
+         (
+           request.auth != null &&
+           userExists(request.auth.uid) &&
+           (
+             getUserData(request.auth.uid).companyId == resource.data.companyId ||
+             request.auth.uid == resource.data.clientId 
+           )
+         );
+
+      // LIST
       allow list: if request.auth != null;
-      
-      // Client & Guest 'update' (for status changes or file uploads)
-      allow update: if (
-            // Client update logic
+
+      // UPDATE
+      allow update: if 
+         isAdmin() ||
+         // A. Guest Logic (Uploads, Saves, Status)
+         (
+           // FIX: Restored 'canUpload' check. 
+           // Now, read-only guests CANNOT change specs or builder state.
+           (hasValidGuestDataAccess(projectId, 'canUpload') || hasValidGuestDataAccess(projectId, 'isOwner')) &&
+           request.resource.data.diff(resource.data).affectedKeys().hasAny([
+             'status', 'lastUploadAt', 'specs', 'guestBuilderState', 
+             'projectType', 'editorLock', 'guestUploadStatus', 'guestBuildData'
+           ])
+         )
+         ||
+         // B. Guest Logic (Approvals only)
+         (
+           (hasValidGuestDataAccess(projectId, 'canApprove') || hasValidGuestDataAccess(projectId, 'isOwner')) &&
+           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+         )
+         ||
+         // C. Client Logic (Status Change OR File Upload Handshake)
+         (
             request.auth != null &&
-            exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+            userExists(request.auth.uid) &&
             getUserData(request.auth.uid).companyId == resource.data.companyId &&
             (
+              // Simple status update
               (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])) ||
-              (resource.data.isAwaitingClientUpload == true &&
+              // Complex Client Upload Handshake
+              (
+                resource.data.isAwaitingClientUpload == true &&
                 request.resource.data.isAwaitingClientUpload == false &&
                 request.resource.data.status == 'pending' &&
-                request.resource.data.versions.size() == resource.data.versions.size() + 1 &&
-                request.resource.data.companyId == resource.data.companyId &&
-                request.resource.data.projectName == resource.data.projectName &&
-                request.resource.data.specs == resource.data.specs
+                request.resource.data.versions.size() == resource.data.versions.size() + 1
               )
             )
-          )
-          // ** OR Guest Approval Logic **
-          ||
-          (
-            (hasValidGuestDataAccess(projectId, 'canApprove') || hasValidGuestDataAccess(projectId, 'isOwner')) &&
-            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
-          )
-          // ** OR Guest Upload Logic **
-          ||
-          (
-            (hasValidGuestDataAccess(projectId, 'canUpload') || hasValidGuestDataAccess(projectId, 'isOwner')) &&
-            // FIX: Added 'guestBuilderState' and 'projectType' to the allowed list so saving drafts works
-            // ADDED: 'editorLock' for concurrent editing protection
-            request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'lastUploadAt', 'specs', 'guestBuilderState', 'projectType', 'editorLock'])
-          );
+         );
 
-      // --- Rules for 'guestLinks' Sub-collection ---
+      // --- Sub-collections ---
       match /guestLinks/{linkId} {
-          // Admins have full control
           allow read, write: if isAdmin();
-          // Allow guests/users to read the link to validate it
           allow get: if true;
-          // [NEW] Allow guests to update ONLY the viewHistory field
-          // This lets them increment the view counter without being able to change permissions or expiry
           allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewHistory']);
       }
-
-      // --- Rules for 'pages' Sub-collection ---
+      
       match /pages/{pageId} {
-          allow read, write: if isAdmin() ||
-            (request.auth != null && isCompanyMember(getProject(projectId).companyId));
+          allow read, write: if isAdmin() || (request.auth != null && isCompanyMember(getProject(projectId).companyId));
       }
 
-      // --- Rules for 'history' Sub-collection (NEW) ---
       match /history/{historyId} {
-        // Allow read access to admins and members of the project's company
-        // CHANGE: Added guest access (null permission) so history loads for guests
-        allow read: if isAdmin() ||
-                       isCompanyMember(getProject(projectId).companyId) ||
-                       hasValidGuestDataAccess(projectId, null);
-                       
-        // Disallow client-side creation, update, and deletion.
+        allow read: if isAdmin() || isCompanyMember(getProject(projectId).companyId) || hasValidGuestDataAccess(projectId, '');
         allow create, update, delete: if false;
       }
-    }
-
-    // --- Rules for 'annotations' Sub-collection ---
-    match /projects/{projectId}/annotations/{annotationId} {
-      // Admin full control
-      allow read, create, update, delete: if isAdmin();
-      // Client read/create
-      allow read, create: if request.auth != null &&
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-        (
-          getUserData(request.auth.uid).companyId == getProject(projectId).companyId ||
-          request.auth.uid == getProject(projectId).clientId
-        );
-      // Author can update/delete their own annotations
-      allow update, delete: if request.auth != null && request.auth.uid == resource.data.authorUid;
-      // Guest read access
-      // CHANGE: Added OR isOwner
-      allow read: if hasValidGuestDataAccess(projectId, 'canSeeComments') ||
-        hasValidGuestDataAccess(projectId, 'isOwner');
-
-      // Guest create access
-      // CHANGE: Added OR isOwner
-      allow create: if hasValidGuestDataAccess(projectId, 'canAnnotate') ||
-        hasValidGuestDataAccess(projectId, 'isOwner');
-    }
-
-    // --- Rules for 'vendors' Collection ---
-    match /vendors/{vendorId} {
-      // Admins can manage vendors, staff can read
-      allow read, write: if isAdmin();
-    }
-
-    // --- Rules for 'inventory' Collection ---
-    match /inventory/{stockId} {
-      // Admins can manage inventory.
-      // We will add rules for staff/mobile app later.
-      allow read, write: if isAdmin();
-    }
-
-    // --- Rules for 'inventoryPurchases' Collection ---
-    match /inventoryPurchases/{purchaseId} {
-      // Admins can log new purchases.
-      allow read, create: if isAdmin();
-      // Lock records after creation
-      allow update, delete: if false;
-    }
-
-    // ******** ADD THIS SECTION ********
-
-    // --- Rules for 'settings' Collection (NEW) ---
-    // This matches the path: 'settings/globalImpositionDefaults'
-    match /settings/globalImpositionDefaults {
-      allow read, write: if isAdmin();
-    }
-
-    // Add this new rule
-    match /settings/globalEstimatorDefaults {
-      allow read: if request.auth != null;
-      // Allow all users (even public) to read
-      allow write: if isAdmin();
-      // Only admins can change them
-    }
-
-    // This matches the path: 'settings/sheetSizes'
-    match /settings/sheetSizes {
-      // This document isn't used directly, but we need the path
-      // to define rules for its subcollection.
-      allow read, write: if false; // Deny access to the parent doc itself
-
-      // This matches the path: 'settings/sheetSizes/sizes/{sizeId}'
-      match /sizes/{sizeId} {
-        // Allow only admins to read, create, update, and delete sheet sizes
+      
+      match /annotations/{annotationId} {
+        // Admin
         allow read, write: if isAdmin();
+        
+        // Client Access
+        allow read, create: if request.auth != null && userExists(request.auth.uid) && (
+            getUserData(request.auth.uid).companyId == getProject(projectId).companyId ||
+            request.auth.uid == getProject(projectId).clientId
+        );
+
+        // Author Access
+        allow update, delete: if request.auth != null && request.auth.uid == resource.data.authorUid;
+
+        // Guest Access - specific permissions required
+        allow read: if hasValidGuestDataAccess(projectId, 'canSeeComments') || hasValidGuestDataAccess(projectId, 'isOwner');
+        allow create: if hasValidGuestDataAccess(projectId, 'canAnnotate') || hasValidGuestDataAccess(projectId, 'isOwner');
       }
     }
 
-    // --- Rules for 'impositionDefaults' Collection (NEW) ---
-    // This matches the path: 'impositionDefaults/{ruleId}'
-    match /impositionDefaults/{ruleId} {
-      // Allow only admins to read, create, update, and delete imposition rules
-      allow read, write: if isAdmin();
+    // --- 5. Settings / Estimators ---
+    match /settings/globalEstimatorDefaults {
+      allow read: if request.auth != null; 
+      allow write: if isAdmin();
     }
-    // ******** END ADDED SECTION ********
+
+    match /settings/{document=**} { 
+      allow read, write: if isAdmin(); 
+    }
+
+    match /impositionDefaults/{ruleId} { 
+      allow read, write: if isAdmin(); 
+    }
+
+    // --- 6. Other Collections ---
+    match /temp_processing/{docId} {
+      allow read, write: if request.auth != null && (
+         docId == request.auth.uid || 
+         docId.matches(request.auth.uid + '_.*')
+      );
+    }
+    
+    match /notifications/{notificationId} {
+      allow read, update, delete: if request.auth != null && request.auth.uid == resource.data.recipientUid;
+    }
+    
+    match /admin_notifications/{notificationId} { allow read, write: if isAdmin(); }
+    match /vendors/{vendorId} { allow read, write: if isAdmin(); }
+    match /inventory/{stockId} { allow read, write: if isAdmin(); }
+    match /inventoryPurchases/{purchaseId} { allow read, create: if isAdmin(); allow update, delete: if false; }
 
   }
 }

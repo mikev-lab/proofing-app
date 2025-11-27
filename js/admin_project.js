@@ -401,9 +401,6 @@ onAuthStateChanged(auth, async (user) => {
             }
         } catch (error) {
             console.error("Error verifying admin status:", error);
-            // If we can't verify, we shouldn't proceed.
-            // However, if the error is permission-denied (because guest can't read users),
-            // that confirms they aren't an admin!
             window.location.href = 'index.html';
             return;
         }
@@ -414,6 +411,45 @@ onAuthStateChanged(auth, async (user) => {
             onSnapshot(projectRef, async (docSnap) => {
                 if (docSnap.exists()) {
                     currentProjectData = docSnap.data(); // Store data globally
+
+                    // --- [FIX] PROCESSING STATE CHECK ---
+                    const currentVersions = currentProjectData.versions || [];
+                    const latestVersion = currentVersions.length > 0
+                        ? currentVersions.reduce((prev, current) => (prev.versionNumber > current.versionNumber) ? prev : current)
+                        : null;
+
+                    const isProcessingStatus = currentProjectData.status === 'Processing Upload';
+                    
+                    let isNewVersionPending = false;
+                    if (currentProjectData.lastUploadAt && latestVersion && latestVersion.createdAt) {
+                        // If the latest version on file is OLDER than the last upload timestamp, we are waiting for new files.
+                        isNewVersionPending = latestVersion.createdAt.seconds < currentProjectData.lastUploadAt.seconds;
+                    }
+
+                    const isVersionProcessing = latestVersion && latestVersion.processingStatus === 'processing';
+                    
+                    // [NEW] Also check if the Cover is processing
+                    const cover = currentProjectData.cover || {};
+                    const isCoverProcessing = cover.processingStatus === 'processing';
+
+                    if (isProcessingStatus || isNewVersionPending || isVersionProcessing || isCoverProcessing) {
+                        loadingSpinner.classList.remove('hidden');
+                        proofContent.classList.add('hidden');
+                        loadingSpinner.innerHTML = `
+                            <div class="flex flex-col items-center gap-4">
+                                <div class="w-12 h-12 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div>
+                                <div class="text-center">
+                                    <p class="text-indigo-400 font-bold text-lg animate-pulse">Processing Files...</p>
+                                    <p class="text-gray-400 text-sm mt-1">
+                                        ${isCoverProcessing ? 'Generating cover preview...' : 'Generating proof PDF...'}
+                                    </p>
+                                </div>
+                            </div>
+                        `;
+                        return; // Stop rendering until EVERYTHING is complete
+                    }
+                    // ------------------------------------
+
                     projectNameHeader.textContent = currentProjectData.projectName;
                     document.getElementById('project-name').textContent = currentProjectData.projectName;
 
@@ -427,58 +463,27 @@ onAuthStateChanged(auth, async (user) => {
                     // Populate the specs form
                     populateSpecsForm(currentProjectData);
 
-                    // --- ADD THIS LINE ---
                     // Populate the manual cover specs form
                     populateCoverForm(currentProjectData.cover);
 
-                    renderImpositions(currentProjectData.impositions);
+                    if (typeof renderImpositions === 'function') {
+                        renderImpositions(currentProjectData.impositions);
+                    }
 
                     // --- Real-time Update Logic (Smart Version Switching) ---
                     const versionSelector = document.getElementById('version-selector');
-                    const currentVersions = currentProjectData.versions || [];
-
-                    // Find the max version number in the new data
+                    
                     const maxVersion = currentVersions.length > 0
                         ? Math.max(...currentVersions.map(v => v.versionNumber))
                         : 0;
 
-                    // Check if we have a new latest version compared to what was previously known/selected
-                    // Note: We don't track 'previousMax' explicitly in a var, but we can infer if the user
-                    // was on an older version but a new one is now available (maxVersion > selectedVersion).
-                    // However, "Auto Update" implies: If I am viewing the LATEST, and a NEW LATEST comes in, switch to it.
-                    // If I am explicitly viewing an OLD version (history), don't switch.
-
                     const selectedVersion = versionSelector ? parseInt(versionSelector.value, 10) : null;
                     let targetVersion = selectedVersion;
 
-                    // HEURISTIC: If the user was viewing the *previous* latest version, auto-switch to the *new* latest.
-                    // Or simpler: If selectedVersion is null (initial load) OR we just want to force latest if new proof arrived.
-                    // Given the user request "viewer keeps trying to load an older version", we should prioritize the latest
-                    // if the update event was likely triggered by a new version creation.
-
-                    // Let's detect if the versions array grew.
-                    // Since we don't have `previousProjectData` easily available here without global state management beyond `currentProjectData`
-                    // (which is already updated), we can rely on the fact that `versionSelector.value` reflects the state *before* this update cycle
-                    // (because we haven't rebuilt it yet? No, viewer.js rebuilds it).
-
-                    // Actually, `initializeSharedViewer` rebuilds the dropdown.
-                    // So we need to decide the target version *before* calling it, pass it (if viewer supports), or manipulate after.
-                    // Viewer.js defaults to MAX version if no selector value.
-
-                    // STRATEGY:
-                    // 1. If `selectedVersion` (from DOM) < `maxVersion` (from Data), it implies a new version might have arrived.
-                    // 2. However, user might be browsing history.
-                    // 3. BUT, if the `processingStatus` of the *latest* version just changed (e.g. processing -> complete), we want to see it.
-
-                    // SIMPLIFIED FIX: Always default to the LATEST version when an update occurs,
-                    // UNLESS the user has explicitly interacted to select an older one?
-                    // The user complaint is that it *doesn't* update.
-                    // So let's force update to the latest version if the latest version number is higher than the currently selected one.
-
                     if (selectedVersion && maxVersion > selectedVersion) {
                         console.log(`[Auto-Update] New version detected (v${maxVersion}). Switching from v${selectedVersion}.`);
-                        targetVersion = null; // Setting to null forces viewer.js to pick the latest
-                        if (versionSelector) versionSelector.value = ""; // Clear DOM value to prevent "stickiness"
+                        targetVersion = null; // Force viewer.js to pick latest
+                        if (versionSelector) versionSelector.value = ""; 
                     }
 
                     // Re-initialize the viewer.
@@ -492,7 +497,7 @@ onAuthStateChanged(auth, async (user) => {
 
                     initializeImpositionUI({ projectData: currentProjectData, db, projectId });
 
-                    // Restore selection ONLY if we didn't decide to switch to latest
+                    // Restore selection
                     if (targetVersion && versionSelector) {
                         const versionExists = currentVersions.some(v => v.versionNumber === targetVersion);
                         if (versionExists) {
@@ -500,14 +505,14 @@ onAuthStateChanged(auth, async (user) => {
                         }
                     }
 
-                    // --- Button Visibility & Form Disabling based on Status ---
+                    // --- Button Visibility ---
                     const isApproved = currentProjectData.status === 'Approved' || 
                    currentProjectData.status === 'In Production' || 
                    currentProjectData.status === 'Imposition Complete';
 
                    const isWaitingReview = currentProjectData.status === 'Waiting Admin Review';
 
-                    // Toggle approve/unapprove buttons
+                    // Toggle buttons
                     approveButton.classList.toggle('hidden', isApproved);
                     unapproveButton.classList.toggle('hidden', !isApproved);
 
@@ -515,13 +520,12 @@ onAuthStateChanged(auth, async (user) => {
                         sendProofButton.classList.toggle('hidden', !isWaitingReview);
                     }
 
-                    // Disable upload forms if project is approved
+                    // Disable forms
                     if (isApproved) {
                         if (uploadButton) {
                             uploadButton.disabled = true;
                             fileInput.disabled = true;
                             uploadButton.textContent = 'Project Approved';
-                            // Also disable guided upload
                             document.getElementById('guided-tab').style.pointerEvents = 'none';
                             document.getElementById('guided-tab').style.opacity = '0.5';
                         }
@@ -531,7 +535,6 @@ onAuthStateChanged(auth, async (user) => {
                             coverUploadButton.textContent = 'Project Approved';
                         }
                     } else {
-                        // Re-enable forms if project is not approved
                         if (uploadButton) {
                             uploadButton.disabled = false;
                             fileInput.disabled = false;
@@ -545,52 +548,6 @@ onAuthStateChanged(auth, async (user) => {
                             coverUploadButton.textContent = 'Upload Cover';
                         }
                     }
-
-                    // --- START NEW: Imposition Notification Logic ---
-                        /*
-                        const impositions = currentProjectData.impositions || [];
-                        
-                        // 1. Initialize count on first load
-                        if (previousImpositionCount === -1) {
-                            previousImpositionCount = impositions.length;
-                        } 
-                        // 2. Detect New Imposition
-                        else if (impositions.length > previousImpositionCount) {
-                            const latestImposition = impositions[impositions.length - 1];
-                            
-                            // Update Bell Indicator
-                            const indicator = document.getElementById('notification-indicator');
-                            if (indicator) indicator.classList.remove('hidden');
-                            
-                            // Add to Dropdown List
-                            const list = document.getElementById('notification-list');
-                            // Remove "No notifications" text if it exists
-                            const emptyMsg = list.querySelector('p.text-gray-400');
-                            if (emptyMsg && emptyMsg.textContent.includes('No new')) emptyMsg.remove();
-                            
-                            const notifItem = document.createElement('div');
-                            notifItem.className = "px-4 py-3 hover:bg-slate-700 border-b border-slate-700 last:border-0 cursor-pointer transition-colors group";
-                            notifItem.innerHTML = `
-                                <div class="flex justify-between items-start">
-                                    <p class="text-sm text-white font-semibold">Imposition Generated</p>
-                                    <span class="text-[10px] text-green-400 bg-green-900/30 px-1.5 py-0.5 rounded">NEW</span>
-                                </div>
-                                <p class="text-xs text-gray-400 mt-1 group-hover:text-blue-300 transition-colors">Click to download PDF</p>
-                                <p class="text-[10px] text-gray-500 mt-1">${new Date().toLocaleTimeString()}</p>
-                            `;
-                            
-                            // Click to download
-                            notifItem.onclick = () => window.open(latestImposition.fileURL, '_blank');
-                            
-                            list.prepend(notifItem);
-                            
-                            // Update count
-                            previousImpositionCount = impositions.length;
-                        }
-                        */
-                        // --- END NEW Logic ---
-
-                    // --- End Real-time Update Logic ---
 
                     loadingSpinner.classList.add('hidden');
                     proofContent.classList.remove('hidden');

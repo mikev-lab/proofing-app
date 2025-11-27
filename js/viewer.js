@@ -481,11 +481,32 @@ export async function initializeSharedViewer(config) {
     /**
      * Renders a page or spread onto the main canvas.
      */
+    /**
+     * Renders a page or spread onto the main canvas.
+     */
+    /**
+     * Renders a page or spread onto the main canvas.
+     */
     async function renderPage(viewNumber) {
         if (!pdfDoc) {
              console.warn("renderPage called but pdfDoc is null.");
              return; // Don't proceed if pdfDoc isn't loaded
         }
+
+        // --- FIX 1: Refresh projectSpecs from projectData to ensure we have the latest data ---
+        if (currentView === 'cover') {
+            if (projectData.specs && projectData.specs.coverDimensions) {
+                projectSpecs = {
+                    ...projectData.specs,
+                    dimensions: projectData.specs.coverDimensions
+                };
+            } else {
+                projectSpecs = projectData.cover?.specs || projectData.specs;
+            }
+        } else {
+            projectSpecs = projectData.specs;
+        }
+
         if (pageRendering) {
             // If already rendering, queue the new page number if different
             if (viewNumber !== pageNum) pageNumPending = viewNumber;
@@ -537,7 +558,21 @@ export async function initializeSharedViewer(config) {
 
             // --- SPREAD MASKING LOGIC ---
             const isSpread = currentViewMode === 'spread' && pages.length > 1;
-            const bleedPt = (projectSpecs?.bleedInches || 0) * 72; // 72 points per inch
+
+            // --- FIX 2: Robust Bleed Calculation with Fallback ---
+            // 1. Try 'bleedInches', then 'bleed'
+            let bleedInches = projectSpecs?.bleedInches !== undefined 
+                ? projectSpecs.bleedInches 
+                : (projectSpecs?.bleed || 0);
+
+            // 2. FALLBACK: If bleed is 0 but we are in a spread (and pages are pushed out), 
+            // force a standard 0.125" bleed. This fixes files where optimization wiped the metadata.
+            if ((!bleedInches || bleedInches === 0) && isSpread) {
+                console.warn("Bleed metadata missing or 0. Defaulting to 0.125\" to fix spread mask.");
+                bleedInches = 0.125;
+            }
+
+            const bleedPt = bleedInches * 72; // 72 points per inch
             const scaledBleed = bleedPt * pdfRenderScale; // Bleed scaled for rendering
 
             // Render each page to a temporary canvas, then composite them onto the main hidden canvas.
@@ -648,7 +683,9 @@ export async function initializeSharedViewer(config) {
                 let isLeft = false;
                 if (pages.length > 1) { // Only relevant for spreads
                     if (projectSpecs?.readingDirection === 'rtl') {
-                        isLeft = (i === 1); // In RTL, the second page in the array is the left one
+                        // In RTL spreads, the pages array is reversed by getPagesForView: [Odd, Even].
+                        // i=0 corresponds to the Odd page (visually Left in RTL spreads).
+                        isLeft = (i === 0);
                     } else {
                         isLeft = (i === 0); // In LTR, the first page is the left one
                     }
