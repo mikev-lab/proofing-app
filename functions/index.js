@@ -1700,9 +1700,29 @@ async function createBookletPdf(projectId, files, spineMode) {
         let zoneMid = { x: trimWidth + bleed, y: 0, w: spineWidth, h: totalHeight }; 
         let zoneRight = { x: trimWidth + bleed + spineWidth, y: 0, w: trimWidth + bleed, h: totalHeight }; 
 
+        // [FIX] SEAM OVERLAP: Add 0.02 inches of overlap to hide white lines
+        const seamOverlap = 0.005; 
+
         let drawSpine = true;
-        if (spineMode === 'wrap-front-stretch') { zoneRight.x = zoneMid.x; zoneRight.w = zoneRight.w + zoneMid.w; drawSpine = false; } 
-        else if (spineMode === 'wrap-back-stretch') { zoneLeft.w = zoneLeft.w + zoneMid.w; drawSpine = false; }
+        
+        if (spineMode === 'wrap-front-stretch') { 
+            zoneRight.x = zoneMid.x; 
+            zoneRight.w = zoneRight.w + zoneMid.w; 
+            drawSpine = false; 
+        } else if (spineMode === 'wrap-back-stretch') { 
+            zoneLeft.w = zoneLeft.w + zoneMid.w; 
+            drawSpine = false; 
+        } else if (spineMode === 'meet-middle') {
+            // [FIX] Extend both sides to the middle PLUS overlap
+            // Left Zone expands to the right
+            zoneLeft.w = zoneLeft.w + (spineWidth / 2) + seamOverlap;
+            
+            // Right Zone starts earlier (to the left) and expands width to match
+            zoneRight.x = zoneRight.x - (spineWidth / 2) - seamOverlap;
+            zoneRight.w = zoneRight.w + (spineWidth / 2) + seamOverlap;
+            
+            drawSpine = false;
+        }
 
         await drawPart(coverPage1, coverFiles.back, zoneLeft.x, zoneLeft.y, zoneLeft.w, zoneLeft.h); 
         if (drawSpine) await drawPart(coverPage1, coverFiles.spine, zoneMid.x, zoneMid.y, zoneMid.w, zoneMid.h);

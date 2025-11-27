@@ -1856,6 +1856,9 @@ function createGhostCoverCard(sourceEntry, label, width, height, bleed, pixelsPe
 function renderBookViewer() {
     const container = document.getElementById('book-viewer-container');
     if (!container) return;
+    
+    // [FIX] Enforce spine rules whenever pages change (which affects spine width calculation)
+    enforceSpineRules();
 
     renderQueue.length = 0; 
     container.innerHTML = ''; 
@@ -3586,6 +3589,9 @@ async function renderCoverPreview() {
 
     const myRenderId = ++coverRenderId;
 
+    // Enforce rules just in case page count changed
+    enforceSpineRules();
+
     // Switch parent to grid-center
     const parent = coverCanvas.parentElement;
     if (parent) {
@@ -3616,6 +3622,9 @@ async function renderCoverPreview() {
     const basePPI = 40; 
     const pixelsPerInch = basePPI * coverZoom; 
     
+    // [FIX] Tiny overlap to prevent white lines (approx 1 screen pixel)
+    const overlap = 1 / pixelsPerInch; 
+
     if (!_previewOffscreen) {
         _previewOffscreen = document.createElement('canvas');
         _previewCtx = _previewOffscreen.getContext('2d', { alpha: false });
@@ -3643,6 +3652,16 @@ async function renderCoverPreview() {
     let zoneLeft = { x: 0, y: 0, w: bleed + trimWidth, h: totalHeight };
     let zoneMid = { x: bleed + trimWidth, y: 0, w: spineWidth, h: totalHeight };
     let zoneRight = { x: bleed + trimWidth + spineWidth, y: 0, w: trimWidth + bleed, h: totalHeight };
+
+    // [FIX] Apply Overlap for White Line Prevention
+    // Extend Left Zone slightly right (into the spine area)
+    zoneLeft.w += overlap;
+    // Extend Right Zone slightly left (into the spine area)
+    zoneRight.x -= overlap; 
+    zoneRight.w += overlap;
+    // Extend Mid Zone slightly both ways (to cover gaps)
+    zoneMid.x -= overlap; 
+    zoneMid.w += (overlap * 2);
 
     let leftSource, midSource, rightSource;
     let leftSettings, midSettings, rightSettings;
@@ -3684,7 +3703,16 @@ async function renderCoverPreview() {
             midSource = coverSources['file-spine'];
             midSettings = coverSettings['file-spine'] || { pageIndex: 1, scaleMode: 'fill' };
         } else {
-            if (spineMode === 'wrap-front-stretch') {
+            if (spineMode === 'meet-middle') {
+                // [NEW] Meet at Middle Logic
+                // Extend Left Zone to middle of spine
+                zoneLeft.w += (spineWidth / 2); 
+                // Extend Right Zone to middle of spine
+                zoneRight.x -= (spineWidth / 2); 
+                zoneRight.w += (spineWidth / 2);
+                skipMidDraw = true;
+            } 
+            else if (spineMode === 'wrap-front-stretch') {
                 zoneRight.x = zoneMid.x;
                 zoneRight.w = zoneMid.w + zoneRight.w; 
                 skipMidDraw = true;
@@ -3700,7 +3728,6 @@ async function renderCoverPreview() {
     }
 
     // --- PARALLEL DRAWING ---
-    // We create an array of promises to execute simultaneously
     const drawPromises = [];
 
     // 1. Left Panel
@@ -3715,8 +3742,7 @@ async function renderCoverPreview() {
 
     // 3. Middle Panel (Spine/Glue)
     if (coverPreviewMode === 'inside' && drawGlueArea) {
-        // Glue area is drawn synchronously below after images load, or we can just draw it last.
-        // For visual stacking, we usually draw images first.
+        // Glue area drawn later
     } else if (coverPreviewMode === 'outside' && !skipMidDraw) {
         const spineMode = window.currentSpineMode || 'file';
         if (spineMode === 'file') {
@@ -3727,23 +3753,26 @@ async function renderCoverPreview() {
              const isFrontSource = spineMode.includes('front');
              const sourceEntry = isFrontSource ? rightSource : leftSource;
              const settings = isFrontSource ? rightSettings : leftSettings;
-             // Wrapper drawing
              drawPromises.push(
                 drawWrapper(ctx, sourceEntry, zoneMid.x, zoneMid.y, zoneMid.w, zoneMid.h, 'mirror', isFrontSource, 0, settings.pageIndex)
              );
         }
     }
 
-    // AWAIT ALL SIMULTANEOUSLY
-    await Promise.all(drawPromises);
+    const results = await Promise.all(drawPromises);
+
+    // Loop animation if processing
+    if (results.some(r => r && r.isProcessing)) {
+        if (myRenderId === coverRenderId) requestAnimationFrame(renderCoverPreview);
+    }
 
     if (myRenderId !== coverRenderId) return;
 
     // --- Post-Draw Overlays (Glue Area & Guides) ---
     if (coverPreviewMode === 'inside' && drawGlueArea) {
-        const overlap = 0.125; 
-        const glueW_Inches = spineWidth + (overlap * 2);
-        const glueX_Inches = zoneMid.x - overlap;
+        const ov = 0.125; 
+        const glueW_Inches = spineWidth + (ov * 2);
+        const glueX_Inches = (bleed + trimWidth) - ov; // Corrected placement
         
         ctx.save();
         ctx.fillStyle = '#f8fafc'; 
@@ -4046,6 +4075,46 @@ specsForm.addEventListener('submit', async (e) => {
     }
 });
 
+// --- Helper: Enforce Spine Rules (<3mm) ---
+function enforceSpineRules() {
+    const spineSelect = document.getElementById('spine-mode-select');
+    if (!spineSelect || !projectSpecs.dimensions) return;
+
+    const spineWidth = calculateSpineWidth(projectSpecs); // In inches
+    const spineWidthMM = spineWidth * 25.4;
+    const isTooThin = spineWidthMM < 3;
+
+    const fileOption = spineSelect.querySelector('option[value="file"]');
+    const dropZone = document.getElementById('spine-upload-group')?.querySelector('.drop-zone');
+
+    if (isTooThin) {
+        // Disable "Upload File"
+        if (fileOption) fileOption.disabled = true;
+        if (fileOption) fileOption.textContent = "Upload File (Too Thin < 3mm)";
+        
+        // If currently selected, switch to safe default
+        if (spineSelect.value === 'file') {
+            spineSelect.value = 'meet-middle'; // Default to meet-middle
+            window.currentSpineMode = 'meet-middle';
+            renderCoverPreview(); // Redraw with new mode
+            triggerAutosave();
+        }
+
+        // Hide Dropzone
+        if (dropZone) dropZone.classList.add('hidden');
+
+    } else {
+        // Enable "Upload File"
+        if (fileOption) fileOption.disabled = false;
+        if (fileOption) fileOption.textContent = "Upload File";
+        
+        // Restore Dropzone if selected
+        if (spineSelect.value === 'file' && dropZone) {
+            dropZone.classList.remove('hidden');
+        }
+    }
+}
+
 function refreshBuilderUI() {
     // Update Header Nav
     if(professionalUploadUI) professionalUploadUI.classList.add('hidden');
@@ -4095,6 +4164,7 @@ function refreshBuilderUI() {
             <label class="text-xs font-medium text-gray-400">Spine Mode</label>
             <select id="spine-mode-select" class="text-xs bg-slate-900 border border-slate-600 rounded px-2 py-1 text-white focus:outline-none">
                 <option value="file">Upload File</option>
+                <option value="meet-middle">Meet at Middle</option>
                 <option value="wrap-front">Mirror Front</option>
                 <option value="wrap-back">Mirror Back</option>
                 <option value="wrap-front-stretch">Stretch Front</option>
