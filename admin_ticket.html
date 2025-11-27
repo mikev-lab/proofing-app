@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCE Printing - Job Ticket</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js"></script>
+    <style>
+        @media print {
+            .no-print { display: none !important; }
+            body { background: white; -webkit-print-color-adjust: exact; }
+        }
+        .cut-line { border-bottom: 2px dashed #9ca3af; }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen p-8 text-gray-900">
+
+    <div class="max-w-2xl mx-auto bg-white p-8 rounded-lg shadow-lg print:shadow-none print:w-full print:max-w-none">
+
+        <!-- Header -->
+        <div class="flex justify-between items-start mb-6 border-b-2 border-black pb-4">
+            <div>
+                <h1 class="text-4xl font-bold uppercase tracking-tighter">Job Ticket</h1>
+                <p class="text-lg text-gray-600 mt-1">MCE Printing Production</p>
+            </div>
+            <div class="text-right">
+                <p class="text-3xl font-mono font-bold" id="ticket-id">#-----</p>
+                <p class="text-sm text-gray-500" id="ticket-date">Date: --/--/----</p>
+            </div>
+        </div>
+
+        <!-- Main Info -->
+        <div class="grid grid-cols-2 gap-8 mb-8">
+            <div>
+                <h2 class="text-sm font-bold text-gray-500 uppercase">Project Name</h2>
+                <p class="text-2xl font-bold leading-tight" id="project-name">Loading...</p>
+            </div>
+            <div>
+                <h2 class="text-sm font-bold text-gray-500 uppercase">Client / Company</h2>
+                <p class="text-xl" id="client-name">--</p>
+            </div>
+        </div>
+
+        <!-- Specs Grid -->
+        <div class="bg-gray-50 border-2 border-gray-200 rounded-lg p-6 mb-8">
+            <h3 class="font-bold text-lg mb-4 border-b border-gray-300 pb-2">Production Specifications</h3>
+
+            <div class="grid grid-cols-2 gap-y-4 gap-x-8">
+                <div>
+                    <span class="block text-xs text-gray-500 uppercase">Quantity</span>
+                    <span class="text-xl font-mono font-bold" id="spec-quantity">--</span>
+                </div>
+                <div>
+                    <span class="block text-xs text-gray-500 uppercase">Finished Size</span>
+                    <span class="text-lg" id="spec-size">--</span>
+                </div>
+                <div>
+                    <span class="block text-xs text-gray-500 uppercase">Paper Stock</span>
+                    <span class="text-md font-medium" id="spec-paper">--</span>
+                </div>
+                <div>
+                    <span class="block text-xs text-gray-500 uppercase">Binding</span>
+                    <span class="text-md font-medium" id="spec-binding">--</span>
+                </div>
+                <div class="col-span-2">
+                    <span class="block text-xs text-gray-500 uppercase">Finishing Notes</span>
+                    <p class="text-md italic text-gray-700" id="spec-notes">None</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Workflow / QR -->
+        <div class="flex justify-between items-end mt-12">
+            <div class="space-y-4 w-2/3">
+                <h3 class="font-bold text-lg">Routing</h3>
+                <div class="flex space-x-4">
+                    <div class="h-12 w-12 border-2 border-gray-400 rounded flex items-center justify-center text-xs text-gray-400 font-bold uppercase">Print</div>
+                    <div class="h-12 w-12 border-2 border-gray-400 rounded flex items-center justify-center text-xs text-gray-400 font-bold uppercase">Lam</div>
+                    <div class="h-12 w-12 border-2 border-gray-400 rounded flex items-center justify-center text-xs text-gray-400 font-bold uppercase">Cut</div>
+                    <div class="h-12 w-12 border-2 border-gray-400 rounded flex items-center justify-center text-xs text-gray-400 font-bold uppercase">Bind</div>
+                    <div class="h-12 w-12 border-2 border-gray-400 rounded flex items-center justify-center text-xs text-gray-400 font-bold uppercase">Ship</div>
+                </div>
+            </div>
+
+            <div class="text-center">
+                <canvas id="qr-code" class="mb-2"></canvas>
+                <p class="text-xs font-mono text-gray-500">Scan to Update</p>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Print Controls -->
+    <div class="fixed bottom-0 left-0 w-full bg-slate-900 p-4 flex justify-center no-print shadow-xl border-t border-slate-700">
+        <button onclick="window.print()" class="bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2 px-6 rounded shadow-lg transition-colors flex items-center">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+            </svg>
+            Print Ticket
+        </button>
+    </div>
+
+    <script type="module">
+        import { db } from './js/firebase.js';
+        import { doc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        async function init() {
+            const params = new URLSearchParams(window.location.search);
+            const projectId = params.get('id');
+
+            if (!projectId) {
+                alert("No Project ID specified.");
+                return;
+            }
+
+            try {
+                const docSnap = await getDoc(doc(db, "projects", projectId));
+                if (docSnap.exists()) {
+                    renderTicket(docSnap.id, docSnap.data());
+                } else {
+                    alert("Project not found.");
+                }
+            } catch (e) {
+                console.error(e);
+                alert("Error loading project.");
+            }
+        }
+
+        function renderTicket(id, data) {
+            document.getElementById('ticket-id').textContent = '#' + id.substring(0, 6).toUpperCase();
+            document.getElementById('ticket-date').textContent = new Date().toLocaleDateString();
+            document.getElementById('project-name').textContent = data.projectName || 'Untitled';
+            document.getElementById('client-name').textContent = data.companyName || data.clientName || 'N/A';
+
+            // Specs
+            const specs = data.specs || {};
+            document.getElementById('spec-quantity').textContent = specs.quantity || '-';
+
+            // Dimensions
+            if (specs.dimensions) {
+                const d = specs.dimensions;
+                const w = d.width || d.width_mm;
+                const h = d.height || d.height_mm;
+                document.getElementById('spec-size').textContent = `${w} x ${h} ${d.units || ''}`;
+            }
+
+            // Paper
+            let paperText = '';
+            if (specs.coverPaperSku) paperText += `Cover: ${specs.coverPaperSku}\n`;
+            if (specs.bwPaperSku) paperText += `Interior: ${specs.bwPaperSku}`;
+            document.getElementById('spec-paper').textContent = paperText || 'See Online Specs';
+
+            // Binding
+            document.getElementById('spec-binding').textContent = (specs.bindingMethod || specs.binding || 'None').replace(/([A-Z])/g, ' $1').trim();
+
+            // Lamination / Notes
+            let notes = [];
+            if (specs.laminationType && specs.laminationType !== 'none') notes.push(`Lamination: ${specs.laminationType}`);
+            if (data.isRushOrder) notes.push('*** RUSH ORDER ***');
+            document.getElementById('spec-notes').textContent = notes.join(', ') || 'None';
+
+            // QR Code
+            new QRious({
+                element: document.getElementById('qr-code'),
+                value: id, // The QR code just contains the Project ID
+                size: 100
+            });
+        }
+
+        init();
+    </script>
+</body>
+</html>

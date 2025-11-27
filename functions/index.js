@@ -1836,6 +1836,50 @@ exports.processGuestBuild = onDocumentUpdated({
             });
         }
     }
+
+});
+
+// --- NEW: Production Status Monitor ---
+exports.monitorProductionStatus = onDocumentUpdated('projects/{projectId}', async (event) => {
+    const before = event.data.before.data();
+    const after = event.data.after.data();
+    const projectId = event.params.projectId;
+
+    // Detect changes in 'productionStatus'
+    if (before.productionStatus !== after.productionStatus && after.productionStatus) {
+        // Only notify on significant steps or errors
+        const status = after.productionStatus;
+        let title = null;
+        let message = null;
+
+        if (status === 'Printing') {
+            title = "Print Job Started";
+            message = `"${after.projectName}" is now printing.`;
+        } else if (status === 'Finishing') {
+            title = "Printing Complete";
+            message = `"${after.projectName}" has finished printing and is now in Finishing.`;
+        } else if (status === 'Complete') {
+            title = "Production Complete";
+            message = `"${after.projectName}" production is finished.`;
+        } else if (status === 'Error') {
+            title = "Production Error";
+            message = `Error reported for "${after.projectName}": ${after.productionError || 'Unknown error'}`;
+        }
+
+        if (title) {
+            // Fetch admins to notify
+            const adminSnapshot = await db.collection('users').where('role', '==', 'admin').get();
+            const adminUids = adminSnapshot.docs.map(doc => doc.id);
+
+            for (const adminUid of adminUids) {
+                await createNotification(adminUid, {
+                    title: title,
+                    message: message,
+                    link: `admin_production.html?id=${projectId}`
+                });
+            }
+        }
+    }
 });
 
 // --- EXPORT 3: Legacy Generate Booklet (For Pro Upload Form) ---
@@ -1910,6 +1954,7 @@ exports.scheduledProjectDeletion = onSchedule("every day 03:00", async (event) =
 
 // --- NEW Imposition Functions ---
 const { imposePdfLogic, maximizeNUp } = require('./imposition'); // Import the core logic
+const { mockFieryAPI, mockFieryLogic } = require('./fiery'); // Import Mock Fiery Service and Logic
 const { getFirestore } = require('firebase-admin/firestore');
 const axios = require('axios');
 const { PDFDocument } = require('pdf-lib');
@@ -3276,3 +3321,206 @@ if (process.env.FUNCTION_TARGET === 'analyzePdfToolbox' || process.env.FUNCTIONS
         }
     });
 }
+
+// Export the Mock Fiery Service
+exports.mockFieryAPI = mockFieryAPI;
+
+// --- Production Constants ---
+exports.PRODUCTION_CONSTANTS = {
+    PRINTING_SPEED_SPM: 15,
+    LAMINATING_SPEED_MPM: 5,
+    PERFECT_BINDER_SPEED_BPH: 300,
+    SADDLE_STITCHER_SPEED_BPH: 400,
+    TRIMMING_CYCLE_TIME_MINS: 5
+};
+
+// --- Inventory Helpers ---
+
+exports.checkInventoryAvailability = onCall({ region: 'us-central1' }, async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Auth required.');
+    const { projectId } = request.data;
+    if (!projectId) throw new HttpsError('invalid-argument', 'Missing Project ID');
+
+    const projectDoc = await db.collection('projects').doc(projectId).get();
+    if (!projectDoc.exists) throw new HttpsError('not-found', 'Project not found');
+    const project = projectDoc.data();
+
+    // Simplistic Logic: Check first paper stock
+    // In reality, we'd loop through all stocks in project.specs.paperStock
+    // For now, let's assume one main stock or we check based on 'bwPaperSku' / 'coverPaperSku' from estimator logic
+    // But since the estimator saves cost data, let's look for `paperStock` array if it exists (v2)
+    // or fall back to spec fields.
+
+    const quantity = project.specs?.quantity || 0;
+    const requiredSheets = quantity * 1.1; // +10% spoilage
+
+    // Let's assume we are checking the "Cover" or "Interior" paper.
+    // Ideally, we'd pass the specific SKUs to check.
+    // For this mock/MVP, let's check one key SKU if present.
+    const skuToCheck = project.specs?.coverPaperSku || project.specs?.bwPaperSku;
+
+    if (!skuToCheck) return { available: true, warning: "No paper SKU defined in project." };
+
+    // Find inventory
+    const inventorySnapshot = await db.collection('inventory').where('manufacturerSKU', '==', skuToCheck).limit(1).get();
+    if (inventorySnapshot.empty) {
+        return { available: false, warning: `Paper SKU ${skuToCheck} not found in inventory system.` };
+    }
+
+    const item = inventorySnapshot.docs[0].data();
+    const totalSheets = (item.quantityInPackages * item.sheetsPerPackage) + item.quantityLooseSheets;
+
+    if (totalSheets < requiredSheets) {
+        return {
+            available: false,
+            warning: `Low Stock: Need ~${Math.ceil(requiredSheets)} sheets of ${item.name}, but only ${totalSheets} available.`
+        };
+    }
+
+    return { available: true };
+});
+
+async function performInventoryDeduction(projectId, userUid) {
+    await db.runTransaction(async (t) => {
+        // 1. Get Project
+        const projectRef = db.collection('projects').doc(projectId);
+        const projectDoc = await t.get(projectRef);
+        if (!projectDoc.exists) throw new Error('Project not found');
+        const project = projectDoc.data();
+
+        // 2. Determine Usage
+        const quantity = project.specs?.quantity || 0;
+        if (quantity <= 0) return;
+
+        const skuToCheck = project.specs?.coverPaperSku || project.specs?.bwPaperSku;
+        if (!skuToCheck) return;
+
+        // 3. Find Inventory Item
+        const inventoryQuery = db.collection('inventory').where('manufacturerSKU', '==', skuToCheck).limit(1);
+        const inventorySnapshot = await t.get(inventoryQuery);
+
+        if (inventorySnapshot.empty) {
+            logger.warn(`Inventory deduction skipped: SKU ${skuToCheck} not found.`);
+            return;
+        }
+
+        const inventoryDoc = inventorySnapshot.docs[0];
+        const itemRef = inventoryDoc.ref;
+        const item = inventoryDoc.data();
+
+        // 4. Calculate Deduction
+        const sheetsPerUnit = 1;
+        const requiredSheets = Math.ceil(quantity * sheetsPerUnit * 1.1);
+
+        const currentTotal = (item.quantityInPackages * item.sheetsPerPackage) + item.quantityLooseSheets;
+        const newTotal = Math.max(0, currentTotal - requiredSheets);
+
+        // 5. Convert back
+        const newPackages = Math.floor(newTotal / item.sheetsPerPackage);
+        const newLoose = newTotal % item.sheetsPerPackage;
+
+        // 6. Update
+        t.update(itemRef, {
+            quantityInPackages: newPackages,
+            quantityLooseSheets: newLoose,
+            lastDeductedAt: admin.firestore.FieldValue.serverTimestamp(),
+            lastDeductedByProject: projectId
+        });
+
+        // 7. History
+        const historyRef = projectRef.collection('history').doc();
+        t.set(historyRef, {
+            action: 'inventory_deducted',
+            timestamp: admin.firestore.FieldValue.serverTimestamp(),
+            userId: userUid,
+            details: {
+                sku: skuToCheck,
+                deductedSheets: requiredSheets,
+                previousTotal: currentTotal,
+                newTotal: newTotal
+            }
+        });
+
+        logger.log(`Deducted ${requiredSheets} sheets of ${skuToCheck} for project ${projectId}.`);
+    });
+}
+
+exports.deductJobInventory = onCall({ region: 'us-central1' }, async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Auth required.');
+    const userUid = request.auth.uid;
+    const userDoc = await db.collection('users').doc(userUid).get();
+    if (!userDoc.exists || userDoc.data().role !== 'admin') {
+        throw new HttpsError('permission-denied', 'Admin only.');
+    }
+
+    const { projectId } = request.data;
+    if (!projectId) throw new HttpsError('invalid-argument', 'Missing Project ID');
+
+    try {
+        await performInventoryDeduction(projectId, userUid);
+        return { success: true };
+    } catch (error) {
+        logger.error(`Inventory deduction failed for ${projectId}:`, error);
+        throw new HttpsError('internal', error.message);
+    }
+});
+
+exports.kiosk_updateStatus = onCall({ region: 'us-central1' }, async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Auth required.');
+
+    // Allow any authenticated user (staff/admin) to use Kiosk for now
+    // Ideally check for specific 'shop_floor' role
+
+    const { projectId, newStatus } = request.data;
+    if (!projectId || !newStatus) throw new HttpsError('invalid-argument', 'Missing fields');
+
+    try {
+        // 1. Update Status
+        await db.collection('projects').doc(projectId).update({ productionStatus: newStatus });
+
+        // 2. Trigger Side Effects
+        if (newStatus === 'Printing') {
+            logger.log(`Kiosk started print job: ${projectId}`);
+
+            // Mock Fiery Start
+            // Use the internal logic object, NOT the onCall wrapper
+            mockFieryLogic.startJob(projectId);
+
+            // Inventory Deduction
+            try {
+                await performInventoryDeduction(projectId, request.auth.uid);
+            } catch (e) {
+                logger.warn('Inventory deduction failed during Kiosk update', e);
+            }
+        }
+
+        return { success: true };
+    } catch (error) {
+        logger.error(`Kiosk update failed for ${projectId}:`, error);
+        throw new HttpsError('internal', error.message);
+    }
+});
+
+exports.getProductionStats = onCall({ region: 'us-central1' }, async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Auth required.');
+
+    // In a real implementation, we would query Firestore with date ranges.
+    // For this prototype, we will return mock data to visualize the dashboard.
+
+    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+    return {
+        completedToday: 12,
+        newThisWeek: 45,
+        activePipeline: 28,
+        onTimeRate: 94,
+        throughputHistory: {
+            labels: days,
+            data: [8, 12, 15, 10, 14, 5, 2]
+        },
+        volumeHistory: {
+            labels: days,
+            data: [10, 15, 8, 20, 12, 4, 1]
+        }
+    };
+});
