@@ -1836,6 +1836,46 @@ exports.processGuestBuild = onDocumentUpdated({
             });
         }
     }
+
+    // --- NEW: Production Status Notifications ---
+    // Detect changes in 'productionStatus'
+    if (before.productionStatus !== after.productionStatus && after.productionStatus) {
+        // Only notify on significant steps or errors
+        const status = after.productionStatus;
+        let title = null;
+        let message = null;
+        let isError = false;
+
+        if (status === 'Printing') {
+            title = "Print Job Started";
+            message = `"${after.projectName}" is now printing.`;
+        } else if (status === 'Finishing') {
+            title = "Printing Complete";
+            message = `"${after.projectName}" has finished printing and is now in Finishing.`;
+        } else if (status === 'Complete') {
+            title = "Production Complete";
+            message = `"${after.projectName}" production is finished.`;
+        } else if (status === 'Error') {
+            title = "Production Error";
+            message = `Error reported for "${after.projectName}": ${after.productionError || 'Unknown error'}`;
+            isError = true;
+        }
+
+        if (title) {
+            // Safe-guard: Ensure adminUids is available.
+            // The variable 'adminUids' is defined in the outer scope of this function,
+            // so it is available here.
+            if (adminUids && adminUids.length > 0) {
+                for (const adminUid of adminUids) {
+                    await createNotification(adminUid, {
+                        title: title,
+                        message: message,
+                        link: `admin_production.html?id=${projectId}`
+                    });
+                }
+            }
+        }
+    }
 });
 
 // --- EXPORT 3: Legacy Generate Booklet (For Pro Upload Form) ---
@@ -1910,6 +1950,7 @@ exports.scheduledProjectDeletion = onSchedule("every day 03:00", async (event) =
 
 // --- NEW Imposition Functions ---
 const { imposePdfLogic, maximizeNUp } = require('./imposition'); // Import the core logic
+const { mockFieryAPI } = require('./fiery'); // Import Mock Fiery Service
 const { getFirestore } = require('firebase-admin/firestore');
 const axios = require('axios');
 const { PDFDocument } = require('pdf-lib');
@@ -3276,3 +3317,6 @@ if (process.env.FUNCTION_TARGET === 'analyzePdfToolbox' || process.env.FUNCTIONS
         }
     });
 }
+
+// Export the Mock Fiery Service
+exports.mockFieryAPI = mockFieryAPI;

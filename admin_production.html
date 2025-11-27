@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCE Printing - Production Schedule</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css">
+    <script src="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+    </style>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-[#0f172a] to-[#334155] text-gray-100">
+
+    <div class="flex h-full">
+        <div class="flex flex-col w-64 bg-slate-900/70 backdrop-blur-sm border-r border-slate-700/50">
+            <div class="flex items-center justify-center h-16 border-b border-slate-700/50">
+                <h1 class="text-2xl font-bold text-white">MCE Admin</h1>
+            </div>
+            <div class="flex-grow">
+                <nav class="flex-grow md:block px-4 pb-4 md:pb-0 md:overflow-y-auto">
+                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="admin.html">All Projects</a>
+                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="admin_client_management.html">Clients</a>
+                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-200 bg-slate-700/50 rounded-lg hover:bg-slate-600/50" href="admin_production.html">Production</a>
+                    <a href="admin_inventory.html" class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50">Inventory</a>
+                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="admin_settings.html">Settings</a>
+                </nav>
+            </div>
+        </div>
+
+        <div class="flex flex-col flex-1">
+            <header class="flex justify-between items-center h-16 px-6 bg-slate-800/60 backdrop-blur-sm border-b border-slate-700/50">
+                <div>
+                    <h2 class="text-xl font-semibold text-white">Production Schedule</h2>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <div class="relative">
+                        <button id="notification-bell" class="relative text-gray-400 hover:text-white">
+                            <svg class="h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
+                            </svg>
+                            <span id="notification-indicator" class="hidden absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-red-500"></span>
+                        </button>
+                        <div id="notification-panel" class="hidden absolute right-0 mt-2 w-80 bg-slate-800 rounded-lg shadow-lg border border-slate-700/50 z-50">
+                            <div class="p-3 border-b border-slate-700/50 flex justify-between items-center">
+                                <h3 class="font-semibold text-white">Notifications</h3>
+                                <button id="clear-notifications-btn" class="text-xs text-indigo-400 hover:text-indigo-300 transition-colors hover:underline">
+                                    Clear All
+                                </button>
+                            </div>
+                            <div id="notification-list" class="py-1 max-h-96 overflow-y-auto custom-scrollbar">
+                                <p class="px-4 py-2 text-sm text-gray-400">No new notifications</p>
+                            </div>
+                        </div>
+                    </div>
+                    <span id="user-email" class="text-sm text-gray-300 hidden sm:block"></span>
+                    <button id="logout-button" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all duration-150 ease-in-out">
+                        Sign Out
+                    </button>
+                </div>
+            </header>
+
+            <main class="flex-1 p-6 overflow-hidden flex flex-col">
+                <div class="flex justify-between mb-4">
+                    <div class="flex space-x-2">
+                        <button id="view-mode-day" class="px-3 py-1 bg-indigo-600 text-white text-sm rounded hover:bg-indigo-500">Day</button>
+                        <button id="view-mode-week" class="px-3 py-1 bg-slate-700 text-gray-300 text-sm rounded hover:bg-slate-600">Week</button>
+                        <button id="view-mode-month" class="px-3 py-1 bg-slate-700 text-gray-300 text-sm rounded hover:bg-slate-600">Month</button>
+                    </div>
+                </div>
+
+                <div id="loading-spinner" class="text-center py-12">
+                    <div class="h-12 w-12 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900 mx-auto" role="status">
+                        <span class="sr-only">Loading...</span>
+                    </div>
+                    <p class="mt-4 text-gray-300">Loading production schedule...</p>
+                </div>
+
+                <div class="flex-1 bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 overflow-auto relative">
+                     <div id="gantt-chart" class="h-full w-full"></div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+
+    <!-- Job Details Modal -->
+    <div id="job-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center hidden z-50">
+        <div class="bg-slate-800 rounded-lg shadow-xl p-6 w-full max-w-lg mx-4 border border-slate-700/50">
+            <div class="flex justify-between items-center mb-4">
+                <h3 id="modal-project-name" class="text-xl font-semibold text-white">Project Name</h3>
+                <button id="job-modal-close" class="text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
+            </div>
+
+            <div id="modal-content" class="space-y-4">
+                <!-- Status Badge -->
+                <div>
+                    <span id="modal-status-badge" class="px-3 py-1 rounded-full text-xs font-medium inline-flex items-center gap-1 bg-gray-500/20 text-gray-300">Unknown</span>
+                </div>
+
+                <!-- Job Details -->
+                <div class="grid grid-cols-2 gap-4 text-sm text-gray-300">
+                     <div>
+                        <p class="text-gray-500 text-xs">Quantity</p>
+                        <p id="modal-quantity" class="font-medium">-</p>
+                     </div>
+                     <div>
+                        <p class="text-gray-500 text-xs">Estimated Duration</p>
+                        <div class="flex items-center space-x-2">
+                             <input type="number" id="modal-duration-input" class="w-16 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-white text-xs" min="1">
+                             <span class="text-xs">hours</span>
+                        </div>
+                     </div>
+                </div>
+
+                <!-- Preview (Pre-Press only) -->
+                <div id="modal-preview-container" class="hidden">
+                     <p class="text-gray-500 text-xs mb-2">Imposition Preview</p>
+                     <div class="bg-slate-900 rounded p-2 flex justify-center">
+                        <img id="modal-preview-image" src="" alt="Preview" class="max-h-48 object-contain">
+                     </div>
+                </div>
+
+                <!-- Actions -->
+                <div id="modal-actions" class="pt-4 border-t border-slate-700 flex justify-end space-x-3">
+                    <!-- Dynamic Buttons will be injected here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="js/notifications.js"></script>
+    <script type="module" src="js/admin_production.js"></script>
+</body>
+</html>
