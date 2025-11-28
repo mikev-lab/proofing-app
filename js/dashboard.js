@@ -4,18 +4,9 @@ import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/
 import { collection, query, where, getDocs, doc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
 // Get DOM elements
-const userEmailSpan = document.getElementById('user-email');
-const logoutButton = document.getElementById('logout-button');
 const loadingSpinner = document.getElementById('loading-spinner');
 const emptyState = document.getElementById('empty-state');
 const projectsList = document.getElementById('projects-list');
-const notificationBell = document.getElementById('notification-bell');
-const notificationPanel = document.getElementById('notification-panel');
-
-function fetchNotifications() {
-    // Placeholder function for fetching notifications
-    console.log("Fetching notifications...");
-}
 
 /**
  * Formats a Firebase Timestamp into a readable date string.
@@ -200,13 +191,8 @@ onAuthStateChanged(auth, (user) => {
         // User is signed in.
         console.log('User is logged in:', user.uid);
 
-        // Show user's email
-        userEmailSpan.textContent = user.email;
-        userEmailSpan.classList.remove('hidden');
-
         // Fetch this user's projects
         fetchProjects(user.uid);
-        fetchNotifications();
 
     } else {
         // User is signed out. Redirect to login page.
@@ -214,12 +200,3 @@ onAuthStateChanged(auth, (user) => {
         window.location.href = 'index.html';
     }
 });
-
-// Add click listener for the logout button
-logoutButton.addEventListener('click', () => {
-    signOut(auth).catch((error) => {
-        console.error('Sign out error', error);
-    });
-    window.location.href = 'index.html';
-});
-

@@ -18,70 +18,38 @@
     </style>
 </head>
 <body class="min-h-screen bg-gradient-to-br from-[#0f172a] to-[#334155] text-gray-100">
-    <div class="flex h-full">
-        <!-- Sidebar -->
-        <div class="flex flex-col w-64 bg-slate-900/70 backdrop-blur-sm border-r border-slate-700/50">
-            <div class="flex items-center justify-center h-16 border-b border-slate-700/50">
-                <h1 class="text-2xl font-bold text-white">MCE Admin</h1>
-            </div>
-            <div class="flex-grow">
-                <nav class="flex-grow md:block px-4 pb-4 md:pb-0 md:overflow-y-auto">
-                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="admin.html">All Projects</a>
-                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="admin_client_management.html">Clients</a>
-                    <a href="admin_inventory.html" class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-200 bg-slate-700/50 rounded-lg hover:bg-slate-600/50">Inventory</a>
-                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="admin_settings.html">Settings</a>
-                </nav>
-            </div>
+
+    <div id="loading-spinner" class="text-center py-12">
+        <div class="h-12 w-12 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900 mx-auto"></div>
+        <p class="mt-4 text-gray-300">Loading inventory...</p>
+    </div>
+
+    <div id="inventory-content" class="hidden">
+        <div class="flex justify-end mb-4">
+            <button id="add-item-button" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md mr-2">Add New Item</button>
+            <button id="receive-inventory-button" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-4 rounded-md mr-2">Receive Inventory</button>
+            <button id="reconcile-inventory-button" class="bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md">Reconcile Inventory</button>
         </div>
-
-        <!-- Main content -->
-        <div class="flex flex-col flex-1">
-            <!-- Header -->
-            <header class="flex justify-between items-center h-16 px-6 bg-slate-800/60 backdrop-blur-sm border-b border-slate-700/50">
-                <div>
-                    <h2 class="text-xl font-semibold text-white">Inventory Management</h2>
-                </div>
-                <div class="flex items-center space-x-4">
-                    <span id="user-email" class="text-sm text-gray-300 hidden sm:block"></span>
-                    <button id="logout-button" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm">Sign Out</button>
-                </div>
-            </header>
-
-            <main class="flex-1 p-6">
-                <div id="loading-spinner" class="text-center py-12">
-                    <div class="h-12 w-12 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900 mx-auto"></div>
-                    <p class="mt-4 text-gray-300">Loading inventory...</p>
-                </div>
-
-                <div id="inventory-content" class="hidden">
-                    <div class="flex justify-end mb-4">
-                        <button id="add-item-button" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md mr-2">Add New Item</button>
-                        <button id="receive-inventory-button" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-4 rounded-md mr-2">Receive Inventory</button>
-                        <button id="reconcile-inventory-button" class="bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md">Reconcile Inventory</button>
-                    </div>
-                    <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50">
-                        <table class="min-w-full divide-y divide-slate-700">
-                            <thead class="bg-slate-900/50">
-                                <tr>
-                                    <th scope="col" class="py-3.5 pl-4 pr-3 text-left text-sm font-semibold text-white sm:pl-6">Name</th>
-                                    <th scope="col" class="px-3 py-3.5 text-left text-sm font-semibold text-white">Packages</th>
-                                    <th scope="col" class="px-3 py-3.5 text-left text-sm font-semibold text-white hidden sm:table-cell">Loose Sheets</th>
-                                    <th scope="col" class="px-3 py-3.5 text-left text-sm font-semibold text-white hidden md:table-cell">Dimensions</th>
-                                    <th scope="col" class="px-3 py-3.5 text-left text-sm font-semibold text-white hidden lg:table-cell">Grain</th>
-                                    <th scope="col" class="px-3 py-3.5 text-left text-sm font-semibold text-white hidden xl:table-cell">Weight</th>
-                                    <th scope="col" class="px-3 py-3.5 text-left text-sm font-semibold text-white hidden xl:table-cell">Thickness</th>
-                                    <th scope="col" class="relative py-3.5 pl-3 pr-4 sm:pr-6">
-                                        <span class="sr-only">Actions</span>
-                                    </th>
-                                </tr>
-                            </thead>
-                            <tbody id="inventory-table-body" class="divide-y divide-slate-800">
-                                <!-- Inventory items will be populated here -->
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </main>
+        <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50">
+            <table class="min-w-full divide-y divide-slate-700">
+                <thead class="bg-slate-900/50">
+                    <tr>
+                        <th scope="col" class="py-3.5 pl-4 pr-3 text-left text-sm font-semibold text-white sm:pl-6">Name</th>
+                        <th scope="col" class="px-3 py-3.5 text-left text-sm font-semibold text-white">Packages</th>
+                        <th scope="col" class="px-3 py-3.5 text-left text-sm font-semibold text-white hidden sm:table-cell">Loose Sheets</th>
+                        <th scope="col" class="px-3 py-3.5 text-left text-sm font-semibold text-white hidden md:table-cell">Dimensions</th>
+                        <th scope="col" class="px-3 py-3.5 text-left text-sm font-semibold text-white hidden lg:table-cell">Grain</th>
+                        <th scope="col" class="px-3 py-3.5 text-left text-sm font-semibold text-white hidden xl:table-cell">Weight</th>
+                        <th scope="col" class="px-3 py-3.5 text-left text-sm font-semibold text-white hidden xl:table-cell">Thickness</th>
+                        <th scope="col" class="relative py-3.5 pl-3 pr-4 sm:pr-6">
+                            <span class="sr-only">Actions</span>
+                        </th>
+                    </tr>
+                </thead>
+                <tbody id="inventory-table-body" class="divide-y divide-slate-800">
+                    <!-- Inventory items will be populated here -->
+                </tbody>
+            </table>
         </div>
     </div>
 
@@ -230,6 +198,10 @@
             </div>
         </div>
     </div>
-    <script type="module" src="js/admin-notifications.js"></script>
+
+    <script type="module">
+        import { initLayout } from './js/layout.js';
+        initLayout();
+    </script>
 </body>
 </html>
