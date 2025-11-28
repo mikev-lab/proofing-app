@@ -2,18 +2,8 @@ import { auth, db } from './firebase.js';
 import { onAuthStateChanged, signOut, sendPasswordResetEmail, createUserWithEmailAndPassword } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 import { doc, getDoc, collection, query, where, getDocs, updateDoc, deleteDoc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-const notificationBell = document.getElementById('notification-bell');
-const notificationPanel = document.getElementById('notification-panel');
-
-function fetchNotifications() {
-    // Placeholder function for fetching notifications
-    console.log("Fetching notifications...");
-}
-
 onAuthStateChanged(auth, async (user) => {
     if (user) {
-        document.getElementById('user-email').textContent = user.email;
-        fetchNotifications();
         const userDoc = await getDoc(doc(db, "users", user.uid));
         if (userDoc.exists() && userDoc.data().companyRole === 'admin') {
             document.getElementById('team-management-section').classList.remove('hidden');
@@ -24,10 +14,6 @@ onAuthStateChanged(auth, async (user) => {
     }
 });
 
-document.getElementById('logout-button').addEventListener('click', () => {
-    signOut(auth);
-    window.location.href = 'index.html';
-});
 document.getElementById('password-reset-button').addEventListener('click', async () => {
     try {
         await sendPasswordResetEmail(auth, auth.currentUser.email);
@@ -85,9 +71,6 @@ document.getElementById('add-team-member-form').addEventListener('submit', async
     const companyId = userDoc.data().companyId;
 
     try {
-        // This is a simplified approach. In a real app, you'd use a cloud function to create the user
-        // to avoid exposing a way to create users with any details.
-        // For this project, we'll create the user on the client.
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
         await setDoc(doc(db, "users", userCredential.user.uid), {
             name,

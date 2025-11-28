@@ -45,158 +45,128 @@
     </style>
 </head>
 <body class="min-h-screen bg-gradient-to-br from-[#0f172a] to-[#334155] text-gray-100">
-    <div class="flex h-full">
-        <!-- Sidebar -->
-        <div class="flex flex-col w-64 bg-slate-900/70 backdrop-blur-sm border-r border-slate-700/50">
-            <div class="flex items-center justify-center h-16 border-b border-slate-700/50">
-                <h1 class="text-2xl font-bold text-white">MCE Admin</h1>
-            </div>
-            <div class="flex-grow">
-                <nav class="flex-grow md:block px-4 pb-4 md:pb-0 md:overflow-y-auto">
-                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="admin.html">All Projects</a>
-                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="admin_client_management.html">Clients</a>
-                    <a href="admin_inventory.html" class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50">Inventory</a>
-                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-200 bg-slate-700/50 rounded-lg hover:bg-slate-600/50" href="admin_settings.html">Settings</a>
-                </nav>
-            </div>
+    <div id="loading-spinner" class="text-center py-12">
+        <div class="h-12 w-12 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900 mx-auto"></div>
+        <p class="mt-4 text-gray-300">Loading settings...</p>
+    </div>
+
+    <div id="settings-content" class="hidden space-y-8 max-w-4xl mx-auto">
+        <!-- Global Defaults -->
+        <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
+            <h3 class="text-lg font-semibold text-white mb-4">Global Defaults</h3>
+            <form id="global-defaults-form" class="space-y-4">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label for="bleed-inches" class="form-label">Default Bleed (inches)</label>
+                        <input type="number" id="bleed-inches" name="bleedInches" step="0.001" class="form-input">
+                    </div>
+                    <div>
+                        <label for="safety-inches" class="form-label">Default Safety Margin (inches)</label>
+                        <input type="number" id="safety-inches" name="safetyInches" step="0.001" class="form-input">
+                    </div>
+                </div>
+                <div class="pt-4 text-right">
+                    <button type="submit" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-4 rounded-md">Save Global Defaults</button>
+                </div>
+            </form>
         </div>
 
-        <!-- Main content -->
-        <div class="flex flex-col flex-1">
-            <!-- Header -->
-            <header class="flex justify-between items-center h-16 px-6 bg-slate-800/60 backdrop-blur-sm border-b border-slate-700/50">
+        <!-- Estimator Defaults -->
+        <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
+            <h3 class="text-lg font-semibold text-white mb-4">Estimator Defaults</h3>
+            <form id="estimator-defaults-form" class="space-y-4">
                 <div>
-                    <h2 class="text-xl font-semibold text-white">Admin Settings</h2>
+                    <label for="default-labor-rate" class="form-label">Default Labor Rate ($/hr)</label>
+                    <input type="number" id="default-labor-rate" step="1" class="form-input">
                 </div>
-                <div class="flex items-center space-x-4">
-                    <span id="user-email" class="text-sm text-gray-300 hidden sm:block"></span>
-                    <button id="logout-button" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm">Sign Out</button>
+                <div>
+                    <label for="default-markup" class="form-label">Default Markup (%)</label>
+                    <input type="number" id="default-markup" step="1" class="form-input">
                 </div>
-            </header>
-
-            <main class="flex-1 p-6">
-                <div id="loading-spinner" class="text-center py-12">
-                    <div class="h-12 w-12 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900 mx-auto"></div>
-                    <p class="mt-4 text-gray-300">Loading settings...</p>
+                <div>
+                    <label for="default-spoilage" class="form-label">Default Spoilage (%)</label>
+                    <input type="number" id="default-spoilage" step="0.5" class="form-input">
                 </div>
-
-                <div id="settings-content" class="hidden space-y-8 max-w-4xl mx-auto">
-                    <!-- Global Defaults -->
-                    <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
-                        <h3 class="text-lg font-semibold text-white mb-4">Global Defaults</h3>
-                        <form id="global-defaults-form" class="space-y-4">
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div>
-                                    <label for="bleed-inches" class="form-label">Default Bleed (inches)</label>
-                                    <input type="number" id="bleed-inches" name="bleedInches" step="0.001" class="form-input">
-                                </div>
-                                <div>
-                                    <label for="safety-inches" class="form-label">Default Safety Margin (inches)</label>
-                                    <input type="number" id="safety-inches" name="safetyInches" step="0.001" class="form-input">
-                                </div>
-                            </div>
-                            <div class="pt-4 text-right">
-                                <button type="submit" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-4 rounded-md">Save Global Defaults</button>
-                            </div>
-                        </form>
-                    </div>
-
-                    <!-- Estimator Defaults -->
-                    <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
-                        <h3 class="text-lg font-semibold text-white mb-4">Estimator Defaults</h3>
-                        <form id="estimator-defaults-form" class="space-y-4">
-                            <div>
-                                <label for="default-labor-rate" class="form-label">Default Labor Rate ($/hr)</label>
-                                <input type="number" id="default-labor-rate" step="1" class="form-input">
-                            </div>
-                            <div>
-                                <label for="default-markup" class="form-label">Default Markup (%)</label>
-                                <input type="number" id="default-markup" step="1" class="form-input">
-                            </div>
-                            <div>
-                                <label for="default-spoilage" class="form-label">Default Spoilage (%)</label>
-                                <input type="number" id="default-spoilage" step="0.5" class="form-input">
-                            </div>
-                            <div class="pt-4 text-right">
-                                <button type="submit" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-4 rounded-md">Save Estimator Defaults</button>
-                            </div>
-                            <p id="estimator-status" class="text-sm text-gray-400 mt-2 text-right"></p>
-                        </form>
-                    </div>
-
-                    <!-- Sheet Sizes -->
-                    <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
-                        <h3 class="text-lg font-semibold text-white mb-4">Manage Press Sheet Sizes</h3>
-                        <div id="sheet-sizes-list" class="space-y-2 mb-4">
-                            <!-- Sheet sizes will be populated here -->
-                        </div>
-                        <form id="add-sheet-size-form" class="flex items-end space-x-4">
-                            <div class="flex-1">
-                                <label for="new-sheet-name" class="form-label">Sheet Name</label>
-                                <input type="text" id="new-sheet-name" placeholder="e.g., Super B" class="form-input">
-                            </div>
-                            <div class="w-24">
-                                <label for="new-sheet-long" class="form-label">Long (in)</label>
-                                <input type="number" id="new-sheet-long" step="any" class="form-input">
-                            </div>
-                            <div class="w-24">
-                                <label for="new-sheet-short" class="form-label">Short (in)</label>
-                                <input type="number" id="new-sheet-short" step="any" class="form-input">
-                            </div>
-                            <button type="submit" class="bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md">Add</button>
-                        </form>
-                    </div>
-
-                    <!-- Imposition Rules -->
-                    <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
-                        <h3 class="text-lg font-semibold text-white mb-4">Default Imposition Rules</h3>
-                        <p class="text-sm text-gray-400 mb-4">Map a document size to a default press sheet for automatic imposition.</p>
-                        <div id="imposition-rules-list" class="space-y-2 mb-4">
-                            <!-- Rules will be populated here -->
-                        </div>
-                        <form id="add-imposition-rule-form" class="flex flex-col md:flex-row gap-2 items-end">
-                            <div class="w-full md:w-auto flex-1">
-                                <label class="block text-xs text-gray-400 mb-1">Doc Size</label>
-                                <select id="new-rule-doc-size" class="w-full p-2 bg-slate-800 border border-slate-600 rounded-md text-white text-sm"></select>
-                            </div>
-                            <div class="w-full md:w-auto flex-1">
-                                <label class="block text-xs text-gray-400 mb-1">Press Sheet</label>
-                                <select id="new-rule-press-sheet" class="w-full p-2 bg-slate-800 border border-slate-600 rounded-md text-white text-sm"></select>
-                            </div>
-                            <div class="w-full md:w-24">
-                                <label class="block text-xs text-gray-400 mb-1">Type</label>
-                                <select id="new-rule-type" class="w-full p-2 bg-slate-800 border border-slate-600 rounded-md text-white text-sm">
-                                    <option value="stack">Stack</option>
-                                    <option value="repeat">Repeat</option>
-                                    <option value="booklet">Booklet</option>
-                                </select>
-                            </div>
-                            <div class="w-full md:w-20">
-                                <label class="block text-xs text-gray-400 mb-1">H. Gut</label>
-                                <input type="number" id="new-rule-h-gutter" step="0.001" value="0" class="w-full p-2 bg-slate-800 border border-slate-600 rounded-md text-white text-sm" placeholder="0">
-                            </div>
-                            <div class="w-full md:w-20">
-                                <label class="block text-xs text-gray-400 mb-1">V. Gut</label>
-                                <input type="number" id="new-rule-v-gutter" step="0.001" value="0" class="w-full p-2 bg-slate-800 border border-slate-600 rounded-md text-white text-sm" placeholder="0">
-                            </div>
-                            <div class="w-full md:w-28">
-                                <label class="block text-xs text-gray-400 mb-1">Slip Sheet</label>
-                                <select id="new-rule-slip-sheet" class="w-full p-2 bg-slate-800 border border-slate-600 rounded-md text-white text-sm">
-                                    <option value="none">None</option>
-                                    <option value="yellow">Yellow</option>
-                                    <option value="pink">Pink</option>
-                                    <option value="blue">Blue</option>
-                                    <option value="green">Green</option>
-                                </select>
-                            </div>
-                            <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-500 text-sm w-full md:w-auto whitespace-nowrap">Add Rule</button>
-                        </form>
-                    </div>
+                <div class="pt-4 text-right">
+                    <button type="submit" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-4 rounded-md">Save Estimator Defaults</button>
                 </div>
-            </main>
+                <p id="estimator-status" class="text-sm text-gray-400 mt-2 text-right"></p>
+            </form>
+        </div>
+
+        <!-- Sheet Sizes -->
+        <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
+            <h3 class="text-lg font-semibold text-white mb-4">Manage Press Sheet Sizes</h3>
+            <div id="sheet-sizes-list" class="space-y-2 mb-4">
+                <!-- Sheet sizes will be populated here -->
+            </div>
+            <form id="add-sheet-size-form" class="flex items-end space-x-4">
+                <div class="flex-1">
+                    <label for="new-sheet-name" class="form-label">Sheet Name</label>
+                    <input type="text" id="new-sheet-name" placeholder="e.g., Super B" class="form-input">
+                </div>
+                <div class="w-24">
+                    <label for="new-sheet-long" class="form-label">Long (in)</label>
+                    <input type="number" id="new-sheet-long" step="any" class="form-input">
+                </div>
+                <div class="w-24">
+                    <label for="new-sheet-short" class="form-label">Short (in)</label>
+                    <input type="number" id="new-sheet-short" step="any" class="form-input">
+                </div>
+                <button type="submit" class="bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md">Add</button>
+            </form>
+        </div>
+
+        <!-- Imposition Rules -->
+        <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
+            <h3 class="text-lg font-semibold text-white mb-4">Default Imposition Rules</h3>
+            <p class="text-sm text-gray-400 mb-4">Map a document size to a default press sheet for automatic imposition.</p>
+            <div id="imposition-rules-list" class="space-y-2 mb-4">
+                <!-- Rules will be populated here -->
+            </div>
+            <form id="add-imposition-rule-form" class="flex flex-col md:flex-row gap-2 items-end">
+                <div class="w-full md:w-auto flex-1">
+                    <label class="block text-xs text-gray-400 mb-1">Doc Size</label>
+                    <select id="new-rule-doc-size" class="w-full p-2 bg-slate-800 border border-slate-600 rounded-md text-white text-sm"></select>
+                </div>
+                <div class="w-full md:w-auto flex-1">
+                    <label class="block text-xs text-gray-400 mb-1">Press Sheet</label>
+                    <select id="new-rule-press-sheet" class="w-full p-2 bg-slate-800 border border-slate-600 rounded-md text-white text-sm"></select>
+                </div>
+                <div class="w-full md:w-24">
+                    <label class="block text-xs text-gray-400 mb-1">Type</label>
+                    <select id="new-rule-type" class="w-full p-2 bg-slate-800 border border-slate-600 rounded-md text-white text-sm">
+                        <option value="stack">Stack</option>
+                        <option value="repeat">Repeat</option>
+                        <option value="booklet">Booklet</option>
+                    </select>
+                </div>
+                <div class="w-full md:w-20">
+                    <label class="block text-xs text-gray-400 mb-1">H. Gut</label>
+                    <input type="number" id="new-rule-h-gutter" step="0.001" value="0" class="w-full p-2 bg-slate-800 border border-slate-600 rounded-md text-white text-sm" placeholder="0">
+                </div>
+                <div class="w-full md:w-20">
+                    <label class="block text-xs text-gray-400 mb-1">V. Gut</label>
+                    <input type="number" id="new-rule-v-gutter" step="0.001" value="0" class="w-full p-2 bg-slate-800 border border-slate-600 rounded-md text-white text-sm" placeholder="0">
+                </div>
+                <div class="w-full md:w-28">
+                    <label class="block text-xs text-gray-400 mb-1">Slip Sheet</label>
+                    <select id="new-rule-slip-sheet" class="w-full p-2 bg-slate-800 border border-slate-600 rounded-md text-white text-sm">
+                        <option value="none">None</option>
+                        <option value="yellow">Yellow</option>
+                        <option value="pink">Pink</option>
+                        <option value="blue">Blue</option>
+                        <option value="green">Green</option>
+                    </select>
+                </div>
+                <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-500 text-sm w-full md:w-auto whitespace-nowrap">Add Rule</button>
+            </form>
         </div>
     </div>
-    <script type="module" src="js/admin-notifications.js"></script>
+    <script type="module">
+        import { initLayout } from './js/layout.js';
+        initLayout();
+    </script>
     <script type="module" src="./js/admin-settings.js"></script>
 </body>
 </html>

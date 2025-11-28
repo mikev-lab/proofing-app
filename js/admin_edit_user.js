@@ -4,17 +4,9 @@ import { doc, getDoc, updateDoc, collection, getDocs } from "https://www.gstatic
 
 const urlParams = new URLSearchParams(window.location.search);
 const userId = urlParams.get('id');
-const notificationBell = document.getElementById('notification-bell');
-const notificationPanel = document.getElementById('notification-panel');
-
-function fetchNotifications() {
-    // Placeholder function for fetching notifications
-    console.log("Fetching notifications...");
-}
 
 onAuthStateChanged(auth, async (user) => {
     if (user) {
-        document.getElementById('user-email').textContent = user.email;
         const userDoc = await getDoc(doc(db, "users", user.uid));
         if (!userDoc.exists() || userDoc.data().role !== 'admin') {
             window.location.href = 'dashboard.html';
@@ -23,25 +15,8 @@ onAuthStateChanged(auth, async (user) => {
         if (userId) {
             loadUserData(userId);
         }
-        fetchNotifications();
     } else {
         window.location.href = 'index.html';
-    }
-});
-
-document.getElementById('logout-button').addEventListener('click', () => {
-    signOut(auth);
-    window.location.href = 'index.html';
-});
-
-notificationBell.addEventListener('click', () => {
-    notificationPanel.classList.toggle('hidden');
-});
-
-// Hide panel if clicking outside
-document.addEventListener('click', function(event) {
-    if (!notificationBell.contains(event.target) && !notificationPanel.contains(event.target)) {
-        notificationPanel.classList.add('hidden');
     }
 });
 
