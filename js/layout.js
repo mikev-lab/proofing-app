@@ -1,4 +1,3 @@
-
 import { auth, db } from './firebase.js';
 import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 import { doc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
@@ -66,11 +65,13 @@ export function initLayout() {
                         const userData = userDoc.data();
                         role = userData.role === 'admin' ? 'admin' : 'client';
                     } else {
-                        role = 'client';
+                        // [CHANGE] If user exists but has no profile, they are a Guest
+                        role = 'guest';
                     }
                 } catch (e) {
                     console.error("Layout: Error fetching user role", e);
-                    role = 'client';
+                    // [CHANGE] Default to guest on error to be safe
+                    role = 'guest';
                 }
             }
 
@@ -145,8 +146,8 @@ function renderStructure(container, user, role) {
 
     let headerRightContent = '';
 
-    // Check if user is authenticated AND not anonymous
-    if (user && !user.isAnonymous) {
+    // [CHANGE] Updated condition: Check if user is authenticated AND not anonymous AND not a guest role
+    if (user && !user.isAnonymous && role !== 'guest') {
         headerRightContent = `
             <div class="flex items-center space-x-4">
                 <div id="header-extra-actions" class="flex items-center space-x-2"></div>
@@ -174,13 +175,12 @@ function renderStructure(container, user, role) {
             </div>
         `;
     }
-    // Handle Anonymous (Guest) Users
-    else if (user && user.isAnonymous) {
+    // [CHANGE] Updated condition: Handle Anonymous OR Guest Users
+    else if ((user && user.isAnonymous) || role === 'guest') {
          headerRightContent = `
             <div class="flex items-center space-x-4">
                 <div id="header-extra-actions" class="flex items-center space-x-2"></div>
                 <a href="register.html" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all">Register</a>
-                <button id="logout-button" class="text-gray-300 hover:text-white font-medium text-sm">Sign Out</button>
             </div>
         `;
     }
@@ -233,7 +233,7 @@ function renderStructure(container, user, role) {
             });
         }
 
-        if (!user.isAnonymous) {
+        if (!user.isAnonymous && role !== 'guest') {
             initializeNotifications();
         }
     }
