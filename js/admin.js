@@ -4,16 +4,12 @@ import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/
 import { collection, getDocs, doc, getDoc, Timestamp, query, where, orderBy, updateDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 import { httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js";
 
-const userEmailSpan = document.getElementById('user-email');
-const logoutButton = document.getElementById('logout-button');
 const loadingSpinner = document.getElementById('loading-spinner');
 const emptyState = document.getElementById('empty-state');
 const projectsTableContainer = document.getElementById('projects-table-container');
 const projectsList = document.getElementById('projects-list');
 const statusFilter = document.getElementById('status-filter');
 const sortBy = document.getElementById('sort-by');
-const notificationBell = document.getElementById('notification-bell');
-const notificationPanel = document.getElementById('notification-panel');
 const shareModal = document.getElementById('share-modal');
 const shareModalCloseButton = document.getElementById('share-modal-close-button');
 const shareModalCancelButton = document.getElementById('share-modal-cancel-button');
@@ -108,10 +104,6 @@ function getStatusBadge(status) {
     return `<span class="${classes}">${text}${icon}</span>`;
 }
 // --- UPDATE END ---
-
-function fetchNotifications() {
-    console.log("Fetching notifications...");
-}
 
 async function fetchAllProjects() {
     try {
@@ -277,18 +269,10 @@ onAuthStateChanged(auth, async (user) => {
             return;
         }
 
-        userEmailSpan.textContent = user.email;
-        userEmailSpan.classList.remove('hidden');
         fetchAllProjects();
-        fetchNotifications(); 
     } else {
         window.location.href = 'index.html';
     }
-});
-
-logoutButton.addEventListener('click', () => {
-    signOut(auth).catch((error) => console.error('Sign out error', error));
-    window.location.href = 'index.html';
 });
 
 projectsList.addEventListener('click', async (e) => {

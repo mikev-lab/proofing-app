@@ -2,14 +2,6 @@ import { auth, db } from './firebase.js';
 import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 import { getFirestore, collection, getDocs, doc, getDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-const notificationBell = document.getElementById('notification-bell');
-const notificationPanel = document.getElementById('notification-panel');
-
-function fetchNotifications() {
-    // Placeholder function for fetching notifications
-    console.log("Fetching notifications...");
-}
-
 onAuthStateChanged(auth, async (user) => {
     if (user) {
         const userDoc = await getDoc(doc(db, "users", user.uid));
@@ -17,27 +9,9 @@ onAuthStateChanged(auth, async (user) => {
             window.location.href = 'dashboard.html';
             return;
         }
-        document.getElementById('user-email').textContent = user.email;
         loadData();
-        fetchNotifications();
     } else {
         window.location.href = 'index.html';
-    }
-});
-
-document.getElementById('logout-button').addEventListener('click', () => {
-    signOut(auth);
-    window.location.href = 'index.html';
-});
-
-notificationBell.addEventListener('click', () => {
-    notificationPanel.classList.toggle('hidden');
-});
-
-// Hide panel if clicking outside
-document.addEventListener('click', function(event) {
-    if (!notificationBell.contains(event.target) && !notificationPanel.contains(event.target)) {
-        notificationPanel.classList.add('hidden');
     }
 });
 
