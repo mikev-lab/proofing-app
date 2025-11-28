@@ -18,8 +18,6 @@ console.log(`[Init] Parsed URL Params - Guest Token: ${initialGuestToken}, Proje
 // --- END PARSE URL PARAMS ---
 
 
-const userEmailSpan = document.getElementById('user-email');
-const logoutButton = document.getElementById('logout-button');
 const loadingSpinner = document.getElementById('loading-spinner');
 const proofContent = document.getElementById('proof-content');
 const projectName = document.getElementById('project-name');
@@ -247,6 +245,12 @@ async function handleGuestAccess(projectId, guestToken) {
     try {
         // 1. Fetch Guest Link Details (Keep this for UI feedback)
         console.log('[Guest Flow] Attempting to read guest link document...');
+        
+        // [NOTE] This read might cause the error if the user is completely unauthed initially
+        // but typically public reads are allowed if your rules permit it. 
+        // If your rules block unauthed reads, this line will fail. 
+        // However, the error you see is a "Write" stream error, suggesting something is trying to write or set up a listener.
+        
         const linkRef = doc(db, "projects", projectId, "guestLinks", guestToken);
         const linkSnap = await getDoc(linkRef);
 
@@ -260,20 +264,16 @@ async function handleGuestAccess(projectId, guestToken) {
             throw new Error("This share link has expired.");
         }
 
-        // Update view history (This works because of your firestore.rules line 45)
-        updateDoc(linkRef, {
-            viewHistory: arrayUnion({
-                timestamp: Timestamp.now(),
-                userAgent: navigator.userAgent || 'Unknown'
-            })
-        }).catch(err => console.warn("[Guest Flow] Failed to record view:", err));
+        // [CHANGE] We used to write view history here. 
+        // If we write BEFORE signing in with the token, we might not have permission, 
+        // or the auth switch interrupts the write, causing the "Transport errored" log.
+        // Let's Move the view history update to AFTER the sign-in.
 
         // Set local flags
         isGuest = true; 
         guestPermissions = linkData.permissions;
 
         // 2. Authenticate via Cloud Function (The Fix)
-        // Instead of writing to a restricted collection, we ask the server for a token
         console.log('[Guest Flow] Calling authenticateGuest Cloud Function...');
         const authenticateGuest = httpsCallable(functions, 'authenticateGuest');
         const response = await authenticateGuest({ projectId, guestToken });
@@ -283,11 +283,19 @@ async function handleGuestAccess(projectId, guestToken) {
         }
 
         // 3. Sign in with the Custom Token
-        // This gives the user the 'guestProjectId' and 'guestPermissions' claims required by firestore.rules
         console.log('[Guest Flow] Signing in with custom token...');
         const userCredential = await signInWithCustomToken(auth, response.data.token);
         const user = userCredential.user;
         console.log('[Guest Flow] Sign-in successful. User UID:', user.uid);
+
+        // [MOVED HERE] Now that we are signed in with the correct token, record the view.
+        updateDoc(linkRef, {
+            viewHistory: arrayUnion({
+                timestamp: Timestamp.now(),
+                userAgent: navigator.userAgent || 'Unknown'
+            })
+        }).catch(err => console.warn("[Guest Flow] Failed to record view:", err));
+
 
         // 4. Apply Guest UI Mode
         console.log('[Guest Flow] Enabling Guest UI...');
@@ -301,6 +309,7 @@ async function handleGuestAccess(projectId, guestToken) {
         if(accountButton) accountButton.classList.add('hidden');
 
         // 5. Load Project
+        // [IMPORTANT] This triggers the listeners. We do this strictly after sign in.
         loadProjectForUser(user);
 
     } catch (error) {
@@ -693,13 +702,4 @@ if (copyLinkBtn) {
         copyStatusMsg.textContent = 'Copied!';
         setTimeout(() => { copyStatusMsg.textContent = ''; }, 2000);
     });
-}
-
-if (logoutButton) {
-    logoutButton.addEventListener('click', () => {
-         console.log('[Logout] Button clicked.');
-        signOut(auth);
-    });
-} else {
-     console.warn('[Init] Logout button not found.');
 }

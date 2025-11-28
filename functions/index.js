@@ -3088,6 +3088,84 @@ exports.recordHistory = onCall({ region: 'us-central1' }, async (request) => {
   }
 });
 
+exports.assignProjectToCompany = onCall({ region: 'us-central1' }, async (request) => {
+    // 1. Authentication Check
+    if (!request.auth || !request.auth.uid) {
+        throw new HttpsError('unauthenticated', 'You must be authenticated.');
+    }
+    const userId = request.auth.uid;
+
+    try {
+        const userDoc = await db.collection('users').doc(userId).get();
+        if (!userDoc.exists || userDoc.data().role !== 'admin') {
+            throw new HttpsError('permission-denied', 'You must be an admin.');
+        }
+    } catch (error) {
+        logger.error('Admin check failed', error);
+        throw new HttpsError('internal', 'Admin verification failed.');
+    }
+
+    // 2. Data Validation
+    const { projectId, companyId } = request.data;
+    if (!projectId) {
+        throw new HttpsError('invalid-argument', 'Missing projectId.');
+    }
+
+    try {
+        const projectRef = db.collection('projects').doc(projectId);
+        const projectDoc = await projectRef.get();
+        if (!projectDoc.exists) {
+            throw new HttpsError('not-found', 'Project not found.');
+        }
+
+        // Case A: Remove Assignment
+        if (!companyId) {
+            await projectRef.update({
+                companyId: null,
+                clientId: null, // Also clear clientId as it might be linked
+                clientEmail: null
+            });
+            logger.log(`Project ${projectId} unassigned from company.`);
+            return { success: true, message: 'Project unassigned.' };
+        }
+
+        // Case B: Assign Company
+        const companyRef = db.collection('companies').doc(companyId);
+        const companyDoc = await companyRef.get();
+
+        if (!companyDoc.exists) {
+            throw new HttpsError('not-found', 'Company not found.');
+        }
+
+        const companyData = companyDoc.data();
+        const ownerUid = companyData.ownerUid;
+
+        // Update Project
+        await projectRef.update({
+            companyId: companyId,
+            // We optionally link the company owner as the main client contact
+            clientId: ownerUid || null
+        });
+
+        // Notify Company Owner
+        if (ownerUid) {
+            await createNotification(ownerUid, {
+                title: "New Project Assigned",
+                message: `You have been assigned to project "${projectDoc.data().projectName}".`,
+                link: `proof.html?id=${projectId}`
+            });
+        }
+
+        logger.log(`Project ${projectId} assigned to company ${companyId}.`);
+        return { success: true, message: 'Project assigned successfully.' };
+
+    } catch (error) {
+        logger.error(`Error assigning project ${projectId}:`, error);
+        if (error instanceof HttpsError) throw error;
+        throw new HttpsError('internal', 'Failed to assign project.');
+    }
+});
+
 // --- NEW Callable function to securely fetch notifications ---
 exports.getNotifications = onCall({ region: 'us-central1' }, async (request) => {
     if (!request.auth || !request.auth.uid) {

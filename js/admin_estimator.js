@@ -4,13 +4,9 @@ import { httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebas
 import { doc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
 document.addEventListener('DOMContentLoaded', () => {
-    const logoutButton = document.getElementById('logout-button');
-    const userEmailSpan = document.getElementById('user-email');
-
     // Auth state listener
     onAuthStateChanged(auth, async (user) => {
         if (user) {
-            userEmailSpan.textContent = user.email;
             // Fetch user role and show/hide admin elements if needed
             const userDocRef = doc(db, 'users', user.uid);
             const userDoc = await getDoc(userDocRef);
@@ -25,15 +21,6 @@ document.addEventListener('DOMContentLoaded', () => {
             // No user is signed in.
             window.location.href = 'index.html';
         }
-    });
-
-    // Logout functionality
-    logoutButton.addEventListener('click', () => {
-        signOut(auth).then(() => {
-            window.location.href = 'index.html';
-        }).catch((error) => {
-            console.error('Sign Out Error', error);
-        });
     });
 });
 
