@@ -14,75 +14,36 @@
 </head>
 <body class="min-h-screen bg-gradient-to-br from-[#0f172a] to-[#334155] text-gray-100">
 
-    <div class="flex h-full">
-        <!-- Sidebar -->
-        <div class="flex flex-col w-64 bg-slate-900/70 backdrop-blur-sm border-r border-slate-700/50">
-            <div class="flex items-center justify-center h-16 border-b border-slate-700/50">
-                <h1 class="text-2xl font-bold text-white">MCE Admin</h1>
-            </div>
-            <div class="flex-grow">
-                <nav class="flex-grow md:block px-4 pb-4 md:pb-0 md:overflow-y-auto">
-                    <a href="admin.html" class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50">All Projects</a>
-                    <a href="admin_client_management.html" class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-200 bg-slate-700/50 rounded-lg hover:bg-slate-600/50">Clients</a>
-                    <a href="admin_inventory.html" class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50">Inventory</a>
-                    <a href="admin_settings.html" class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50">Settings</a>
-                </nav>
-            </div>
+    <div class="max-w-lg mx-auto bg-slate-800/60 rounded-lg shadow-xl p-8 border border-slate-700/50 mt-10">
+        <!-- Back Link moved here as content header action -->
+        <div class="mb-4">
+            <a href="admin_client_management.html" class="text-sm text-indigo-400 hover:text-indigo-300">&larr; Back to Client Management</a>
         </div>
-
-        <!-- Main content -->
-        <div class="flex flex-col flex-1">
-            <header class="flex justify-between items-center h-16 px-6 bg-slate-800/60 backdrop-blur-sm border-b border-slate-700/50">
-                <h2 class="text-xl font-semibold text-white">Edit User</h2>
-                <div class="flex items-center space-x-4">
-                    <a href="admin_client_management.html" class="text-sm text-indigo-400 hover:text-indigo-300">&larr; Back to Client Management</a>
-                    <div class="relative">
-                        <button id="notification-bell" class="relative text-gray-400 hover:text-white">
-                            <svg class="h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
-                            </svg>
-                            <span id="notification-indicator" class="hidden absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-red-500"></span>
-                        </button>
-                        <div id="notification-panel" class="hidden absolute right-0 mt-2 w-80 bg-slate-800 rounded-lg shadow-lg border border-slate-700/50 z-10">
-                            <div class="p-3 border-b border-slate-700/50">
-                                <h3 class="font-semibold text-white">Notifications</h3>
-                            </div>
-                            <div id="notification-list" class="py-1 max-h-96 overflow-y-auto">
-                                <p class="px-4 py-2 text-sm text-gray-400">No new notifications</p>
-                            </div>
-                        </div>
-                    </div>
-                    <span id="user-email" class="text-sm text-gray-300 hidden sm:block"></span>
-                    <button id="logout-button" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm">Sign Out</button>
+        <form id="edit-user-form" class="space-y-6">
+            <div>
+                <label for="name" class="block text-sm font-medium leading-6 text-gray-200">Full Name</label>
+                <div class="mt-2">
+                    <input type="text" id="name" name="name" required class="block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white">
                 </div>
-            </header>
-
-            <main class="flex-1 p-6">
-                <div class="max-w-lg mx-auto bg-slate-800/60 rounded-lg shadow-xl p-8 border border-slate-700/50">
-                    <form id="edit-user-form" class="space-y-6">
-                        <div>
-                            <label for="name" class="block text-sm font-medium leading-6 text-gray-200">Full Name</label>
-                            <div class="mt-2">
-                                <input type="text" id="name" name="name" required class="block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white">
-                            </div>
-                        </div>
-                        <div>
-                            <label for="companyId" class="block text-sm font-medium leading-6 text-gray-200">Company</label>
-                            <div class="mt-2">
-                                <select id="companyId" name="companyId" required class="block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white"></select>
-                            </div>
-                        </div>
-                        <div>
-                            <button type="submit" id="save-button" class="flex w-full justify-center rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold">
-                                Save Changes
-                            </button>
-                        </div>
-                    </form>
+            </div>
+            <div>
+                <label for="companyId" class="block text-sm font-medium leading-6 text-gray-200">Company</label>
+                <div class="mt-2">
+                    <select id="companyId" name="companyId" required class="block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white"></select>
                 </div>
-            </main>
-        </div>
+            </div>
+            <div>
+                <button type="submit" id="save-button" class="flex w-full justify-center rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold">
+                    Save Changes
+                </button>
+            </div>
+        </form>
     </div>
-    <script type="module" src="js/admin-notifications.js"></script>
+
+    <script type="module">
+        import { initLayout } from './js/layout.js';
+        initLayout();
+    </script>
     <script type="module" src="js/admin_edit_user.js"></script>
 </body>
 </html>
