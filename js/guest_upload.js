@@ -1381,7 +1381,9 @@ async function processQueue(items, limit, asyncFn) {
 
 // --- REWRITTEN: addInteriorFiles (Concurrent Version + Stability Fix) ---
 async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = null) {
-    const fileArray = Array.from(files);
+    const fileArray = Array.from(files).sort((a, b) => 
+        a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+    );
     
     // 1. Setup Phase (Synchronous-ish) - Quick Feedback
     toggleBusyOverlay(true, "Preparing uploads...");
