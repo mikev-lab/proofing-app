@@ -14,87 +14,42 @@
 </head>
 <body class="min-h-screen bg-gradient-to-br from-[#0f172a] to-[#334155] text-gray-100">
 
-    <div class="flex h-full">
-        <!-- Sidebar -->
-        <div class="flex flex-col w-64 bg-slate-900/70 backdrop-blur-sm border-r border-slate-700/50">
-            <div class="flex items-center justify-center h-16 border-b border-slate-700/50">
-                <h1 class="text-2xl font-bold text-white">MCE Admin</h1>
-            </div>
-            <div class="flex-grow">
-                <nav class="flex-grow md:block px-4 pb-4 md:pb-0 md:overflow-y-auto">
-                    <a href="admin.html" class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50">All Projects</a>
-                    <a href="admin_client_management.html" class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-200 bg-slate-700/50 rounded-lg hover:bg-slate-600/50">Clients</a>
-                    <a href="admin_inventory.html" class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50">Inventory</a>
-                    <a href="admin_settings.html" class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50">Settings</a>
-                </nav>
-            </div>
-        </div>
-
-        <!-- Main content -->
-        <div class="flex flex-col flex-1">
-            <header class="flex justify-between items-center h-16 px-6 bg-slate-800/60 backdrop-blur-sm border-b border-slate-700/50">
-                <h2 class="text-xl font-semibold text-white">Client Management</h2>
-                <div class="flex items-center space-x-4">
-                    <div class="relative">
-                        <button id="notification-bell" class="relative text-gray-400 hover:text-white">
-                            <svg class="h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
-                            </svg>
-                            <span id="notification-indicator" class="hidden absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-red-500"></span>
-                        </button>
-                       <div id="notification-panel" class="hidden absolute right-0 mt-2 w-80 bg-slate-800 rounded-lg shadow-lg border border-slate-700/50 z-50">
-                           <div class="p-3 border-b border-slate-700/50 flex justify-between items-center">
-                               <h3 class="font-semibold text-white">Notifications</h3>
-                               <button id="clear-notifications-btn" class="text-xs text-indigo-400 hover:text-indigo-300 transition-colors hover:underline">
-                                   Clear All
-                               </button>
-                           </div>
-                           <div id="notification-list" class="py-1 max-h-96 overflow-y-auto custom-scrollbar">
-                               <p class="px-4 py-2 text-sm text-gray-400">No new notifications</p>
-                           </div>
-                       </div>
-                    </div>
-                    <span id="user-email" class="text-sm text-gray-300 hidden sm:block"></span>
-                    <button id="logout-button" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm">Sign Out</button>
-                </div>
-            </header>
-
-            <main class="flex-1 p-6">
-                <!-- Companies List -->
-                <h3 class="text-2xl font-bold text-white mb-4">Companies</h3>
-                <div id="companies-table-container" class="overflow-x-auto bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 mb-8">
-                    <table class="min-w-full divide-y divide-slate-700">
-                        <thead class="bg-slate-900/50">
-                            <tr>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase">Company Name</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase">Owner Email</th>
-                                <th class="px-6 py-3"></th>
-                            </tr>
-                        </thead>
-                        <tbody id="companies-list" class="divide-y divide-slate-800"></tbody>
-                    </table>
-                </div>
-
-                <!-- Users List -->
-                <h3 class="text-2xl font-bold text-white mb-4">Users</h3>
-                <div id="users-table-container" class="overflow-x-auto bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50">
-                    <table class="min-w-full divide-y divide-slate-700">
-                        <thead class="bg-slate-900/50">
-                            <tr>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase">Name</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase">Email</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase">Company Name</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase">Role</th>
-                                <th class="px-6 py-3"></th>
-                            </tr>
-                        </thead>
-                        <tbody id="users-list" class="divide-y divide-slate-800"></tbody>
-                    </table>
-                </div>
-            </main>
-        </div>
+    <!-- Companies List -->
+    <h3 class="text-2xl font-bold text-white mb-4">Companies</h3>
+    <div id="companies-table-container" class="overflow-x-auto bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 mb-8">
+        <table class="min-w-full divide-y divide-slate-700">
+            <thead class="bg-slate-900/50">
+                <tr>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase">Company Name</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase">Owner Email</th>
+                    <th class="px-6 py-3"></th>
+                </tr>
+            </thead>
+            <tbody id="companies-list" class="divide-y divide-slate-800"></tbody>
+        </table>
     </div>
-    <script type="module" src="js/notifications.js"></script>
+
+    <!-- Users List -->
+    <h3 class="text-2xl font-bold text-white mb-4">Users</h3>
+    <div id="users-table-container" class="overflow-x-auto bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50">
+        <table class="min-w-full divide-y divide-slate-700">
+            <thead class="bg-slate-900/50">
+                <tr>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase">Name</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase">Email</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase">Company Name</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase">Role</th>
+                    <th class="px-6 py-3"></th>
+                </tr>
+            </thead>
+            <tbody id="users-list" class="divide-y divide-slate-800"></tbody>
+        </table>
+    </div>
+
+    <script type="module">
+        import { initLayout } from './js/layout.js';
+        initLayout();
+    </script>
     <script type="module" src="js/admin_client_management.js"></script>
 </body>
 </html>

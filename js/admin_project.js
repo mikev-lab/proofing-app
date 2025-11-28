@@ -405,7 +405,6 @@ onAuthStateChanged(auth, async (user) => {
             return;
         }
 
-        document.getElementById('user-email').textContent = user.email;
         if (projectId) {
             const projectRef = doc(db, "projects", projectId);
             onSnapshot(projectRef, async (docSnap) => {
@@ -450,13 +449,15 @@ onAuthStateChanged(auth, async (user) => {
                     }
                     // ------------------------------------
 
-                    projectNameHeader.textContent = currentProjectData.projectName;
-                    document.getElementById('project-name').textContent = currentProjectData.projectName;
+                    if (projectNameHeader) projectNameHeader.textContent = currentProjectData.projectName;
+                    const projectNameEl = document.getElementById('project-name');
+                    if (projectNameEl) projectNameEl.textContent = currentProjectData.projectName;
 
                     if (currentProjectData.companyId) {
                         const companySnap = await getDoc(doc(db, "companies", currentProjectData.companyId));
                         if (companySnap.exists()) {
-                            document.getElementById('company-name').textContent = companySnap.data().companyName;
+                            const companyNameEl = document.getElementById('company-name');
+                            if (companyNameEl) companyNameEl.textContent = companySnap.data().companyName;
                         }
                     }
 
@@ -513,8 +514,8 @@ onAuthStateChanged(auth, async (user) => {
                    const isWaitingReview = currentProjectData.status === 'Waiting Admin Review';
 
                     // Toggle buttons
-                    approveButton.classList.toggle('hidden', isApproved);
-                    unapproveButton.classList.toggle('hidden', !isApproved);
+                    if (approveButton) approveButton.classList.toggle('hidden', isApproved);
+                    if (unapproveButton) unapproveButton.classList.toggle('hidden', !isApproved);
 
                     if (sendProofButton) {
                         sendProofButton.classList.toggle('hidden', !isWaitingReview);
@@ -563,12 +564,6 @@ onAuthStateChanged(auth, async (user) => {
         window.location.href = 'index.html';
     }
 });
-
-document.getElementById('logout-button').addEventListener('click', () => {
-    signOut(auth);
-    window.location.href = 'index.html';
-});
-
 
 // --- File Upload Logic ---
 if (fileUploadForm) {
@@ -820,62 +815,63 @@ if (projectId) {
 }
 
 // --- Approve Button Logic ---
-const approveButton = document.getElementById('approve-button');
-const unapproveButton = document.getElementById('unapprove-button');
+if (approveButton) {
+    approveButton.addEventListener('click', async () => {
+        if (!projectId) return;
+        if (confirm('Are you sure you want to mark this project as approved? This will lock the project for the client.')) {
+            approveButton.disabled = true;
+            approveButton.textContent = 'Approving...';
+            try {
+                const projectRef = doc(db, "projects", projectId);
+                await updateDoc(projectRef, { status: 'Approved' });
 
-approveButton.addEventListener('click', async () => {
-    if (!projectId) return;
-    if (confirm('Are you sure you want to mark this project as approved? This will lock the project for the client.')) {
-        approveButton.disabled = true;
-        approveButton.textContent = 'Approving...';
-        try {
-            const projectRef = doc(db, "projects", projectId);
-            await updateDoc(projectRef, { status: 'Approved' });
+                // Record history
+                const recordHistory = httpsCallable(functions, 'recordHistory');
+                await recordHistory({
+                    projectId: projectId,
+                    action: 'admin_approved_proof'
+                });
 
-            // Record history
-            const recordHistory = httpsCallable(functions, 'recordHistory');
-            await recordHistory({
-                projectId: projectId,
-                action: 'admin_approved_proof'
-            });
-
-            alert('Project marked as approved.');
-        } catch (error) {
-            console.error("Error approving project:", error);
-            alert('Could not approve the project. Please try again.');
-        } finally {
-            approveButton.disabled = false;
-            approveButton.textContent = 'Mark as Approved';
+                alert('Project marked as approved.');
+            } catch (error) {
+                console.error("Error approving project:", error);
+                alert('Could not approve the project. Please try again.');
+            } finally {
+                approveButton.disabled = false;
+                approveButton.textContent = 'Mark as Approved';
+            }
         }
-    }
-});
+    });
+}
 
-unapproveButton.addEventListener('click', async () => {
-    if (!projectId) return;
-    if (confirm('Are you sure you want to un-approve this project? This will unlock it and allow the client to make changes.')) {
-        unapproveButton.disabled = true;
-        unapproveButton.textContent = 'Un-approving...';
-        try {
-            const projectRef = doc(db, "projects", projectId);
-            await updateDoc(projectRef, { status: 'Pending' }); // Revert to a neutral status
+if (unapproveButton) {
+    unapproveButton.addEventListener('click', async () => {
+        if (!projectId) return;
+        if (confirm('Are you sure you want to un-approve this project? This will unlock it and allow the client to make changes.')) {
+            unapproveButton.disabled = true;
+            unapproveButton.textContent = 'Un-approving...';
+            try {
+                const projectRef = doc(db, "projects", projectId);
+                await updateDoc(projectRef, { status: 'Pending' }); // Revert to a neutral status
 
-            // Record history
-            const recordHistory = httpsCallable(functions, 'recordHistory');
-            await recordHistory({
-                projectId: projectId,
-                action: 'admin_unapproved_proof'
-            });
+                // Record history
+                const recordHistory = httpsCallable(functions, 'recordHistory');
+                await recordHistory({
+                    projectId: projectId,
+                    action: 'admin_unapproved_proof'
+                });
 
-            alert('Project has been un-approved and unlocked.');
-        } catch (error) {
-            console.error("Error un-approving project:", error);
-            alert('Could not un-approve the project. Please try again.');
-        } finally {
-            unapproveButton.disabled = false;
-            unapproveButton.textContent = 'Unlock / Un-approve';
+                alert('Project has been un-approved and unlocked.');
+            } catch (error) {
+                console.error("Error un-approving project:", error);
+                alert('Could not un-approve the project. Please try again.');
+            } finally {
+                unapproveButton.disabled = false;
+                unapproveButton.textContent = 'Unlock / Un-approve';
+            }
         }
-    }
-});
+    });
+}
 
 if (rerunPreflightButton) {
     rerunPreflightButton.addEventListener('click', async () => {

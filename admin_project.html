@@ -53,24 +53,15 @@
             display: block;
             width: 100%;
             border-radius: 0.5rem;
-            /* rounded-lg */
             border: 0;
             background-color: rgba(255, 255, 255, 0.05);
-            /* bg-white/5 */
             padding-top: 0.5rem;
-            /* py-2 */
             padding-bottom: 0.5rem;
-            /* py-2 */
             padding-left: 0.75rem;
-            /* px-3 */
             padding-right: 0.75rem;
-            /* px-3 */
             color: white;
-            /* text-white */
             box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-            /* shadow-sm */
             ring: 1px solid rgba(255, 255, 255, 0.1);
-            /* ring-1 ring-inset ring-white/10 */
         }
 
         #specs-form select:focus,
@@ -78,7 +69,6 @@
             outline: 2px solid transparent;
             outline-offset: 2px;
             --tw-ring-color: #6366f1;
-            /* focus:ring-indigo-500 */
             box-shadow: 0 0 0 2px #6366f1;
         }
 
@@ -86,16 +76,12 @@
             display: block;
             margin-bottom: 0.25rem;
             font-size: 0.875rem;
-            /* text-sm */
             font-weight: 500;
-            /* font-medium */
             color: #d1d5db;
-            /* text-gray-300 */
         }
 
         #specs-form .form-group {
             margin-bottom: 1rem;
-            /* Add spacing between groups */
         }
 
         .accordion-content {
@@ -112,363 +98,314 @@
 
 <body class="min-h-screen bg-gradient-to-br from-[#0f172a] to-[#334155] text-gray-100">
 
-    <div class="flex h-full">
-        <!-- Sidebar -->
-        <div class="flex flex-col w-64 bg-slate-900/70 backdrop-blur-sm border-r border-slate-700/50">
-            <div class="flex items-center justify-center h-16 border-b border-slate-700/50">
-                <h1 class="text-2xl font-bold text-white">MCE Admin</h1>
-            </div>
-            <div class="flex-grow">
-                <nav class="flex-grow md:block px-4 pb-4 md:pb-0 md:overflow-y-auto">
-                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-200 bg-slate-700/50 rounded-lg hover:bg-slate-600/50" href="admin.html">All Projects</a>
-                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="admin_client_management.html">Clients</a>
-                    <a href="admin_inventory.html" class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50">Inventory</a>
-                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="admin_settings.html">Settings</a>
-                </nav>
-            </div>
+    <!-- Header Actions (Will be moved by JS) -->
+    <div id="admin-project-header-actions" class="hidden flex items-center space-x-2">
+        <button id="approve-button" class="bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all duration-150 ease-in-out">
+            Mark as Approved
+        </button>
+        <button id="send-proof-button" class="hidden bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all duration-150 ease-in-out">
+            Send Proof to Client
+        </button>
+        <button id="unapprove-button" class="hidden bg-yellow-600 hover:bg-yellow-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all duration-150 ease-in-out">
+            Unlock / Un-approve
+        </button>
+        <button id="impose-pdf-button" class="bg-teal-600 hover:bg-teal-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all duration-150 ease-in-out">
+            Impose PDF
+        </button>
+        <button id="guest-builder-button" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all duration-150 ease-in-out flex items-center gap-2">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+            </svg>
+            Guest Builder
+        </button>
+        <button id="header-share-button" class="bg-purple-600 hover:bg-purple-500 text-white font-semibold p-2 rounded-md text-sm transition-all duration-150 ease-in-out" title="Share Link">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+            </svg>
+        </button>
+    </div>
+
+    <!-- Loading Spinner -->
+    <div id="loading-spinner" class="text-center py-12">
+        <div class="h-12 w-12 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900 mx-auto" role="status">
+            <span class="sr-only">Loading...</span>
         </div>
+        <p class="mt-4 text-gray-300">Fetching project details...</p>
+    </div>
 
-        <!-- Main content -->
-        <div class="flex flex-col flex-1">
-            <!-- Header -->
-            <header class="flex justify-between items-center h-16 px-6 bg-slate-800/60 backdrop-blur-sm border-b border-slate-700/50 relative z-50">
-                <div>
-                    <h2 id="project-name-header" class="text-xl font-semibold text-white">Project Details</h2>
-                </div>
-                <div class="flex items-center space-x-4">
-                    <button id="approve-button" class="bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all duration-150 ease-in-out">
-                        Mark as Approved
-                    </button>
-                    <button id="send-proof-button" class="hidden bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all duration-150 ease-in-out">
-                        Send Proof to Client
-                    </button>
-                    <button id="unapprove-button" class="hidden bg-yellow-600 hover:bg-yellow-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all duration-150 ease-in-out">
-                        Unlock / Un-approve
-                    </button>
-                    <button id="impose-pdf-button" class="bg-teal-600 hover:bg-teal-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all duration-150 ease-in-out">
-                        Impose PDF
-                    </button>
-                    <button id="guest-builder-button" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all duration-150 ease-in-out flex items-center gap-2">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                        </svg>
-                        Guest Builder
-                    </button>
-                    <button id="header-share-button" class="bg-purple-600 hover:bg-purple-500 text-white font-semibold p-2 rounded-md text-sm transition-all duration-150 ease-in-out" title="Share Link">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
-                        </svg>
-                    </button>
-                    <div class="relative">
-                        <button id="notification-bell" class="relative text-gray-400 hover:text-white">
-                            <svg class="h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
-                            </svg>
-                            <span id="notification-indicator" class="hidden absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-red-500"></span>
-                        </button>
-                        <div id="notification-panel" class="hidden absolute right-0 mt-2 w-80 bg-slate-800 rounded-lg shadow-lg border border-slate-700/50 z-50">
-                            <div class="p-3 border-b border-slate-700/50 flex justify-between items-center">
-                                <h3 class="font-semibold text-white">Notifications</h3>
-                                <button id="clear-notifications-btn" class="text-xs text-indigo-400 hover:text-indigo-300 transition-colors hover:underline">
-                                    Clear All
-                                </button>
-                            </div>
-                            <div id="notification-list" class="py-1 max-h-96 overflow-y-auto custom-scrollbar">
-                                <p class="px-4 py-2 text-sm text-gray-400">No new notifications</p>
-                            </div>
-                        </div>
-                    </div>
-                    <span id="user-email" class="text-sm text-gray-300 hidden sm:block"></span>
-                    <button id="logout-button" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all duration-150 ease-in-out">
-                        Sign Out
-                    </button>
-                </div>
-            </header>
-
-            <main class="flex-1 p-6">
-                <!-- Loading Spinner -->
-                <div id="loading-spinner" class="text-center py-12">
-                    <div class="h-12 w-12 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900 mx-auto" role="status">
-                        <span class="sr-only">Loading...</span>
-                    </div>
-                    <p class="mt-4 text-gray-300">Fetching project details...</p>
-                </div>
-
-                <div id="viewer-tabs" class="hidden mb-6">
-                    <div class="border-b border-slate-700/50">
-                        <nav class="-mb-px flex space-x-8" aria-label="Tabs">
-                            <button id="internals-tab" class="border-indigo-500 text-indigo-400 whitespace-nowrap py-2 px-1 border-b-2 font-medium text-sm transition-colors duration-150">
-                                Internal Pages
-                            </button>
-                            <button id="cover-tab" class="border-transparent text-gray-400 hover:text-gray-200 hover:border-gray-300 whitespace-nowrap py-2 px-1 border-b-2 font-medium text-sm transition-colors duration-150">
-                                Cover
-                            </button>
-                        </nav>
-                    </div>
-                </div>
-
-                <!-- Main Grid for Viewer -->
-                <div id="proof-content" class="hidden grid grid-cols-1 lg:grid-cols-6 gap-4 mb-6">
-                    <!-- Left Column: Thumbnails -->
-                    <div class="lg:col-span-1 space-y-6">
-                        <div class="bg-slate-900/50 rounded-lg shadow-2xl p-4 min-h-[300px] max-h-[80vh] overflow-y-auto">
-                            <h3 class="text-xl font-semibold text-white mb-4 sticky top-0 bg-slate-900/50 backdrop-blur-sm z-10 py-2">Pages</h3>
-                            <div id="thumbnail-list" class="space-y-4"></div>
-                        </div>
-                    </div>
-
-                    <!-- Center Column: Proof Viewer -->
-                    <div class="lg:col-span-4 bg-slate-900/50 rounded-lg shadow-2xl min-h-[600px] flex flex-col p-4 max-h-[85vh]">
-                        <div id="pdf-viewer" class="flex-1 bg-black/20 rounded-md flex justify-center items-center relative">
-                            <canvas id="pdf-canvas"></canvas>
-                            <div id="rendering-throbber" class="hidden absolute inset-0 bg-slate-900/50 backdrop-blur-sm flex flex-col items-center justify-center z-20">
-                                <div class="h-10 w-10 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900" role="status"></div>
-                                <p class="mt-3 text-gray-300 text-sm">Rendering PDF...</p>
-                            </div>
-                            <div id="navigation-controls" class="hidden">
-                                <button id="prev-page" class="text-white px-2 py-1 rounded-md hover:bg-slate-700 disabled:opacity-50" title="Previous Page">&lt;</button>
-                                <span class="text-white px-2" id="page-num"></span> / <span class="text-white px-2" id="page-count"></span>
-                                <button id="next-page" class="text-white px-2 py-1 rounded-md hover:bg-slate-700 disabled:opacity-50" title="Next Page">&gt;</button>
-                                <div id="tool-selector" class="ml-4 flex items-center border-l border-slate-600 pl-4 space-x-1">
-                                    <button id="tool-pan" title="Pan Tool" class="text-white p-2 rounded-md hover:bg-slate-700 bg-slate-600">
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                            <path d="M5 11.5a2.5 2.5 0 0 1 5 0Z" />
-                                            <path d="M4 5.5a2.5 2.5 0 0 1 5 0Z" />
-                                            <path d="M12 5.5a2.5 2.5 0 0 1 5 0Z" />
-                                            <path d="M15 11.5a2.5 2.5 0 0 1 5 0Z" />
-                                            <path d="M5 17.5a2.5 2.5 0 0 1 5 0Z" />
-                                            <path d="m17 22 5-5" />
-                                            <path d="m2 7 5 5" />
-                                        </svg>
-                                    </button>
-                                    <button id="tool-comment" title="Comment Tool" class="text-white p-2 rounded-md hover:bg-slate-700">
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                            <path d="m3 21 1.9-5.7a8.5 8.5 0 1 1 3.8 3.8z" />
-                                        </svg>
-                                    </button>
-                                </div>
-                                <div class="ml-4 flex items-center border-l border-slate-600 pl-4">
-                                    <button id="zoom-out-button" title="Zoom Out" class="text-white px-2 py-1 rounded-md text-lg hover:bg-slate-700 disabled:opacity-50">-</button>
-                                    <button id="zoom-reset-button" title="Reset Zoom & Pan" class="text-white px-2 py-1 rounded-md text-sm hover:bg-slate-700 disabled:opacity-50">
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                            <path d="M3 2v6h6" />
-                                            <path d="M21 12A9 9 0 0 0 6 5.3L3 8" />
-                                            <path d="M21 22v-6h-6" />
-                                            <path d="M3 12a9 9 0 0 0 15 6.7l3-2.7" />
-                                        </svg>
-                                    </button>
-                                    <button id="zoom-in-button" title="Zoom In" class="text-white px-2 py-1 rounded-md text-lg hover:bg-slate-700 disabled:opacity-50">+</button>
-                                    <span id="zoom-level-display" class="text-xs text-gray-300 w-12 text-center">100%</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Right Column: Guides & Comments -->
-                    <div class="lg:col-span-1 space-y-6">
-                        <div id="guides-section" class="bg-slate-800/60 backdrop-blur-sm shadow-xl rounded-xl p-6 border border-slate-700/50">
-                            <h3 class="text-xl font-semibold text-white mb-4">Options</h3>
-                            <div class="mb-4">
-                                <label for="version-selector" class="block text-sm font-medium text-gray-300">Proof Version</label>
-                                <select id="version-selector" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10"></select>
-                            </div>
-                            <div class="mb-4 pt-4 border-t border-slate-700/50">
-                                <label for="view-mode-select" class="block text-sm font-medium text-gray-300">View Mode</label>
-                                <select id="view-mode-select" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10"></select>
-                            </div>
-                            <div class="space-y-2 pt-4 border-t border-slate-700/50">
-                                <div class="flex items-center">
-                                    <input type="checkbox" id="show-trim-guide" checked class="h-4 w-4 rounded border-gray-300 text-indigo-600 bg-white/10 cursor-pointer">
-                                    <label for="show-trim-guide" class="ml-2 block text-sm text-gray-300 cursor-pointer">Show Trim</label>
-                                </div>
-                                <div class="flex items-center">
-                                    <input type="checkbox" id="show-bleed-guide" checked class="h-4 w-4 rounded border-gray-300 text-indigo-600 bg-white/10 cursor-pointer">
-                                    <label for="show-bleed-guide" class="ml-2 block text-sm text-gray-300 cursor-pointer">Show Bleed</label>
-                                </div>
-                                <div class="flex items-center">
-                                    <input type="checkbox" id="show-safety-guide" checked class="h-4 w-4 rounded border-gray-300 text-indigo-600 bg-white/10 cursor-pointer">
-                                    <label for="show-safety-guide" class="ml-2 block text-sm text-gray-300 cursor-pointer">Show Safety</label>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="bg-slate-800/60 backdrop-blur-sm shadow-xl rounded-xl p-6 border border-slate-700/50">
-                            <h3 class="text-xl font-semibold text-white mb-4">Comments</h3>
-                            <div id="comments-section" class="space-y-4 max-h-60 overflow-y-auto pr-2"></div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Tabbed Interface for Project Details -->
-                <div id="project-details-tabs" class="hidden">
-                    <!-- Tab Headers -->
-                    <div class="border-b border-slate-700">
-                        <nav class="-mb-px flex space-x-8" aria-label="Tabs">
-                            <button data-tab="overview" class="tab-button border-indigo-500 text-indigo-400 whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm">
-                                Overview
-                            </button>
-                            <button data-tab="specifications" class="tab-button border-transparent text-gray-400 hover:text-gray-200 hover:border-gray-500 whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm">
-                                Specifications
-                            </button>
-                            <button data-tab="files" class="tab-button border-transparent text-gray-400 hover:text-gray-200 hover:border-gray-500 whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm">
-                                File Management
-                            </button>
-                        </nav>
-                    </div>
-
-                    <!-- Tab Content Panels -->
-                    <div class="py-6">
-                        <!-- Overview Panel -->
-                        <div id="overview-panel" class="tab-panel">
-                            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                                <!-- Project Details -->
-                                <div class="md:col-span-1 bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
-                                    <h3 class="text-lg font-semibold text-white mb-4">Project Details</h3>
-                                    <p class="mt-1 text-white"><strong class="text-gray-400">Project:</strong> <span id="project-name"></span></p>
-                                    <p class="mt-1 text-white mb-4"><strong class="text-gray-400">Company:</strong> <span id="company-name"></span></p>
-                                </div>
-                                <!-- Project History -->
-                                <div class="md:col-span-1 bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
-                                    <h3 class="text-lg font-semibold text-white mb-4">Project History</h3>
-                                    <div id="project-history-list" class="space-y-4 max-h-96 overflow-y-auto">
-                                        <p class="text-gray-400">Loading history...</p>
-                                    </div>
-                                </div>
-                                <!-- Preflight Checks -->
-                                <div class="md:col-span-1 bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
-                                    <div class="flex justify-between items-center mb-4">
-                                        <h3 class="text-lg font-semibold text-white">Preflight Check Results</h3>
-                                        <button id="rerun-preflight-button" class="text-xs bg-indigo-600 hover:bg-indigo-500 text-white py-1.5 px-3 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-                                            Rerun Check
-                                        </button>
-                                    </div>
-                                    <div id="preflight-results-container">
-                                        <div id="preflight-status-message" class="text-gray-400"></div>
-                                        <ul id="preflight-issues-list" class="space-y-2 list-disc list-inside text-red-400"></ul>
-                                        <div id="preflight-data-list" class="mt-4 space-y-2"></div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Specifications Panel -->
-                        <div id="specifications-panel" class="tab-panel hidden">
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <!-- Print Specifications -->
-                                <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
-                                    <h3 class="text-lg font-semibold text-white mb-4">Print Specifications</h3>
-                                    <form id="specs-form">
-                                        <div class="space-y-4">
-                                            <div class="form-group"><label for="dimensions">Dimensions</label><select id="dimensions" name="dimensions">
-                                                    <option value="custom">Custom</option>
-                                                </select>
-                                                <div id="custom-dimension-inputs" class="hidden mt-2 space-y-2"><input type="number" id="custom-width" name="custom-width" placeholder="Width" step="any"><input type="number" id="custom-height" name="custom-height" placeholder="Height" step="any"><select id="custom-units" name="custom-units">
-                                                        <option value="in">Inches (in)</option>
-                                                        <option value="mm">Millimeters (mm)</option>
-                                                    </select></div>
-                                            </div>
-                                            <div class="form-group"><label for="bleedInches">Bleed (inches)</label><input type="number" id="bleedInches" name="bleedInches" value="0.125" step="0.001" required></div>
-                                            <div class="form-group"><label for="safetyInches">Safety Margin (inches)</label><input type="number" id="safetyInches" name="safetyInches" value="0.125" step="0.001" required></div>
-                                            <div class="form-group"><label for="specs-page-count">Page Count</label><input type="number" id="specs-page-count" name="page-count" required></div>
-                                            <div class="form-group"><label for="binding">Binding</label><select id="binding" name="binding">
-                                                    <option value="Perfect Bound">Perfect Bound</option>
-                                                    <option value="Saddle-Stitch">Saddle-Stitch</option>
-                                                    <option value="Coil Bound">Coil Bound</option>
-                                                    <option value="None">None (Flat Sheets)</option>
-                                                </select></div>
-                                            <div class="form-group"><label for="readingDirection">Reading Direction</label><select id="readingDirection" name="readingDirection">
-                                                    <option value="ltr">Left-to-Right</option>
-                                                    <option value="rtl">Right-to-Left</option>
-                                                </select></div>
-                                            <div class="form-group">
-                                                <label for="paper-type">Interior Paper Type</label>
-                                                <select id="paper-type" name="paper-type">
-                                                    </select>
-                                            </div>
-                                            <div class="form-group">
-                                                <label for="cover-paper-type">Cover Paper Type</label>
-                                                <select id="cover-paper-type" name="cover-paper-type">
-                                                    </select>
-                                            </div>
-                                        </div>
-                                        <div class="mt-6 border-t border-slate-700/50 pt-4"><button type="submit" id="save-specs-button" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-blue-800 disabled:cursor-not-allowed">Save Specification Changes</button>
-                                            <p id="specs-status-message" class="mt-2 text-center text-sm"></p>
-                                        </div>
-                                    </form>
-                                </div>
-                                <!-- Cover Specifications -->
-                                <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
-                                    <h3 class="text-lg font-semibold text-white mb-4">Cover Specifications (Manual Override)</h3>
-                                    <form id="cover-specs-form">
-                                        <div class="grid grid-cols-2 gap-4">
-                                            <div class="form-group"><label for="cover-width" class="block text-sm font-medium text-gray-300">Cover Width</label><input type="number" id="cover-width" name="coverWidth" step="0.001" placeholder="Width" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-indigo-500"></div>
-                                            <div class="form-group"><label for="cover-height" class="block text-sm font-medium text-gray-300">Cover Height</label><input type="number" id="cover-height" name="coverHeight" step="0.001" placeholder="Height" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-indigo-500"></div>
-                                        </div>
-                                        <div class="form-group mt-4"><label for="cover-units" class="block text-sm font-medium text-gray-300">Units</label><select id="cover-units" name="coverUnits" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-indigo-500">
-                                                <option value="in">Inches (in)</option>
-                                                <option value="mm">Millimeters (mm)</option>
-                                            </select></div>
-                                        <div class="mt-6 border-t border-slate-700/50 pt-4"><button type="submit" id="save-cover-specs-button" class="w-full bg-purple-600 hover:bg-purple-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-purple-800 disabled:cursor-not-allowed">Save Cover Dimensions</button>
-                                            <p id="cover-specs-status-message" class="mt-2 text-center text-sm"></p>
-                                        </div>
-                                    </form>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- File Management Panel -->
-                        <div id="files-panel" class="tab-panel hidden">
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <!-- Upload New Version -->
-                                <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
-                                    <h3 class="text-lg font-semibold text-white mb-4">Upload New Version</h3>
-                                    <div class="mb-4 border-b border-slate-700/50">
-                                        <nav class="-mb-px flex space-x-4" aria-label="Tabs"><button id="guided-tab" type="button" class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm border-indigo-500 text-indigo-400">Guided Setup</button><button id="quick-tab" type="button" class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm border-transparent text-gray-400 hover:text-gray-200 hover:border-gray-500">Expert Upload</button></nav>
-                                    </div>
-                                    <div id="guided-panel"><label class="block text-sm font-medium text-gray-300 mb-2">Upload Pages (Images, Docs, PDF)</label>
-                                        <div id="drop-zone" class="mt-1 flex justify-center items-center px-6 pt-5 pb-6 border-2 border-slate-600 border-dashed rounded-md cursor-pointer hover:border-indigo-500 transition-colors">
-                                            <div class="space-y-1 text-center"><svg class="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
-                                                    <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
-                                                </svg>
-                                                <div class="flex text-sm text-gray-400">
-                                                    <p class="pl-1">or drag and drop</p>
-                                                </div>
-                                                <p class="text-xs text-gray-500">PDF, DOCX, PNG, JPG, TIFF up to 500MB</p>
-                                            </div>
-                                        </div><input type="file" id="guided-file-input" multiple class="hidden">
-                                        <div id="upload-status-area" class="mt-4 space-y-2"></div>
-                                        <div class="mt-6"><label class="block text-sm font-medium text-gray-300 mb-2">Organize Pages</label>
-                                            <div id="thumbnail-organizer" class="min-h-[200px] bg-slate-900/50 rounded-md p-4 border border-slate-700/50">
-                                                <p class="text-sm text-gray-500 text-center">Thumbnails of processed pages will appear here. You can drag and drop to reorder them.</p>
-                                            </div>
-                                        </div>
-                                        <div class="mt-6 border-t border-slate-700/50 pt-4"><button id="finalize-guided-upload-button" class="w-full bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-green-800 disabled:cursor-not-allowed">Create New Version From Pages</button></div>
-                                    </div>
-                                    <div id="quick-panel" class="hidden">
-                                        <form id="file-upload-form"><label for="file-input" class="block text-sm font-medium text-gray-300">Proof File (PDF)</label><input type="file" id="file-input" accept=".pdf" class="mt-1 block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-600/20 file:text-indigo-300 hover:file:bg-indigo-600/30"><button type="submit" class="w-full mt-4 bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-green-800 disabled:cursor-not-allowed">Upload New Version</button>
-                                            <div id="upload-status-container" class="mt-4 space-y-2"></div>
-                                        </form>
-                                        <div class="mt-6 border-t border-slate-700/50 pt-4">
-                                            <form id="cover-upload-form"><label for="cover-file-input" class="block text-sm font-medium text-gray-300">Cover File (PDF)</label><input type="file" id="cover-file-input" accept=".pdf" class="mt-1 block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-purple-600/20 file:text-purple-300 hover:file:bg-purple-600/30"><button type="submit" class="w-full mt-4 bg-purple-600 hover:bg-purple-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-purple-800 disabled:cursor-not-allowed">Upload Cover</button>
-                                                <div id="cover-upload-status-container" class="mt-4 space-y-2"></div>
-                                            </form>
-                                        </div>
-                                    </div>
-                                </div>
-                                <!-- Generated Impositions -->
-                                <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
-                                    <h3 class="text-lg font-semibold text-white mb-4">Generated Impositions</h3>
-                                    <p class="text-sm text-gray-400 mb-4">Download automatically or manually generated imposed files.</p>
-                                    <div id="imposition-list" class="space-y-3 max-h-96 overflow-y-auto pr-2 custom-scrollbar">
-                                        <p class="text-sm text-gray-500">No impositions generated yet.</p>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </main>
+    <div id="viewer-tabs" class="hidden mb-6">
+        <div class="border-b border-slate-700/50">
+            <nav class="-mb-px flex space-x-8" aria-label="Tabs">
+                <button id="internals-tab" class="border-indigo-500 text-indigo-400 whitespace-nowrap py-2 px-1 border-b-2 font-medium text-sm transition-colors duration-150">
+                    Internal Pages
+                </button>
+                <button id="cover-tab" class="border-transparent text-gray-400 hover:text-gray-200 hover:border-gray-300 whitespace-nowrap py-2 px-1 border-b-2 font-medium text-sm transition-colors duration-150">
+                    Cover
+                </button>
+            </nav>
         </div>
     </div>
+
+    <!-- Main Grid for Viewer -->
+    <div id="proof-content" class="hidden grid grid-cols-1 lg:grid-cols-6 gap-4 mb-6">
+        <!-- Left Column: Thumbnails -->
+        <div class="lg:col-span-1 space-y-6">
+            <div class="bg-slate-900/50 rounded-lg shadow-2xl p-4 min-h-[300px] max-h-[80vh] overflow-y-auto">
+                <h3 class="text-xl font-semibold text-white mb-4 sticky top-0 bg-slate-900/50 backdrop-blur-sm z-10 py-2">Pages</h3>
+                <div id="thumbnail-list" class="space-y-4"></div>
+            </div>
+        </div>
+
+        <!-- Center Column: Proof Viewer -->
+        <div class="lg:col-span-4 bg-slate-900/50 rounded-lg shadow-2xl min-h-[600px] flex flex-col p-4 max-h-[85vh]">
+            <div id="pdf-viewer" class="flex-1 bg-black/20 rounded-md flex justify-center items-center relative">
+                <canvas id="pdf-canvas"></canvas>
+                <div id="rendering-throbber" class="hidden absolute inset-0 bg-slate-900/50 backdrop-blur-sm flex flex-col items-center justify-center z-20">
+                    <div class="h-10 w-10 animate-spin rounded-full border-4 border-t-indigo-400 border-indigo-900" role="status"></div>
+                    <p class="mt-3 text-gray-300 text-sm">Rendering PDF...</p>
+                </div>
+                <div id="navigation-controls" class="hidden">
+                    <button id="prev-page" class="text-white px-2 py-1 rounded-md hover:bg-slate-700 disabled:opacity-50" title="Previous Page">&lt;</button>
+                    <span class="text-white px-2" id="page-num"></span> / <span class="text-white px-2" id="page-count"></span>
+                    <button id="next-page" class="text-white px-2 py-1 rounded-md hover:bg-slate-700 disabled:opacity-50" title="Next Page">&gt;</button>
+                    <div id="tool-selector" class="ml-4 flex items-center border-l border-slate-600 pl-4 space-x-1">
+                        <button id="tool-pan" title="Pan Tool" class="text-white p-2 rounded-md hover:bg-slate-700 bg-slate-600">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M5 11.5a2.5 2.5 0 0 1 5 0Z" />
+                                <path d="M4 5.5a2.5 2.5 0 0 1 5 0Z" />
+                                <path d="M12 5.5a2.5 2.5 0 0 1 5 0Z" />
+                                <path d="M15 11.5a2.5 2.5 0 0 1 5 0Z" />
+                                <path d="M5 17.5a2.5 2.5 0 0 1 5 0Z" />
+                                <path d="m17 22 5-5" />
+                                <path d="m2 7 5 5" />
+                            </svg>
+                        </button>
+                        <button id="tool-comment" title="Comment Tool" class="text-white p-2 rounded-md hover:bg-slate-700">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="m3 21 1.9-5.7a8.5 8.5 0 1 1 3.8 3.8z" />
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="ml-4 flex items-center border-l border-slate-600 pl-4">
+                        <button id="zoom-out-button" title="Zoom Out" class="text-white px-2 py-1 rounded-md text-lg hover:bg-slate-700 disabled:opacity-50">-</button>
+                        <button id="zoom-reset-button" title="Reset Zoom & Pan" class="text-white px-2 py-1 rounded-md text-sm hover:bg-slate-700 disabled:opacity-50">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M3 2v6h6" />
+                                <path d="M21 12A9 9 0 0 0 6 5.3L3 8" />
+                                <path d="M21 22v-6h-6" />
+                                <path d="M3 12a9 9 0 0 0 15 6.7l3-2.7" />
+                            </svg>
+                        </button>
+                        <button id="zoom-in-button" title="Zoom In" class="text-white px-2 py-1 rounded-md text-lg hover:bg-slate-700 disabled:opacity-50">+</button>
+                        <span id="zoom-level-display" class="text-xs text-gray-300 w-12 text-center">100%</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Column: Guides & Comments -->
+        <div class="lg:col-span-1 space-y-6">
+            <div id="guides-section" class="bg-slate-800/60 backdrop-blur-sm shadow-xl rounded-xl p-6 border border-slate-700/50">
+                <h3 class="text-xl font-semibold text-white mb-4">Options</h3>
+                <div class="mb-4">
+                    <label for="version-selector" class="block text-sm font-medium text-gray-300">Proof Version</label>
+                    <select id="version-selector" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10"></select>
+                </div>
+                <div class="mb-4 pt-4 border-t border-slate-700/50">
+                    <label for="view-mode-select" class="block text-sm font-medium text-gray-300">View Mode</label>
+                    <select id="view-mode-select" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10"></select>
+                </div>
+                <div class="space-y-2 pt-4 border-t border-slate-700/50">
+                    <div class="flex items-center">
+                        <input type="checkbox" id="show-trim-guide" checked class="h-4 w-4 rounded border-gray-300 text-indigo-600 bg-white/10 cursor-pointer">
+                        <label for="show-trim-guide" class="ml-2 block text-sm text-gray-300 cursor-pointer">Show Trim</label>
+                    </div>
+                    <div class="flex items-center">
+                        <input type="checkbox" id="show-bleed-guide" checked class="h-4 w-4 rounded border-gray-300 text-indigo-600 bg-white/10 cursor-pointer">
+                        <label for="show-bleed-guide" class="ml-2 block text-sm text-gray-300 cursor-pointer">Show Bleed</label>
+                    </div>
+                    <div class="flex items-center">
+                        <input type="checkbox" id="show-safety-guide" checked class="h-4 w-4 rounded border-gray-300 text-indigo-600 bg-white/10 cursor-pointer">
+                        <label for="show-safety-guide" class="ml-2 block text-sm text-gray-300 cursor-pointer">Show Safety</label>
+                    </div>
+                </div>
+            </div>
+            <div class="bg-slate-800/60 backdrop-blur-sm shadow-xl rounded-xl p-6 border border-slate-700/50">
+                <h3 class="text-xl font-semibold text-white mb-4">Comments</h3>
+                <div id="comments-section" class="space-y-4 max-h-60 overflow-y-auto pr-2"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tabbed Interface for Project Details -->
+    <div id="project-details-tabs" class="hidden">
+        <!-- Tab Headers -->
+        <div class="border-b border-slate-700">
+            <nav class="-mb-px flex space-x-8" aria-label="Tabs">
+                <button data-tab="overview" class="tab-button border-indigo-500 text-indigo-400 whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm">
+                    Overview
+                </button>
+                <button data-tab="specifications" class="tab-button border-transparent text-gray-400 hover:text-gray-200 hover:border-gray-500 whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm">
+                    Specifications
+                </button>
+                <button data-tab="files" class="tab-button border-transparent text-gray-400 hover:text-gray-200 hover:border-gray-500 whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm">
+                    File Management
+                </button>
+            </nav>
+        </div>
+
+        <!-- Tab Content Panels -->
+        <div class="py-6">
+            <!-- Overview Panel -->
+            <div id="overview-panel" class="tab-panel">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <!-- Project Details -->
+                    <div class="md:col-span-1 bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
+                        <h3 class="text-lg font-semibold text-white mb-4">Project Details</h3>
+                        <p class="mt-1 text-white"><strong class="text-gray-400">Project:</strong> <span id="project-name"></span></p>
+                        <p class="mt-1 text-white mb-4"><strong class="text-gray-400">Company:</strong> <span id="company-name"></span></p>
+                    </div>
+                    <!-- Project History -->
+                    <div class="md:col-span-1 bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
+                        <h3 class="text-lg font-semibold text-white mb-4">Project History</h3>
+                        <div id="project-history-list" class="space-y-4 max-h-96 overflow-y-auto">
+                            <p class="text-gray-400">Loading history...</p>
+                        </div>
+                    </div>
+                    <!-- Preflight Checks -->
+                    <div class="md:col-span-1 bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
+                        <div class="flex justify-between items-center mb-4">
+                            <h3 class="text-lg font-semibold text-white">Preflight Check Results</h3>
+                            <button id="rerun-preflight-button" class="text-xs bg-indigo-600 hover:bg-indigo-500 text-white py-1.5 px-3 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                                Rerun Check
+                            </button>
+                        </div>
+                        <div id="preflight-results-container">
+                            <div id="preflight-status-message" class="text-gray-400"></div>
+                            <ul id="preflight-issues-list" class="space-y-2 list-disc list-inside text-red-400"></ul>
+                            <div id="preflight-data-list" class="mt-4 space-y-2"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Specifications Panel -->
+            <div id="specifications-panel" class="tab-panel hidden">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <!-- Print Specifications -->
+                    <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
+                        <h3 class="text-lg font-semibold text-white mb-4">Print Specifications</h3>
+                        <form id="specs-form">
+                            <div class="space-y-4">
+                                <div class="form-group"><label for="dimensions">Dimensions</label><select id="dimensions" name="dimensions">
+                                        <option value="custom">Custom</option>
+                                    </select>
+                                    <div id="custom-dimension-inputs" class="hidden mt-2 space-y-2"><input type="number" id="custom-width" name="custom-width" placeholder="Width" step="any"><input type="number" id="custom-height" name="custom-height" placeholder="Height" step="any"><select id="custom-units" name="custom-units">
+                                            <option value="in">Inches (in)</option>
+                                            <option value="mm">Millimeters (mm)</option>
+                                        </select></div>
+                                </div>
+                                <div class="form-group"><label for="bleedInches">Bleed (inches)</label><input type="number" id="bleedInches" name="bleedInches" value="0.125" step="0.001" required></div>
+                                <div class="form-group"><label for="safetyInches">Safety Margin (inches)</label><input type="number" id="safetyInches" name="safetyInches" value="0.125" step="0.001" required></div>
+                                <div class="form-group"><label for="specs-page-count">Page Count</label><input type="number" id="specs-page-count" name="page-count" required></div>
+                                <div class="form-group"><label for="binding">Binding</label><select id="binding" name="binding">
+                                        <option value="Perfect Bound">Perfect Bound</option>
+                                        <option value="Saddle-Stitch">Saddle-Stitch</option>
+                                        <option value="Coil Bound">Coil Bound</option>
+                                        <option value="None">None (Flat Sheets)</option>
+                                    </select></div>
+                                <div class="form-group"><label for="readingDirection">Reading Direction</label><select id="readingDirection" name="readingDirection">
+                                        <option value="ltr">Left-to-Right</option>
+                                        <option value="rtl">Right-to-Left</option>
+                                    </select></div>
+                                <div class="form-group">
+                                    <label for="paper-type">Interior Paper Type</label>
+                                    <select id="paper-type" name="paper-type">
+                                        </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="cover-paper-type">Cover Paper Type</label>
+                                    <select id="cover-paper-type" name="cover-paper-type">
+                                        </select>
+                                </div>
+                            </div>
+                            <div class="mt-6 border-t border-slate-700/50 pt-4"><button type="submit" id="save-specs-button" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-blue-800 disabled:cursor-not-allowed">Save Specification Changes</button>
+                                <p id="specs-status-message" class="mt-2 text-center text-sm"></p>
+                            </div>
+                        </form>
+                    </div>
+                    <!-- Cover Specifications -->
+                    <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
+                        <h3 class="text-lg font-semibold text-white mb-4">Cover Specifications (Manual Override)</h3>
+                        <form id="cover-specs-form">
+                            <div class="grid grid-cols-2 gap-4">
+                                <div class="form-group"><label for="cover-width" class="block text-sm font-medium text-gray-300">Cover Width</label><input type="number" id="cover-width" name="coverWidth" step="0.001" placeholder="Width" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-indigo-500"></div>
+                                <div class="form-group"><label for="cover-height" class="block text-sm font-medium text-gray-300">Cover Height</label><input type="number" id="cover-height" name="coverHeight" step="0.001" placeholder="Height" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-indigo-500"></div>
+                            </div>
+                            <div class="form-group mt-4"><label for="cover-units" class="block text-sm font-medium text-gray-300">Units</label><select id="cover-units" name="coverUnits" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-indigo-500">
+                                    <option value="in">Inches (in)</option>
+                                    <option value="mm">Millimeters (mm)</option>
+                                </select></div>
+                            <div class="mt-6 border-t border-slate-700/50 pt-4"><button type="submit" id="save-cover-specs-button" class="w-full bg-purple-600 hover:bg-purple-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-purple-800 disabled:cursor-not-allowed">Save Cover Dimensions</button>
+                                <p id="cover-specs-status-message" class="mt-2 text-center text-sm"></p>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <!-- File Management Panel -->
+            <div id="files-panel" class="tab-panel hidden">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <!-- Upload New Version -->
+                    <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
+                        <h3 class="text-lg font-semibold text-white mb-4">Upload New Version</h3>
+                        <div class="mb-4 border-b border-slate-700/50">
+                            <nav class="-mb-px flex space-x-4" aria-label="Tabs"><button id="guided-tab" type="button" class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm border-indigo-500 text-indigo-400">Guided Setup</button><button id="quick-tab" type="button" class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm border-transparent text-gray-400 hover:text-gray-200 hover:border-gray-500">Expert Upload</button></nav>
+                        </div>
+                        <div id="guided-panel"><label class="block text-sm font-medium text-gray-300 mb-2">Upload Pages (Images, Docs, PDF)</label>
+                            <div id="drop-zone" class="mt-1 flex justify-center items-center px-6 pt-5 pb-6 border-2 border-slate-600 border-dashed rounded-md cursor-pointer hover:border-indigo-500 transition-colors">
+                                <div class="space-y-1 text-center"><svg class="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
+                                        <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                                    </svg>
+                                    <div class="flex text-sm text-gray-400">
+                                        <p class="pl-1">or drag and drop</p>
+                                    </div>
+                                    <p class="text-xs text-gray-500">PDF, DOCX, PNG, JPG, TIFF up to 500MB</p>
+                                </div>
+                            </div><input type="file" id="guided-file-input" multiple class="hidden">
+                            <div id="upload-status-area" class="mt-4 space-y-2"></div>
+                            <div class="mt-6"><label class="block text-sm font-medium text-gray-300 mb-2">Organize Pages</label>
+                                <div id="thumbnail-organizer" class="min-h-[200px] bg-slate-900/50 rounded-md p-4 border border-slate-700/50">
+                                    <p class="text-sm text-gray-500 text-center">Thumbnails of processed pages will appear here. You can drag and drop to reorder them.</p>
+                                </div>
+                            </div>
+                            <div class="mt-6 border-t border-slate-700/50 pt-4"><button id="finalize-guided-upload-button" class="w-full bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-green-800 disabled:cursor-not-allowed">Create New Version From Pages</button></div>
+                        </div>
+                        <div id="quick-panel" class="hidden">
+                            <form id="file-upload-form"><label for="file-input" class="block text-sm font-medium text-gray-300">Proof File (PDF)</label><input type="file" id="file-input" accept=".pdf" class="mt-1 block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-600/20 file:text-indigo-300 hover:file:bg-indigo-600/30"><button type="submit" class="w-full mt-4 bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-green-800 disabled:cursor-not-allowed">Upload New Version</button>
+                                <div id="upload-status-container" class="mt-4 space-y-2"></div>
+                            </form>
+                            <div class="mt-6 border-t border-slate-700/50 pt-4">
+                                <form id="cover-upload-form"><label for="cover-file-input" class="block text-sm font-medium text-gray-300">Cover File (PDF)</label><input type="file" id="cover-file-input" accept=".pdf" class="mt-1 block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-purple-600/20 file:text-purple-300 hover:file:bg-purple-600/30"><button type="submit" class="w-full mt-4 bg-purple-600 hover:bg-purple-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-purple-800 disabled:cursor-not-allowed">Upload Cover</button>
+                                    <div id="cover-upload-status-container" class="mt-4 space-y-2"></div>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Generated Impositions -->
+                    <div class="bg-slate-800/60 rounded-lg shadow-xl border border-slate-700/50 p-6">
+                        <h3 class="text-lg font-semibold text-white mb-4">Generated Impositions</h3>
+                        <p class="text-sm text-gray-400 mb-4">Download automatically or manually generated imposed files.</p>
+                        <div id="imposition-list" class="space-y-3 max-h-96 overflow-y-auto pr-2 custom-scrollbar">
+                            <p class="text-sm text-gray-500">No impositions generated yet.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
 
     <!-- Annotation Modal -->
     <div id="annotation-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center hidden z-50">
@@ -542,9 +479,6 @@
             </div>
             </div>
     </div>
-
-    <script type="module" src="js/admin_project.js"></script>
-    <script type="module" src="js/notifications.js"></script>
 
     <!-- Imposition Modal -->
     <div id="imposition-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-80 flex items-center justify-center z-50">
@@ -661,6 +595,21 @@
     </div>
     <div id="guide-tooltip" class="fixed hidden z-50 max-w-xs bg-slate-900/95 backdrop-blur-sm text-white text-sm p-3 rounded-lg shadow-xl border border-slate-600 pointer-events-none transition-opacity duration-150">
     </div>
+
+    <script type="module">
+        import { initLayout, mountHeaderActions } from './js/layout.js';
+
+        const actions = document.getElementById('admin-project-header-actions');
+
+        initLayout().then(() => {
+             if (actions) {
+                 mountHeaderActions(actions);
+                 actions.classList.remove('hidden');
+             }
+        });
+    </script>
+    <script type="module" src="js/admin_project.js"></script>
+    <script type="module" src="js/notifications.js"></script>
 </body>
 
 </html>

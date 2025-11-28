@@ -24,230 +24,183 @@
 </head>
 <body class="min-h-screen bg-gradient-to-br from-[#0f172a] to-[#334155] text-gray-100">
 
-    <div class="flex h-full">
-        <!-- Sidebar -->
-        <div class="flex flex-col w-64 bg-slate-900/70 backdrop-blur-sm border-r border-slate-700/50">
-            <div class="flex items-center justify-center h-16 border-b border-slate-700/50">
-                <h1 class="text-2xl font-bold text-white">MCE Admin</h1>
+    <div class="max-w-xl mx-auto bg-slate-800/60 p-8 rounded-lg shadow-xl border border-slate-700/50 mt-10">
+        <form id="new-project-form" class="space-y-6">
+            <div>
+                <label for="projectName" class="block text-sm font-medium text-gray-300">Project Name</label>
+                <input type="text" id="projectName" name="projectName" required class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
             </div>
-            <div class="flex-grow">
-                <nav class="flex-grow md:block px-4 pb-4 md:pb-0 md:overflow-y-auto">
-                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-200 bg-slate-700/50 rounded-lg hover:bg-slate-600/50" href="admin.html">All Projects</a>
-                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="admin_client_management.html">Clients</a>
-                    <a href="admin_inventory.html" class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50">Inventory</a>
-                    <a class="block px-4 py-2 mt-2 text-sm font-semibold text-gray-300 rounded-lg hover:bg-slate-700/50" href="admin_settings.html">Settings</a>
-                </nav>
+            <div>
+                <label for="companyId" class="block text-sm font-medium text-gray-300">Select Company</label>
+                <select id="companyId" name="companyId" required class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
+                    <option value="">Loading companies...</option>
+                </select>
             </div>
-        </div>
 
-        <!-- Main content -->
-        <div class="flex flex-col flex-1">
-            <!-- Header -->
-            <header class="flex justify-between items-center h-16 px-6 bg-slate-800/60 backdrop-blur-sm border-b border-slate-700/50">
-                <div>
-                    <h2 class="text-xl font-semibold text-white">Create New Project</h2>
-                </div>
-                <div class="flex items-center space-x-4">
-                    <div class="relative">
-                        <button id="notification-bell" class="relative text-gray-400 hover:text-white">
-                            <svg class="h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
-                            </svg>
-                            <span id="notification-indicator" class="hidden absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-red-500"></span>
-                        </button>
-                        <div id="notification-panel" class="hidden absolute right-0 mt-2 w-80 bg-slate-800 rounded-lg shadow-lg border border-slate-700/50 z-10">
-                            <div class="p-3 border-b border-slate-700/50">
-                                <h3 class="font-semibold text-white">Notifications</h3>
-                            </div>
-                            <div id="notification-list" class="py-1 max-h-96 overflow-y-auto">
-                                <p class="px-4 py-2 text-sm text-gray-400">No new notifications</p>
-                            </div>
-                        </div>
-                    </div>
-                    <span id="user-email" class="text-sm text-gray-300 hidden sm:block"></span>
-                    <button id="logout-button" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all duration-150 ease-in-out">
-                        Sign Out
-                    </button>
-                </div>
-            </header>
-
-            <main class="flex-1 p-6">
-                <div class="max-w-xl mx-auto bg-slate-800/60 p-8 rounded-lg shadow-xl border border-slate-700/50">
-                    <form id="new-project-form" class="space-y-6">
-                        <div>
-                            <label for="projectName" class="block text-sm font-medium text-gray-300">Project Name</label>
-                            <input type="text" id="projectName" name="projectName" required class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
-                        </div>
-                        <div>
-                            <label for="companyId" class="block text-sm font-medium text-gray-300">Select Company</label>
-                            <select id="companyId" name="companyId" required class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
-                                <option value="">Loading companies...</option>
+            <!-- Print Specifications -->
+            <div class="border-t border-slate-700/50 pt-6">
+                <h3 class="text-lg font-semibold text-white">Print Specifications</h3>
+                <div class="space-y-4 mt-4">
+                    <!-- Dimensions -->
+                    <div>
+                        <label for="dimensions" class="block text-sm font-medium text-gray-300">Dimensions</label>
+                        <select id="dimensions" name="dimensions" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
+                            <optgroup label="ISO A">
+                                <option value="A0">A0 (841 x 1189 mm)</option>
+                                <option value="A1">A1 (594 x 841 mm)</option>
+                                <option value="A2">A2 (420 x 594 mm)</option>
+                                <option value="A3">A3 (297 x 420 mm)</option>
+                                <option value="A4">A4 (210 x 297 mm)</option>
+                                <option value="A5">A5 (148 x 210 mm)</option>
+                                <option value="A6">A6 (105 x 148 mm)</option>
+                            </optgroup>
+                            <optgroup label="ISO B">
+                                <option value="B0">B0 (1000 x 1414 mm)</option>
+                                <option value="B1">B1 (707 x 1000 mm)</option>
+                                <option value="B2">B2 (500 x 707 mm)</option>
+                                <option value="B3">B3 (353 x 500 mm)</option>
+                                <option value="B4">B4 (250 x 353 mm)</option>
+                                <option value="B5">B5 (176 x 250 mm)</option>
+                                <option value="B6">B6 (125 x 176 mm)</option>
+                            </optgroup>
+                            <optgroup label="JIS B">
+                                <option value="JIS_B0">JIS B0 (1030 x 1456 mm)</option>
+                                <option value="JIS_B1">JIS B1 (728 x 1030 mm)</option>
+                                <option value="JIS_B2">JIS B2 (515 x 728 mm)</option>
+                                <option value="JIS_B3">JIS B3 (364 x 515 mm)</option>
+                                <option value="JIS_B4">JIS B4 (257 x 364 mm)</option>
+                                <option value="JIS_B5">JIS B5 (182 x 257 mm)</option>
+                                <option value="JIS_B6">JIS B6 (128 x 182 mm)</option>
+                                <option value="JIS_B7">JIS B7 (91 x 128 mm)</option>
+                            </optgroup>
+                            <optgroup label="US Standard">
+                                <option value="US_Letter">Letter (8.5 x 11 in)</option>
+                                <option value="US_Legal">Legal (8.5 x 14 in)</option>
+                                <option value="US_Tabloid">Tabloid / Ledger (11 x 17 in)</option>
+                                <option value="US_Junior_Legal">Junior Legal (5 x 8 in)</option>
+                            </optgroup>
+                            <optgroup label="Business Cards">
+                                <option value="US_Business_Card">US Business Card (3.5 x 2 in)</option>
+                                <option value="EU_Business_Card">EU Business Card (85 x 55 mm)</option>
+                                <option value="JP_Business_Card">JP Business Card (91 x 55 mm)</option>
+                            </optgroup>
+                            <optgroup label="Postcards">
+                                <option value="US_Postcard">US Postcard (4 x 6 in)</option>
+                                <option value="US_Postcard_Large">US Postcard Large (5 x 7 in)</option>
+                                <option value="A6_Postcard">A6 Postcard (105 x 148 mm)</option>
+                            </optgroup>
+                            <option value="custom">Custom</option>
+                        </select>
+                        <div id="custom-dimension-inputs" class="hidden mt-2 space-y-2">
+                            <input type="number" id="custom-width" name="custom-width" placeholder="Width" step="any" class="block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
+                            <input type="number" id="custom-height" name="custom-height" placeholder="Height" step="any" class="block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
+                            <select id="custom-units" name="custom-units" class="block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
+                                <option value="in">Inches (in)</option>
+                                <option value="mm">Millimeters (mm)</option>
                             </select>
                         </div>
-
-                        <!-- Print Specifications -->
-                        <div class="border-t border-slate-700/50 pt-6">
-                            <h3 class="text-lg font-semibold text-white">Print Specifications</h3>
-                            <div class="space-y-4 mt-4">
-                                <!-- Dimensions -->
-                                <div>
-                                    <label for="dimensions" class="block text-sm font-medium text-gray-300">Dimensions</label>
-                                    <select id="dimensions" name="dimensions" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
-                                        <optgroup label="ISO A">
-                                            <option value="A0">A0 (841 x 1189 mm)</option>
-                                            <option value="A1">A1 (594 x 841 mm)</option>
-                                            <option value="A2">A2 (420 x 594 mm)</option>
-                                            <option value="A3">A3 (297 x 420 mm)</option>
-                                            <option value="A4">A4 (210 x 297 mm)</option>
-                                            <option value="A5">A5 (148 x 210 mm)</option>
-                                            <option value="A6">A6 (105 x 148 mm)</option>
-                                        </optgroup>
-                                        <optgroup label="ISO B">
-                                            <option value="B0">B0 (1000 x 1414 mm)</option>
-                                            <option value="B1">B1 (707 x 1000 mm)</option>
-                                            <option value="B2">B2 (500 x 707 mm)</option>
-                                            <option value="B3">B3 (353 x 500 mm)</option>
-                                            <option value="B4">B4 (250 x 353 mm)</option>
-                                            <option value="B5">B5 (176 x 250 mm)</option>
-                                            <option value="B6">B6 (125 x 176 mm)</option>
-                                        </optgroup>
-                                        <optgroup label="JIS B">
-                                            <option value="JIS_B0">JIS B0 (1030 x 1456 mm)</option>
-                                            <option value="JIS_B1">JIS B1 (728 x 1030 mm)</option>
-                                            <option value="JIS_B2">JIS B2 (515 x 728 mm)</option>
-                                            <option value="JIS_B3">JIS B3 (364 x 515 mm)</option>
-                                            <option value="JIS_B4">JIS B4 (257 x 364 mm)</option>
-                                            <option value="JIS_B5">JIS B5 (182 x 257 mm)</option>
-                                            <option value="JIS_B6">JIS B6 (128 x 182 mm)</option>
-                                            <option value="JIS_B7">JIS B7 (91 x 128 mm)</option>
-                                        </optgroup>
-                                        <optgroup label="US Standard">
-                                            <option value="US_Letter">Letter (8.5 x 11 in)</option>
-                                            <option value="US_Legal">Legal (8.5 x 14 in)</option>
-                                            <option value="US_Tabloid">Tabloid / Ledger (11 x 17 in)</option>
-                                            <option value="US_Junior_Legal">Junior Legal (5 x 8 in)</option>
-                                        </optgroup>
-                                        <optgroup label="Business Cards">
-                                            <option value="US_Business_Card">US Business Card (3.5 x 2 in)</option>
-                                            <option value="EU_Business_Card">EU Business Card (85 x 55 mm)</option>
-                                            <option value="JP_Business_Card">JP Business Card (91 x 55 mm)</option>
-                                        </optgroup>
-                                        <optgroup label="Postcards">
-                                            <option value="US_Postcard">US Postcard (4 x 6 in)</option>
-                                            <option value="US_Postcard_Large">US Postcard Large (5 x 7 in)</option>
-                                            <option value="A6_Postcard">A6 Postcard (105 x 148 mm)</option>
-                                        </optgroup>
-                                        <option value="custom">Custom</option>
-                                    </select>
-                                    <div id="custom-dimension-inputs" class="hidden mt-2 space-y-2">
-                                        <input type="number" id="custom-width" name="custom-width" placeholder="Width" step="any" class="block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
-                                        <input type="number" id="custom-height" name="custom-height" placeholder="Height" step="any" class="block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
-                                        <select id="custom-units" name="custom-units" class="block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
-                                            <option value="in">Inches (in)</option>
-                                            <option value="mm">Millimeters (mm)</option>
-                                        </select>
-                                    </div>
-                                </div>
-                                <!-- Bleed -->
-                                <div>
-                                    <label for="bleedInches" class="block text-sm font-medium text-gray-300">Bleed (inches)</label>
-                                    <input type="number" id="bleedInches" name="bleedInches" value="0.125" step="0.001" required class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
-                                </div>
-                                <!-- Safety -->
-                                <div>
-                                    <label for="safetyInches" class="block text-sm font-medium text-gray-300">Safety Margin (inches)</label>
-                                    <input type="number" id="safetyInches" name="safetyInches" value="0.125" step="0.001" required class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
-                                </div>
-                                <!-- Page Count -->
-                                <div>
-                                    <label for="page-count" class="block text-sm font-medium text-gray-300">Page Count</label>
-                                    <input type="number" id="page-count" name="page-count" required class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
-                                </div>
-                                <!-- Binding -->
-                                <div>
-                                    <label for="binding" class="block text-sm font-medium text-gray-300">Binding</label>
-                                    <select id="binding" name="binding" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
-                                        <option value="Perfect Bound">Perfect Bound</option>
-                                        <option value="Saddle-Stitch">Saddle-Stitch</option>
-                                        <option value="Coil Bound">Coil Bound</option>
-                                        <option value="None">None (Flat Sheets)</option> <!-- Added None option -->
-                                    </select>
-                                </div>
-                                <!-- Reading Direction -->
-                                <div>
-                                    <label for="readingDirection" class="block text-sm font-medium text-gray-300">Reading Direction</label>
-                                    <select id="readingDirection" name="readingDirection" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
-                                        <option value="ltr">Left-to-Right</option>
-                                        <option value="rtl">Right-to-Left</option>
-                                    </select>
-                                </div>
-                                <!-- Paper Type -->
-                                <div>
-                                    <label for="paper-type" class="block text-sm font-medium text-gray-300">Paper Type</label>
-                                    <select id="paper-type" name="paper-type" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
-                                        <option value="Gloss">Gloss</option>
-                                        <option value="Matte">Matte</option>
-                                        <option value="Uncoated">Uncoated</option> <!-- Added Uncoated -->
-                                    </select>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Upload Method Tabs -->
-                        <div class="border-t border-slate-700/50 pt-6">
-                            <div class="mb-4 border-b border-slate-700/50">
-                                <nav class="-mb-px flex space-x-4" aria-label="Tabs">
-                                    <button id="guided-tab" type="button" class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm border-indigo-500 text-indigo-400">
-                                        Guided Setup
-                                    </button>
-                                    <button id="quick-tab" type="button" class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm border-transparent text-gray-400 hover:text-gray-200 hover:border-gray-500">
-                                        Quick Upload
-                                    </button>
-                                </nav>
-                            </div>
-
-                            <!-- Guided Setup Panel -->
-                            <div id="guided-panel">
-                                <label for="guided-file-input" class="block text-sm font-medium text-gray-300 mb-2">Upload Pages (Images, Docs, PDF)</label>
-                                <input type="file" id="guided-file-input" multiple accept=".pdf,.doc,.docx,.tif,.tiff,.jpg,.jpeg,.png" class="mt-1 block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-600/20 file:text-indigo-300 hover:file:bg-indigo-600/30">
-
-                                <div id="upload-status-area" class="mt-4 space-y-2"></div>
-
-                                <div class="mt-4">
-                                    <label class="block text-sm font-medium text-gray-300 mb-2">Organize Pages</label>
-                                    <div id="thumbnail-organizer" class="min-h-[200px] bg-slate-900/50 rounded-md p-4 border border-slate-700/50">
-                                        <p class="text-sm text-gray-500 text-center">Thumbnails of processed pages will appear here. You can drag and drop to reorder them.</p>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- Quick Upload Panel -->
-                            <div id="quick-panel" class="hidden">
-                                <div>
-                                    <label for="file-input" class="block text-sm font-medium text-gray-300">Proof File (PDF)</label>
-                                    <input type="file" id="file-input" name="proofFile" accept=".pdf" class="mt-1 block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-600/20 file:text-indigo-300 hover:file:bg-indigo-600/30">
-                                </div>
-
-                                <div class="mt-6 border-t border-slate-700/50 pt-4">
-                                    <label for="cover-file-input" class="block text-sm font-medium text-gray-300">Cover File (PDF)</label>
-                                    <input type="file" id="cover-file-input" name="coverFile" accept=".pdf" class="mt-1 block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-purple-600/20 file:text-purple-300 hover:file:bg-purple-600/30">
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Submit Button -->
-                        <div class="pt-4">
-                            <button type="submit" id="submit-button" class="w-full bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-green-800 disabled:cursor-not-allowed">
-                                Create Project
-                            </button>
-                        </div>
-                    </form>
-                    <div id="status-message" class="mt-4 text-center"></div>
+                    </div>
+                    <!-- Bleed -->
+                    <div>
+                        <label for="bleedInches" class="block text-sm font-medium text-gray-300">Bleed (inches)</label>
+                        <input type="number" id="bleedInches" name="bleedInches" value="0.125" step="0.001" required class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
+                    </div>
+                    <!-- Safety -->
+                    <div>
+                        <label for="safetyInches" class="block text-sm font-medium text-gray-300">Safety Margin (inches)</label>
+                        <input type="number" id="safetyInches" name="safetyInches" value="0.125" step="0.001" required class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
+                    </div>
+                    <!-- Page Count -->
+                    <div>
+                        <label for="page-count" class="block text-sm font-medium text-gray-300">Page Count</label>
+                        <input type="number" id="page-count" name="page-count" required class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
+                    </div>
+                    <!-- Binding -->
+                    <div>
+                        <label for="binding" class="block text-sm font-medium text-gray-300">Binding</label>
+                        <select id="binding" name="binding" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
+                            <option value="Perfect Bound">Perfect Bound</option>
+                            <option value="Saddle-Stitch">Saddle-Stitch</option>
+                            <option value="Coil Bound">Coil Bound</option>
+                            <option value="None">None (Flat Sheets)</option> <!-- Added None option -->
+                        </select>
+                    </div>
+                    <!-- Reading Direction -->
+                    <div>
+                        <label for="readingDirection" class="block text-sm font-medium text-gray-300">Reading Direction</label>
+                        <select id="readingDirection" name="readingDirection" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
+                            <option value="ltr">Left-to-Right</option>
+                            <option value="rtl">Right-to-Left</option>
+                        </select>
+                    </div>
+                    <!-- Paper Type -->
+                    <div>
+                        <label for="paper-type" class="block text-sm font-medium text-gray-300">Paper Type</label>
+                        <select id="paper-type" name="paper-type" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500">
+                            <option value="Gloss">Gloss</option>
+                            <option value="Matte">Matte</option>
+                            <option value="Uncoated">Uncoated</option> <!-- Added Uncoated -->
+                        </select>
+                    </div>
                 </div>
-            </main>
-        </div>
+            </div>
+
+            <!-- Upload Method Tabs -->
+            <div class="border-t border-slate-700/50 pt-6">
+                <div class="mb-4 border-b border-slate-700/50">
+                    <nav class="-mb-px flex space-x-4" aria-label="Tabs">
+                        <button id="guided-tab" type="button" class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm border-indigo-500 text-indigo-400">
+                            Guided Setup
+                        </button>
+                        <button id="quick-tab" type="button" class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm border-transparent text-gray-400 hover:text-gray-200 hover:border-gray-500">
+                            Quick Upload
+                        </button>
+                    </nav>
+                </div>
+
+                <!-- Guided Setup Panel -->
+                <div id="guided-panel">
+                    <label for="guided-file-input" class="block text-sm font-medium text-gray-300 mb-2">Upload Pages (Images, Docs, PDF)</label>
+                    <input type="file" id="guided-file-input" multiple accept=".pdf,.doc,.docx,.tif,.tiff,.jpg,.jpeg,.png" class="mt-1 block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-600/20 file:text-indigo-300 hover:file:bg-indigo-600/30">
+
+                    <div id="upload-status-area" class="mt-4 space-y-2"></div>
+
+                    <div class="mt-4">
+                        <label class="block text-sm font-medium text-gray-300 mb-2">Organize Pages</label>
+                        <div id="thumbnail-organizer" class="min-h-[200px] bg-slate-900/50 rounded-md p-4 border border-slate-700/50">
+                            <p class="text-sm text-gray-500 text-center">Thumbnails of processed pages will appear here. You can drag and drop to reorder them.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Quick Upload Panel -->
+                <div id="quick-panel" class="hidden">
+                    <div>
+                        <label for="file-input" class="block text-sm font-medium text-gray-300">Proof File (PDF)</label>
+                        <input type="file" id="file-input" name="proofFile" accept=".pdf" class="mt-1 block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-600/20 file:text-indigo-300 hover:file:bg-indigo-600/30">
+                    </div>
+
+                    <div class="mt-6 border-t border-slate-700/50 pt-4">
+                        <label for="cover-file-input" class="block text-sm font-medium text-gray-300">Cover File (PDF)</label>
+                        <input type="file" id="cover-file-input" name="coverFile" accept=".pdf" class="mt-1 block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-purple-600/20 file:text-purple-300 hover:file:bg-purple-600/30">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Submit Button -->
+            <div class="pt-4">
+                <button type="submit" id="submit-button" class="w-full bg-green-600 hover:bg-green-500 text-white font-semibold py-2 px-4 rounded-md disabled:bg-green-800 disabled:cursor-not-allowed">
+                    Create Project
+                </button>
+            </div>
+        </form>
+        <div id="status-message" class="mt-4 text-center"></div>
     </div>
-    <script type="module" src="js/admin-notifications.js"></script>
+
+    <script type="module">
+        import { initLayout } from './js/layout.js';
+        initLayout();
+    </script>
     <script type="module" src="js/admin_new_project.js"></script>
 </body>
 </html>
