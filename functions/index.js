@@ -1706,11 +1706,16 @@ async function createBookletPdf(projectId, files, spineMode) {
         let drawSpine = true;
         
         if (spineMode === 'wrap-front-stretch') { 
-            zoneRight.x = zoneMid.x; 
-            zoneRight.w = zoneRight.w + zoneMid.w; 
+            // Front (Right) stretches LEFT over spine to meet Back (Left)
+            // Move Start X left by overlap amount
+            zoneRight.x = zoneMid.x - seamOverlap; 
+            // Increase width to cover spine + overlap
+            zoneRight.w = zoneRight.w + zoneMid.w + seamOverlap; 
             drawSpine = false; 
         } else if (spineMode === 'wrap-back-stretch') { 
-            zoneLeft.w = zoneLeft.w + zoneMid.w; 
+            // Back (Left) stretches RIGHT over spine to meet Front (Right)
+            // Increase width to cover spine + overlap
+            zoneLeft.w = zoneLeft.w + zoneMid.w + seamOverlap; 
             drawSpine = false; 
         } else if (spineMode === 'meet-middle') {
             // [FIX] Extend both sides to the middle PLUS overlap
@@ -2501,14 +2506,16 @@ exports.generateBooklet = onCall({
             let zoneMid = { x: trimWidth + bleed, y: 0, w: spineWidth, h: totalHeight }; 
             let zoneRight = { x: trimWidth + bleed + spineWidth, y: 0, w: trimWidth + bleed, h: totalHeight }; 
 
+            // [FIX] Ensure overlap logic is consistent with createBookletPdf
+            const seamOverlap = 0.02; 
             let drawSpine = true;
 
             if (spineMode === 'wrap-front-stretch') {
-                zoneRight.x = zoneMid.x;
-                zoneRight.w = zoneRight.w + zoneMid.w;
+                zoneRight.x = zoneMid.x - seamOverlap;
+                zoneRight.w = zoneRight.w + zoneMid.w + seamOverlap;
                 drawSpine = false;
             } else if (spineMode === 'wrap-back-stretch') {
-                zoneLeft.w = zoneLeft.w + zoneMid.w;
+                zoneLeft.w = zoneLeft.w + zoneMid.w + seamOverlap;
                 drawSpine = false;
             }
 

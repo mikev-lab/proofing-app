@@ -21,10 +21,22 @@ async function redirectUser(user) {
     const userDocRef = doc(db, "users", user.uid);
     const userDocSnap = await getDoc(userDocRef);
 
-    if (userDocSnap.exists() && userDocSnap.data().role === 'admin') {
-        window.location.href = 'admin.html';
+    // [CHANGE] Only redirect if a User Profile actually exists.
+    // This prevents Guests (who have auth but no profile) from being bounced to the Dashboard.
+    if (userDocSnap.exists()) {
+        const userData = userDocSnap.data();
+        if (userData.role === 'admin') {
+            window.location.href = 'admin.html';
+        } else {
+            window.location.href = 'dashboard.html';
+        }
     } else {
-        window.location.href = 'dashboard.html';
+        // User is authenticated (Guest) but has no profile.
+        // We do NOT redirect them, allowing them to use the login form if they wish to sign in as a Client.
+        console.log("User is authenticated but has no profile (Guest). Staying on login page.");
+        
+        // Optional: You could sign them out here to clear the guest session, 
+        // but leaving them is fine as the Login button will overwrite the session.
     }
 }
 

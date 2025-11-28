@@ -133,7 +133,8 @@ async function imposePdfLogic(params) {
     const {
         columns, rows, bleedInches, horizontalGutterInches, verticalGutterInches,
         impositionType, sheetOrientation, isDuplex, rowOffsetType,
-        showQRCode, qrCodePosition, slipSheetColor
+        showQRCode, qrCodePosition, slipSheetColor,
+        includeCover = true // [NEW] Default to true
     } = settings;
 
     let inputPdfDoc;
@@ -161,6 +162,18 @@ async function imposePdfLogic(params) {
     const verticalGutterPoints = verticalGutterInches * INCH_TO_POINTS;
     const { width: pageContentWidth, height: pageContentHeight } = inputPdfDoc.getPages()[0].getSize();
 
+    // --- 1. COVER EXCLUSION LOGIC ---
+    let pageOffset = 0;
+    let processingPageCount = numInputPages;
+
+    if (impositionType === 'booklet' && includeCover === false) {
+        // If excluding cover, we assume the input has the cover (4 pages: F, IF, IB, B)
+        // We want to skip the first 2 and ignore the last 2.
+        if (numInputPages < 4) throw new Error("Cannot exclude cover: Document has fewer than 4 pages.");
+        pageOffset = 2; // Start reading from Page 3 (Index 2)
+        processingPageCount = numInputPages - 4; // Exclude last 2 pages
+    }
+
     // --- SHEET SIZE RESOLUTION ---
     let paperLongSidePoints, paperShortSidePoints;
     
@@ -186,13 +199,19 @@ async function imposePdfLogic(params) {
         actualSheetHeightPoints = paperShortSidePoints;
     }
 
-    // Layout Calculations
+    // --- LAYOUT CALCULATIONS ---
     let slotsPerSheet = columns * rows;
-    if (impositionType === 'booklet') slotsPerSheet = 2;
+    if (impositionType === 'booklet') {
+        // [FIX] Support Step-and-Repeat for Booklets
+        // Booklet always has 2 columns (Left Page, Right Page)
+        // But can have multiple rows (stacking duplicates)
+        slotsPerSheet = 2 * rows; 
+    }
 
     let totalPhysicalSheets = 0;
     if (impositionType === 'booklet') {
-        const paddedPageCount = Math.ceil(numInputPages / 4) * 4;
+        // Calculate based on the "Interior Only" count if cover is excluded
+        const paddedPageCount = Math.ceil(processingPageCount / 4) * 4;
         totalPhysicalSheets = paddedPageCount / 4;
     } else if (impositionType === 'repeat') {
         totalPhysicalSheets = isDuplex ? Math.ceil(numInputPages / 2) : numInputPages;
@@ -200,11 +219,12 @@ async function imposePdfLogic(params) {
         const slotsPerPhysicalSheet = slotsPerSheet * (isDuplex ? 2 : 1);
         totalPhysicalSheets = Math.ceil(numInputPages / slotsPerPhysicalSheet);
     }
-    if (totalPhysicalSheets === 0 && numInputPages > 0) totalPhysicalSheets = 1;
+    if (totalPhysicalSheets === 0 && processingPageCount > 0) totalPhysicalSheets = 1;
 
     // Grid Calculations
     const currentColumnsForLayout = impositionType === 'booklet' ? 2 : columns;
-    const currentRowsForLayout = impositionType === 'booklet' ? 1 : rows;
+    const currentRowsForLayout = rows; // Use provided rows (e.g. 2 for 4-up booklet)
+    
     const slotPositions = [];
     let totalRequiredWidth = (pageContentWidth * currentColumnsForLayout) + (Math.max(0, currentColumnsForLayout - 1) * horizontalGutterPoints);
     const totalRequiredHeight = (pageContentHeight * currentRowsForLayout) + (Math.max(0, currentRowsForLayout - 1) * verticalGutterPoints);
@@ -229,9 +249,10 @@ async function imposePdfLogic(params) {
     let currentBatchFont = await currentBatchDoc.embedFont(StandardFonts.Helvetica);
     let batchPageCache = new Map(); 
     
-    // [FIX] Refactored to catch "Missing Contents" error
     const embedPageForBatch = async (pageIndex) => {
-        if (pageIndex >= numInputPages) return 'OUT_OF_BOUNDS'; // Special sentinel for non-existent pages
+        if (pageIndex === 'OUT_OF_BOUNDS') return 'OUT_OF_BOUNDS';
+        if (pageIndex >= numInputPages) return 'OUT_OF_BOUNDS'; 
+        
         if (batchPageCache.has(pageIndex)) return batchPageCache.get(pageIndex);
         const sourcePage = inputPdfDoc.getPages()[pageIndex];
         try {
@@ -240,10 +261,15 @@ async function imposePdfLogic(params) {
             return embeddedPage;
         } catch (e) {
             console.warn(`Failed to embed page ${pageIndex}: ${e.message}`);
-            // Return null to signal "blank page", but valid slot
             batchPageCache.set(pageIndex, null);
             return null;
         }
+    };
+
+    // Helper: Map Virtual Booklet Index to Real PDF Index (Handling Exclusions)
+    const resolveBookletIndex = (virtualIndex) => {
+        if (virtualIndex >= processingPageCount) return 'OUT_OF_BOUNDS';
+        return virtualIndex + pageOffset;
     };
 
     for (let physicalSheetIndex = 0; physicalSheetIndex < totalPhysicalSheets; physicalSheetIndex++) {
@@ -275,6 +301,24 @@ async function imposePdfLogic(params) {
         } else if (impositionType === 'repeat') {
             const masterIndex = physicalSheetIndex * (isDuplex ? 2 : 1);
             for (let i = 0; i < slotsPerSheet; i++) pagesForFrontIndices.push(masterIndex);
+        } else if (impositionType === 'booklet') {
+            // [FIX] Saddle Stitch Ordering (Front)
+            const totalBookletPages = totalPhysicalSheets * 4; 
+            const s = physicalSheetIndex;
+            
+            // 1. Calculate the Page PAIR for this sheet
+            const leftVirtual = totalBookletPages - 1 - (2 * s);
+            const rightVirtual = 0 + (2 * s);
+
+            // 2. Resolve to absolute PDF indices
+            const absLeft = resolveBookletIndex(leftVirtual);
+            const absRight = resolveBookletIndex(rightVirtual);
+
+            // 3. Repeat for every Row (Step and Repeat)
+            for (let r = 0; r < rows; r++) {
+                pagesForFrontIndices.push(absLeft);
+                pagesForFrontIndices.push(absRight);
+            }
         }
 
         for (let slotIndex = 0; slotIndex < slotsPerSheet; slotIndex++) {
@@ -283,26 +327,27 @@ async function imposePdfLogic(params) {
             
             const embeddedPage = await embedPageForBatch(pIndex);
             
-            // [FIX] Check for OUT_OF_BOUNDS (skip slot) vs NULL (draw empty with crop marks)
             if (embeddedPage === 'OUT_OF_BOUNDS') continue; 
 
             const { x, y } = slotPositions[slotIndex];
-            const row = Math.floor(slotIndex / columns);
-            const col = slotIndex % columns;
+            // [FIX] Columns is 2 for booklet, but if 'stack', use settings.columns
+            const gridCols = impositionType === 'booklet' ? 2 : columns;
+            const gridRows = rows;
 
-            // Only draw content if page is valid (not null)
+            const row = Math.floor(slotIndex / gridCols);
+            const col = slotIndex % gridCols;
+
             if (embeddedPage) {
                 outputSheetFront.drawPage(embeddedPage, { x, y, width: pageContentWidth, height: pageContentHeight });
             }
 
-            // Always draw crop marks for valid slots (even if content is missing/blank)
             const trimAreaX = x + bleedPoints;
             const trimAreaY = y + bleedPoints;
             const trimAreaW = pageContentWidth - (2 * bleedPoints);
             const trimAreaH = pageContentHeight - (2 * bleedPoints);
             drawCropMarks(outputSheetFront, trimAreaX, trimAreaY, trimAreaW, trimAreaH, {
-                hasTopNeighbor: row > 0, hasBottomNeighbor: row < rows - 1,
-                hasLeftNeighbor: col > 0, hasRightNeighbor: col < columns - 1
+                hasTopNeighbor: row > 0, hasBottomNeighbor: row < gridRows - 1,
+                hasLeftNeighbor: col > 0, hasRightNeighbor: col < gridCols - 1
             });
         }
 
@@ -317,6 +362,24 @@ async function imposePdfLogic(params) {
             } else if (impositionType === 'repeat') {
                  const masterIndex = (physicalSheetIndex * 2) + 1;
                  for (let i = 0; i < slotsPerSheet; i++) pagesForBackIndices.push(masterIndex);
+            } else if (impositionType === 'booklet') {
+                // [FIX] Saddle Stitch Ordering (Back)
+                const totalBookletPages = totalPhysicalSheets * 4;
+                const s = physicalSheetIndex;
+
+                // 1. Calculate Page PAIR
+                const leftVirtual = 0 + (2 * s) + 1;
+                const rightVirtual = totalBookletPages - 1 - (2 * s) - 1;
+
+                // 2. Resolve
+                const absLeft = resolveBookletIndex(leftVirtual);
+                const absRight = resolveBookletIndex(rightVirtual);
+
+                // 3. Repeat for Rows
+                for (let r = 0; r < rows; r++) {
+                    pagesForBackIndices.push(absLeft);
+                    pagesForBackIndices.push(absRight);
+                }
             }
 
             for (let slotIndex = 0; slotIndex < slotsPerSheet; slotIndex++) {
@@ -327,8 +390,10 @@ async function imposePdfLogic(params) {
                 if (embeddedPage === 'OUT_OF_BOUNDS') continue;
 
                 const { x, y } = slotPositions[slotIndex]; 
-                const row = Math.floor(slotIndex / columns);
-                const col = slotIndex % columns;
+                const gridCols = impositionType === 'booklet' ? 2 : columns;
+                const gridRows = rows;
+                const row = Math.floor(slotIndex / gridCols);
+                const col = slotIndex % gridCols;
 
                 if (embeddedPage) {
                     outputSheetBack.drawPage(embeddedPage, { x, y, width: pageContentWidth, height: pageContentHeight });
@@ -339,8 +404,8 @@ async function imposePdfLogic(params) {
                 const trimAreaW = pageContentWidth - (2 * bleedPoints);
                 const trimAreaH = pageContentHeight - (2 * bleedPoints);
                 drawCropMarks(outputSheetBack, trimAreaX, trimAreaY, trimAreaW, trimAreaH, {
-                    hasTopNeighbor: row > 0, hasBottomNeighbor: row < rows - 1,
-                    hasLeftNeighbor: col > 0, hasRightNeighbor: col < columns - 1
+                    hasTopNeighbor: row > 0, hasBottomNeighbor: row < gridRows - 1,
+                    hasLeftNeighbor: col > 0, hasRightNeighbor: col < gridCols - 1
                 });
             }
             

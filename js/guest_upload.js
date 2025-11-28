@@ -2875,7 +2875,6 @@ function createPageCard(page, index, isRightPage, isFirstPage, width, height, bl
 }
 
 // Helper to replace page content
-// Helper to replace page content
 async function updatePageContent(pageId, file) {
     const page = pages.find(p => p.id === pageId);
     if (!page) return;
@@ -2889,6 +2888,10 @@ async function updatePageContent(pageId, file) {
     const isComplexFormat = /\.(psd|ai|tiff|tif)$/i.test(name);
     const isWebImage = type.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(name);
     const isLocal = (isPDF || isWebImage) && !isComplexFormat;
+
+    // [FIX] Crucial: If this was an auto-blank, it is now a real user page.
+    // We must clear this flag so balancePages() doesn't delete it later.
+    page.isAutoBlank = false;
 
     if (isLocal) {
         sourceFiles[sourceId] = file;
@@ -2914,6 +2917,10 @@ async function updatePageContent(pageId, file) {
         await processServerFile(file, sourceId);
     }
     
+    // [FIX] Trigger re-balance to ensure we still meet page count requirements
+    // (e.g., if you filled the last blank, we might not need new ones, 
+    // but if you filled a blank and now have an odd number, we might need 3 more).
+    balancePages();
     triggerAutosave();
 }
 
@@ -3632,7 +3639,7 @@ async function renderCoverPreview() {
     const pixelsPerInch = basePPI * coverZoom; 
     
     // [FIX] Tiny overlap to prevent white lines (approx 1 screen pixel)
-    const overlap = 1 / pixelsPerInch; 
+    const overlap = 2 / pixelsPerInch; 
 
     if (!_previewOffscreen) {
         _previewOffscreen = document.createElement('canvas');
@@ -3972,6 +3979,65 @@ async function drawImageOnCanvas(ctx, sourceEntry, x, y, targetW, targetH, pageI
     }
 }
 
+// [NEW HELPER] Centralized Listener Attachment
+function attachBuilderEventListeners() {
+    if (window.builderListenersAttached) return; // Prevent duplicate listeners
+    
+    console.log("Attaching builder event listeners...");
+
+    // 1. Setup Drop Zone for Interior
+    setupDropZone('file-interior-drop');
+
+    // 2. Setup Drop Zones for Cover
+    if (document.getElementById('file-cover-front')) setupDropZone('file-cover-front');
+    if (document.getElementById('file-spine')) setupDropZone('file-spine');
+    if (document.getElementById('file-cover-back')) setupDropZone('file-cover-back');
+    if (document.getElementById('file-cover-inside-front')) setupDropZone('file-cover-inside-front');
+    if (document.getElementById('file-cover-inside-back')) setupDropZone('file-cover-inside-back');
+
+    // 3. Connect "Add Pages" Button
+    if (addInteriorFileBtn) {
+        addInteriorFileBtn.onclick = (e) => {
+            e.preventDefault(); 
+            window._insertIndex = pages.length; 
+            if(hiddenInteriorInput) hiddenInteriorInput.click();
+        };
+    }
+
+    // 4. Connect Hidden Interior Input
+    if (hiddenInteriorInput) {
+        hiddenInteriorInput.onchange = (e) => {
+            if (e.target.files.length > 0) {
+                addInteriorFiles(e.target.files, false, window._insertIndex);
+                e.target.value = ''; 
+            }
+        };
+    }
+
+    // 5. Connect Spread Upload Input
+    const spreadInput = document.getElementById('upload-spread-input');
+    if (spreadInput) {
+        spreadInput.onchange = (e) => {
+            if (e.target.files.length > 0) {
+                addInteriorFiles(e.target.files, true, pages.length);
+                e.target.value = '';
+            }
+        };
+    }
+    
+    // 6. Connect Main Drop Input
+    if (fileInteriorDrop) {
+            fileInteriorDrop.onchange = (e) => {
+            if (e.target.files.length > 0) {
+                addInteriorFiles(e.target.files, false);
+                e.target.value = '';
+            }
+            };
+    }
+
+    window.builderListenersAttached = true;
+}
+
 // --- Specs Form Submit Handler ---
 specsForm.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -4048,18 +4114,12 @@ specsForm.addEventListener('submit', async (e) => {
 
         // --- MODE LOGIC ---
         if (uploadMode === 'professional') {
-            // 1. Hide Specs Modal
             specsModal.classList.add('hidden');
-            
-            // 2. Show Professional UI (NOT the standard upload container)
             professionalUploadUI.classList.remove('hidden');
             
-            // 3. Configure Pro UI based on binding
             if (projectType === 'single') {
-                // Hide cover input for loose sheets
                 document.getElementById('pro-cover-group').classList.add('hidden');
             } else {
-                // Show cover input for booklets
                 document.getElementById('pro-cover-group').classList.remove('hidden');
             }
         } else {
@@ -4071,6 +4131,10 @@ specsForm.addEventListener('submit', async (e) => {
             
             // 3. Initialize Builder
             refreshBuilderUI();
+            
+            // [FIX] Attach listeners here!
+            attachBuilderEventListeners();
+
             await initializeBuilder();
         }
 
@@ -4079,7 +4143,6 @@ specsForm.addEventListener('submit', async (e) => {
         alert("Failed to save specifications: " + err.message);
     } finally {
         saveSpecsBtn.disabled = false;
-        // Reset button text based on current mode (in case validation failed)
         saveSpecsBtn.textContent = uploadMode === 'professional' ? 'Continue to Upload' : 'Save & Start Builder';
     }
 });
@@ -4583,55 +4646,8 @@ async function init() {
             
             refreshBuilderUI();
 
-            // --- EVENT LISTENERS FIX ---
-            // 1. Setup Drop Zone for Interior
-            setupDropZone('file-interior-drop');
-
-            // 2. Setup Drop Zones for Cover
-            if (document.getElementById('file-cover-front')) setupDropZone('file-cover-front');
-            if (document.getElementById('file-spine')) setupDropZone('file-spine');
-            if (document.getElementById('file-cover-back')) setupDropZone('file-cover-back');
-            if (document.getElementById('file-cover-inside-front')) setupDropZone('file-cover-inside-front');
-            if (document.getElementById('file-cover-inside-back')) setupDropZone('file-cover-inside-back');
-
-            // 3. Connect "Add Pages" Button
-            if (addInteriorFileBtn) {
-                addInteriorFileBtn.onclick = (e) => {
-                    e.preventDefault(); 
-                    window._insertIndex = pages.length; 
-                    if(hiddenInteriorInput) hiddenInteriorInput.click();
-                };
-            }
-
-            // 4. Connect Hidden Interior Input
-            if (hiddenInteriorInput) {
-                hiddenInteriorInput.onchange = (e) => {
-                    if (e.target.files.length > 0) {
-                        addInteriorFiles(e.target.files, false, window._insertIndex);
-                        e.target.value = ''; 
-                    }
-                };
-            }
-
-            // 5. Connect Spread Upload Input
-            if (spreadInput) {
-                spreadInput.onchange = (e) => {
-                    if (e.target.files.length > 0) {
-                        addInteriorFiles(e.target.files, true, pages.length);
-                        e.target.value = '';
-                    }
-                };
-            }
-            
-            // 6. Connect Main Drop Input
-            if (fileInteriorDrop) {
-                 fileInteriorDrop.onchange = (e) => {
-                    if (e.target.files.length > 0) {
-                        addInteriorFiles(e.target.files, false);
-                        e.target.value = '';
-                    }
-                 };
-            }
+            // [FIX] Use the new centralized helper
+            attachBuilderEventListeners();
 
             await initializeBuilder();
 
@@ -4980,7 +4996,7 @@ async function handleUpload(e) {
     const COVER_PAGES = 4; 
 
     if (binding === 'saddleStitch') {
-        const MAX_TOTAL = 24;
+        const MAX_TOTAL = 36;
         const MAX_INTERIOR = MAX_TOTAL - COVER_PAGES; 
         if (totalInteriorPages > MAX_INTERIOR) {
             alert(`Page Count Limit Exceeded.\n\nSaddle Stitch books are limited to ${MAX_TOTAL} total pages.`);
