@@ -6,16 +6,12 @@ import * as pdfjsLib from "https://mozilla.github.io/pdf.js/build/pdf.mjs";
 
 const newProjectForm = document.getElementById('new-project-form');
 const submitButton = document.getElementById('submit-button');
-const notificationBell = document.getElementById('notification-bell');
-const notificationPanel = document.getElementById('notification-panel');
 const statusMessage = document.getElementById('status-message');
 const companySelect = document.getElementById('companyId');
 const dimensionsSelect = document.getElementById('dimensions');
 const customDimensionInputs = document.getElementById('custom-dimension-inputs');
 const customWidthInput = document.getElementById('custom-width');
 const customHeightInput = document.getElementById('custom-height');
-const requestFileCheckbox = document.getElementById('request-file-checkbox');
-const fileInput = document.getElementById('file-input');
 const guidedTab = document.getElementById('guided-tab');
 const quickTab = document.getElementById('quick-tab');
 const guidedPanel = document.getElementById('guided-panel');
@@ -186,12 +182,6 @@ guidedFileInput.addEventListener('change', async (e) => {
     console.log('All file processing tasks have completed.');
     // Optionally re-enable upload button if needed
 });
-
-
-function fetchNotifications() {
-    // Placeholder function for fetching notifications
-    console.log("Fetching notifications...");
-}
 
 // Populate companies dropdown
 async function loadCompanies() {
@@ -457,27 +447,9 @@ newProjectForm.addEventListener('submit', handleFormSubmit);
 
 onAuthStateChanged(auth, (user) => {
     if (user) {
-        document.getElementById('user-email').textContent = user.email;
         loadCompanies();
-        fetchNotifications();
     } else {
         window.location.href = 'index.html';
-    }
-});
-
-document.getElementById('logout-button').addEventListener('click', () => {
-    signOut(auth);
-    window.location.href = 'index.html';
-});
-
-notificationBell.addEventListener('click', () => {
-    notificationPanel.classList.toggle('hidden');
-});
-
-// Hide panel if clicking outside
-document.addEventListener('click', function(event) {
-    if (!notificationBell.contains(event.target) && !notificationPanel.contains(event.target)) {
-        notificationPanel.classList.add('hidden');
     }
 });
 

@@ -6,8 +6,6 @@ import { STANDARD_PAPER_SIZES } from './guides.js';
 
 const loadingSpinner = document.getElementById('loading-spinner');
 const settingsContent = document.getElementById('settings-content');
-const userEmailSpan = document.getElementById('user-email');
-const logoutButton = document.getElementById('logout-button');
 
 // --- Global Defaults ---
 const globalDefaultsForm = document.getElementById('global-defaults-form');
@@ -232,7 +230,6 @@ async function saveEstimatorDefaults(e) {
 
 onAuthStateChanged(auth, (user) => {
     if (user) {
-        userEmailSpan.textContent = user.email;
         Promise.all([
             loadGlobalDefaults(),
             loadSheetSizes(),
@@ -246,10 +243,6 @@ onAuthStateChanged(auth, (user) => {
     } else {
         window.location.href = 'index.html';
     }
-});
-
-logoutButton.addEventListener('click', () => {
-    signOut(auth);
 });
 
 globalDefaultsForm.addEventListener('submit', saveGlobalDefaults);

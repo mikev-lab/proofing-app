@@ -4,8 +4,6 @@ import { collection, getDocs, orderBy, query, where, doc } from "https://www.gst
 import { httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js";
 
 document.addEventListener('DOMContentLoaded', () => {
-    const userEmailElement = document.getElementById('user-email');
-    const logoutButton = document.getElementById('logout-button');
     const loadingSpinner = document.getElementById('loading-spinner');
     const inventoryContent = document.getElementById('inventory-content');
     const inventoryTableBody = document.getElementById('inventory-table-body');
@@ -45,19 +43,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     onAuthStateChanged(auth, async (user) => {
         if (user) {
-            userEmailElement.textContent = user.email;
             await loadInventory();
         } else {
             window.location.href = 'index.html';
         }
-    });
-
-    logoutButton.addEventListener('click', () => {
-        signOut(auth).then(() => {
-            window.location.href = 'index.html';
-        }).catch((error) => {
-            console.error('Sign Out Error', error);
-        });
     });
 
     // Event listeners for receive and reconcile buttons
@@ -440,5 +429,4 @@ document.addEventListener('DOMContentLoaded', () => {
     closeCostHistoryModalButton.addEventListener('click', () => {
         costHistoryModal.classList.add('hidden');
     });
-
 });

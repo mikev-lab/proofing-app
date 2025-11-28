@@ -18,8 +18,6 @@ console.log(`[Init] Parsed URL Params - Guest Token: ${initialGuestToken}, Proje
 // --- END PARSE URL PARAMS ---
 
 
-const userEmailSpan = document.getElementById('user-email');
-const logoutButton = document.getElementById('logout-button');
 const loadingSpinner = document.getElementById('loading-spinner');
 const proofContent = document.getElementById('proof-content');
 const projectName = document.getElementById('project-name');
@@ -693,13 +691,4 @@ if (copyLinkBtn) {
         copyStatusMsg.textContent = 'Copied!';
         setTimeout(() => { copyStatusMsg.textContent = ''; }, 2000);
     });
-}
-
-if (logoutButton) {
-    logoutButton.addEventListener('click', () => {
-         console.log('[Logout] Button clicked.');
-        signOut(auth);
-    });
-} else {
-     console.warn('[Init] Logout button not found.');
 }
