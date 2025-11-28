@@ -148,6 +148,7 @@ let sourceFiles = {}; // Map: id -> File object
 let pages = []; // Array: { id, sourceFileId, pageIndex, settings: { scaleMode, alignment }, isSpread: boolean }
 let viewerScale = 0.5; // Zoom level for viewer
 let coverPreviewMode = 'outside';
+let isSigningIn = false;
 // --- LRU Cache Implementation ---
 class LRUCache {
     constructor(limit = 50) {
@@ -215,6 +216,44 @@ const enqueueRender = (renderFn) => {
         processRenderQueue();
     });
 };
+
+// --- NEW: Session Conflict Handler ---
+async function ensureProjectSession() {
+    if (!guestToken || !projectId || isSigningIn) return;
+
+    const user = auth.currentUser;
+    let sessionMismatch = false;
+    
+    if (!user) {
+        sessionMismatch = true;
+    } else {
+        try {
+            const token = await user.getIdTokenResult();
+            // Check if the current session's project ID matches this tab's project ID
+            if (token.claims.guestProjectId !== projectId) {
+                console.warn(`[Session] Conflict detected. Current user is for ${token.claims.guestProjectId}, but this tab is ${projectId}. Switching...`);
+                sessionMismatch = true;
+            }
+        } catch (e) {
+            sessionMismatch = true;
+        }
+    }
+
+    if (sessionMismatch) {
+        try {
+            isSigningIn = true;
+            // Re-authenticate for THIS project specifically
+            const authenticateGuest = httpsCallable(functions, 'authenticateGuest');
+            const authResult = await authenticateGuest({ projectId, guestToken });
+            await signInWithCustomToken(auth, authResult.data.token);
+            
+            // Update global currentUser reference
+            currentUser = auth.currentUser; 
+        } finally {
+            isSigningIn = false;
+        }
+    }
+}
 
 // --- Helper: Shared PDF Loader ---
 // This ensures we never open the same network URL twice, regardless of where it's called
@@ -1340,50 +1379,41 @@ async function processQueue(items, limit, asyncFn) {
     return results;
 }
 
-// --- REWRITTEN: addInteriorFiles (Concurrent Version) ---
+// --- REWRITTEN: addInteriorFiles (Concurrent Version + Stability Fix) ---
 async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = null) {
     const fileArray = Array.from(files);
     
     // 1. Setup Phase (Synchronous-ish) - Quick Feedback
     toggleBusyOverlay(true, "Preparing uploads...");
-    await new Promise(r => setTimeout(r, 50)); // Allow UI update
+    await new Promise(r => setTimeout(r, 50)); 
 
     // Cleanup Auto Blanks before adding
     while (pages.length > 0 && pages[pages.length - 1].isAutoBlank) {
         pages.pop();
     }
 
-    // Determine Insertion Point
     let insertionIndex = (insertAtIndex !== null && insertAtIndex >= 0) ? insertAtIndex : pages.length;
-
     const tasks = [];
 
     // 2. Create ALL Placeholders Immediately
-    // This loop runs synchronously to populate the UI instantly
     for (const file of fileArray) {
         const sourceId = Date.now() + Math.random().toString(16).slice(2);
-        
-        // Setup Source File Entry
         const name = file.name.toLowerCase();
         const type = file.type.toLowerCase();
         
         const isComplexFormat = /\.(psd|ai|tiff|tif)$/i.test(name);
         const isWebImage = type.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(name);
         const isPDF = type === 'application/pdf' || name.endsWith('.pdf');
-        
-        // Large file check (> 20MB) -> Force server processing
         const isLargeFile = file.size > 20 * 1024 * 1024;
         const isLocal = (isPDF || isWebImage) && !isComplexFormat && !isLargeFile;
 
         sourceFiles[sourceId] = { 
             file: file, 
-            status: isLocal ? 'processing' : 'uploading', // Initial status
+            status: isLocal ? 'processing' : 'uploading', 
             previewUrl: null, 
             isServer: !isLocal 
         };
 
-        // Create 1 Placeholder Page (or Spread Pair)
-        // We assume 1 page initially. If the file has more, we expand later.
         if (isSpreadUpload) {
             const pL = { id: `${sourceId}_p0_L`, sourceFileId: sourceId, pageIndex: 1, settings: { scaleMode: 'fill', alignment: 'center', view: 'left', panX: 0.5, panY: 0 }, isSpread: false };
             const pR = { id: `${sourceId}_p0_R`, sourceFileId: sourceId, pageIndex: 1, settings: { scaleMode: 'fill', alignment: 'center', view: 'right', panX: -0.5, panY: 0 }, isSpread: false };
@@ -1395,18 +1425,20 @@ async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = n
             insertionIndex++;
         }
 
-        // Add Task to Queue
         tasks.push({ file, sourceId, isLocal, isPDF, isSpreadUpload });
     }
 
-    // Update UI to show all placeholders immediately
+    // 3. Render UI *Before* Network Calls
+    // This ensures placeholders are visible immediately
     saveState();
     renderBookViewer();
     renderMinimap();
-    toggleBusyOverlay(false); // Hide global overlay, rely on placeholder spinners
+    toggleBusyOverlay(false);
 
-    // 3. Process Concurrently (Limit 3 at a time)
-    // This processes the heavy lifting (uploading/converting) in parallel
+    // 4. Check Session Once
+    await ensureProjectSession();
+
+    // 5. Process Concurrently
     await processQueue(tasks, 3, async (task) => {
         const { file, sourceId, isLocal, isPDF, isSpreadUpload } = task;
         
@@ -1414,7 +1446,6 @@ async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = n
             let numPages = 1;
 
             if (isLocal) {
-                // Local Processing
                 if (isPDF) {
                     try {
                         const fileUrl = URL.createObjectURL(file);
@@ -1426,22 +1457,17 @@ async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = n
                 sourceFiles[sourceId].status = 'ready';
             } else {
                 // Server Processing
-                // processServerFile handles status updates (uploading -> processing) via DOM placeholders
+                // processServerFile will check session internally now too
                 const generatedPages = await processServerFile(file, sourceId);
                 if (generatedPages) numPages = generatedPages.length;
             }
 
-            // 4. Dynamic Expansion: If file has > 1 page, insert the rest
             if (numPages > 1) {
-                // Find where our placeholder currently lives (it might have moved if user dragged things)
-                // We look for the first page associated with this sourceId
                 const baseIndex = pages.findIndex(p => p.sourceFileId === sourceId);
-                
                 if (baseIndex !== -1) {
                     const newPagesToAdd = [];
-                    // We already have Page 1 (index 0). We need to add pages 2..N (index 1..N-1)
                     for (let k = 1; k < numPages; k++) {
-                        const pageIndex = k + 1; // 1-based index for UI
+                        const pageIndex = k + 1;
                         if (isSpreadUpload) {
                             newPagesToAdd.push({
                                 id: `${sourceId}_p${k}_L`, sourceFileId: sourceId, pageIndex: pageIndex,
@@ -1458,26 +1484,23 @@ async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = n
                             });
                         }
                     }
-
-                    // Insert after the initial placeholder(s)
                     const insertOffset = isSpreadUpload ? 2 : 1;
                     pages.splice(baseIndex + insertOffset, 0, ...newPagesToAdd);
                 }
             }
-
-            // Refresh Views per file completion so user sees progress
             renderBookViewer();
             triggerAutosave();
 
         } catch (e) {
             console.error(`Failed to process ${file.name}`, e);
-            // Mark as error so UI shows red
-            if (isLocal) sourceFiles[sourceId].status = 'error';
+            if (sourceFiles[sourceId]) {
+                sourceFiles[sourceId].status = 'error';
+                sourceFiles[sourceId].error = e.message;
+            }
             renderBookViewer();
         }
     });
 
-    // Final cleanup and balance
     balancePages();
     triggerAutosave();
 }
@@ -1520,6 +1543,9 @@ function addPagesToModel(targetArray, sourceId, numPages, isSpreadUpload) {
 }
 
 async function processCoverFile(file, slotId) {
+    // [FIX] Ensure we are the correct user before starting
+    await ensureProjectSession();
+
     let progressUnsubscribe = null;
     const userId = auth.currentUser ? auth.currentUser.uid : 'guest';
     const tempId = Date.now().toString();
@@ -1540,7 +1566,6 @@ async function processCoverFile(file, slotId) {
         
         await uploadBytesResumable(storageRef, file);
 
-        // Check if still active (user might have deleted while uploading)
         if (!coverSources[slotId]) return;
 
         // 3. Update State to Processing
@@ -1581,7 +1606,6 @@ async function processCoverFile(file, slotId) {
         if (result.data && result.data.pages && result.data.pages.length > 0) {
             const firstPage = result.data.pages[0];
             
-            // Update memory state
             coverSources[slotId] = {
                 file: file,
                 status: 'ready',
@@ -1595,8 +1619,7 @@ async function processCoverFile(file, slotId) {
             renderCoverPreview();
             renderBookViewer(); 
             
-            // [CRITICAL FIX] Force immediate save to persist the new thumbnail data.
-            // This prevents data loss if the user refreshes before the debounced autosave fires.
+            // Force immediate save
             console.log(`[Cover ${slotId}] Processing complete. Saving state immediately.`);
             await syncProjectState('draft');
 
@@ -1621,20 +1644,18 @@ async function processCoverFile(file, slotId) {
 }
 
 async function processServerFile(file, sourceId) {
+    // Ensure session is valid immediately before upload starts
+    await ensureProjectSession();
+
     let progressUnsubscribe = null;
     const userId = auth.currentUser ? auth.currentUser.uid : 'guest';
     const tempId = Date.now().toString();
-    // Create a secure ID for the progress document
     const progressDocId = `${userId}_${tempId}`; 
 
     try {
         const storagePath = `temp_uploads/${userId}/${tempId}/${file.name}`;
         const storageRef = ref(storage, storagePath);
 
-        // Initial Busy State
-        updateBusyMessage("Starting upload...");
-
-        // Helper to update the on-page placeholder
         const updateStatus = (msg) => {
             if(sourceFiles[sourceId]) sourceFiles[sourceId].status = 'processing';
             const relatedPages = pages.filter(p => p.sourceFileId === sourceId);
@@ -1651,56 +1672,43 @@ async function processServerFile(file, sourceId) {
             });
         };
 
-        // 1. Upload with Progress Monitoring
         updateStatus("Uploading 0%");
         const uploadTask = uploadBytesResumable(storageRef, file);
 
         uploadTask.on('state_changed', (snapshot) => {
             const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
             const p = Math.round(progress);
-            updateBusyMessage(`Uploading file... ${p}%`);
             updateStatus(`Uploading ${p}%`);
         });
 
         await uploadTask;
 
-        // 2. Setup Firestore Listener for Real-time Server Progress
         updateStatus("Queued...");
-        updateBusyMessage("Waiting for server...");
 
         const progressRef = doc(db, "temp_processing", progressDocId);
-        
-        // Initialize the doc so we can listen to it
         await setDoc(progressRef, { status: "Initializing...", createdAt: serverTimestamp() });
 
         progressUnsubscribe = onSnapshot(progressRef, (doc) => {
             if (doc.exists()) {
                 const data = doc.data();
-                if (data.status) {
-                    updateBusyMessage(data.status);
-                    updateStatus(data.status.split('...')[0]); // Short version for card
-                }
+                if (data.status) updateStatus(data.status.split('...')[0]);
             }
         });
 
-        // 3. Call Generate Previews (Optimizing)
-        // USE THE SPECIFIC URL FOR THE CUSTOM CONTAINER
         if (GENERATE_PREVIEWS_URL.includes("YOUR_CLOUD_RUN")) {
-            console.error("Please set the GENERATE_PREVIEWS_URL in guest_upload.js");
             throw new Error("Configuration Error: Missing Server URL");
         }
 
         const generatePreviews = httpsCallableFromURL(functions, GENERATE_PREVIEWS_URL, { 
-            timeout: 540000 // [FIX] 9 Minute Timeout (Client Side)
+            timeout: 540000 
         });
         
         const result = await generatePreviews({
             filePath: storagePath,
             originalName: file.name,
-            progressDocId: progressDocId // [FIX] Pass ID to server
+            progressDocId: progressDocId
         });
 
-        // 4. Handle Results
         if (result.data && result.data.pages) {
             const generatedPages = result.data.pages;
             
@@ -1723,7 +1731,6 @@ async function processServerFile(file, sourceId) {
         renderBookViewer();
         throw err; 
     } finally {
-        // Cleanup listener
         if (progressUnsubscribe) progressUnsubscribe();
     }
 }
@@ -4810,15 +4817,15 @@ function simulateProgress(start, end, durationMs) {
 }
 function stopProgress() { if(progressInterval) clearInterval(progressInterval); }
 
-// --- NEW: Helper to Upload Files & Save State ---
+// --- Helper to Upload Files & Save State ---
 async function syncProjectState(statusLabel) {
+    // Initial check
+    await ensureProjectSession();
+
     const progressBar = document.getElementById('progress-bar');
     const progressText = document.getElementById('progress-text');
     const progressPercent = document.getElementById('progress-percent');
     const uploadProgress = document.getElementById('upload-progress');
-
-    uploadProgress.classList.remove('hidden');
-    progressText.textContent = 'Preparing files...';
 
     const activeSourceIds = new Set();
     pages.forEach(p => {
@@ -4830,10 +4837,18 @@ async function syncProjectState(statusLabel) {
 
     const checkSource = (id, src, type) => {
         if (!src) return;
+
+        // Skip files that are currently being processed by the main uploader
+        if (src.status === 'processing' || src.status === 'uploading') {
+            console.log(`[Autosave] Skipping in-flight file: ${id}`);
+            return;
+        }
+
         if (src.storagePath) {
             allSourcePaths[id] = src.storagePath;
             return;
         }
+        
         if (src instanceof File) {
             filesToUpload.push({ id, file: src, type });
         } else if (src.file instanceof File) {
@@ -4849,22 +4864,26 @@ async function syncProjectState(statusLabel) {
         checkSource('cover_front', coverSources['file-cover-front'], 'cover_front');
         checkSource('cover_spine', coverSources['file-spine'], 'cover_spine');
         checkSource('cover_back', coverSources['file-cover-back'], 'cover_back');
-        // [FIX] Add new checks
         checkSource('cover_inside_front', coverSources['file-cover-inside-front'], 'cover_inside_front');
         checkSource('cover_inside_back', coverSources['file-cover-inside-back'], 'cover_inside_back');
     }
 
-    let completed = 0;
     const total = filesToUpload.length;
 
     if (total > 0) {
-        // 1. Calculate Total Bytes
+        uploadProgress.classList.remove('hidden');
+        progressText.textContent = 'Syncing files...';
+
         let totalBytesExpected = 0;
         filesToUpload.forEach(f => totalBytesExpected += f.file.size);
-        let totalBytesTransferred = 0;
-        const fileProgressMap = new Map(); // id -> bytes
+        
+        const fileProgressMap = new Map(); 
 
         for (const item of filesToUpload) {
+            // [CRITICAL FIX] Re-assert session before EVERY file upload.
+            // This prevents another tab from stealing the session mid-loop.
+            await ensureProjectSession();
+
             const timestamp = Date.now();
             const cleanName = item.file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
             const storagePath = `guest_uploads/${projectId}/${timestamp}_${item.type}_${cleanName}`;
@@ -4872,36 +4891,28 @@ async function syncProjectState(statusLabel) {
 
             progressText.textContent = `Uploading ${item.file.name}...`;
             
-            // Use Upload Task to monitor progress
             const uploadTask = uploadBytesResumable(storageRef, item.file);
 
             uploadTask.on('state_changed',
                 (snapshot) => {
-                    // Update this file's progress
                     fileProgressMap.set(item.id, snapshot.bytesTransferred);
-
-                    // Sum all progress
                     let currentTotal = 0;
                     fileProgressMap.forEach(v => currentTotal += v);
-
-                    // Update Total Progress Bar
                     const percent = (currentTotal / totalBytesExpected) * 100;
                     if(progressBar) progressBar.style.width = `${percent}%`;
                     if(progressPercent) progressPercent.textContent = `${Math.round(percent)}%`;
                 }
             );
 
-            await uploadTask; // Wait for completion
+            await uploadTask; 
 
-            // Ensure this file is marked 100% (in case state_changed missed the very last byte)
             fileProgressMap.set(item.id, item.file.size);
-
             allSourcePaths[item.id] = storagePath;
             
+            // Update memory
             if (item.type === 'interior_source' && sourceFiles[item.id]) {
                 sourceFiles[item.id].storagePath = storagePath;
             } else if (item.type.startsWith('cover_')) {
-                // Reverse map to update memory
                 let localSlot = null;
                 if (item.type === 'cover_front') localSlot = 'file-cover-front';
                 else if (item.type === 'cover_spine') localSlot = 'file-spine';
@@ -4916,7 +4927,10 @@ async function syncProjectState(statusLabel) {
         }
     }
 
-    progressText.textContent = 'Saving Project State...';
+    if (total > 0) progressText.textContent = 'Saving Project State...';
+    
+    // [CRITICAL FIX] Ensure session one last time before writing to Firestore
+    await ensureProjectSession();
     await persistStateAfterSubmit(allSourcePaths, statusLabel);
     
     return allSourcePaths;
