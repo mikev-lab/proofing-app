@@ -849,7 +849,7 @@ export async function initializeSharedViewer(config) {
 
         const urlToLoad = versionData.previewURL || versionData.fileURL;
 
-        if (urlToLoad && urlToLoad !== currentlyLoadedURL) {
+        if (urlToLoad && (urlToLoad !== currentlyLoadedURL || !pdfDoc)) {
             console.log(`Loading URL for version ${versionData.versionNumber}: ${urlToLoad.substring(0, 100)}...`);
             loadPdf(urlToLoad);
         } else if (!urlToLoad) {

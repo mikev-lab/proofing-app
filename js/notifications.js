@@ -12,6 +12,7 @@ export async function initializeNotifications() {
     const notificationIndicator = document.getElementById('notification-indicator');
     const notificationPanel = document.getElementById('notification-panel');
     const notificationList = document.getElementById('notification-list');
+    const clearNotificationsBtn = document.getElementById('clear-notifications-btn'); // Moved inside
 
     if (!notificationBell || !notificationIndicator || !notificationPanel || !notificationList) {
         console.warn("Notification UI elements not found during initialization.");
@@ -30,6 +31,65 @@ export async function initializeNotifications() {
         document.addEventListener('click', (e) => {
             if (!notificationPanel.contains(e.target) && !notificationBell.contains(e.target)) {
                 notificationPanel.classList.add('hidden');
+            }
+        });
+    }
+
+    // --- "Clear All" Logic (Moved Inside) ---
+    if (clearNotificationsBtn && clearNotificationsBtn.dataset.initialized !== 'true') {
+        clearNotificationsBtn.dataset.initialized = 'true';
+        
+        clearNotificationsBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+
+            if (!auth.currentUser) return;
+
+            try {
+                const originalText = clearNotificationsBtn.textContent;
+                clearNotificationsBtn.textContent = "Clearing...";
+                clearNotificationsBtn.disabled = true;
+                clearNotificationsBtn.classList.add('opacity-50', 'cursor-not-allowed');
+
+                const q = query(
+                    collection(db, "notifications"), 
+                    where("recipientUid", "==", auth.currentUser.uid)
+                );
+                const snapshot = await getDocs(q);
+
+                if (snapshot.empty) {
+                    resetClearButton();
+                    return;
+                }
+
+                // Firestore batches are limited to 500 ops. 
+                // If you expect >500 notifications, you need to loop batches.
+                // For now, this handles standard usage.
+                const batch = writeBatch(db);
+                snapshot.docs.forEach(doc => {
+                    batch.delete(doc.ref);
+                });
+
+                await batch.commit();
+
+                // Update UI immediately
+                if (notificationList) {
+                    notificationList.innerHTML = '<p class="px-4 py-2 text-sm text-gray-400">No new notifications</p>';
+                }
+                if (notificationIndicator) {
+                    notificationIndicator.classList.add('hidden');
+                }
+
+            } catch (err) {
+                console.error("Error clearing notifications:", err);
+                alert("Failed to clear notifications.");
+            } finally {
+                resetClearButton();
+            }
+
+            function resetClearButton() {
+                clearNotificationsBtn.textContent = "Clear All";
+                clearNotificationsBtn.disabled = false;
+                clearNotificationsBtn.classList.remove('opacity-50', 'cursor-not-allowed');
             }
         });
     }
@@ -82,7 +142,6 @@ export async function initializeNotifications() {
     }
 
     function renderNotifications(notifications, unreadCount) {
-        // Re-query the list element in case the DOM was rebuilt (though layout shouldn't trash the header once built)
         const currentList = document.getElementById('notification-list');
         const currentIndicator = document.getElementById('notification-indicator');
 
@@ -90,7 +149,7 @@ export async function initializeNotifications() {
         currentList.innerHTML = '';
 
         if (notifications.length === 0) {
-            currentList.innerHTML = '<p class="px-4 py-2 text-sm text-gray-400">No notifications yet.</p>';
+            currentList.innerHTML = '<p class="px-4 py-2 text-sm text-gray-400">No new notifications</p>';
         } else {
             notifications.forEach(notification => {
                 const item = document.createElement('div');
@@ -157,58 +216,4 @@ export async function initializeNotifications() {
             }
         }
     }
-}
-
-// Global clear button logic
-const clearNotificationsBtn = document.getElementById('clear-notifications-btn');
-
-if (clearNotificationsBtn) {
-    clearNotificationsBtn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-
-        if (!auth.currentUser) return;
-
-        try {
-            clearNotificationsBtn.textContent = "Clearing...";
-            clearNotificationsBtn.disabled = true;
-            clearNotificationsBtn.classList.add('opacity-50', 'cursor-not-allowed');
-
-            const q = query(
-                collection(db, "notifications"), 
-                where("recipientUid", "==", auth.currentUser.uid)
-            );
-            const snapshot = await getDocs(q);
-
-            if (snapshot.empty) {
-                clearNotificationsBtn.textContent = "Clear All";
-                clearNotificationsBtn.disabled = false;
-                clearNotificationsBtn.classList.remove('opacity-50', 'cursor-not-allowed');
-                return;
-            }
-
-            const batch = writeBatch(db);
-            snapshot.docs.forEach(doc => {
-                batch.delete(doc.ref);
-            });
-
-            await batch.commit();
-
-            const list = document.getElementById('notification-list');
-            if (list) {
-                list.innerHTML = '<p class="px-4 py-2 text-sm text-gray-400">No new notifications</p>';
-            }
-            const indicator = document.getElementById('notification-indicator');
-            if (indicator) {
-                indicator.classList.add('hidden');
-            }
-
-        } catch (err) {
-            console.error("Error clearing notifications:", err);
-            alert("Failed to clear notifications.");
-        } finally {
-            clearNotificationsBtn.textContent = "Clear All";
-            clearNotificationsBtn.disabled = false;
-            clearNotificationsBtn.classList.remove('opacity-50', 'cursor-not-allowed');
-        }
-    });
 }

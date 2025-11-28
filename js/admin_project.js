@@ -726,7 +726,7 @@ shareLinkForm.addEventListener('submit', async (e) => {
 
         try {
             const result = await generateGuestLink({
-                projectId: currentProjectId,
+                projectId: projectId,
                 permissions
             });
 
@@ -742,18 +742,18 @@ shareLinkForm.addEventListener('submit', async (e) => {
             console.error("Error generating link:", error);
             alert(`Error: ${error.message || 'Could not generate link.'}`);
         } finally {
-            generateLinkBtn.textContent = 'Generate Link';
-            generateLinkBtn.disabled = false;
+            generateLinkButton.textContent = 'Generate Link';
+            generateLinkButton.disabled = false;
         }
     });
-}
 
-if (copyLinkBtn) {
-    copyLinkBtn.addEventListener('click', () => {
+
+if (copyLinkButton) {
+    copyLinkButton.addEventListener('click', () => {
         generatedLinkUrlInput.select();
         document.execCommand('copy');
-        copyStatusMsg.textContent = 'Copied!';
-        setTimeout(() => { copyStatusMsg.textContent = ''; }, 2000);
+        copyStatusMessage.textContent = 'Copied!';
+        setTimeout(() => { copyStatusMessage.textContent = ''; }, 2000);
     });
 }
 
