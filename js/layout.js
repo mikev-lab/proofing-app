@@ -144,7 +144,9 @@ function renderStructure(container, user, role) {
     }
 
     let headerRightContent = '';
-    if (user) {
+
+    // Check if user is authenticated AND not anonymous
+    if (user && !user.isAnonymous) {
         headerRightContent = `
             <div class="flex items-center space-x-4">
                 <div id="header-extra-actions" class="flex items-center space-x-2"></div>
@@ -171,7 +173,19 @@ function renderStructure(container, user, role) {
                 <button id="logout-button" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all">Sign Out</button>
             </div>
         `;
-    } else {
+    }
+    // Handle Anonymous (Guest) Users
+    else if (user && user.isAnonymous) {
+         headerRightContent = `
+            <div class="flex items-center space-x-4">
+                <div id="header-extra-actions" class="flex items-center space-x-2"></div>
+                <a href="register.html" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md text-sm transition-all">Register</a>
+                <button id="logout-button" class="text-gray-300 hover:text-white font-medium text-sm">Sign Out</button>
+            </div>
+        `;
+    }
+    // Fully Unauthenticated
+    else {
         headerRightContent = `
             <div class="flex items-center space-x-4">
                 <a href="index.html" class="text-gray-300 hover:text-white font-medium text-sm">Log In</a>
@@ -219,7 +233,9 @@ function renderStructure(container, user, role) {
             });
         }
 
-        initializeNotifications();
+        if (!user.isAnonymous) {
+            initializeNotifications();
+        }
     }
 
     if (role === 'admin') {
