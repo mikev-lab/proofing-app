@@ -233,7 +233,16 @@ function renderProjects(projects, companyMap) {
                     ${statusIndicator}
                 </div>
             </td>
-            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">${companyName}</td>
+            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300 relative group company-cell" data-project-id="${project.id}" data-company-id="${project.companyId || ''}">
+                <div class="flex items-center justify-between">
+                    <span class="company-name cursor-pointer hover:text-white border-b border-transparent hover:border-gray-500 transition-colors" title="Click to edit">${companyName}</span>
+                    <button class="remove-company-btn hidden group-hover:block text-red-500 hover:text-red-400 ml-2" title="Unassign Client" data-project-id="${project.id}">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+            </td>
             <td class="px-6 py-4 whitespace-nowrap text-sm">${statusBadge}</td>
             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400">${formattedDate}</td>
             <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-4">
@@ -332,6 +341,125 @@ projectsList.addEventListener('click', async (e) => {
     if (target.classList.contains('share-btn')) {
         currentProjectId = projectId;
         openShareModal();
+    }
+});
+
+// --- NEW: Company Cell Interaction Logic ---
+projectsList.addEventListener('click', async (e) => {
+    // 1. Handle "Edit" (Click on Company Name)
+    if (e.target.classList.contains('company-name')) {
+        const cell = e.target.closest('.company-cell');
+        const currentName = e.target.textContent.trim();
+        const projectId = cell.dataset.projectId;
+
+        // If 'N/A', clear it for the input
+        const inputValue = currentName === 'N/A' ? '' : currentName;
+
+        // Create Input Element
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = inputValue;
+        input.className = 'bg-slate-700 text-white text-sm rounded border border-indigo-500 px-2 py-1 w-full focus:outline-none';
+        input.setAttribute('list', 'company-list-options'); // Link to datalist
+        input.placeholder = "Type company name...";
+
+        // Create Datalist (if not exists)
+        let dataList = document.getElementById('company-list-options');
+        if (!dataList) {
+            dataList = document.createElement('datalist');
+            dataList.id = 'company-list-options';
+            document.body.appendChild(dataList);
+            // Populate
+            cachedCompanies.forEach(c => {
+                const opt = document.createElement('option');
+                opt.value = c.companyName;
+                dataList.appendChild(opt);
+            });
+        }
+
+        // Replace content
+        cell.innerHTML = '';
+        cell.appendChild(input);
+        input.focus();
+
+        // Handle Save (Enter or Blur)
+        const saveChange = async () => {
+            const newName = input.value.trim();
+            if (newName === inputValue) {
+                 // No change, revert UI by re-fetching or just reloading the list for simplicity
+                 fetchAllProjects();
+                 return;
+            }
+
+            // Find Company ID
+            const match = cachedCompanies.find(c => c.companyName.toLowerCase() === newName.toLowerCase());
+
+            // UI Loading State
+            cell.innerHTML = '<span class="text-xs text-yellow-400 animate-pulse">Assigning...</span>';
+
+            try {
+                const assignProjectToCompany = httpsCallable(functions, 'assignProjectToCompany');
+
+                if (match) {
+                    await assignProjectToCompany({ projectId: projectId, companyId: match.id });
+                } else if (newName === "") {
+                    // Empty input means remove
+                    if (confirm("Remove client assignment?")) {
+                         await assignProjectToCompany({ projectId: projectId, companyId: null });
+                    } else {
+                        fetchAllProjects();
+                        return;
+                    }
+                } else {
+                    alert("Company not found. Please create the company first or check the spelling.");
+                    fetchAllProjects();
+                    return;
+                }
+
+                // Refresh list to show updated state
+                fetchAllProjects();
+
+            } catch (err) {
+                console.error("Assignment failed:", err);
+                alert("Failed to assign company: " + err.message);
+                fetchAllProjects(); // Revert
+            }
+        };
+
+        // Event Listeners for Input
+        input.addEventListener('blur', () => {
+            // Delay slightly to allow click events (like selecting from datalist) to register
+            setTimeout(saveChange, 200);
+        });
+        input.addEventListener('keydown', (evt) => {
+            if (evt.key === 'Enter') {
+                input.blur(); // Triggers blur logic above
+            }
+            if (evt.key === 'Escape') {
+                fetchAllProjects(); // Cancel
+            }
+        });
+    }
+
+    // 2. Handle "Remove" (Click on Red X)
+    if (e.target.closest('.remove-company-btn')) {
+        const btn = e.target.closest('.remove-company-btn');
+        const projectId = btn.dataset.projectId;
+        const cell = btn.closest('.company-cell');
+
+        if (confirm("Are you sure you want to remove the client assignment for this project?")) {
+             cell.innerHTML = '<span class="text-xs text-red-400 animate-pulse">Removing...</span>';
+
+             try {
+                const assignProjectToCompany = httpsCallable(functions, 'assignProjectToCompany');
+                await assignProjectToCompany({ projectId: projectId, companyId: null });
+                fetchAllProjects();
+             } catch (err) {
+                 console.error("Unassignment failed:", err);
+                 alert("Failed to unassign: " + err.message);
+                 fetchAllProjects();
+             }
+        }
     }
 });
 
