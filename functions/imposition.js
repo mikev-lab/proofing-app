@@ -129,12 +129,12 @@ const drawSlugInfo = async (page, pdfDoc, currentSheetId, totalSheetsForSlug, fo
 };
 
 async function imposePdfLogic(params) {
-    const { inputFile, settings, jobInfo, localFilePath, preLoadedPdfDoc } = params; 
+    const { inputFile, settings, jobInfo, localFilePath, preLoadedPdfDoc, coverFilePath } = params;
     const {
         columns, rows, bleedInches, horizontalGutterInches, verticalGutterInches,
         impositionType, sheetOrientation, isDuplex, rowOffsetType,
         showQRCode, qrCodePosition, slipSheetColor,
-        includeCover = true // [NEW] Default to true
+        includeCover = true
     } = settings;
 
     let inputPdfDoc;
@@ -154,6 +154,83 @@ async function imposePdfLogic(params) {
         await inputFile.download({ destination: tempInputPath });
         const inputPdfBuffer = fs.readFileSync(tempInputPath);
         inputPdfDoc = await PDFDocument.load(inputPdfBuffer);
+    }
+
+    // --- NEW COVER MERGING LOGIC ---
+    // If includeCover is true AND a coverFilePath is provided, merge them.
+    if (includeCover && coverFilePath && fs.existsSync(coverFilePath)) {
+        try {
+            console.log("Merging cover file into interior...");
+            const coverPdfBuffer = fs.readFileSync(coverFilePath);
+            const coverDoc = await PDFDocument.load(coverPdfBuffer);
+            const coverPageCount = coverDoc.getPageCount();
+
+            // Create a new merged document
+            const mergedDoc = await PDFDocument.create();
+
+            // Copy all necessary pages
+            const interiorPages = await mergedDoc.copyPages(inputPdfDoc, inputPdfDoc.getPageIndices());
+            const coverPages = await mergedDoc.copyPages(coverDoc, coverDoc.getPageIndices());
+
+            // Logic:
+            // 4-page cover: [F, IF, IB, B] -> Add F, IF -> Interior -> IB, B
+            // 2-page cover: [F, B] -> Add F, Blank -> Interior -> Blank, B
+            // 1-page cover: [F] -> Add F, Blank -> Interior -> Blank, Blank
+
+            // 1. Add Front Cover (Page 1)
+            if (coverPages.length > 0) mergedDoc.addPage(coverPages[0]);
+            else mergedDoc.addPage([interiorPages[0].getWidth(), interiorPages[0].getHeight()]); // Blank fallback?
+
+            // 2. Add Inside Front (Page 2)
+            if (coverPages.length >= 4) {
+                mergedDoc.addPage(coverPages[1]);
+            } else if (coverPages.length === 2) {
+                // Insert Blank
+                const size = interiorPages[0].getSize();
+                mergedDoc.addPage([size.width, size.height]);
+            } else if (coverPages.length === 1) {
+                 const size = interiorPages[0].getSize();
+                 mergedDoc.addPage([size.width, size.height]);
+            } else {
+                 // Try best guess for 3 pages? [F, IF, B]?
+                 if (coverPages.length >= 2) mergedDoc.addPage(coverPages[1]);
+                 else {
+                     const size = interiorPages[0].getSize();
+                     mergedDoc.addPage([size.width, size.height]);
+                 }
+            }
+
+            // 3. Add Interior
+            interiorPages.forEach(p => mergedDoc.addPage(p));
+
+            // 4. Add Inside Back
+            if (coverPages.length >= 4) {
+                mergedDoc.addPage(coverPages[2]);
+            } else {
+                // Insert Blank
+                const size = interiorPages[0].getSize();
+                mergedDoc.addPage([size.width, size.height]);
+            }
+
+            // 5. Add Back Cover
+            if (coverPages.length >= 4) {
+                mergedDoc.addPage(coverPages[3]);
+            } else if (coverPages.length === 2) {
+                mergedDoc.addPage(coverPages[1]); // Back is page 2
+            } else {
+                 // If 1 page, we assume back is blank?
+                 const size = interiorPages[0].getSize();
+                 mergedDoc.addPage([size.width, size.height]);
+            }
+
+            // Replace inputPdfDoc with the merged one
+            inputPdfDoc = mergedDoc;
+            console.log(`Merged Document Page Count: ${inputPdfDoc.getPageCount()}`);
+
+        } catch (e) {
+            console.error("Failed to merge cover:", e);
+            // Fallback: Proceed with just the interior, but log error
+        }
     }
 
     const numInputPages = inputPdfDoc.getPageCount();

@@ -2731,11 +2731,61 @@ exports.imposePdf = onCall({
 
     const file = bucket.file(decodeURIComponent(filePath));
 
+    // [NEW] Check for separate cover file if requested
+    let coverTempPath = null;
+    if (settings.includeCover) {
+        // Validation: Ensure cover data exists
+        if (!projectData.cover || (!projectData.cover.fileURL && !projectData.cover.previewURL)) {
+             throw new HttpsError('failed-precondition', 'Include Cover was requested, but no cover file is associated with this project.');
+        }
+
+        try {
+            const coverUrl = projectData.cover.fileURL || projectData.cover.previewURL;
+            logger.log(`Fetching cover file from: ${coverUrl}`);
+
+            // Re-use robust parsing logic for cover URL
+            const urlObj = new URL(coverUrl);
+            let coverFilePath;
+            if (urlObj.protocol === 'gs:') {
+                coverFilePath = urlObj.pathname.startsWith('/') ? urlObj.pathname.slice(1) : urlObj.pathname;
+            } else {
+                 const parts = urlObj.pathname.split('/o/');
+                 if (parts.length > 1) {
+                     // Decode components to handle %2F correctly
+                     coverFilePath = decodeURIComponent(parts[1]);
+                 } else {
+                     coverFilePath = urlObj.pathname.startsWith('/') ? urlObj.pathname.slice(1) : urlObj.pathname;
+                 }
+            }
+
+            // Ensure decoding is safe (avoid double decoding if logic above was mixed)
+            // If it starts with proofs/ or guest_uploads/, it's likely clean.
+            // If it contains %2F, it needs decoding.
+            if (coverFilePath.includes('%')) coverFilePath = decodeURIComponent(coverFilePath);
+
+            logger.log(`Resolved cover storage path: ${coverFilePath}`);
+
+            coverTempPath = path.join(os.tmpdir(), `cover_${projectId}_${Date.now()}.pdf`);
+            await bucket.file(coverFilePath).download({ destination: coverTempPath });
+            logger.log(`Cover downloaded successfully to: ${coverTempPath}`);
+
+        } catch (e) {
+            logger.error("Failed to download cover file:", e);
+            throw new HttpsError('internal', `Failed to retrieve cover file: ${e.message}`);
+        }
+    }
+
     const { filePath: localImposedPath } = await imposePdfLogic({
       inputFile: file,
       settings: settings,
       jobInfo: projectData,
+      coverFilePath: coverTempPath // Pass to logic
     });
+
+    // Cleanup cover temp file
+    if (coverTempPath && fs.existsSync(coverTempPath)) {
+        try { fs.unlinkSync(coverTempPath); } catch(e) {}
+    }
 
     const imposedFileName = `imposed_manual_${Date.now()}.pdf`;
     const imposedFilePath = `imposed/${projectId}/${imposedFileName}`;
