@@ -2682,6 +2682,7 @@ function drawOnSheet(doc, embeddable, trimW, trimH, bleed, settings, isPdf) {
     }
 }
 
+// functions/index.js (Partial - imposePdf)
 
 exports.imposePdf = onCall({
   region: 'us-central1',
@@ -2690,7 +2691,6 @@ exports.imposePdf = onCall({
 }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Auth required.');
   
-  // 1. Admin Check
   const userUid = request.auth.uid;
   const userDoc = await db.collection('users').doc(userUid).get();
   if (!userDoc.exists || userDoc.data().role !== 'admin') {
@@ -2700,7 +2700,7 @@ exports.imposePdf = onCall({
   const { projectId, settings } = request.data;
   if (!projectId || !settings) throw new HttpsError('invalid-argument', 'Missing inputs.');
 
-  logger.log(`Manual imposition for ${projectId} by ${userUid}`);
+  const tempFilesToCleanup = [];
 
   try {
     const projectRef = db.collection('projects').doc(projectId);
@@ -2708,34 +2708,125 @@ exports.imposePdf = onCall({
     if (!projectDoc.exists) throw new HttpsError('not-found', 'Project not found.');
     const projectData = projectDoc.data();
 
-    const latestVersion = projectData.versions.reduce((latest, v) => (v.versionNumber > latest.versionNumber ? v : latest), projectData.versions[0]);
-    if (!latestVersion || !latestVersion.fileURL) throw new HttpsError('not-found', 'No file found.');
+    const latestVersion = projectData.versions?.reduce((latest, v) => (v.versionNumber > latest.versionNumber ? v : latest), projectData.versions[0]);
+    if (!latestVersion || !latestVersion.fileURL) throw new HttpsError('not-found', 'No interior file found.');
 
     const bucket = admin.storage().bucket();
     
-    // --- FIX: Robust URL Parsing (Copied from onProjectApprove) ---
-    let filePath;
-    const urlObj = new URL(latestVersion.fileURL);
-
-    if (urlObj.protocol === 'gs:') {
-        filePath = urlObj.pathname.startsWith('/') ? urlObj.pathname.slice(1) : urlObj.pathname;
-    } else {
+    const resolveStoragePath = (url) => {
+        const urlObj = new URL(url);
+        if (urlObj.protocol === 'gs:') return urlObj.pathname.startsWith('/') ? urlObj.pathname.slice(1) : urlObj.pathname;
         const parts = urlObj.pathname.split('/o/');
-        if (parts.length > 1) {
-            filePath = parts[1].replace(/%2F/g, '/');
-        } else {
-            filePath = urlObj.pathname.startsWith('/') ? urlObj.pathname.slice(1) : urlObj.pathname;
+        if (parts.length > 1) return parts[1].replace(/%2F/g, '/');
+        return urlObj.pathname.startsWith('/') ? urlObj.pathname.slice(1) : urlObj.pathname;
+    };
+
+    const interiorPath = resolveStoragePath(latestVersion.fileURL);
+    const localInteriorPath = path.join(os.tmpdir(), `interior_${Date.now()}.pdf`);
+    await bucket.file(decodeURIComponent(interiorPath)).download({ destination: localInteriorPath });
+    tempFilesToCleanup.push(localInteriorPath);
+
+    let finalSourcePath = localInteriorPath;
+
+    // [FIX] ONLY MERGE COVER FOR BOOKLETS
+    if (settings.impositionType === 'booklet' && settings.includeCover && projectData.cover && projectData.cover.fileURL) {
+        logger.log("Include Cover requested for Booklet. Fetching cover file...");
+        const coverPath = resolveStoragePath(projectData.cover.fileURL);
+        const localCoverPath = path.join(os.tmpdir(), `cover_${Date.now()}.pdf`);
+        
+        try {
+            await bucket.file(decodeURIComponent(coverPath)).download({ destination: localCoverPath });
+            tempFilesToCleanup.push(localCoverPath);
+
+            const { PDFDocument } = require('pdf-lib');
+            const mergedDoc = await PDFDocument.create();
+            
+            const coverPdf = await PDFDocument.load(fs.readFileSync(localCoverPath));
+            const interiorPdf = await PDFDocument.load(fs.readFileSync(localInteriorPath));
+            const coverCount = coverPdf.getPageCount();
+            
+            // Get Geometry
+            const interiorPage0 = interiorPdf.getPage(0);
+            const { width: intW, height: intH } = interiorPage0.getSize();
+
+            // Detect Spread
+            const coverP1 = coverPdf.getPage(0);
+            const { width: covW, height: covH } = coverP1.getSize();
+            const isSpread = coverCount === 2 && covW > intW * 1.5;
+
+            if (isSpread) {
+                const [embeddedCover1] = await mergedDoc.embedPages([coverP1]);
+                const [embeddedCover2] = await mergedDoc.embedPages([coverPdf.getPage(1)]);
+
+                // 1. Front (Right Half of P1)
+                const p1 = mergedDoc.addPage([intW, intH]);
+                // Align Right Edge: drawX = PageWidth - SpreadWidth
+                p1.drawPage(embeddedCover1, { x: intW - covW, y: 0, width: covW, height: covH });
+
+                // 2. Inside Front (Left Half of P2)
+                const p2 = mergedDoc.addPage([intW, intH]);
+                // Align Left Edge: drawX = 0
+                p2.drawPage(embeddedCover2, { x: 0, y: 0, width: covW, height: covH });
+
+                // 3. Interiors
+                const interiorIndices = interiorPdf.getPageIndices();
+                const interiorPages = await mergedDoc.copyPages(interiorPdf, interiorIndices);
+                interiorPages.forEach(p => mergedDoc.addPage(p));
+
+                // 4. Inside Back (Right Half of P2)
+                const p3 = mergedDoc.addPage([intW, intH]);
+                p3.drawPage(embeddedCover2, { x: intW - covW, y: 0, width: covW, height: covH });
+
+                // 5. Back (Left Half of P1)
+                const p4 = mergedDoc.addPage([intW, intH]);
+                p4.drawPage(embeddedCover1, { x: 0, y: 0, width: covW, height: covH });
+
+            } else {
+                // Standard 4-page cover
+                if (coverCount >= 1) { const [p] = await mergedDoc.copyPages(coverPdf, [0]); mergedDoc.addPage(p); }
+                if (coverCount >= 2) { const [p] = await mergedDoc.copyPages(coverPdf, [1]); mergedDoc.addPage(p); }
+                else mergedDoc.addPage([intW, intH]);
+
+                const interiorIndices = interiorPdf.getPageIndices();
+                const interiorPages = await mergedDoc.copyPages(interiorPdf, interiorIndices);
+                interiorPages.forEach(p => mergedDoc.addPage(p));
+
+                if (coverCount >= 3) { const [p] = await mergedDoc.copyPages(coverPdf, [2]); mergedDoc.addPage(p); }
+                else if (coverCount === 2) mergedDoc.addPage([intW, intH]); 
+
+                if (coverCount >= 4) { const [p] = await mergedDoc.copyPages(coverPdf, [3]); mergedDoc.addPage(p); }
+                else if (coverCount === 2) { const [p] = await mergedDoc.copyPages(coverPdf, [1]); mergedDoc.addPage(p); }
+            }
+
+            if (settings.impositionType === 'booklet') {
+                const totalPages = mergedDoc.getPageCount();
+                const remainder = totalPages % 4;
+                if (remainder !== 0) {
+                    const pagesToAdd = 4 - remainder;
+                    for(let i=0; i<pagesToAdd; i++) mergedDoc.addPage([intW, intH]);
+                }
+            }
+
+            const mergedPath = path.join(os.tmpdir(), `merged_${Date.now()}.pdf`);
+            const mergedBytes = await mergedDoc.save();
+            fs.writeFileSync(mergedPath, mergedBytes);
+            
+            finalSourcePath = mergedPath;
+            tempFilesToCleanup.push(mergedPath);
+
+        } catch (coverErr) {
+            logger.error("Failed to merge cover:", coverErr);
+            throw new HttpsError('internal', "Failed to merge cover file: " + coverErr.message);
         }
     }
-    // -------------------------------------------------------------
-
-    const file = bucket.file(decodeURIComponent(filePath));
 
     const { filePath: localImposedPath } = await imposePdfLogic({
-      inputFile: file,
+      inputFile: null,
+      localFilePath: finalSourcePath,
       settings: settings,
       jobInfo: projectData,
     });
+    tempFilesToCleanup.push(localImposedPath);
 
     const imposedFileName = `imposed_manual_${Date.now()}.pdf`;
     const imposedFilePath = `imposed/${projectId}/${imposedFileName}`;
@@ -2745,8 +2836,6 @@ exports.imposePdf = onCall({
         destination: imposedFilePath,
         contentType: 'application/pdf'
     });
-
-    try { require('fs').unlinkSync(localImposedPath); } catch(e) {}
     
     const [imposedFileUrl] = await imposedFile.getSignedUrl({ action: 'read', expires: '03-09-2491' });
 
@@ -2760,7 +2849,6 @@ exports.imposePdf = onCall({
       }),
     });
 
-    // Notify Admin
     await createNotification(userUid, {
         title: "Imposition Ready",
         message: `Manual imposition for "${projectData.projectName}" is complete.`,
@@ -2773,9 +2861,12 @@ exports.imposePdf = onCall({
   } catch (error) {
     logger.error(`Error during manual imposition:`, error);
     throw new HttpsError('internal', error.message);
+  } finally {
+      tempFilesToCleanup.forEach(p => {
+          try { require('fs').unlinkSync(p); } catch(e) {}
+      });
   }
 });
-
 
 // Firestore Trigger for automatic imposition
 exports.onProjectApprove = onDocumentUpdated({

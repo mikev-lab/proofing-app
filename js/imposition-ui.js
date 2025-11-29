@@ -4,10 +4,11 @@ import { maximizeNUp, getSheetSizes, getPageSequenceForSheet } from './impositio
 import { drawCropMarks, drawSlugInfo, drawPageNumber } from './imposition-drawing.js';
 import { INCH_TO_POINTS } from './constants.js';
 import { collection, query, where, getDocs, doc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js"; // NEW IMPORT
+import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js"; 
 
 // --- STATE MANAGEMENT ---
-let pdfDoc = null;
+let interiorPdfDoc = null;
+let coverPdfDoc = null;
 let currentSheetIndex = 0;
 let totalSheets = 0;
 let currentSettings = {};
@@ -37,7 +38,6 @@ const IMPOSITION_TYPE_OPTIONS = [
 function getTrimSizeInPoints(projectData) {
     const specs = projectData.specs;
     if (!specs || !specs.dimensions) {
-        console.warn("No specs.dimensions found, defaulting to Letter.");
         return { width: 8.5 * INCH_TO_POINTS, height: 11 * INCH_TO_POINTS };
     }
 
@@ -49,13 +49,9 @@ function getTrimSizeInPoints(projectData) {
 
     const dimStr = String(specs.dimensions).toLowerCase();
     switch (dimStr) {
-        case 'letter':
-            return { width: 8.5 * INCH_TO_POINTS, height: 11 * INCH_TO_POINTS };
-        case 'tabloid':
-            return { width: 11 * INCH_TO_POINTS, height: 17 * INCH_TO_POINTS };
-        default:
-            console.warn(`Unknown dimension string: ${specs.dimensions}, defaulting to Letter.`);
-            return { width: 8.5 * INCH_TO_POINTS, height: 11 * INCH_TO_POINTS };
+        case 'letter': return { width: 8.5 * INCH_TO_POINTS, height: 11 * INCH_TO_POINTS };
+        case 'tabloid': return { width: 11 * INCH_TO_POINTS, height: 17 * INCH_TO_POINTS };
+        default: return { width: 8.5 * INCH_TO_POINTS, height: 11 * INCH_TO_POINTS };
     }
 }
 
@@ -84,7 +80,7 @@ function populateForm(settings) {
 
 // --- CORE RENDERING ---
 async function renderAllPreviews(projectData) {
-    if (!pdfDoc) return;
+    if (!interiorPdfDoc) return;
     await renderContentCanvas(projectData);
     await renderThumbnailList(projectData);
 }
@@ -136,7 +132,7 @@ function renderMainPreview(projectData) {
 
 async function renderContentCanvas(projectData) {
     const sheetConfig = sheetSizes.find(s => s.name === currentSettings.sheet);
-    if (!pdfDoc || !sheetConfig) return;
+    if (!interiorPdfDoc || !sheetConfig) return;
 
     let sheetWidth = sheetConfig.longSideInches * INCH_TO_POINTS;
     let sheetHeight = sheetConfig.shortSideInches * INCH_TO_POINTS;
@@ -166,7 +162,7 @@ function requestRender(projectData) {
 
 
 async function renderSheetAndThumbnails(projectData) {
-    if (!pdfDoc) return;
+    if (!interiorPdfDoc) return;
 
     totalSheets = calculateTotalSheets();
     await renderContentCanvas(projectData);
@@ -229,10 +225,28 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
     }
     ctx.fillRect(0, 0, sheetWidth, sheetHeight);
 
-    if (!pdfDoc || totalSheets === 0) return;
+    if (!interiorPdfDoc || totalSheets === 0) return;
 
-    const sequence = getPageSequenceForSheet(sheetIndex, pdfDoc.numPages, currentSettings);
+    const totalInteriorPages = interiorPdfDoc.numPages;
+    // [FIX] STRICT: Only Booklet
+    const isBooklet = currentSettings.impositionType === 'booklet';
+    const hasCover = !!coverPdfDoc && currentSettings.includeCover && isBooklet;
+    const coverPageCount = hasCover ? 4 : 0;
+    const virtualTotalPages = totalInteriorPages + coverPageCount;
+
+    // Detect 2-Page Spread Cover
+    let isSpreadCover = false;
+    if (hasCover && coverPdfDoc.numPages === 2) {
+        const intPage = await interiorPdfDoc.getPage(1);
+        const covPage = await coverPdfDoc.getPage(1);
+        if (covPage.view[2] > intPage.view[2] * 1.5) {
+            isSpreadCover = true;
+        }
+    }
+
+    const sequence = getPageSequenceForSheet(sheetIndex, virtualTotalPages, currentSettings);
     const pagesOnThisSide = sequence[side];
+
     if (!pagesOnThisSide || pagesOnThisSide.every(p => p === null)) {
         if (currentSettings.showQRCode) {
             await drawSlugInfo(ctx, sheetIndex + 1, totalSheets, projectData, currentSettings.qrCodePosition);
@@ -245,48 +259,133 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
     const artBoxWidth = trimWidth + (2 * bleedPoints);
     const artBoxHeight = trimHeight + (2 * bleedPoints);
 
-    const firstPageProxy = await pdfDoc.getPage(1);
-    const pageViewport = firstPageProxy.getViewport({ scale: 1 });
-    const { width: actualFileWidth, height: actualFileHeight } = pageViewport;
+    const gridCols = isBooklet ? 2 : currentSettings.columns;
+    const gridRows = currentSettings.rows;
 
-    const clipX = (actualFileWidth - artBoxWidth) / 2;
-    const clipY = (actualFileHeight - artBoxHeight) / 2;
+    const colStepX = isBooklet 
+        ? trimWidth + (currentSettings.horizontalGutterInches * INCH_TO_POINTS) 
+        : artBoxWidth + (currentSettings.horizontalGutterInches * INCH_TO_POINTS);
 
-    const totalRequiredWidth = (artBoxWidth * currentSettings.columns) + (Math.max(0, currentSettings.columns - 1) * (currentSettings.horizontalGutterInches * INCH_TO_POINTS));
-    const totalRequiredHeight = (artBoxHeight * currentSettings.rows) + (Math.max(0, currentSettings.rows - 1) * (currentSettings.verticalGutterInches * INCH_TO_POINTS));
+    const rowStepY = artBoxHeight + (currentSettings.verticalGutterInches * INCH_TO_POINTS);
+
+    let totalRequiredWidth;
+    if (isBooklet) {
+        totalRequiredWidth = (trimWidth * (gridCols - 1)) + artBoxWidth;
+        if(gridCols > 1) totalRequiredWidth += (gridCols - 1) * (currentSettings.horizontalGutterInches * INCH_TO_POINTS);
+    } else {
+        totalRequiredWidth = (artBoxWidth * gridCols) + (Math.max(0, gridCols - 1) * (currentSettings.horizontalGutterInches * INCH_TO_POINTS));
+    }
+
+    const totalRequiredHeight = (artBoxHeight * gridRows) + (Math.max(0, gridRows - 1) * (currentSettings.verticalGutterInches * INCH_TO_POINTS));
     const startX = (sheetWidth - totalRequiredWidth) / 2;
     const startY = (sheetHeight - totalRequiredHeight) / 2;
 
-
-    for (let row = 0; row < currentSettings.rows; row++) {
-        for (let col = 0; col < currentSettings.columns; col++) {
-            const slotIndex = row * currentSettings.columns + col;
-            const pageNum = pagesOnThisSide[slotIndex];
-            if (!pageNum) continue;
-
-            const page = await pdfDoc.getPage(pageNum);
+    for (let row = 0; row < gridRows; row++) {
+        for (let col = 0; col < gridCols; col++) {
+            const slotIndex = row * gridCols + col;
+            const virtualPageNum = pagesOnThisSide[slotIndex];
             
-            const x = startX + col * (artBoxWidth + (currentSettings.horizontalGutterInches * INCH_TO_POINTS));
-            const y = startY + row * (artBoxHeight + (currentSettings.verticalGutterInches * INCH_TO_POINTS));
+            if (!virtualPageNum) continue;
 
-            const specificViewport = page.getViewport({ scale: 1 });
+            let pdfToUse = interiorPdfDoc;
+            let actualPageNum = virtualPageNum;
+            let spreadShiftMode = 'none'; 
+
+            if (hasCover) {
+                if (virtualPageNum === 1) { 
+                    pdfToUse = coverPdfDoc; 
+                    actualPageNum = 1; 
+                    if(isSpreadCover) spreadShiftMode = 'rightHalf'; 
+                }
+                else if (virtualPageNum === 2) { 
+                    pdfToUse = coverPdfDoc; 
+                    actualPageNum = 2; 
+                    if(isSpreadCover) spreadShiftMode = 'leftHalf'; 
+                }
+                else if (virtualPageNum === virtualTotalPages - 1) { 
+                    pdfToUse = coverPdfDoc; 
+                    actualPageNum = isSpreadCover ? 2 : (coverPdfDoc.numPages > 2 ? 3 : 2); 
+                    if(isSpreadCover) spreadShiftMode = 'rightHalf'; 
+                } 
+                else if (virtualPageNum === virtualTotalPages) { 
+                    pdfToUse = coverPdfDoc; 
+                    actualPageNum = isSpreadCover ? 1 : (coverPdfDoc.numPages >= 4 ? 4 : 1);
+                    if(isSpreadCover) spreadShiftMode = 'leftHalf'; 
+                }
+                else { actualPageNum = virtualPageNum - 2; }
+            }
+
+            if (actualPageNum > pdfToUse.numPages || actualPageNum < 1) continue;
+
+            const page = await pdfToUse.getPage(actualPageNum);
+            
+            let x = startX + col * colStepX;
+            const y = startY + row * rowStepY;
+
+            // Creep Calculation (Reversed Index Order)
+            if (isBooklet && currentSettings.creepInches) {
+                const safeTotalSheets = Math.max(1, totalSheets - 1);
+                const creepStep = (currentSettings.creepInches * INCH_TO_POINTS) / safeTotalSheets;
+                const inverseIndex = safeTotalSheets - sheetIndex;
+                const shiftAmount = inverseIndex * creepStep;
+
+                const isLeftPage = (col === 0);
+                x += isLeftPage ? shiftAmount : -shiftAmount; 
+            }
+
+            const viewport = page.getViewport({ scale: 1 });
+            
+            ctx.save();
+
+            // MASKING
+            if (isBooklet) {
+                ctx.beginPath();
+                if (col === 0) {
+                    ctx.rect(x - bleedPoints, y, bleedPoints + trimWidth, artBoxHeight);
+                } else {
+                    ctx.rect(x, y, trimWidth + bleedPoints, artBoxHeight);
+                }
+                ctx.clip();
+            }
+
             const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = specificViewport.width;
-            tempCanvas.height = specificViewport.height;
-            
-            await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport: specificViewport }).promise;
-            
-            ctx.drawImage(tempCanvas, 
-                clipX, clipY,                     
-                artBoxWidth, artBoxHeight,        
-                x, y,                             
-                artBoxWidth, artBoxHeight         
-            );
+            tempCanvas.width = viewport.width;
+            tempCanvas.height = viewport.height;
+            await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport }).promise;
 
-            drawPageNumber(ctx, pageNum, x, y);
+            // DRAW IMAGE
+            let drawX = isBooklet ? x - bleedPoints : x;
+            let drawW = artBoxWidth;
+            let drawH = artBoxHeight;
+
+            if (isSpreadCover && pdfToUse === coverPdfDoc) {
+                const scaleFactor = artBoxHeight / viewport.height;
+                drawW = viewport.width * scaleFactor;
+                drawH = viewport.height * scaleFactor;
+                
+                if (spreadShiftMode === 'rightHalf') {
+                    drawX = x - (drawW / 2);
+                }
+                else if (spreadShiftMode === 'leftHalf') {
+                    drawX = x + trimWidth - (drawW / 2);
+                }
+            }
+
+            ctx.drawImage(tempCanvas, drawX, y, drawW, drawH);
+
+            ctx.restore(); 
+
+            const numX = isBooklet ? x : x + bleedPoints;
+            drawPageNumber(ctx, virtualPageNum, numX, y + bleedPoints);
+
+            let finalCropX = x + bleedPoints;
+            if (isBooklet) {
+                if (col === 0) finalCropX = x; 
+                if (col === 1) finalCropX = x; 
+            }
 
             drawCropMarks(ctx, 
-                x + bleedPoints,
+                finalCropX,
                 y + bleedPoints,
                 trimWidth,
                 trimHeight,
@@ -300,57 +399,79 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
 
 
 function calculateTotalSheets() {
-    if (!pdfDoc) return 0;
-    const { impositionType, columns, rows, isDuplex } = currentSettings;
-    const slotsPerSheet = columns * rows;
+    if (!interiorPdfDoc) return 0;
+    const { impositionType, columns, rows, isDuplex, includeCover } = currentSettings;
+    
+    const effectiveCols = impositionType === 'booklet' ? 2 : columns;
+    const slotsPerSheet = effectiveCols * rows;
+    
     if (!slotsPerSheet) return 0;
 
+    let processingPages = interiorPdfDoc.numPages;
+    // [FIX] Strict Check
+    if (coverPdfDoc && includeCover && impositionType === 'booklet') {
+        processingPages += 4; 
+    }
+
     if (impositionType === 'booklet') {
-        const roundedPages = Math.ceil(pdfDoc.numPages / 4) * 4;
+        const roundedPages = Math.ceil(processingPages / 4) * 4;
         if (roundedPages === 0) return 0;
         return roundedPages / 4;
     }
     if (impositionType === 'repeat') {
-        return isDuplex ? Math.ceil(pdfDoc.numPages / 2) : pdfDoc.numPages;
+        return isDuplex ? Math.ceil(processingPages / 2) : processingPages;
     }
      if (impositionType === 'collateCut') {
-        const pagesPerLogicalStack = Math.ceil(pdfDoc.numPages / slotsPerSheet);
+        const pagesPerLogicalStack = Math.ceil(processingPages / slotsPerSheet);
         return isDuplex ? Math.ceil(pagesPerLogicalStack / 2) : pagesPerLogicalStack;
     }
     const slots = isDuplex ? slotsPerSheet * 2 : slotsPerSheet;
-    return Math.ceil(pdfDoc.numPages / slots);
+    return Math.ceil(processingPages / slots);
 }
 
 // --- INITIALIZATION ---
-// Updated to accept projectId
 export async function initializeImpositionUI({ projectData, db, projectId }) {
     const imposePdfButton = document.getElementById('impose-pdf-button');
     const impositionModal = document.getElementById('imposition-modal');
     const closeModalButton = document.getElementById('imposition-modal-close-button');
-    const generateButton = document.getElementById('imposition-generate-button'); // Get Generate Button
+    const generateButton = document.getElementById('imposition-generate-button');
     const form = document.getElementById('imposition-form');
     const thumbnailList = document.getElementById('imposition-thumbnail-list');
     const sideSelectorContainer = document.getElementById('side-selector-container');
 
-    // Populate dropdowns first
     const impTypeSelect = document.getElementById('imposition-type');
     impTypeSelect.innerHTML = '';
     IMPOSITION_TYPE_OPTIONS.forEach(opt => impTypeSelect.add(new Option(opt.label, opt.value)));
     const sheetSelect = document.getElementById('sheet-size');
 
-    // Fetch sheet sizes
     try {
         sheetSizes = await getSheetSizes(db);
         sheetSelect.innerHTML = '';
         sheetSizes.forEach(s => sheetSelect.add(new Option(s.name, s.name)));
     } catch (e) {
-        console.error("Could not load sheet sizes:", e);
         if (sheetSizes.length === 0) {
             sheetSizes = [{ name: "Letter (11x8.5)", longSideInches: 11, shortSideInches: 8.5 }];
             sheetSizes.forEach(s => sheetSelect.add(new Option(s.name, s.name)));
         }
     }
 
+    if (!document.getElementById('creep-control-group')) {
+        const creepGroup = document.createElement('div');
+        creepGroup.id = 'creep-control-group';
+        creepGroup.className = "mb-4 hidden"; 
+        creepGroup.innerHTML = `
+            <label for="creepInches" class="block text-sm font-medium text-gray-300">Total Creep (in)</label>
+            <input type="number" name="creepInches" id="creepInches" step="0.001" value="0" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-indigo-500">
+        `;
+        
+        const coverContainer = document.getElementById('include-cover-container');
+        if (coverContainer && coverContainer.parentNode) {
+            coverContainer.parentNode.insertBefore(creepGroup, coverContainer.nextSibling);
+        } else {
+            const settingsPanel = document.getElementById('imposition-settings-panel')?.querySelector('form');
+            if(settingsPanel) settingsPanel.appendChild(creepGroup);
+        }
+    }
 
     async function handleFormChange() {
         const formData = new FormData(form);
@@ -360,6 +481,20 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
             if (el.type === 'number') currentSettings[key] = parseFloat(el.value || 0);
             if (el.type === 'checkbox') currentSettings[key] = el.checked;
         });
+
+        const creepGroup = document.getElementById('creep-control-group');
+        const coverGroup = document.getElementById('include-cover-group');
+        const coverContainer = document.getElementById('include-cover-container');
+        
+        if (currentSettings.impositionType === 'booklet') {
+            if (creepGroup) creepGroup.classList.remove('hidden');
+            if (coverGroup) coverGroup.classList.remove('hidden');
+            if (coverContainer) coverContainer.classList.remove('hidden');
+        } else {
+            if (creepGroup) creepGroup.classList.add('hidden');
+            if (coverGroup) coverGroup.classList.add('hidden');
+            if (coverContainer) coverContainer.classList.add('hidden');
+        }
 
         currentSheetIndex = 0;
         currentViewSide = 'front';
@@ -387,15 +522,13 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
         await renderContentCanvas(projectData);
     });
 
-    // --- Generate Button Listener (Background Mode) ---
     if (generateButton) {
-        generateButton.addEventListener('click', () => { // Removed 'async' to not block
+        generateButton.addEventListener('click', () => { 
             if (!projectId) {
                 alert("Error: Project ID not found.");
                 return;
             }
 
-            // 1. Prepare Payload
             const sheetConfig = sheetSizes.find(s => s.name === currentSettings.sheet);
             const settingsPayload = { ...currentSettings };
             if (sheetConfig) {
@@ -403,10 +536,8 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
                 settingsPayload.sheetShortSideInches = sheetConfig.shortSideInches;
             }
 
-            // 2. Close Modal & Show Feedback Immediately
             impositionModal.classList.add('hidden');
             
-            // Create "Processing" Toast
             const toastId = 'toast-' + Date.now();
             const processingToast = document.createElement('div');
             processingToast.id = toastId;
@@ -417,7 +548,6 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
             `;
             document.body.appendChild(processingToast);
 
-            // 3. Fire Request in Background
             const functions = getFunctions();
             const imposePdf = httpsCallable(functions, 'imposePdf', { timeout: 3600000 });
 
@@ -425,8 +555,7 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
                 projectId: projectId,
                 settings: settingsPayload
             }).then((result) => {
-                // 4. Handle Success
-                document.getElementById(toastId)?.remove(); // Remove processing toast
+                document.getElementById(toastId)?.remove();
 
                 if (result.data.success) {
                     const successToast = document.createElement('div');
@@ -444,15 +573,11 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
                         </div>
                     `;
                     document.body.appendChild(successToast);
-                    
-                    // Auto-dismiss after 30 seconds
                     setTimeout(() => { if(successToast.parentElement) successToast.remove() }, 30000);
                 }
             }).catch((error) => {
-                // 5. Handle Error
                 document.getElementById(toastId)?.remove();
                 console.error("Imposition error:", error);
-                
                 const errorToast = document.createElement('div');
                 errorToast.className = "fixed bottom-6 right-6 bg-slate-800 border border-red-500 text-white px-6 py-4 rounded-lg shadow-2xl z-[100]";
                 errorToast.innerHTML = `
@@ -475,9 +600,21 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
         }
         if (imposePdfButton) imposePdfButton.style.display = 'inline-block';
 
+        // Load Interior
         const latestVersion = projectData.versions.slice().sort((a, b) => b.version - a.version)[0];
-        pdfDoc = await getPdfDoc(latestVersion.previewURL || latestVersion.fileURL);
-        if (!pdfDoc) return;
+        interiorPdfDoc = await getPdfDoc(latestVersion.previewURL || latestVersion.fileURL);
+        
+        // Load Cover if available
+        if (projectData.cover && projectData.cover.fileURL) {
+            try {
+                coverPdfDoc = await getPdfDoc(projectData.cover.previewURL || projectData.cover.fileURL);
+                console.log("Cover PDF loaded for preview");
+            } catch (e) {
+                console.warn("Failed to load cover PDF for preview", e);
+            }
+        }
+
+        if (!interiorPdfDoc) return;
 
         let globalDefaults = {};
         let ruleSettings = null;
@@ -493,12 +630,12 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
                 if (!querySnapshot.empty) ruleSettings = querySnapshot.docs[0].data();
             }
         } catch (error) {
-            console.warn("Could not fetch settings from Firestore for test environment, using defaults.", error);
+            console.warn("Could not fetch settings from Firestore, using defaults.", error);
         }
 
         let initialSettings = projectData.impositions?.slice().sort((a,b) => b.createdAt - a.createdAt)[0]?.settings;
         if (!initialSettings) {
-             const firstPage = await pdfDoc.getPage(1);
+             const firstPage = await interiorPdfDoc.getPage(1);
              const { width, height } = firstPage.getViewport({scale: 1});
             if (ruleSettings) {
                 initialSettings = { ...globalDefaults, ...ruleSettings, sheet: ruleSettings.pressSheet, impositionType: 'stack' };

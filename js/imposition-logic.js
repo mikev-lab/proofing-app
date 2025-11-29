@@ -111,16 +111,31 @@ function getBookletPagePairs(sheetIndex, paddedPageCount) {
 
 
 export function getPageSequenceForSheet(sheetIndex, numInputPages, settings) {
-    const { impositionType, columns, rows, isDuplex } = settings;
+    const { impositionType, columns, rows, isDuplex, includeCover = true } = settings;
     const slotsPerSheet = columns * rows;
     const pages = Array(slotsPerSheet * 2).fill(null); // Max size for duplex
 
     if (impositionType === 'booklet') {
-        const paddedPageCount = Math.ceil(numInputPages / 4) * 4;
+        let processingPages = numInputPages;
+        let pageOffset = 0;
+
+        // Handle Cover Exclusion
+        if (includeCover === false && numInputPages >= 4) {
+            processingPages = numInputPages - 4; // Ignore 2 at start and 2 at end
+            pageOffset = 2; // Start mapping from page index 2 (Page 3)
+        }
+
+        const paddedPageCount = Math.ceil(processingPages / 4) * 4;
         const pairs = getBookletPagePairs(sheetIndex, paddedPageCount);
-        // The booklet logic uses a fixed 2-column, 1-row layout for its pairs
-        const frontPages = [pairs.front[0] + 1, pairs.front[1] + 1].map(p => p > paddedPageCount ? null : p);
-        const backPages = [pairs.back[0] + 1, pairs.back[1] + 1].map(p => p > paddedPageCount ? null : p);
+        
+        // Helper to resolve mapped index or null
+        const resolve = (pIndex) => {
+            if (pIndex > processingPages - 1) return null;
+            return pIndex + 1 + pageOffset;
+        };
+
+        const frontPages = [resolve(pairs.front[0]), resolve(pairs.front[1])];
+        const backPages = [resolve(pairs.back[0]), resolve(pairs.back[1])];
         return { front: frontPages, back: backPages };
     }
 
