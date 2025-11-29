@@ -2731,11 +2731,49 @@ exports.imposePdf = onCall({
 
     const file = bucket.file(decodeURIComponent(filePath));
 
+    // [NEW] Check for separate cover file if requested
+    let coverTempPath = null;
+    if (settings.includeCover && projectData.cover && (projectData.cover.fileURL || projectData.cover.previewURL)) {
+        try {
+            const coverUrl = projectData.cover.fileURL || projectData.cover.previewURL;
+            logger.log(`Fetching cover file from: ${coverUrl}`);
+
+            // Re-use robust parsing logic for cover URL
+            const urlObj = new URL(coverUrl);
+            let coverFilePath;
+            if (urlObj.protocol === 'gs:') {
+                coverFilePath = urlObj.pathname.startsWith('/') ? urlObj.pathname.slice(1) : urlObj.pathname;
+            } else {
+                 const parts = urlObj.pathname.split('/o/');
+                 if (parts.length > 1) {
+                     coverFilePath = parts[1].replace(/%2F/g, '/');
+                 } else {
+                     coverFilePath = urlObj.pathname.startsWith('/') ? urlObj.pathname.slice(1) : urlObj.pathname;
+                 }
+            }
+
+            coverTempPath = path.join(os.tmpdir(), `cover_${projectId}_${Date.now()}.pdf`);
+            await bucket.file(decodeURIComponent(coverFilePath)).download({ destination: coverTempPath });
+            logger.log(`Cover downloaded to: ${coverTempPath}`);
+
+        } catch (e) {
+            logger.warn("Failed to download cover file:", e);
+            // Don't fail the whole job, just log and continue without cover
+            coverTempPath = null;
+        }
+    }
+
     const { filePath: localImposedPath } = await imposePdfLogic({
       inputFile: file,
       settings: settings,
       jobInfo: projectData,
+      coverFilePath: coverTempPath // Pass to logic
     });
+
+    // Cleanup cover temp file
+    if (coverTempPath && fs.existsSync(coverTempPath)) {
+        try { fs.unlinkSync(coverTempPath); } catch(e) {}
+    }
 
     const imposedFileName = `imposed_manual_${Date.now()}.pdf`;
     const imposedFilePath = `imposed/${projectId}/${imposedFileName}`;
