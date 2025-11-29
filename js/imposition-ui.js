@@ -337,6 +337,7 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
     impTypeSelect.innerHTML = '';
     IMPOSITION_TYPE_OPTIONS.forEach(opt => impTypeSelect.add(new Option(opt.label, opt.value)));
     const sheetSelect = document.getElementById('sheet-size');
+    const includeCoverContainer = document.getElementById('include-cover-container');
 
     // Fetch sheet sizes
     try {
@@ -366,6 +367,17 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
         if (sideSelectorContainer) sideSelectorContainer.classList.add('hidden');
 
         resetZoom(); 
+        // Toggle 'Include Cover' visibility
+        if (includeCoverContainer) {
+            if (currentSettings.impositionType === 'booklet') {
+                includeCoverContainer.classList.remove('hidden');
+            } else {
+                includeCoverContainer.classList.add('hidden');
+                // Force disable includeCover if not in booklet mode to prevent accidental merging
+                currentSettings.includeCover = false;
+            }
+        }
+
         await renderSheetAndThumbnails(projectData); 
     }
 
