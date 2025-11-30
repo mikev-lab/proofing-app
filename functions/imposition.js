@@ -164,7 +164,8 @@ async function imposePdfLogic(params) {
     const verticalGutterPoints = verticalGutterInches * INCH_TO_POINTS;
     const { width: pageContentWidth, height: pageContentHeight } = inputPdfDoc.getPages()[0].getSize();
     
-    const trimWidth = pageContentWidth - (2 * bleedPoints);
+    // Ensure trimWidth is safe
+    const trimWidth = Math.max(0, pageContentWidth - (2 * bleedPoints));
 
     // --- SHEET SIZE RESOLUTION ---
     let paperLongSidePoints, paperShortSidePoints;
@@ -217,6 +218,7 @@ async function imposePdfLogic(params) {
     
     let colStepX;
     if (impositionType === 'booklet') {
+        // Booklet always assumes strict trim alignment at spine
         colStepX = trimWidth + horizontalGutterPoints;
     } else {
         colStepX = pageContentWidth + horizontalGutterPoints;
@@ -250,10 +252,9 @@ async function imposePdfLogic(params) {
         const safeTotalSheets = Math.max(1, totalPhysicalSheets - 1);
         const creepStep = (creepInches * INCH_TO_POINTS) / safeTotalSheets;
         
-        // [FIX] Reverse Order: Sheet 0 (Cover) gets MAX creep. Sheet N (Center) gets 0.
-        // This moves the outer pages INWARD the most, or centers content on the inner-most page.
-        const inverseIndex = safeTotalSheets - sheetIndex;
-        const shiftAmount = inverseIndex * creepStep;
+        // STANDARD CREEP: Sheet 0 (Cover) gets 0. Sheet N (Center) gets Max.
+        // This keeps the Cover size fixed (as reference) and squeezes the inner pages INWARD.
+        const shiftAmount = sheetIndex * creepStep;
 
         // Direction: INWARD (Towards Spine)
         // Left Page (Col 0) -> Spine on Right -> Move Right (+)
@@ -341,11 +342,20 @@ async function imposePdfLogic(params) {
 
             if (impositionType === 'booklet') {
                 outputSheetFront.pushOperators(pushGraphicsState());
+                
+                // MASKING LOGIC FOR BOOKLET
+                // Left Page (Col 0): Clip Right Bleed (Mask at x + trim)
+                // Right Page (Col 1): Clip Left Bleed (Mask at x)
+                
                 if (col === 0) {
+                    // Clip Box: Left Edge to Spine
+                    // x is the Left Edge of the Trim
                     outputSheetFront.pushOperators(rect(x - bleedPoints, y, bleedPoints + trimWidth, pageContentHeight));
                     outputSheetFront.pushOperators(clip(), endPath());
                     outputSheetFront.drawPage(embeddedPage, { x: x - bleedPoints, y, width: pageContentWidth, height: pageContentHeight });
                 } else {
+                    // Clip Box: Spine to Right Edge
+                    // x is the Left Edge of the Trim (Spine)
                     outputSheetFront.pushOperators(rect(x, y, trimWidth + bleedPoints, pageContentHeight));
                     outputSheetFront.pushOperators(clip(), endPath());
                     outputSheetFront.drawPage(embeddedPage, { x: x - bleedPoints, y, width: pageContentWidth, height: pageContentHeight });
@@ -359,8 +369,8 @@ async function imposePdfLogic(params) {
             const trimAreaH = pageContentHeight - (2 * bleedPoints);
             let finalCropX = x + bleedPoints;
             if (impositionType === 'booklet') {
-                if (col === 0) finalCropX = x;
-                if (col === 1) finalCropX = x;
+                if (col === 0) finalCropX = x; // Start of trim
+                if (col === 1) finalCropX = x; // Start of trim (Spine)
             }
 
             drawCropMarks(outputSheetFront, finalCropX, trimAreaY, trimWidth, trimAreaH, {
@@ -404,6 +414,7 @@ async function imposePdfLogic(params) {
                 const col = slotIndex % gridCols;
 
                 if (impositionType === 'booklet') {
+                    // Note: Col 0 on Back is physically LEFT (Page 2), which is a LEFT page in the book.
                     const isLeftPage = (col === 0);
                     x += calculateCreepShift(physicalSheetIndex, isLeftPage);
                 }
@@ -411,10 +422,12 @@ async function imposePdfLogic(params) {
                 if (impositionType === 'booklet') {
                     outputSheetBack.pushOperators(pushGraphicsState());
                     if (col === 0) {
+                        // Left Page Logic (Mask Right Bleed / Spine)
                         outputSheetBack.pushOperators(rect(x - bleedPoints, y, bleedPoints + trimWidth, pageContentHeight));
                         outputSheetBack.pushOperators(clip(), endPath());
                         outputSheetBack.drawPage(embeddedPage, { x: x - bleedPoints, y, width: pageContentWidth, height: pageContentHeight });
                     } else {
+                         // Right Page Logic (Mask Left Bleed / Spine)
                         outputSheetBack.pushOperators(rect(x, y, trimWidth + bleedPoints, pageContentHeight));
                         outputSheetBack.pushOperators(clip(), endPath());
                         outputSheetBack.drawPage(embeddedPage, { x: x - bleedPoints, y, width: pageContentWidth, height: pageContentHeight });

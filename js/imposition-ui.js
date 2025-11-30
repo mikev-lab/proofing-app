@@ -228,7 +228,6 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
     if (!interiorPdfDoc || totalSheets === 0) return;
 
     const totalInteriorPages = interiorPdfDoc.numPages;
-    // [FIX] STRICT: Only Booklet
     const isBooklet = currentSettings.impositionType === 'booklet';
     const hasCover = !!coverPdfDoc && currentSettings.includeCover && isBooklet;
     const coverPageCount = hasCover ? 4 : 0;
@@ -319,18 +318,32 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
 
             const page = await pdfToUse.getPage(actualPageNum);
             
-            let x = startX + col * colStepX;
+            // 1. Nominal Grid (Fixed Spine)
+            let nominalX = startX + col * colStepX;
             const y = startY + row * rowStepY;
 
-            // Creep Calculation (Reversed Index Order)
+            // 2. Content Position (Shifted by Creep)
+            let contentX = nominalX;
+            let creepApplied = 0;
+            
             if (isBooklet && currentSettings.creepInches) {
-                const safeTotalSheets = Math.max(1, totalSheets - 1);
-                const creepStep = (currentSettings.creepInches * INCH_TO_POINTS) / safeTotalSheets;
-                const inverseIndex = safeTotalSheets - sheetIndex;
-                const shiftAmount = inverseIndex * creepStep;
+                // TOGGLE CHECK: Preserve Center Spread
+                const isCenterSheet = (sheetIndex === totalSheets - 1);
+                
+                if (currentSettings.preserveCenterSpread && isCenterSheet) {
+                    // Force 0 creep for center sheet
+                    creepApplied = 0;
+                } else {
+                    const safeTotalSheets = Math.max(1, totalSheets - 1);
+                    const creepStep = (currentSettings.creepInches * INCH_TO_POINTS) / safeTotalSheets;
+                    
+                    // Standard Creep Logic
+                    const shiftAmount = sheetIndex * creepStep;
+                    creepApplied = shiftAmount;
 
-                const isLeftPage = (col === 0);
-                x += isLeftPage ? shiftAmount : -shiftAmount; 
+                    const isLeftPage = (col === 0);
+                    contentX += isLeftPage ? shiftAmount : -shiftAmount; 
+                }
             }
 
             const viewport = page.getViewport({ scale: 1 });
@@ -341,9 +354,9 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
             if (isBooklet) {
                 ctx.beginPath();
                 if (col === 0) {
-                    ctx.rect(x - bleedPoints, y, bleedPoints + trimWidth, artBoxHeight);
+                    ctx.rect(nominalX - bleedPoints, y, bleedPoints + trimWidth, artBoxHeight);
                 } else {
-                    ctx.rect(x, y, trimWidth + bleedPoints, artBoxHeight);
+                    ctx.rect(nominalX, y, trimWidth + bleedPoints, artBoxHeight);
                 }
                 ctx.clip();
             }
@@ -354,7 +367,7 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
             await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport }).promise;
 
             // DRAW IMAGE
-            let drawX = isBooklet ? x - bleedPoints : x;
+            let drawX = isBooklet ? contentX - bleedPoints : contentX;
             let drawW = artBoxWidth;
             let drawH = artBoxHeight;
 
@@ -364,25 +377,26 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
                 drawH = viewport.height * scaleFactor;
                 
                 if (spreadShiftMode === 'rightHalf') {
-                    drawX = x - (drawW / 2);
+                    drawX = contentX - (drawW / 2);
                 }
                 else if (spreadShiftMode === 'leftHalf') {
-                    drawX = x + trimWidth - (drawW / 2);
+                    drawX = contentX + trimWidth - (drawW / 2);
                 }
             }
 
             ctx.drawImage(tempCanvas, drawX, y, drawW, drawH);
-
             ctx.restore(); 
 
-            const numX = isBooklet ? x : x + bleedPoints;
+            // DRAW PAGE NUMBER
+            const numX = isBooklet ? contentX : contentX + bleedPoints;
             drawPageNumber(ctx, virtualPageNum, numX, y + bleedPoints);
 
-            let finalCropX = x + bleedPoints;
-            if (isBooklet) {
-                if (col === 0) finalCropX = x; 
-                if (col === 1) finalCropX = x; 
-            }
+            // DRAW CROP MARKS (Use CONTENT X)
+            // UPDATED: User requested crop marks to move with the content shift
+            let finalCropX = isBooklet ? contentX : nominalX + bleedPoints;
+            
+            // For Stack/Repeat, use standard logic
+            if (!isBooklet) finalCropX = nominalX + bleedPoints;
 
             drawCropMarks(ctx, 
                 finalCropX,
@@ -390,6 +404,24 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
                 trimWidth,
                 trimHeight,
                 {});
+
+            // VISUAL AID
+            if (isBooklet && Math.abs(currentSettings.creepInches || 0) > 0) {
+                ctx.save();
+                ctx.beginPath();
+                ctx.strokeStyle = 'cyan';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([5, 5]);
+                
+                let spineX = nominalX; 
+                if (col === 0) spineX = nominalX + trimWidth;
+                else spineX = nominalX; 
+                
+                ctx.moveTo(spineX, y - 20);
+                ctx.lineTo(spineX, y + artBoxHeight + 20);
+                ctx.stroke();
+                ctx.restore();
+            }
         }
     }
     if (currentSettings.showQRCode) {
@@ -458,10 +490,19 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
     if (!document.getElementById('creep-control-group')) {
         const creepGroup = document.createElement('div');
         creepGroup.id = 'creep-control-group';
-        creepGroup.className = "mb-4 hidden"; 
+        creepGroup.className = "mb-4 hidden space-y-3"; 
+        
+        // ADDED: Preserve Spread Checkbox
         creepGroup.innerHTML = `
-            <label for="creepInches" class="block text-sm font-medium text-gray-300">Total Creep (in)</label>
-            <input type="number" name="creepInches" id="creepInches" step="0.001" value="0" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-indigo-500">
+            <div>
+                <label for="creepInches" class="block text-sm font-medium text-gray-300">Total Creep (in)</label>
+                <input type="number" name="creepInches" id="creepInches" step="0.001" value="0" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-indigo-500">
+            </div>
+            <div class="flex items-center">
+                <input id="preserveCenterSpread" name="preserveCenterSpread" type="checkbox" class="h-4 w-4 rounded border-gray-600 bg-gray-700 text-indigo-600 focus:ring-indigo-600">
+                <label for="preserveCenterSpread" class="ml-2 block text-sm text-gray-300">Preserve Center Spread</label>
+            </div>
+            <p class="text-xs text-gray-500">Center spread will have 0 shift if checked.</p>
         `;
         
         const coverContainer = document.getElementById('include-cover-container');
@@ -476,9 +517,13 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
     async function handleFormChange() {
         const formData = new FormData(form);
         currentSettings = Object.fromEntries(formData.entries());
+        
         Object.keys(currentSettings).forEach(key => {
             const el = form.elements[key];
-            if (el.type === 'number') currentSettings[key] = parseFloat(el.value || 0);
+            if (el.type === 'number') {
+                const val = parseFloat(el.value);
+                currentSettings[key] = isNaN(val) ? 0 : val;
+            }
             if (el.type === 'checkbox') currentSettings[key] = el.checked;
         });
 
@@ -503,6 +548,9 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
         resetZoom(); 
         await renderSheetAndThumbnails(projectData); 
     }
+
+    form.addEventListener('change', handleFormChange);
+    form.addEventListener('input', handleFormChange);
 
     thumbnailList.addEventListener('click', async (e) => {
         const item = e.target.closest('.thumbnail-item');
