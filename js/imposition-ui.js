@@ -33,6 +33,25 @@ const IMPOSITION_TYPE_OPTIONS = [
     { value: 'collateCut', label: 'Collate & Cut' }
 ];
 
+// [NEW] Paper Caliper Lookup (Inches)
+// Mirrored from your Estimator logic for consistency
+const PAPER_CALIPERS = {
+    "60lb Text": 0.0032,
+    "70lb Text": 0.0038,
+    "80lb Text": 0.0045,
+    "100lb Text": 0.0055,
+    "80lb Gloss Text": 0.0035,
+    "100lb Gloss Text": 0.0045,
+    "80lb Matte Text": 0.0042,
+    "100lb Matte Text": 0.0052,
+    "100lb Gloss Cover": 0.0095,
+    "12pt C1S": 0.0120,
+    "14pt C1S": 0.0140,
+    // Fallback for generic types if exact match fails
+    "Coated": 0.004,
+    "Uncoated": 0.0045
+};
+
 // --- HELPERS ---
 
 function getTrimSizeInPoints(projectData) {
@@ -76,6 +95,48 @@ function populateForm(settings) {
             else el.value = settings[key];
         }
     }
+}
+
+// [NEW] Auto-Calculate Creep
+function calculateSuggestedCreep(projectData) {
+    if (!interiorPdfDoc) return 0;
+
+    // 1. Get Page Count
+    let pageCount = interiorPdfDoc.numPages;
+    // Assume Booklet = 4 pages per sheet
+    // (If cover is separate, we usually calculate creep based on inner block thickness)
+    const sheets = Math.ceil(pageCount / 4);
+    if (sheets <= 1) return 0;
+
+    // 2. Get Paper Type from Project Specs
+    // We look for a matching name in our lookup table
+    const paperName = projectData.specs?.paperType || "";
+    const paperWeight = projectData.specs?.paperWeight || ""; // e.g., "80lb Text"
+    
+    // Try to find a match
+    let caliper = 0.004; // Default fallback (approx 20lb bond / 50lb offset)
+
+    // Check exact match first
+    if (PAPER_CALIPERS[paperWeight]) {
+        caliper = PAPER_CALIPERS[paperWeight];
+    } 
+    else if (PAPER_CALIPERS[paperName]) {
+        caliper = PAPER_CALIPERS[paperName];
+    }
+    else {
+        // Simple fuzzy search
+        const searchStr = (paperWeight + " " + paperName).toLowerCase();
+        if (searchStr.includes("gloss")) caliper = 0.0035;
+        else if (searchStr.includes("matte")) caliper = 0.0042;
+        else if (searchStr.includes("cover")) caliper = 0.0095;
+    }
+
+    // 3. Formula: (Sheets - 1) * Thickness
+    // We subtract 1 because the cover (Sheet 0) doesn't "creep" relative to itself.
+    // The innermost sheet is offset by the thickness of the sheets wrapping it.
+    const totalCreep = (sheets - 1) * caliper;
+    
+    return parseFloat(totalCreep.toFixed(4));
 }
 
 // --- CORE RENDERING ---
@@ -391,11 +452,8 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
             const numX = isBooklet ? contentX : contentX + bleedPoints;
             drawPageNumber(ctx, virtualPageNum, numX, y + bleedPoints);
 
-            // DRAW CROP MARKS (Use CONTENT X)
-            // UPDATED: User requested crop marks to move with the content shift
+            // DRAW CROP MARKS (Follow CONTENT for consistency with cut intent)
             let finalCropX = isBooklet ? contentX : nominalX + bleedPoints;
-            
-            // For Stack/Repeat, use standard logic
             if (!isBooklet) finalCropX = nominalX + bleedPoints;
 
             drawCropMarks(ctx, 
@@ -492,11 +550,14 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
         creepGroup.id = 'creep-control-group';
         creepGroup.className = "mb-4 hidden space-y-3"; 
         
-        // ADDED: Preserve Spread Checkbox
+        // Preserve Spread Checkbox
         creepGroup.innerHTML = `
             <div>
                 <label for="creepInches" class="block text-sm font-medium text-gray-300">Total Creep (in)</label>
-                <input type="number" name="creepInches" id="creepInches" step="0.001" value="0" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-indigo-500">
+                <div class="flex space-x-2">
+                    <input type="number" name="creepInches" id="creepInches" step="0.001" value="0" class="mt-1 block w-full rounded-lg border-0 bg-white/5 py-2 px-3 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-indigo-500">
+                    <button type="button" id="auto-calc-creep-btn" class="mt-1 bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-2 rounded text-xs font-semibold whitespace-nowrap">Auto</button>
+                </div>
             </div>
             <div class="flex items-center">
                 <input id="preserveCenterSpread" name="preserveCenterSpread" type="checkbox" class="h-4 w-4 rounded border-gray-600 bg-gray-700 text-indigo-600 focus:ring-indigo-600">
@@ -511,6 +572,18 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
         } else {
             const settingsPanel = document.getElementById('imposition-settings-panel')?.querySelector('form');
             if(settingsPanel) settingsPanel.appendChild(creepGroup);
+        }
+
+        // Add Listener for Auto-Calc Button
+        const autoCalcBtn = document.getElementById('auto-calc-creep-btn');
+        if (autoCalcBtn) {
+            autoCalcBtn.addEventListener('click', () => {
+                const suggestion = calculateSuggestedCreep(projectData);
+                document.getElementById('creepInches').value = suggestion;
+                // Manually trigger change to update state
+                const event = new Event('change');
+                document.getElementById('imposition-form').dispatchEvent(event);
+            });
         }
     }
 
@@ -691,6 +764,15 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
                 initialSettings = { ...globalDefaults, ...maximizeNUp(width, height, sheetSizes) };
             } else {
                 initialSettings = { ...globalDefaults, sheet: sheetSizes[0].name, impositionType: 'stack', rows: 1, columns: 1 };
+            }
+        }
+
+        // [NEW] Auto-Fill Creep Default if 0
+        if (initialSettings.impositionType === 'booklet' && (!initialSettings.creepInches || initialSettings.creepInches === 0)) {
+            const suggested = calculateSuggestedCreep(projectData);
+            if (suggested > 0) {
+                initialSettings.creepInches = suggested;
+                console.log(`Auto-calculated creep: ${suggested} inches`);
             }
         }
 
