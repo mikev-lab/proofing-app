@@ -169,10 +169,27 @@ async function imposePdfLogic(params) {
     }
 
     const numInputPages = inputPdfDoc.getPageCount();
+    const { width: pageContentWidth, height: pageContentHeight } = inputPdfDoc.getPages()[0].getSize();
+
+    // --- [FIX] AUTO-DETECT BLEED ON INPUT FILE ---
+    // If the input file exactly matches a standard Trim size, we MUST force bleedInches to 0.
+    const TOLERANCE = 5;
+    for (const dims of Object.values(STANDARD_SIZES_POINTS)) {
+        const [stdW, stdH] = dims;
+        if ((Math.abs(pageContentWidth - stdW) < TOLERANCE && Math.abs(pageContentHeight - stdH) < TOLERANCE) || 
+            (Math.abs(pageContentWidth - stdH) < TOLERANCE && Math.abs(pageContentHeight - stdW) < TOLERANCE)) {
+            if (bleedInches > 0) {
+                console.log(`Auto-Correction: Input detected as Net Format (${pageContentWidth}x${pageContentHeight}). Forcing bleed to 0.`);
+                bleedInches = 0;
+            }
+            break;
+        }
+    }
+    // ---------------------------------------------
+
     const bleedPoints = bleedInches * INCH_TO_POINTS;
     const horizontalGutterPoints = horizontalGutterInches * INCH_TO_POINTS;
     const verticalGutterPoints = verticalGutterInches * INCH_TO_POINTS;
-    const { width: pageContentWidth, height: pageContentHeight } = inputPdfDoc.getPages()[0].getSize();
     
     // Ensure trimWidth is safe
     const trimWidth = Math.max(0, pageContentWidth - (2 * bleedPoints));
@@ -228,35 +245,19 @@ async function imposePdfLogic(params) {
     
     let colStepX;
     if (impositionType === 'booklet') {
-        // Booklet always assumes strict trim alignment at spine
         colStepX = trimWidth + horizontalGutterPoints;
     } else {
-        // For stack/other, we usually step by the full content box (including bleed) if present
-        // However, usually we want to step by Trim + Gutter, but standard N-Up often preserves bleed between.
-        // If we want bleed-to-bleed contact with gutter, we use pageContentWidth.
         colStepX = pageContentWidth + horizontalGutterPoints;
     }
 
-    // --- [FIXED] CENTERING CALCULATION ---
-    // Previous logic centered the 'Bleed+Trim' block, which caused a shift.
-    // We must center the TRIM BLOCK.
+    // --- CENTERING CALCULATION ---
     let totalTrimWidth;
     if (impositionType === 'booklet') {
-         // Width is (Trim * Cols) + (Gutter * Gaps)
-         // For booklet, gutters are usually 0 at spine, but if set, we include them.
          totalTrimWidth = (trimWidth * currentColumnsForLayout) + (Math.max(0, currentColumnsForLayout - 1) * horizontalGutterPoints);
     } else {
-         // For Stack, the visual block we want centered is usually the array of Trim boxes?
-         // Or the array of Content boxes? 
-         // Typically, we center the content block for Stack.
-         // But to be consistent with the coordinate system where (x,y) = Trim Corner, we should calculate relative to trim?
-         // Let's stick to centering the visual content block for stack to avoid regression there.
          totalTrimWidth = (pageContentWidth * currentColumnsForLayout) + (Math.max(0, currentColumnsForLayout - 1) * horizontalGutterPoints);
     }
     
-    // Height Calculation (remains similar)
-    // For Booklet, height is just the page height (often 1 row).
-    // For Stack, it's total height.
     const totalRequiredHeight = (pageContentHeight * currentRowsForLayout) + (Math.max(0, currentRowsForLayout - 1) * verticalGutterPoints);
     
     // startXBlock is now calculated to position the LEFT TRIM EDGE of the first column
@@ -279,13 +280,7 @@ async function imposePdfLogic(params) {
             let xPos = startXBlock + col * colStepX;
             const yPos = startYBlock + (currentRowsForLayout - 1 - row) * (pageContentHeight + verticalGutterPoints);
             
-            // For stack, if we centered based on Content Width, startXBlock is the Content Edge.
-            // But our draw logic assumes xPos is the Trim Edge (it subtracts bleed).
-            // So for STACK, we must adjust xPos to be the Trim Edge.
             if (impositionType !== 'booklet') {
-                 // startXBlock was "Left Content Edge".
-                 // xPos is currently "Left Content Edge of this slot".
-                 // We need to pass "Left Trim Edge" to the drawing loop.
                  // Left Trim Edge = Left Content Edge + Bleed.
                  xPos += bleedPoints;
             }
@@ -301,14 +296,9 @@ async function imposePdfLogic(params) {
         
         const safeTotalSheets = Math.max(1, totalPhysicalSheets - 1);
         const creepStep = (creepInches * INCH_TO_POINTS) / safeTotalSheets;
-        
-        // STANDARD CREEP: Sheet 0 (Cover) gets 0. Sheet N (Center) gets Max.
-        // This keeps the Cover size fixed (as reference) and squeezes the inner pages INWARD.
         const shiftAmount = sheetIndex * creepStep;
 
         // Direction: INWARD (Towards Spine)
-        // Left Page (Col 0) -> Spine on Right -> Move Right (+)
-        // Right Page (Col 1) -> Spine on Left -> Move Left (-)
         return isLeftPage ? shiftAmount : -shiftAmount;
     };
 
@@ -390,26 +380,24 @@ async function imposePdfLogic(params) {
                 x += calculateCreepShift(physicalSheetIndex, isLeftPage);
             }
 
+            // --- [FIXED] BOOKLET MASKING ---
+            // Clip specifically at the spine so bleed doesn't cross over
             if (impositionType === 'booklet') {
                 outputSheetFront.pushOperators(pushGraphicsState());
-                
-                // MASKING LOGIC FOR BOOKLET
-                // Left Page (Col 0): Clip Right Bleed (Mask at x + trim)
-                // Right Page (Col 1): Clip Left Bleed (Mask at x)
-                
                 if (col === 0) {
-                    // Clip Box: Left Edge to Spine
-                    // x is the Left Edge of the Trim
+                    // Left Page: Clip Right Edge (Spine)
+                    // We allow bleed on Left/Top/Bottom, but Right stops at Trim Edge
+                    // Box: [x - bleed, y] width: [bleed + trim], height: [contentH]
                     outputSheetFront.pushOperators(rect(x - bleedPoints, y, bleedPoints + trimWidth, pageContentHeight));
                     outputSheetFront.pushOperators(clip(), endPath());
-                    outputSheetFront.drawPage(embeddedPage, { x: x - bleedPoints, y, width: pageContentWidth, height: pageContentHeight });
                 } else {
-                    // Clip Box: Spine to Right Edge
-                    // x is the Left Edge of the Trim (Spine)
+                    // Right Page: Clip Left Edge (Spine)
+                    // We allow bleed on Right/Top/Bottom, but Left starts at Trim Edge
+                    // Box: [x, y] width: [trim + bleed], height: [contentH]
                     outputSheetFront.pushOperators(rect(x, y, trimWidth + bleedPoints, pageContentHeight));
                     outputSheetFront.pushOperators(clip(), endPath());
-                    outputSheetFront.drawPage(embeddedPage, { x: x - bleedPoints, y, width: pageContentWidth, height: pageContentHeight });
                 }
+                outputSheetFront.drawPage(embeddedPage, { x: x - bleedPoints, y, width: pageContentWidth, height: pageContentHeight });
                 outputSheetFront.pushOperators(popGraphicsState());
             } else {
                 outputSheetFront.drawPage(embeddedPage, { x: x - bleedPoints, y, width: pageContentWidth, height: pageContentHeight });
@@ -417,9 +405,8 @@ async function imposePdfLogic(params) {
 
             const trimAreaY = y + bleedPoints;
             const trimAreaH = pageContentHeight - (2 * bleedPoints);
-            let finalCropX = x; // Adjusted to align with Trim Edge, not Bleed Edge
+            let finalCropX = x; 
             if (impositionType === 'stack') {
-                // Stack already adjusted x to be Trim Edge in the loop above
                 finalCropX = x; 
             }
             if (impositionType === 'booklet') {
@@ -473,19 +460,19 @@ async function imposePdfLogic(params) {
                     x += calculateCreepShift(physicalSheetIndex, isLeftPage);
                 }
 
+                // --- [FIXED] BOOKLET MASKING (BACK SIDE) ---
                 if (impositionType === 'booklet') {
                     outputSheetBack.pushOperators(pushGraphicsState());
                     if (col === 0) {
-                        // Left Page Logic (Mask Right Bleed / Spine)
+                        // Left Page Logic (Clip Right Edge/Spine)
                         outputSheetBack.pushOperators(rect(x - bleedPoints, y, bleedPoints + trimWidth, pageContentHeight));
                         outputSheetBack.pushOperators(clip(), endPath());
-                        outputSheetBack.drawPage(embeddedPage, { x: x - bleedPoints, y, width: pageContentWidth, height: pageContentHeight });
                     } else {
-                         // Right Page Logic (Mask Left Bleed / Spine)
+                         // Right Page Logic (Clip Left Edge/Spine)
                         outputSheetBack.pushOperators(rect(x, y, trimWidth + bleedPoints, pageContentHeight));
                         outputSheetBack.pushOperators(clip(), endPath());
-                        outputSheetBack.drawPage(embeddedPage, { x: x - bleedPoints, y, width: pageContentWidth, height: pageContentHeight });
                     }
+                    outputSheetBack.drawPage(embeddedPage, { x: x - bleedPoints, y, width: pageContentWidth, height: pageContentHeight });
                     outputSheetBack.pushOperators(popGraphicsState());
                 } else {
                     outputSheetBack.drawPage(embeddedPage, { x: x - bleedPoints, y, width: pageContentWidth, height: pageContentHeight });
@@ -494,7 +481,6 @@ async function imposePdfLogic(params) {
                 const trimAreaY = y + bleedPoints;
                 const trimAreaH = pageContentHeight - (2 * bleedPoints);
                 let finalCropX = x;
-                // Stack/Booklet x is already Trim Edge
                 
                 if (impositionType === 'booklet') {
                     if (col === 0) finalCropX = x;
@@ -537,7 +523,6 @@ async function imposePdfLogic(params) {
     return { filePath: finalOutputPath };
 }
 
-// ... (helpers same)
 function calculateLayout(docWidth, docHeight, sheetWidth, sheetHeight, gutterH = 0, gutterV = 0) {
     const effectiveSheetWidth = sheetWidth + gutterH;
     const effectiveSheetHeight = sheetHeight + gutterV;
@@ -584,6 +569,20 @@ async function maximizeNUp(docWidth, docHeight, db) {
     const sheetSizes = sheetSizesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
     if (sheetSizes.length === 0) throw new Error("No sheet sizes are defined in Firestore settings.");
+
+    // --- DETECT BLEED FOR UI ---
+    let detectedBleed = 0.125;
+    const TOLERANCE = 5;
+    
+    for (const [name, dims] of Object.entries(STANDARD_SIZES_POINTS)) {
+        const [stdW, stdH] = dims;
+        if ((Math.abs(docWidth - stdW) < TOLERANCE && Math.abs(docHeight - stdH) < TOLERANCE) || 
+            (Math.abs(docWidth - stdH) < TOLERANCE && Math.abs(docHeight - stdW) < TOLERANCE)) {
+            detectedBleed = 0;
+            break;
+        }
+    }
+    // ---------------------------
 
     let forcedSheet = null;
     let forcedRuleSettings = null; 
@@ -670,7 +669,7 @@ async function maximizeNUp(docWidth, docHeight, db) {
         sheetLongSideInches: parseFloat(bestLayout.sheet.longSideInches),
         sheetShortSideInches: parseFloat(bestLayout.sheet.shortSideInches),
         sheetOrientation: bestLayout.sheetOrientation,
-        bleedInches: 0.125,
+        bleedInches: detectedBleed,
         horizontalGutterInches: impositionSettings.horizontalGutterInches,
         verticalGutterInches: impositionSettings.verticalGutterInches
     };

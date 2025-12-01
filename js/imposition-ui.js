@@ -398,15 +398,20 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
             
             ctx.save();
 
-            // MASKING
+            // --- [FIXED] BOOKLET MASKING ---
+            // Restored the clip logic specifically to cut the inner bleed at the spine
             if (isBooklet) {
                 ctx.beginPath();
                 if (col === 0) {
-                    // Left Page: Clip Right Bleed
-                    ctx.rect(nominalX - bleedPoints, y, bleedPoints + trimWidth, artBoxHeight);
+                    // Left Page: Clip Right Bleed (Spine)
+                    // Box: [x-bleed, y] to [x+trim, y+h]
+                    // contentX is Left Trim Edge.
+                    ctx.rect(contentX - bleedPoints, y, bleedPoints + trimWidth, artBoxHeight);
                 } else {
-                    // Right Page: Clip Left Bleed
-                    ctx.rect(nominalX, y, trimWidth + bleedPoints, artBoxHeight);
+                    // Right Page: Clip Left Bleed (Spine)
+                    // Box: [x, y] to [x+trim+bleed, y+h]
+                    // contentX is Left Trim Edge (Spine)
+                    ctx.rect(contentX, y, trimWidth + bleedPoints, artBoxHeight);
                 }
                 ctx.clip();
             }
@@ -417,12 +422,8 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
             await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport }).promise;
 
             // [FIXED] DRAW ALIGNMENT: EXPLICIT BLEED ANCHOR
-            // Instead of centering, anchor the PDF based on bleed settings.
-            // DrawX = Trim Edge - Bleed Setting
-            // This ensures the Trim Edge aligns with the PDF's Trim line (assuming PDF matches settings).
-            
             let drawX = contentX - bleedPoints;
-            let drawY = y; // y is top of ArtBox (Trim Top - Bleed), which matches DrawY origin.
+            let drawY = y; 
             let drawW = viewport.width;
             let drawH = viewport.height;
 
@@ -434,15 +435,11 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
                 drawY = y; 
 
                 if (spreadShiftMode === 'rightHalf') {
-                    // Left Page (Back Cover): PDF Center aligns with Right Trim Edge (Spine)
-                    // Spine X = contentX + trimWidth
-                    // For a spread, the center of the PDF is the spine.
-                    // So we place the Center of PDF at the Spine of the Slot.
+                    // Left Page (Back Cover)
                     drawX = (contentX + trimWidth) - (drawW / 2);
                 }
                 else if (spreadShiftMode === 'leftHalf') {
-                    // Right Page (Front Cover): PDF Center aligns with Left Trim Edge (Spine)
-                    // Spine X = contentX
+                    // Right Page (Front Cover)
                     drawX = contentX - (drawW / 2);
                 }
             }
@@ -718,7 +715,7 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
         }
         if (imposePdfButton) imposePdfButton.style.display = 'inline-block';
 
-        const latestVersion = projectData.versions.slice().sort((a, b) => b.version - a.version)[0];
+        const latestVersion = projectData.versions.slice().sort((a, b) => b.versionNumber - a.versionNumber)[0];
         interiorPdfDoc = await getPdfDoc(latestVersion.previewURL || latestVersion.fileURL);
         
         if (projectData.cover && projectData.cover.fileURL) {

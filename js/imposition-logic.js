@@ -3,6 +3,18 @@ import { collection, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/f
 
 export const INCH_TO_POINTS = 72;
 
+// Added for detection logic
+const STANDARD_SIZES_POINTS = {
+    'Letter': [612, 792],
+    'Legal': [612, 1008],
+    'Tabloid': [792, 1224],
+    'A4': [595.28, 841.89],
+    'A3': [841.89, 1190.55],
+    '11x17': [792, 1224],
+    '12x18': [864, 1296],
+    '13x19': [936, 1368]
+};
+
 // Default sheet sizes to be used if Firestore is unavailable or empty
 const DEFAULT_SHEET_SIZES = [
     { name: "Super B (13 x 19 in)", longSideInches: 19, shortSideInches: 13 },
@@ -14,12 +26,6 @@ const DEFAULT_SHEET_SIZES = [
 
 let sheetSizesCache = null;
 
-/**
- * Fetches sheet sizes from Firestore. Caches the result.
- * Falls back to default sizes if Firestore is empty or errors out.
- * @param {object} db - The Firestore database instance.
- * @returns {Promise<Array>} A promise that resolves to an array of sheet size objects.
- */
 export async function getSheetSizes(db) {
     if (sheetSizesCache) {
         return sheetSizesCache;
@@ -49,7 +55,6 @@ export async function getSheetSizes(db) {
 }
 
 function calculateLayout(docWidth, docHeight, sheetWidth, sheetHeight) {
-    // ... (calculateLayout function remains unchanged)
     const cols1 = Math.floor(sheetWidth / docWidth);
     const rows1 = Math.floor(sheetHeight / docHeight);
     const count1 = cols1 * rows1;
@@ -85,6 +90,21 @@ export function maximizeNUp(docWidth, docHeight, sheetSizes) {
             bestLayout = { ...landscapeLayout, sheet: sheet, sheetOrientation: 'landscape' };
         }
     }
+
+    // --- DETECT BLEED ON INPUT FILE ---
+    let detectedBleed = 0.125;
+    const TOLERANCE = 5;
+    
+    for (const [name, dims] of Object.entries(STANDARD_SIZES_POINTS)) {
+        const [stdW, stdH] = dims;
+        if ((Math.abs(docWidth - stdW) < TOLERANCE && Math.abs(docHeight - stdH) < TOLERANCE) || 
+            (Math.abs(docWidth - stdH) < TOLERANCE && Math.abs(docHeight - stdW) < TOLERANCE)) {
+            detectedBleed = 0;
+            break;
+        }
+    }
+    // ----------------------------------
+
     if (bestLayout.count === 0) return null;
     return {
         columns: bestLayout.columns,
@@ -92,6 +112,7 @@ export function maximizeNUp(docWidth, docHeight, sheetSizes) {
         sheet: bestLayout.sheet.name,
         sheetOrientation: bestLayout.sheetOrientation,
         impositionType: 'stack',
+        bleedInches: detectedBleed, // Return detected bleed
     };
 }
 
@@ -101,8 +122,6 @@ function getBookletPagePairs(sheetIndex, paddedPageCount) {
     const pageIndexFL = paddedPageCount - (sheetIndex * 2) - 1;
     const pageIndexBL = sheetIndex * 2 + 1;
     const pageIndexBR = paddedPageCount - (sheetIndex * 2) - 2;
-
-    // Returns pages in visual order: [Front-Left, Front-Right], [Back-Left, Back-Right]
     return {
         front: [pageIndexFL, pageIndexFR],
         back: [pageIndexBL, pageIndexBR]
@@ -113,7 +132,7 @@ function getBookletPagePairs(sheetIndex, paddedPageCount) {
 export function getPageSequenceForSheet(sheetIndex, numInputPages, settings) {
     const { impositionType, columns, rows, isDuplex, includeCover = true } = settings;
     const slotsPerSheet = columns * rows;
-    const pages = Array(slotsPerSheet * 2).fill(null); // Max size for duplex
+    const pages = Array(slotsPerSheet * 2).fill(null);
 
     if (impositionType === 'booklet') {
         let processingPages = numInputPages;
@@ -128,7 +147,6 @@ export function getPageSequenceForSheet(sheetIndex, numInputPages, settings) {
         const paddedPageCount = Math.ceil(processingPages / 4) * 4;
         const pairs = getBookletPagePairs(sheetIndex, paddedPageCount);
         
-        // Helper to resolve mapped index or null
         const resolve = (pIndex) => {
             if (pIndex > processingPages - 1) return null;
             return pIndex + 1 + pageOffset;
@@ -186,7 +204,6 @@ export function getPageSequenceForSheet(sheetIndex, numInputPages, settings) {
         }
     }
 
-    // Work-and-turn logic for duplex stack/collate
     if (isDuplex && (impositionType === 'stack' || impositionType === 'collateCut') && columns > 1) {
         const reversedRows = [];
         for (let row = 0; row < rows; row++) {
