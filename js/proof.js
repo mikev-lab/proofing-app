@@ -118,10 +118,10 @@ function showApproveConfirmation(projectData) {
     const interiorPaperEl = document.getElementById('approval-interior-paper-text');
     if (interiorPaperEl) {
         const paper = specs.paperType || "Standard";
-        const direction = specs.readingDirection === 'rtl' ? 'Right to Left' : 'Left to Right';
+        // [FIX] Removed explicit reading direction text, as requested.
+        // The user acknowledges it via the dedicated checkbox below.
         interiorPaperEl.innerHTML = `
             Confirm Interior Paper: <span class="font-bold text-white">${paper}</span>
-            <br/><span class="text-xs text-gray-300 block mt-1">Reading Direction: <span class="font-bold text-white">${direction}</span></span>
         `;
     }
 
@@ -144,6 +144,27 @@ function showApproveConfirmation(projectData) {
             coverContainer.classList.add('hidden');
             coverCheckbox.checked = true; // Auto-check hidden fields to pass "every()" validation
             coverCheckbox.disabled = true; 
+        }
+    }
+
+    // 3b. Populate Lamination Confirmation
+    const laminationContainer = document.getElementById('container-lamination');
+    const laminationTextEl = document.getElementById('approval-lamination-text');
+    const laminationCheckbox = document.getElementById('check-lamination');
+
+    if (laminationContainer && laminationTextEl && laminationCheckbox) {
+        // Only show if it's a booklet (not loose)
+        if (specs.binding && specs.binding !== 'loose') {
+            laminationContainer.classList.remove('hidden');
+            const lamValue = specs.lamination || 'None';
+            laminationTextEl.innerHTML = `Confirm Lamination: <span class="font-bold text-white">${lamValue}</span>`;
+            laminationCheckbox.required = true;
+            laminationCheckbox.checked = false;
+            laminationCheckbox.disabled = false;
+        } else {
+            laminationContainer.classList.add('hidden');
+            laminationCheckbox.checked = true;
+            laminationCheckbox.disabled = true;
         }
     }
 

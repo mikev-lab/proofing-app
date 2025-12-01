@@ -67,6 +67,8 @@ const specHeight = document.getElementById('spec-height');
 const specBinding = document.getElementById('spec-binding'); // Hidden input now
 const specPaper = document.getElementById('spec-paper');
 const specCoverPaper = document.getElementById('spec-cover-paper');
+const specLamination = document.getElementById('spec-lamination');
+const laminationContainer = document.getElementById('lamination-container');
 const specPageCount = document.getElementById('spec-page-count');
 const paperSection = document.getElementById('paper-section');
 const pageCountSection = document.getElementById('page-count-section');
@@ -761,6 +763,8 @@ Array.from(projectTypeRadios).forEach(radio => {
             if (specReadingDirection && specReadingDirection.parentElement) {
                 specReadingDirection.parentElement.classList.add('hidden');
             }
+            // Hide Lamination
+            if (laminationContainer) laminationContainer.classList.add('hidden');
         } else {
             // Show Cover Paper for Saddle Stitch & Perfect Bound
             if(specCoverPaper.parentElement) specCoverPaper.parentElement.classList.remove('hidden');
@@ -769,6 +773,8 @@ Array.from(projectTypeRadios).forEach(radio => {
             if (specReadingDirection && specReadingDirection.parentElement) {
                 specReadingDirection.parentElement.classList.remove('hidden');
             }
+            // Show Lamination
+            if (laminationContainer) laminationContainer.classList.remove('hidden');
         }
         
         // [NEW] Update Visuals
@@ -843,6 +849,7 @@ function populateSpecsForm() {
     // 3. Other Fields
     if (specPaper) specPaper.value = projectSpecs.paperType || '';
     if (specCoverPaper) specCoverPaper.value = projectSpecs.coverPaperType || '';
+    if (specLamination) specLamination.value = projectSpecs.lamination || 'none';
     
     // --- [FIX] Restore Reading Direction ---
     if (specReadingDirection && projectSpecs.readingDirection) {
@@ -4112,12 +4119,17 @@ specsForm.addEventListener('submit', async (e) => {
         if (typeValue === 'loose') {
             specsUpdate['specs.coverPaperType'] = null;
             specsUpdate['specs.readingDirection'] = null;
+            specsUpdate['specs.lamination'] = null;
         } else {
             if (!specCoverPaper.value) throw new Error("Please select a cover paper type.");
             specsUpdate['specs.coverPaperType'] = specCoverPaper.value;
             // Capture Reading Direction
             if (specReadingDirection) {
                 specsUpdate['specs.readingDirection'] = specReadingDirection.value || 'ltr';
+            }
+            // Capture Lamination
+            if (specLamination) {
+                specsUpdate['specs.lamination'] = specLamination.value || 'none';
             }
         }
 
@@ -4132,7 +4144,8 @@ specsForm.addEventListener('submit', async (e) => {
             pageCount: 0,
             paperType: specsUpdate['specs.paperType'],
             coverPaperType: specsUpdate['specs.coverPaperType'],
-            readingDirection: specsUpdate['specs.readingDirection'] || 'ltr'
+            readingDirection: specsUpdate['specs.readingDirection'] || 'ltr',
+            lamination: specsUpdate['specs.lamination'] || 'none'
         };
         projectType = specsUpdate['projectType'];
 
