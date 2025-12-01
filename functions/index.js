@@ -3014,10 +3014,12 @@ exports.onProjectApprove = onDocumentUpdated({
 
     } catch (error) {
       logger.error(`Error during automatic imposition for project ${projectId}:`, error);
+      // [FIX] Do not fail the approval status if imposition fails. Just log it.
       const projectRef = db.collection('projects').doc(projectId);
       await projectRef.update({
-        status: 'Imposition Failed',
-        impositionError: error.message
+        // Keep status as 'Approved' (implicit, since we don't change it)
+        impositionError: error.message,
+        impositionStatus: 'failed' // Optional: track internal status
       });
     } finally {
         if (tempFilePath && fs.existsSync(tempFilePath)) {

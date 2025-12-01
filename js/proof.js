@@ -1,5 +1,5 @@
 import { auth, db, functions, generateGuestLink } from './firebase.js';
-import { onAuthStateChanged, signOut, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+import { onAuthStateChanged, signOut, signInAnonymously, signInWithCustomToken, setPersistence, browserSessionPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 import { httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js";
 import { initializeSharedViewer } from './viewer.js';
 import { STANDARD_PAPER_SIZES } from './guides.js';
@@ -118,10 +118,10 @@ function showApproveConfirmation(projectData) {
     const interiorPaperEl = document.getElementById('approval-interior-paper-text');
     if (interiorPaperEl) {
         const paper = specs.paperType || "Standard";
-        const direction = specs.readingDirection === 'rtl' ? 'Right to Left' : 'Left to Right';
+        // [FIX] Removed explicit reading direction text, as requested.
+        // The user acknowledges it via the dedicated checkbox below.
         interiorPaperEl.innerHTML = `
             Confirm Interior Paper: <span class="font-bold text-white">${paper}</span>
-            <br/><span class="text-xs text-gray-300 block mt-1">Reading Direction: <span class="font-bold text-white">${direction}</span></span>
         `;
     }
 
@@ -144,6 +144,27 @@ function showApproveConfirmation(projectData) {
             coverContainer.classList.add('hidden');
             coverCheckbox.checked = true; // Auto-check hidden fields to pass "every()" validation
             coverCheckbox.disabled = true; 
+        }
+    }
+
+    // 3b. Populate Lamination Confirmation
+    const laminationContainer = document.getElementById('container-lamination');
+    const laminationTextEl = document.getElementById('approval-lamination-text');
+    const laminationCheckbox = document.getElementById('check-lamination');
+
+    if (laminationContainer && laminationTextEl && laminationCheckbox) {
+        // Only show if it's a booklet (not loose)
+        if (specs.binding && specs.binding !== 'loose') {
+            laminationContainer.classList.remove('hidden');
+            const lamValue = specs.lamination || 'None';
+            laminationTextEl.innerHTML = `Confirm Lamination: <span class="font-bold text-white">${lamValue}</span>`;
+            laminationCheckbox.required = true;
+            laminationCheckbox.checked = false;
+            laminationCheckbox.disabled = false;
+        } else {
+            laminationContainer.classList.add('hidden');
+            laminationCheckbox.checked = true;
+            laminationCheckbox.disabled = true;
         }
     }
 
@@ -243,13 +264,8 @@ if (approvalFormModal) {
 async function handleGuestAccess(projectId, guestToken) {
     console.log(`[Guest Flow] Starting for projectId: ${projectId}, token: ${guestToken}`);
     try {
-        // 1. Fetch Guest Link Details (Keep this for UI feedback)
+        // 1. Fetch Guest Link Details
         console.log('[Guest Flow] Attempting to read guest link document...');
-        
-        // [NOTE] This read might cause the error if the user is completely unauthed initially
-        // but typically public reads are allowed if your rules permit it. 
-        // If your rules block unauthed reads, this line will fail. 
-        // However, the error you see is a "Write" stream error, suggesting something is trying to write or set up a listener.
         
         const linkRef = doc(db, "projects", projectId, "guestLinks", guestToken);
         const linkSnap = await getDoc(linkRef);
@@ -264,16 +280,11 @@ async function handleGuestAccess(projectId, guestToken) {
             throw new Error("This share link has expired.");
         }
 
-        // [CHANGE] We used to write view history here. 
-        // If we write BEFORE signing in with the token, we might not have permission, 
-        // or the auth switch interrupts the write, causing the "Transport errored" log.
-        // Let's Move the view history update to AFTER the sign-in.
-
         // Set local flags
         isGuest = true; 
         guestPermissions = linkData.permissions;
 
-        // 2. Authenticate via Cloud Function (The Fix)
+        // 2. Authenticate via Cloud Function
         console.log('[Guest Flow] Calling authenticateGuest Cloud Function...');
         const authenticateGuest = httpsCallable(functions, 'authenticateGuest');
         const response = await authenticateGuest({ projectId, guestToken });
@@ -282,13 +293,17 @@ async function handleGuestAccess(projectId, guestToken) {
             throw new Error("Failed to obtain access token.");
         }
 
-        // 3. Sign in with the Custom Token
-        console.log('[Guest Flow] Signing in with custom token...');
+        // 3. [CHANGE] Set Session Persistence & Sign in
+        console.log('[Guest Flow] Setting session persistence and signing in...');
+        
+        // This isolates the user to this specific tab
+        await setPersistence(auth, browserSessionPersistence);
+        
         const userCredential = await signInWithCustomToken(auth, response.data.token);
         const user = userCredential.user;
         console.log('[Guest Flow] Sign-in successful. User UID:', user.uid);
 
-        // [MOVED HERE] Now that we are signed in with the correct token, record the view.
+        // Record the view history
         updateDoc(linkRef, {
             viewHistory: arrayUnion({
                 timestamp: Timestamp.now(),
@@ -296,8 +311,7 @@ async function handleGuestAccess(projectId, guestToken) {
             })
         }).catch(err => console.warn("[Guest Flow] Failed to record view:", err));
 
-
-        // 4. Apply Guest UI Mode
+        // 4. Apply Guest UI Mode & Load Project
         console.log('[Guest Flow] Enabling Guest UI...');
         const notificationBell = document.getElementById('notification-bell');
         if (notificationBell) notificationBell.classList.add('hidden');
@@ -308,8 +322,6 @@ async function handleGuestAccess(projectId, guestToken) {
         const accountButton = document.querySelector('a[href="account.html"]');
         if(accountButton) accountButton.classList.add('hidden');
 
-        // 5. Load Project
-        // [IMPORTANT] This triggers the listeners. We do this strictly after sign in.
         loadProjectForUser(user);
 
     } catch (error) {
@@ -567,75 +579,79 @@ function loadProjectForUser(user) {
 let isProcessingGuestLink = false; // Flag to prevent multiple concurrent guest handling attempts
 
 onAuthStateChanged(auth, (user) => {
-    // Use the constants initialGuestToken and initialProjectId parsed outside
-    console.log(`[Auth State] Fired. User: ${user ? user.uid + (user.isAnonymous ? ' (anon)' : '') : 'null'}, Initial Guest Token: ${initialGuestToken}, Initial Project ID: ${initialProjectId}, isProcessing: ${isProcessingGuestLink}, isGuest: ${isGuest}`);
+    // Debug Log
+    console.log(`[Auth State] Fired. User: ${user ? user.uid : 'null'}, Initial Guest Token: ${initialGuestToken}`);
 
-    // Clear previous listener if it exists and we are changing context
-    // Note: We do NOT unsubscribe if we are merely processing a guest link for an existing user, as that would kill the view we are trying to build.
-     if (unsubscribeProjectListener && !isProcessingGuestLink && (!initialGuestToken || !initialProjectId)) {
-         console.log('[Auth State] Unsubscribing existing project listener due to context change.');
-         unsubscribeProjectListener();
-         unsubscribeProjectListener = null;
-     }
-
-     // [NEW] Also unsubscribe history listener
-     if (unsubscribeHistoryListener && !isProcessingGuestLink && (!initialGuestToken || !initialProjectId)) {
-         unsubscribeHistoryListener();
-         unsubscribeHistoryListener = null;
-     }
-     
-     // Reset guest status at the start unless we are actively processing a guest link
-     if (!isProcessingGuestLink && !initialGuestToken) {
-        isGuest = false;
-        guestPermissions = {};
-     }
-
-
-    // --- PRIORITY 1: Handle Guest Link (For ANY user state) ---
-    // We use the constants parsed at the top of the script
+    // --- PRIORITY 1: Handle Guest Link ---
     if (initialGuestToken && initialProjectId) {
-        console.log('[Auth State] Condition MET: Initial guestToken and projectId found.');
         
+        const expectedGuestUid = `guest_${initialGuestToken}`;
+        
+        // CASE A: We are already the correct guest. Success!
+        if (user && user.uid === expectedGuestUid) {
+            console.log('[Auth State] User matches URL guest token. Loading Project.');
+            isGuest = true;
+            
+            // Ensure permissions are fetched if missing (e.g., page refresh)
+            if (!guestPermissions || Object.keys(guestPermissions).length === 0) {
+                 const linkRef = doc(db, "projects", initialProjectId, "guestLinks", initialGuestToken);
+                 getDoc(linkRef).then(snap => {
+                     if(snap.exists()) { 
+                         guestPermissions = snap.data().permissions; 
+                         // Hide UI elements based on guest mode
+                         const notificationBell = document.getElementById('notification-bell');
+                         if (notificationBell) notificationBell.classList.add('hidden');
+                         loadProjectForUser(user);
+                     }
+                 });
+            } else {
+                loadProjectForUser(user);
+            }
+            return;
+        }
+
+        // CASE B: Wrong user is logged in (Zombie Session). Force Sign Out.
+        // This prevents "Permission Denied" errors from trying to access Project A with User B's creds.
+        if (user && user.uid !== expectedGuestUid) {
+             console.log(`[Auth State] Mismatch detected (Current: ${user.uid}). Signing out to clear session...`);
+             
+             // Unsubscribe listeners immediately to stop errors
+             if (unsubscribeProjectListener) { unsubscribeProjectListener(); unsubscribeProjectListener = null; }
+             if (unsubscribeHistoryListener) { unsubscribeHistoryListener(); unsubscribeHistoryListener = null; }
+             
+             // Sign out. This will trigger onAuthStateChanged again with user=null, falling through to Case C.
+             signOut(auth); 
+             return;
+        }
+
+        // CASE C: No user logged in. Start the Guest Access Flow.
         if (!isProcessingGuestLink) {
             isProcessingGuestLink = true;
-            console.log('[Auth State] Starting guest link processing. Preserving current auth state.');
+            // Clean up any lingering listeners just in case
+            if (unsubscribeProjectListener) { unsubscribeProjectListener(); unsubscribeProjectListener = null; }
+            if (unsubscribeHistoryListener) { unsubscribeHistoryListener(); unsubscribeHistoryListener = null; }
 
-            // We simply pass whatever user state exists (logged in or not) to handleGuestAccess.
-            // It will handle signing in anonymously IF needed.
             handleGuestAccess(initialProjectId, initialGuestToken).finally(() => { 
                 isProcessingGuestLink = false;
-                console.log('[Auth State] Guest link processing complete. isProcessingGuestLink = false.');
             });
-        } else {
-             console.log('[Auth State] Guest processing already in progress. Skipping duplicate call.');
         }
-        return; // Stop further checks; handleGuestAccess drives the flow from here.
+        return; 
     }
 
-    // --- PRIORITY 2: Handle Regular Logged-In User (only if no guest token) ---
+    // --- PRIORITY 2: Regular User (No Guest Token in URL) ---
     else if (user && !user.isAnonymous) {
-        console.log('[Auth State] Condition MET: Regular user (no guest token). Loading project.');
+        // Just in case we are switching contexts
+        if (unsubscribeProjectListener && !currentProjectId) { 
+             unsubscribeProjectListener(); unsubscribeProjectListener = null; 
+        }
+        
         isGuest = false; 
         loadProjectForUser(user);
     }
 
-    // --- PRIORITY 3: Handle Stray Anonymous User (no guest token) ---
-    else if (user && user.isAnonymous && !initialGuestToken) {
-        console.warn('[Auth State] Condition MET: Anonymous user (no guest token). Signing out and redirecting.');
-        signOut(auth);
-        window.location.href = 'index.html';
-        return; 
-    }
-
-    // --- PRIORITY 4: No User, No Guest Token (Redirect) ---
+    // --- PRIORITY 3: Redirect if no access ---
     else if (!user && !initialGuestToken) {
-        console.log('[Auth State] Condition MET: No user and no guest token. Redirecting.');
         window.location.href = 'index.html';
-    }
-
-    // --- Fallback ---
-    else {
-        console.error(`[Auth State] Reached unexpected final else. User: ${user}, Token: ${initialGuestToken}`);
     }
 }); // --- End onAuthStateChanged ---
 
