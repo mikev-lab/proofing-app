@@ -1,7 +1,7 @@
 // js/imposition-ui.js
 
 import { maximizeNUp, getSheetSizes, getPageSequenceForSheet } from './imposition-logic.js';
-import { drawCropMarks, drawSlugInfo, drawPageNumber } from './imposition-drawing.js';
+import { drawCropMarks, drawSlugInfo, drawPageNumber, drawSpineIndicator, drawSpineSlugText } from './imposition-drawing.js';
 import { INCH_TO_POINTS } from './constants.js';
 import { collection, query, where, getDocs, doc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js"; 
@@ -33,8 +33,7 @@ const IMPOSITION_TYPE_OPTIONS = [
     { value: 'collateCut', label: 'Collate & Cut' }
 ];
 
-// [NEW] Paper Caliper Lookup (Inches)
-// Mirrored from your Estimator logic for consistency
+// Paper Caliper Lookup (Inches)
 const PAPER_CALIPERS = {
     "60lb Text": 0.0032,
     "70lb Text": 0.0038,
@@ -47,7 +46,6 @@ const PAPER_CALIPERS = {
     "100lb Gloss Cover": 0.0095,
     "12pt C1S": 0.0120,
     "14pt C1S": 0.0140,
-    // Fallback for generic types if exact match fails
     "Coated": 0.004,
     "Uncoated": 0.0045
 };
@@ -97,26 +95,16 @@ function populateForm(settings) {
     }
 }
 
-// [NEW] Auto-Calculate Creep
 function calculateSuggestedCreep(projectData) {
     if (!interiorPdfDoc) return 0;
-
-    // 1. Get Page Count
     let pageCount = interiorPdfDoc.numPages;
-    // Assume Booklet = 4 pages per sheet
-    // (If cover is separate, we usually calculate creep based on inner block thickness)
     const sheets = Math.ceil(pageCount / 4);
     if (sheets <= 1) return 0;
 
-    // 2. Get Paper Type from Project Specs
-    // We look for a matching name in our lookup table
     const paperName = projectData.specs?.paperType || "";
-    const paperWeight = projectData.specs?.paperWeight || ""; // e.g., "80lb Text"
-    
-    // Try to find a match
-    let caliper = 0.004; // Default fallback (approx 20lb bond / 50lb offset)
+    const paperWeight = projectData.specs?.paperWeight || ""; 
+    let caliper = 0.004; 
 
-    // Check exact match first
     if (PAPER_CALIPERS[paperWeight]) {
         caliper = PAPER_CALIPERS[paperWeight];
     } 
@@ -124,18 +112,13 @@ function calculateSuggestedCreep(projectData) {
         caliper = PAPER_CALIPERS[paperName];
     }
     else {
-        // Simple fuzzy search
         const searchStr = (paperWeight + " " + paperName).toLowerCase();
         if (searchStr.includes("gloss")) caliper = 0.0035;
         else if (searchStr.includes("matte")) caliper = 0.0042;
         else if (searchStr.includes("cover")) caliper = 0.0095;
     }
 
-    // 3. Formula: (Sheets - 1) * Thickness
-    // We subtract 1 because the cover (Sheet 0) doesn't "creep" relative to itself.
-    // The innermost sheet is offset by the thickness of the sheets wrapping it.
     const totalCreep = (sheets - 1) * caliper;
-    
     return parseFloat(totalCreep.toFixed(4));
 }
 
@@ -328,16 +311,19 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
 
     const rowStepY = artBoxHeight + (currentSettings.verticalGutterInches * INCH_TO_POINTS);
 
-    let totalRequiredWidth;
+    // --- CENTERING CALCULATION ---
+    let startX;
     if (isBooklet) {
-        totalRequiredWidth = (trimWidth * (gridCols - 1)) + artBoxWidth;
-        if(gridCols > 1) totalRequiredWidth += (gridCols - 1) * (currentSettings.horizontalGutterInches * INCH_TO_POINTS);
+        // Center the TRIM block
+        const totalTrimWidth = (trimWidth * gridCols) + (Math.max(0, gridCols - 1) * (currentSettings.horizontalGutterInches * INCH_TO_POINTS));
+        startX = (sheetWidth - totalTrimWidth) / 2;
     } else {
-        totalRequiredWidth = (artBoxWidth * gridCols) + (Math.max(0, gridCols - 1) * (currentSettings.horizontalGutterInches * INCH_TO_POINTS));
+        // Stack: Center the Content block
+        const totalContentWidth = (artBoxWidth * gridCols) + (Math.max(0, gridCols - 1) * (currentSettings.horizontalGutterInches * INCH_TO_POINTS));
+        startX = (sheetWidth - totalContentWidth) / 2;
     }
 
     const totalRequiredHeight = (artBoxHeight * gridRows) + (Math.max(0, gridRows - 1) * (currentSettings.verticalGutterInches * INCH_TO_POINTS));
-    const startX = (sheetWidth - totalRequiredWidth) / 2;
     const startY = (sheetHeight - totalRequiredHeight) / 2;
 
     for (let row = 0; row < gridRows; row++) {
@@ -379,30 +365,31 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
 
             const page = await pdfToUse.getPage(actualPageNum);
             
-            // 1. Nominal Grid (Fixed Spine)
-            let nominalX = startX + col * colStepX;
+            // 1. Nominal Grid (TRIM EDGE Position)
+            let nominalX;
+            if (isBooklet) {
+                nominalX = startX + col * colStepX;
+            } else {
+                nominalX = startX + (col * colStepX) + bleedPoints;
+            }
+
             const y = startY + row * rowStepY;
 
-            // 2. Content Position (Shifted by Creep)
+            // 2. Creep Adjustment (Shift the Trim Edge)
             let contentX = nominalX;
-            let creepApplied = 0;
+            let shiftAmount = 0;
             
             if (isBooklet && currentSettings.creepInches) {
-                // TOGGLE CHECK: Preserve Center Spread
                 const isCenterSheet = (sheetIndex === totalSheets - 1);
-                
                 if (currentSettings.preserveCenterSpread && isCenterSheet) {
-                    // Force 0 creep for center sheet
-                    creepApplied = 0;
+                    // No shift
                 } else {
                     const safeTotalSheets = Math.max(1, totalSheets - 1);
                     const creepStep = (currentSettings.creepInches * INCH_TO_POINTS) / safeTotalSheets;
                     
-                    // Standard Creep Logic
-                    const shiftAmount = sheetIndex * creepStep;
-                    creepApplied = shiftAmount;
-
+                    shiftAmount = sheetIndex * creepStep;
                     const isLeftPage = (col === 0);
+                    // Shift Inward
                     contentX += isLeftPage ? shiftAmount : -shiftAmount; 
                 }
             }
@@ -415,8 +402,10 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
             if (isBooklet) {
                 ctx.beginPath();
                 if (col === 0) {
+                    // Left Page: Clip Right Bleed
                     ctx.rect(nominalX - bleedPoints, y, bleedPoints + trimWidth, artBoxHeight);
                 } else {
+                    // Right Page: Clip Left Bleed
                     ctx.rect(nominalX, y, trimWidth + bleedPoints, artBoxHeight);
                 }
                 ctx.clip();
@@ -427,34 +416,43 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
             tempCanvas.height = viewport.height;
             await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport }).promise;
 
-            // DRAW IMAGE
-            let drawX = isBooklet ? contentX - bleedPoints : contentX;
-            let drawW = artBoxWidth;
-            let drawH = artBoxHeight;
+            // [FIXED] DRAW ALIGNMENT: EXPLICIT BLEED ANCHOR
+            // Instead of centering, anchor the PDF based on bleed settings.
+            // DrawX = Trim Edge - Bleed Setting
+            // This ensures the Trim Edge aligns with the PDF's Trim line (assuming PDF matches settings).
+            
+            let drawX = contentX - bleedPoints;
+            let drawY = y; // y is top of ArtBox (Trim Top - Bleed), which matches DrawY origin.
+            let drawW = viewport.width;
+            let drawH = viewport.height;
 
+            // Handle Spread Cover Splitting
             if (isSpreadCover && pdfToUse === coverPdfDoc) {
                 const scaleFactor = artBoxHeight / viewport.height;
                 drawW = viewport.width * scaleFactor;
                 drawH = viewport.height * scaleFactor;
-                
+                drawY = y; 
+
                 if (spreadShiftMode === 'rightHalf') {
-                    drawX = contentX - (drawW / 2);
+                    // Left Page (Back Cover): PDF Center aligns with Right Trim Edge (Spine)
+                    // Spine X = contentX + trimWidth
+                    // For a spread, the center of the PDF is the spine.
+                    // So we place the Center of PDF at the Spine of the Slot.
+                    drawX = (contentX + trimWidth) - (drawW / 2);
                 }
                 else if (spreadShiftMode === 'leftHalf') {
-                    drawX = contentX + trimWidth - (drawW / 2);
+                    // Right Page (Front Cover): PDF Center aligns with Left Trim Edge (Spine)
+                    // Spine X = contentX
+                    drawX = contentX - (drawW / 2);
                 }
             }
 
-            ctx.drawImage(tempCanvas, drawX, y, drawW, drawH);
+            ctx.drawImage(tempCanvas, drawX, drawY, drawW, drawH);
             ctx.restore(); 
 
-            // DRAW PAGE NUMBER
-            const numX = isBooklet ? contentX : contentX + bleedPoints;
-            drawPageNumber(ctx, virtualPageNum, numX, y + bleedPoints);
+            drawPageNumber(ctx, virtualPageNum, contentX + 5, y + bleedPoints + 5);
 
-            // DRAW CROP MARKS (Follow CONTENT for consistency with cut intent)
-            let finalCropX = isBooklet ? contentX : nominalX + bleedPoints;
-            if (!isBooklet) finalCropX = nominalX + bleedPoints;
+            let finalCropX = isBooklet ? contentX : nominalX;
 
             drawCropMarks(ctx, 
                 finalCropX,
@@ -463,22 +461,19 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
                 trimHeight,
                 {});
 
-            // VISUAL AID
-            if (isBooklet && Math.abs(currentSettings.creepInches || 0) > 0) {
-                ctx.save();
-                ctx.beginPath();
-                ctx.strokeStyle = 'cyan';
-                ctx.lineWidth = 1;
-                ctx.setLineDash([5, 5]);
-                
-                let spineX = nominalX; 
-                if (col === 0) spineX = nominalX + trimWidth;
-                else spineX = nominalX; 
-                
-                ctx.moveTo(spineX, y - 20);
-                ctx.lineTo(spineX, y + artBoxHeight + 20);
-                ctx.stroke();
-                ctx.restore();
+            if (isBooklet) {
+                const isSpineOnLeft = (col !== 0); 
+                drawSpineIndicator(ctx, 
+                    finalCropX, 
+                    y + bleedPoints, 
+                    trimWidth, 
+                    trimHeight, 
+                    isSpineOnLeft
+                );
+
+                if (Math.abs(shiftAmount) > 0.5) { 
+                     drawSpineSlugText(ctx, finalCropX, y + bleedPoints, trimWidth, trimHeight, isSpineOnLeft, side==='front', bleedPoints);
+                }
             }
         }
     }
@@ -498,7 +493,7 @@ function calculateTotalSheets() {
     if (!slotsPerSheet) return 0;
 
     let processingPages = interiorPdfDoc.numPages;
-    // [FIX] Strict Check
+    // Strict Check
     if (coverPdfDoc && includeCover && impositionType === 'booklet') {
         processingPages += 4; 
     }
@@ -550,7 +545,6 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
         creepGroup.id = 'creep-control-group';
         creepGroup.className = "mb-4 hidden space-y-3"; 
         
-        // Preserve Spread Checkbox
         creepGroup.innerHTML = `
             <div>
                 <label for="creepInches" class="block text-sm font-medium text-gray-300">Total Creep (in)</label>
@@ -574,13 +568,11 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
             if(settingsPanel) settingsPanel.appendChild(creepGroup);
         }
 
-        // Add Listener for Auto-Calc Button
         const autoCalcBtn = document.getElementById('auto-calc-creep-btn');
         if (autoCalcBtn) {
             autoCalcBtn.addEventListener('click', () => {
                 const suggestion = calculateSuggestedCreep(projectData);
                 document.getElementById('creepInches').value = suggestion;
-                // Manually trigger change to update state
                 const event = new Event('change');
                 document.getElementById('imposition-form').dispatchEvent(event);
             });
@@ -599,6 +591,11 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
             }
             if (el.type === 'checkbox') currentSettings[key] = el.checked;
         });
+
+        // FORCE CREEP TO 0 IF INVALID/UNDEFINED (Fix for phantom creep)
+        if (typeof currentSettings.creepInches === 'undefined' || isNaN(currentSettings.creepInches)) {
+            currentSettings.creepInches = 0;
+        }
 
         const creepGroup = document.getElementById('creep-control-group');
         const coverGroup = document.getElementById('include-cover-group');
@@ -721,11 +718,9 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
         }
         if (imposePdfButton) imposePdfButton.style.display = 'inline-block';
 
-        // Load Interior
         const latestVersion = projectData.versions.slice().sort((a, b) => b.version - a.version)[0];
         interiorPdfDoc = await getPdfDoc(latestVersion.previewURL || latestVersion.fileURL);
         
-        // Load Cover if available
         if (projectData.cover && projectData.cover.fileURL) {
             try {
                 coverPdfDoc = await getPdfDoc(projectData.cover.previewURL || projectData.cover.fileURL);
@@ -767,13 +762,9 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
             }
         }
 
-        // [NEW] Auto-Fill Creep Default if 0
+        // [MODIFIED] Do NOT auto-apply creep by default.
         if (initialSettings.impositionType === 'booklet' && (!initialSettings.creepInches || initialSettings.creepInches === 0)) {
-            const suggested = calculateSuggestedCreep(projectData);
-            if (suggested > 0) {
-                initialSettings.creepInches = suggested;
-                console.log(`Auto-calculated creep: ${suggested} inches`);
-            }
+            // Keep it 0.
         }
 
         if (initialSettings) {
@@ -784,7 +775,6 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
 
     form.addEventListener('change', handleFormChange);
 
-    // --- Zoom & Pan Logic ---
     const canvas = document.getElementById('imposition-preview-canvas');
     const zoomInButton = document.getElementById('imposition-zoom-in-button');
     const zoomOutButton = document.getElementById('imposition-zoom-out-button');

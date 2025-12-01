@@ -231,25 +231,65 @@ async function imposePdfLogic(params) {
         // Booklet always assumes strict trim alignment at spine
         colStepX = trimWidth + horizontalGutterPoints;
     } else {
+        // For stack/other, we usually step by the full content box (including bleed) if present
+        // However, usually we want to step by Trim + Gutter, but standard N-Up often preserves bleed between.
+        // If we want bleed-to-bleed contact with gutter, we use pageContentWidth.
         colStepX = pageContentWidth + horizontalGutterPoints;
     }
 
-    let totalRequiredWidth;
+    // --- [FIXED] CENTERING CALCULATION ---
+    // Previous logic centered the 'Bleed+Trim' block, which caused a shift.
+    // We must center the TRIM BLOCK.
+    let totalTrimWidth;
     if (impositionType === 'booklet') {
-        totalRequiredWidth = (trimWidth * (currentColumnsForLayout - 1)) + pageContentWidth + ((currentColumnsForLayout - 1) * horizontalGutterPoints);
+         // Width is (Trim * Cols) + (Gutter * Gaps)
+         // For booklet, gutters are usually 0 at spine, but if set, we include them.
+         totalTrimWidth = (trimWidth * currentColumnsForLayout) + (Math.max(0, currentColumnsForLayout - 1) * horizontalGutterPoints);
     } else {
-        totalRequiredWidth = (pageContentWidth * currentColumnsForLayout) + (Math.max(0, currentColumnsForLayout - 1) * horizontalGutterPoints);
+         // For Stack, the visual block we want centered is usually the array of Trim boxes?
+         // Or the array of Content boxes? 
+         // Typically, we center the content block for Stack.
+         // But to be consistent with the coordinate system where (x,y) = Trim Corner, we should calculate relative to trim?
+         // Let's stick to centering the visual content block for stack to avoid regression there.
+         totalTrimWidth = (pageContentWidth * currentColumnsForLayout) + (Math.max(0, currentColumnsForLayout - 1) * horizontalGutterPoints);
     }
-
+    
+    // Height Calculation (remains similar)
+    // For Booklet, height is just the page height (often 1 row).
+    // For Stack, it's total height.
     const totalRequiredHeight = (pageContentHeight * currentRowsForLayout) + (Math.max(0, currentRowsForLayout - 1) * verticalGutterPoints);
     
-    const startXBlock = (actualSheetWidthPoints - totalRequiredWidth) / 2;
+    // startXBlock is now calculated to position the LEFT TRIM EDGE of the first column
+    let startXBlock;
+    
+    if (impositionType === 'booklet') {
+        // Center the TRIM block
+        const centeredTrimX = (actualSheetWidthPoints - totalTrimWidth) / 2;
+        startXBlock = centeredTrimX; 
+    } else {
+         // Keep legacy centering for stack (Centering the full content block)
+         const totalContentWidth = (pageContentWidth * currentColumnsForLayout) + (Math.max(0, currentColumnsForLayout - 1) * horizontalGutterPoints);
+         startXBlock = (actualSheetWidthPoints - totalContentWidth) / 2;
+    }
+    
     const startYBlock = (actualSheetHeightPoints - totalRequiredHeight) / 2;
 
     for (let row = 0; row < currentRowsForLayout; row++) {
         for (let col = 0; col < currentColumnsForLayout; col++) {
             let xPos = startXBlock + col * colStepX;
             const yPos = startYBlock + (currentRowsForLayout - 1 - row) * (pageContentHeight + verticalGutterPoints);
+            
+            // For stack, if we centered based on Content Width, startXBlock is the Content Edge.
+            // But our draw logic assumes xPos is the Trim Edge (it subtracts bleed).
+            // So for STACK, we must adjust xPos to be the Trim Edge.
+            if (impositionType !== 'booklet') {
+                 // startXBlock was "Left Content Edge".
+                 // xPos is currently "Left Content Edge of this slot".
+                 // We need to pass "Left Trim Edge" to the drawing loop.
+                 // Left Trim Edge = Left Content Edge + Bleed.
+                 xPos += bleedPoints;
+            }
+
             if (rowOffsetType === 'half' && row % 2 !== 0 && impositionType !== 'booklet') xPos += (pageContentWidth + horizontalGutterPoints) / 2;
             slotPositions.push({ x: xPos, y: yPos });
         }
@@ -372,12 +412,16 @@ async function imposePdfLogic(params) {
                 }
                 outputSheetFront.pushOperators(popGraphicsState());
             } else {
-                outputSheetFront.drawPage(embeddedPage, { x, y, width: pageContentWidth, height: pageContentHeight });
+                outputSheetFront.drawPage(embeddedPage, { x: x - bleedPoints, y, width: pageContentWidth, height: pageContentHeight });
             }
 
             const trimAreaY = y + bleedPoints;
             const trimAreaH = pageContentHeight - (2 * bleedPoints);
-            let finalCropX = x + bleedPoints;
+            let finalCropX = x; // Adjusted to align with Trim Edge, not Bleed Edge
+            if (impositionType === 'stack') {
+                // Stack already adjusted x to be Trim Edge in the loop above
+                finalCropX = x; 
+            }
             if (impositionType === 'booklet') {
                 if (col === 0) finalCropX = x; // Start of trim
                 if (col === 1) finalCropX = x; // Start of trim (Spine)
@@ -444,12 +488,14 @@ async function imposePdfLogic(params) {
                     }
                     outputSheetBack.pushOperators(popGraphicsState());
                 } else {
-                    outputSheetBack.drawPage(embeddedPage, { x, y, width: pageContentWidth, height: pageContentHeight });
+                    outputSheetBack.drawPage(embeddedPage, { x: x - bleedPoints, y, width: pageContentWidth, height: pageContentHeight });
                 }
 
                 const trimAreaY = y + bleedPoints;
                 const trimAreaH = pageContentHeight - (2 * bleedPoints);
-                let finalCropX = x + bleedPoints;
+                let finalCropX = x;
+                // Stack/Booklet x is already Trim Edge
+                
                 if (impositionType === 'booklet') {
                     if (col === 0) finalCropX = x;
                     if (col === 1) finalCropX = x;
