@@ -1379,7 +1379,25 @@ async function processQueue(items, limit, asyncFn) {
     return results;
 }
 
-// --- REWRITTEN: addInteriorFiles (Concurrent Version + Stability Fix) ---
+// --- NEW HELPER: Calculate Precise Spread Alignment ---
+const calculateSpreadPanX = () => {
+    // We want the image spine (center of spread) to align with the inner trim line.
+    // Left Page: Spine is at Right Edge of Trim. Pan moves image relative to Canvas Center.
+    // Right Page: Spine is at Left Edge of Trim. 
+    // Calculation: offset = +/- 0.5 * TrimWidth
+    // panX = offset / (TrimWidth + 2*Bleed)
+    
+    if (projectSpecs && projectSpecs.dimensions && projectSpecs.dimensions.width) {
+        const trimWidth = projectSpecs.dimensions.width;
+        const bleed = 0.125; // Standard bleed
+        const totalCanvasWidth = trimWidth + (2 * bleed);
+        
+        return (trimWidth * 0.5) / totalCanvasWidth;
+    }
+    return 0.5; // Fallback (results in gap if bleeds exist)
+};
+
+// --- REWRITTEN: addInteriorFiles (With Spread Pan Fix) ---
 async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = null) {
     const fileArray = Array.from(files).sort((a, b) => 
         a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
@@ -1396,6 +1414,9 @@ async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = n
 
     let insertionIndex = (insertAtIndex !== null && insertAtIndex >= 0) ? insertAtIndex : pages.length;
     const tasks = [];
+    
+    // [FIX] Calculate correct spread offset
+    const spreadPanX = calculateSpreadPanX();
 
     // 2. Create ALL Placeholders Immediately
     for (const file of fileArray) {
@@ -1417,8 +1438,9 @@ async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = n
         };
 
         if (isSpreadUpload) {
-            const pL = { id: `${sourceId}_p0_L`, sourceFileId: sourceId, pageIndex: 1, settings: { scaleMode: 'fill', alignment: 'center', view: 'left', panX: 0.5, panY: 0 }, isSpread: false };
-            const pR = { id: `${sourceId}_p0_R`, sourceFileId: sourceId, pageIndex: 1, settings: { scaleMode: 'fill', alignment: 'center', view: 'right', panX: -0.5, panY: 0 }, isSpread: false };
+            // [FIX] Use calculated panX
+            const pL = { id: `${sourceId}_p0_L`, sourceFileId: sourceId, pageIndex: 1, settings: { scaleMode: 'fill', alignment: 'center', view: 'left', panX: spreadPanX, panY: 0 }, isSpread: false };
+            const pR = { id: `${sourceId}_p0_R`, sourceFileId: sourceId, pageIndex: 1, settings: { scaleMode: 'fill', alignment: 'center', view: 'right', panX: -spreadPanX, panY: 0 }, isSpread: false };
             pages.splice(insertionIndex, 0, pL, pR);
             insertionIndex += 2;
         } else {
@@ -1431,7 +1453,6 @@ async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = n
     }
 
     // 3. Render UI *Before* Network Calls
-    // This ensures placeholders are visible immediately
     saveState();
     renderBookViewer();
     renderMinimap();
@@ -1459,7 +1480,6 @@ async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = n
                 sourceFiles[sourceId].status = 'ready';
             } else {
                 // Server Processing
-                // processServerFile will check session internally now too
                 const generatedPages = await processServerFile(file, sourceId);
                 if (generatedPages) numPages = generatedPages.length;
             }
@@ -1468,16 +1488,19 @@ async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = n
                 const baseIndex = pages.findIndex(p => p.sourceFileId === sourceId);
                 if (baseIndex !== -1) {
                     const newPagesToAdd = [];
+                    // [FIX] Recalculate inside loop in case needed
+                    const spreadPan = calculateSpreadPanX();
+
                     for (let k = 1; k < numPages; k++) {
                         const pageIndex = k + 1;
                         if (isSpreadUpload) {
                             newPagesToAdd.push({
                                 id: `${sourceId}_p${k}_L`, sourceFileId: sourceId, pageIndex: pageIndex,
-                                settings: { scaleMode: 'fill', alignment: 'center', view: 'left', panX: 0.5, panY: 0 }, isSpread: false
+                                settings: { scaleMode: 'fill', alignment: 'center', view: 'left', panX: spreadPan, panY: 0 }, isSpread: false
                             });
                             newPagesToAdd.push({
                                 id: `${sourceId}_p${k}_R`, sourceFileId: sourceId, pageIndex: pageIndex,
-                                settings: { scaleMode: 'fill', alignment: 'center', view: 'right', panX: -0.5, panY: 0 }, isSpread: false
+                                settings: { scaleMode: 'fill', alignment: 'center', view: 'right', panX: -spreadPan, panY: 0 }, isSpread: false
                             });
                         } else {
                             newPagesToAdd.push({
@@ -1508,24 +1531,25 @@ async function addInteriorFiles(files, isSpreadUpload = false, insertAtIndex = n
 }
 
 function addPagesToModel(targetArray, sourceId, numPages, isSpreadUpload) {
+    // [FIX] Calculate correct spread offset
+    const spreadPan = calculateSpreadPanX();
+
     if (isSpreadUpload) {
         for (let i = 0; i < numPages; i++) {
             targetArray.push({
                 id: `${sourceId}_p${i}_L`,
                 sourceFileId: sourceId,
                 pageIndex: i + 1,
-                // Initial PanX: 0.5 to align Left Half of image (center of image to center of Left Page)
-                // If image is 2x wide, center is at x=1. Left Page center is x=0.5. Shift +0.5?
-                // Wait, logic derived in thought: panX=0.5 shifts image RIGHT.
-                settings: { scaleMode: 'fill', alignment: 'center', view: 'left', panX: 0.5, panY: 0 },
+                // Initial PanX: Use calculated spreadPan to align with trim
+                settings: { scaleMode: 'fill', alignment: 'center', view: 'left', panX: spreadPan, panY: 0 },
                 isSpread: false
             });
             targetArray.push({
                 id: `${sourceId}_p${i}_R`,
                 sourceFileId: sourceId,
                 pageIndex: i + 1,
-                // Initial PanX: -0.5 to align Right Half of image
-                settings: { scaleMode: 'fill', alignment: 'center', view: 'right', panX: -0.5, panY: 0 },
+                // Initial PanX: Use calculated -spreadPan to align with trim
+                settings: { scaleMode: 'fill', alignment: 'center', view: 'right', panX: -spreadPan, panY: 0 },
                 isSpread: false
             });
         }

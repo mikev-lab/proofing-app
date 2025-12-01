@@ -132,12 +132,22 @@ const drawSlugInfo = async (page, pdfDoc, currentSheetId, totalSheetsForSlug, fo
 
 async function imposePdfLogic(params) {
     const { inputFile, settings, jobInfo, localFilePath, preLoadedPdfDoc } = params; 
-    const {
+    
+    // Normalize and extract settings
+    let {
         columns, rows, bleedInches, horizontalGutterInches, verticalGutterInches,
         impositionType, sheetOrientation, isDuplex, rowOffsetType,
         showQRCode, qrCodePosition, slipSheetColor,
         creepInches = 0
     } = settings;
+
+    // [FIX] Ensure impositionType is normalized to lowercase and defaults to stack
+    impositionType = (impositionType || 'stack').toLowerCase();
+
+    // Default safe values if undefined
+    if (horizontalGutterInches === undefined) horizontalGutterInches = 0;
+    if (verticalGutterInches === undefined) verticalGutterInches = 0;
+    if (bleedInches === undefined) bleedInches = 0;
 
     let inputPdfDoc;
     let tempInputPath;
