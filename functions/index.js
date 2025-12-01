@@ -2708,9 +2708,6 @@ exports.imposePdf = onCall({
     if (!projectDoc.exists) throw new HttpsError('not-found', 'Project not found.');
     const projectData = projectDoc.data();
 
-    const latestVersion = projectData.versions?.reduce((latest, v) => (v.versionNumber > latest.versionNumber ? v : latest), projectData.versions[0]);
-    if (!latestVersion || !latestVersion.fileURL) throw new HttpsError('not-found', 'No interior file found.');
-
     const bucket = admin.storage().bucket();
     
     const resolveStoragePath = (url) => {
@@ -2721,12 +2718,23 @@ exports.imposePdf = onCall({
         return urlObj.pathname.startsWith('/') ? urlObj.pathname.slice(1) : urlObj.pathname;
     };
 
-    const interiorPath = resolveStoragePath(latestVersion.fileURL);
-    const localInteriorPath = path.join(os.tmpdir(), `interior_${Date.now()}.pdf`);
-    await bucket.file(decodeURIComponent(interiorPath)).download({ destination: localInteriorPath });
-    tempFilesToCleanup.push(localInteriorPath);
+    let sourceFileUrl;
 
-    let finalSourcePath = localInteriorPath;
+    if (settings.source === 'cover') {
+        if (!projectData.cover || !projectData.cover.fileURL) throw new HttpsError('not-found', 'No cover file found on this project.');
+        sourceFileUrl = projectData.cover.fileURL;
+    } else {
+        const latestVersion = projectData.versions?.reduce((latest, v) => (v.versionNumber > latest.versionNumber ? v : latest), projectData.versions[0]);
+        if (!latestVersion || !latestVersion.fileURL) throw new HttpsError('not-found', 'No interior file found.');
+        sourceFileUrl = latestVersion.fileURL;
+    }
+
+    const sourcePath = resolveStoragePath(sourceFileUrl);
+    const localSourcePath = path.join(os.tmpdir(), `source_${Date.now()}.pdf`);
+    await bucket.file(decodeURIComponent(sourcePath)).download({ destination: localSourcePath });
+    tempFilesToCleanup.push(localSourcePath);
+
+    let finalSourcePath = localSourcePath;
 
     // [FIX] ONLY MERGE COVER FOR BOOKLETS
     if (settings.impositionType === 'booklet' && settings.includeCover && projectData.cover && projectData.cover.fileURL) {
@@ -2742,7 +2750,7 @@ exports.imposePdf = onCall({
             const mergedDoc = await PDFDocument.create();
             
             const coverPdf = await PDFDocument.load(fs.readFileSync(localCoverPath));
-            const interiorPdf = await PDFDocument.load(fs.readFileSync(localInteriorPath));
+            const interiorPdf = await PDFDocument.load(fs.readFileSync(localSourcePath));
             const coverCount = coverPdf.getPageCount();
             
             // Get Geometry
