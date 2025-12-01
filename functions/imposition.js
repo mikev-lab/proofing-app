@@ -421,14 +421,10 @@ async function imposePdfLogic(params) {
             for (let i = 0; i < slotsPerSheet; i++) pagesForFrontIndices.push(masterIndex);
         }
 
+        // --- PASS 1: DRAW MARKS (LAYER 1) ---
         for (let slotIndex = 0; slotIndex < slotsPerSheet; slotIndex++) {
-            const pIndex = pagesForFrontIndices[slotIndex];
-            const embeddedPage = await embedPageForBatch(pIndex);
-            
-            // [FIX] Always draw crop marks, even if page is missing, so we see the grid
             let { x: nominalX, y } = slotPositions[slotIndex]; 
             const gridCols = impositionType === 'booklet' ? 2 : columns;
-            const gridRows = rows;
             const row = Math.floor(slotIndex / gridCols);
             const col = slotIndex % gridCols;
 
@@ -442,18 +438,9 @@ async function imposePdfLogic(params) {
             const trimAreaY = y + bleedPoints;
             const trimAreaH = pageContentHeight - (2 * bleedPoints);
             
-            // --- [LAYER 1: MARKS UNDERNEATH] ---
-            // Draw Crop Marks & Spine Indicators FIRST
             let finalCropX = x; 
-            if (impositionType === 'stack') { finalCropX = x; }
-            if (impositionType === 'booklet') {
-                if (col === 0) finalCropX = x; 
-                if (col === 1) finalCropX = x; 
-            }
 
-            // Neighbor Logic:
-            // Booklet: Only Left/Right check applies to Spine. Top/Bottom always False.
-            // Other: Always False (draw all marks).
+            // Neighbor Logic
             let hasLeft = false;
             let hasRight = false;
             let hasTop = false;
@@ -474,9 +461,28 @@ async function imposePdfLogic(params) {
             if (impositionType === 'booklet' && col === 1) {
                 drawFixedSpineMark(outputSheetFront, nominalX, trimAreaY, trimAreaH);
             }
+        }
 
-            // --- [LAYER 2: PAGE CONTENT] ---
-            if (!embeddedPage) continue; 
+        // --- PASS 2: DRAW CONTENT (LAYER 2) ---
+        for (let slotIndex = 0; slotIndex < slotsPerSheet; slotIndex++) {
+            const pIndex = pagesForFrontIndices[slotIndex];
+            const embeddedPage = await embedPageForBatch(pIndex);
+
+            if (!embeddedPage) continue;
+
+            let { x: nominalX, y } = slotPositions[slotIndex];
+            const gridCols = impositionType === 'booklet' ? 2 : columns;
+            const col = slotIndex % gridCols;
+
+            let x = nominalX;
+
+            if (impositionType === 'booklet') {
+                const isLeftPage = (col === 0);
+                x += calculateCreepShift(physicalSheetIndex, isLeftPage);
+            }
+
+            const trimAreaY = y + bleedPoints;
+            const trimAreaH = pageContentHeight - (2 * bleedPoints);
 
             if (impositionType === 'booklet') {
                 outputSheetFront.pushOperators(pushGraphicsState());
@@ -541,21 +547,15 @@ async function imposePdfLogic(params) {
                  for (let i = 0; i < slotsPerSheet; i++) pagesForBackIndices.push(masterIndex);
             }
 
+            // --- PASS 1: DRAW MARKS (LAYER 1) ---
             for (let slotIndex = 0; slotIndex < slotsPerSheet; slotIndex++) {
-                const pIndex = pagesForBackIndices[slotIndex];
-                const embeddedPage = await embedPageForBatch(pIndex);
-                
-                // Draw Marks even if page missing
                 let { x: nominalX, y } = slotPositions[slotIndex]; 
                 const gridCols = impositionType === 'booklet' ? 2 : columns;
-                const gridRows = rows;
-                const row = Math.floor(slotIndex / gridCols);
                 const col = slotIndex % gridCols;
 
                 let x = nominalX;
 
                 if (impositionType === 'booklet') {
-                    // Note: Col 0 on Back is physically LEFT (Page 2), which is a LEFT page in the book.
                     const isLeftPage = (col === 0);
                     x += calculateCreepShift(physicalSheetIndex, isLeftPage);
                 }
@@ -564,11 +564,6 @@ async function imposePdfLogic(params) {
                 const trimAreaH = pageContentHeight - (2 * bleedPoints);
                 let finalCropX = x;
                 
-                if (impositionType === 'booklet') {
-                    if (col === 0) finalCropX = x;
-                    if (col === 1) finalCropX = x;
-                }
-
                 let hasLeft = false;
                 let hasRight = false;
                 let hasTop = false;
@@ -579,7 +574,6 @@ async function imposePdfLogic(params) {
                     hasRight = (col === 0);
                 }
 
-                // [LAYER 1: MARKS]
                 drawCropMarks(outputSheetBack, finalCropX, trimAreaY, trimWidth, trimAreaH, {
                     hasTopNeighbor: hasTop, hasBottomNeighbor: hasBottom,
                     hasLeftNeighbor: hasLeft, hasRightNeighbor: hasRight
@@ -588,9 +582,25 @@ async function imposePdfLogic(params) {
                 if (impositionType === 'booklet' && col === 1) {
                     drawFixedSpineMark(outputSheetBack, nominalX, trimAreaY, trimAreaH);
                 }
+            }
 
-                // [LAYER 2: PAGE]
+            // --- PASS 2: DRAW CONTENT (LAYER 2) ---
+            for (let slotIndex = 0; slotIndex < slotsPerSheet; slotIndex++) {
+                const pIndex = pagesForBackIndices[slotIndex];
+                const embeddedPage = await embedPageForBatch(pIndex);
+
                 if (!embeddedPage) continue;
+
+                let { x: nominalX, y } = slotPositions[slotIndex];
+                const gridCols = impositionType === 'booklet' ? 2 : columns;
+                const col = slotIndex % gridCols;
+
+                let x = nominalX;
+
+                if (impositionType === 'booklet') {
+                    const isLeftPage = (col === 0);
+                    x += calculateCreepShift(physicalSheetIndex, isLeftPage);
+                }
 
                 if (impositionType === 'booklet') {
                     outputSheetBack.pushOperators(pushGraphicsState());
