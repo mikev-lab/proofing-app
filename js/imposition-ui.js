@@ -6,7 +6,7 @@ import { INCH_TO_POINTS } from './constants.js';
 import { collection, query, where, getDocs, doc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js"; 
 
-// ... (State and Constants same as before) ...
+// ... (State variables) ...
 let interiorPdfDoc = null;
 let coverPdfDoc = null;
 let currentSheetIndex = 0;
@@ -25,6 +25,7 @@ let zoomState = {
 let animationFrameRequest = null;
 let contentCanvas = document.createElement('canvas');
 
+// ... (Constants) ...
 const IMPOSITION_TYPE_OPTIONS = [
     { value: 'stack', label: 'Stack' },
     { value: 'repeat', label: 'Repeat' },
@@ -48,7 +49,7 @@ const PAPER_CALIPERS = {
     "Uncoated": 0.0045
 };
 
-// ... (Helpers same as before) ...
+// ... (Helpers) ...
 function getTrimSizeInPoints(projectData) {
     const specs = projectData.specs;
     if (!specs || !specs.dimensions) {
@@ -217,7 +218,6 @@ async function renderThumbnailList(projectData) {
     }
 }
 
-// [FIXED] Updated Render Function with Clip logic and Fixed Spine Mark
 async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, side, projectData) {
     const slipSheetColor = currentSettings.slipSheetColor;
     if (slipSheetColor && slipSheetColor !== 'none' && sheetIndex === 0 && side === 'front') {
@@ -285,28 +285,6 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
             const slotIndex = row * gridCols + col;
             const virtualPageNum = pagesOnThisSide[slotIndex];
             
-            if (!virtualPageNum) continue;
-
-            let pdfToUse = interiorPdfDoc;
-            let actualPageNum = virtualPageNum;
-            let spreadShiftMode = 'none'; 
-
-            if (hasCover) {
-                if (virtualPageNum === 1) { 
-                    pdfToUse = coverPdfDoc; actualPageNum = 1; if(isSpreadCover) spreadShiftMode = 'rightHalf'; 
-                } else if (virtualPageNum === 2) { 
-                    pdfToUse = coverPdfDoc; actualPageNum = 2; if(isSpreadCover) spreadShiftMode = 'leftHalf'; 
-                } else if (virtualPageNum === virtualTotalPages - 1) { 
-                    pdfToUse = coverPdfDoc; actualPageNum = isSpreadCover ? 2 : (coverPdfDoc.numPages > 2 ? 3 : 2); if(isSpreadCover) spreadShiftMode = 'rightHalf'; 
-                } else if (virtualPageNum === virtualTotalPages) { 
-                    pdfToUse = coverPdfDoc; actualPageNum = isSpreadCover ? 1 : (coverPdfDoc.numPages >= 4 ? 4 : 1); if(isSpreadCover) spreadShiftMode = 'leftHalf'; 
-                } else { actualPageNum = virtualPageNum - 2; }
-            }
-
-            if (actualPageNum > pdfToUse.numPages || actualPageNum < 1) continue;
-
-            const page = await pdfToUse.getPage(actualPageNum);
-            
             // nominalX = Fixed Spine Location
             let nominalX;
             if (isBooklet) {
@@ -332,6 +310,86 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
                 }
             }
 
+            let finalCropX = isBooklet ? contentX : nominalX;
+
+            // [LAYER 1] DRAW MARKS BEHIND CONTENT
+            let hasLeft = false;
+            let hasRight = false;
+            let hasTop = false;
+            let hasBottom = false;
+
+            if (isBooklet) {
+                hasLeft = (col === 1); 
+                hasRight = (col === 0);
+            }
+
+            drawCropMarks(ctx, 
+                finalCropX,
+                y + bleedPoints,
+                trimWidth,
+                trimHeight,
+                {
+                    hasTopNeighbor: hasTop, hasBottomNeighbor: hasBottom,
+                    hasLeftNeighbor: hasLeft, hasRightNeighbor: hasRight
+                });
+
+            if (isBooklet) {
+                const isSpineOnLeft = (col !== 0); 
+                drawSpineIndicator(ctx, 
+                    finalCropX, 
+                    y + bleedPoints, 
+                    trimWidth, 
+                    trimHeight, 
+                    isSpineOnLeft
+                );
+
+                if (Math.abs(shiftAmount) > 0.5) { 
+                     drawSpineSlugText(ctx, finalCropX, y + bleedPoints, trimWidth, trimHeight, isSpineOnLeft, side==='front', bleedPoints);
+                }
+
+                // Fixed Spine Mark at nominalX
+                if (col === 1) { // Draw once per spread
+                    ctx.save();
+                    ctx.strokeStyle = '#000000';
+                    ctx.lineWidth = 0.5;
+                    const offset = 9; 
+                    const length = 18;
+                    // Top
+                    ctx.beginPath();
+                    ctx.moveTo(nominalX, y + bleedPoints + trimHeight + offset);
+                    ctx.lineTo(nominalX, y + bleedPoints + trimHeight + offset + length);
+                    ctx.stroke();
+                    // Bottom
+                    ctx.beginPath();
+                    ctx.moveTo(nominalX, y + bleedPoints - offset);
+                    ctx.lineTo(nominalX, y + bleedPoints - offset - length);
+                    ctx.stroke();
+                    ctx.restore();
+                }
+            }
+
+            // [LAYER 2] DRAW CONTENT
+            if (!virtualPageNum) continue;
+
+            let pdfToUse = interiorPdfDoc;
+            let actualPageNum = virtualPageNum;
+            let spreadShiftMode = 'none'; 
+
+            if (hasCover) {
+                if (virtualPageNum === 1) { 
+                    pdfToUse = coverPdfDoc; actualPageNum = 1; if(isSpreadCover) spreadShiftMode = 'rightHalf'; 
+                } else if (virtualPageNum === 2) { 
+                    pdfToUse = coverPdfDoc; actualPageNum = 2; if(isSpreadCover) spreadShiftMode = 'leftHalf'; 
+                } else if (virtualPageNum === virtualTotalPages - 1) { 
+                    pdfToUse = coverPdfDoc; actualPageNum = isSpreadCover ? 2 : (coverPdfDoc.numPages > 2 ? 3 : 2); if(isSpreadCover) spreadShiftMode = 'rightHalf'; 
+                } else if (virtualPageNum === virtualTotalPages) { 
+                    pdfToUse = coverPdfDoc; actualPageNum = isSpreadCover ? 1 : (coverPdfDoc.numPages >= 4 ? 4 : 1); if(isSpreadCover) spreadShiftMode = 'leftHalf'; 
+                } else { actualPageNum = virtualPageNum - 2; }
+            }
+
+            if (actualPageNum > pdfToUse.numPages || actualPageNum < 1) continue;
+
+            const page = await pdfToUse.getPage(actualPageNum);
             const viewport = page.getViewport({ scale: 1 });
             
             ctx.save();
@@ -376,59 +434,6 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
             ctx.restore(); 
 
             drawPageNumber(ctx, virtualPageNum, contentX + 5, y + bleedPoints + 5);
-
-            let finalCropX = isBooklet ? contentX : nominalX;
-
-            // Updated drawCropMarks to handle neighbor logic better
-            // Booklet col 0 has right neighbor (spine), col 1 has left neighbor (spine)
-            const hasLeft = isBooklet ? (col === 1) : (col > 0);
-            const hasRight = isBooklet ? (col === 0) : (col < gridCols - 1);
-
-            drawCropMarks(ctx, 
-                finalCropX,
-                y + bleedPoints,
-                trimWidth,
-                trimHeight,
-                {
-                    hasTopNeighbor: row > 0, hasBottomNeighbor: row < gridRows - 1,
-                    hasLeftNeighbor: hasLeft, hasRightNeighbor: hasRight
-                });
-
-            // Draw Spine Indicators + New Fixed Mark
-            if (isBooklet) {
-                const isSpineOnLeft = (col !== 0); 
-                drawSpineIndicator(ctx, 
-                    finalCropX, 
-                    y + bleedPoints, 
-                    trimWidth, 
-                    trimHeight, 
-                    isSpineOnLeft
-                );
-
-                if (Math.abs(shiftAmount) > 0.5) { 
-                     drawSpineSlugText(ctx, finalCropX, y + bleedPoints, trimWidth, trimHeight, isSpineOnLeft, side==='front', bleedPoints);
-                }
-
-                // Fixed Spine Mark at nominalX
-                if (col === 1) { // Draw once per spread
-                    ctx.save();
-                    ctx.strokeStyle = '#000000';
-                    ctx.lineWidth = 0.5;
-                    const offset = 9; // Points
-                    const length = 18;
-                    // Top
-                    ctx.beginPath();
-                    ctx.moveTo(nominalX, y + bleedPoints + trimHeight + offset);
-                    ctx.lineTo(nominalX, y + bleedPoints + trimHeight + offset + length);
-                    ctx.stroke();
-                    // Bottom
-                    ctx.beginPath();
-                    ctx.moveTo(nominalX, y + bleedPoints - offset);
-                    ctx.lineTo(nominalX, y + bleedPoints - offset - length);
-                    ctx.stroke();
-                    ctx.restore();
-                }
-            }
         }
     }
     if (currentSettings.showQRCode) {
@@ -461,7 +466,7 @@ function calculateTotalSheets() {
     return Math.ceil(processingPages / slots);
 }
 
-// ... (initializeImpositionUI same as before, updated render calls logic is inside renderSheetOnCanvas)
+// ... (initializeImpositionUI same as before)
 export async function initializeImpositionUI({ projectData, db, projectId }) {
     const imposePdfButton = document.getElementById('impose-pdf-button');
     const impositionModal = document.getElementById('imposition-modal');
@@ -487,9 +492,6 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
         }
     }
 
-    // ... (rest of init code same as before, see previous artifact for full block if needed)
-    
-    // Minimal block for context:
     if (!document.getElementById('creep-control-group')) {
         const creepGroup = document.createElement('div');
         creepGroup.id = 'creep-control-group';
@@ -695,7 +697,7 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
     }
 
     form.addEventListener('change', handleFormChange);
-    // ... (rest of event listeners and end of function)
+    // ... (rest of function - same as previous, ending with openModal logic) ...
     const canvas = document.getElementById('imposition-preview-canvas');
     const zoomInButton = document.getElementById('imposition-zoom-in-button');
     const zoomOutButton = document.getElementById('imposition-zoom-out-button');
