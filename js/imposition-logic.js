@@ -3,6 +3,15 @@ import { collection, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/f
 
 export const INCH_TO_POINTS = 72;
 
+// Default sheet sizes to be used if Firestore is unavailable or empty
+const DEFAULT_SHEET_SIZES = [
+    { name: "Super B (13 x 19 in)", longSideInches: 19, shortSideInches: 13 },
+    { name: "Custom (12.5 x 19 in)", longSideInches: 19, shortSideInches: 12.5 },
+    { name: "Digital Press (12 x 18 in)", longSideInches: 18, shortSideInches: 12 },
+    { name: "Tabloid (11 x 17 in)", longSideInches: 17, shortSideInches: 11 },
+    { name: "Letter (8.5 x 11 in)", longSideInches: 11, shortSideInches: 8.5 },
+];
+
 // Added for detection logic
 const STANDARD_SIZES_POINTS = {
     'Letter': [612, 792],
@@ -14,15 +23,6 @@ const STANDARD_SIZES_POINTS = {
     '12x18': [864, 1296],
     '13x19': [936, 1368]
 };
-
-// Default sheet sizes to be used if Firestore is unavailable or empty
-const DEFAULT_SHEET_SIZES = [
-    { name: "Super B (13 x 19 in)", longSideInches: 19, shortSideInches: 13 },
-    { name: "Custom (12.5 x 19 in)", longSideInches: 19, shortSideInches: 12.5 },
-    { name: "Digital Press (12 x 18 in)", longSideInches: 18, shortSideInches: 12 },
-    { name: "Tabloid (11 x 17 in)", longSideInches: 17, shortSideInches: 11 },
-    { name: "Letter (8.5 x 11 in)", longSideInches: 11, shortSideInches: 8.5 },
-];
 
 let sheetSizesCache = null;
 
@@ -122,6 +122,8 @@ function getBookletPagePairs(sheetIndex, paddedPageCount) {
     const pageIndexFL = paddedPageCount - (sheetIndex * 2) - 1;
     const pageIndexBL = sheetIndex * 2 + 1;
     const pageIndexBR = paddedPageCount - (sheetIndex * 2) - 2;
+
+    // Returns pages in visual order: [Front-Left, Front-Right], [Back-Left, Back-Right]
     return {
         front: [pageIndexFL, pageIndexFR],
         back: [pageIndexBL, pageIndexBR]
@@ -132,7 +134,10 @@ function getBookletPagePairs(sheetIndex, paddedPageCount) {
 export function getPageSequenceForSheet(sheetIndex, numInputPages, settings) {
     const { impositionType, columns, rows, isDuplex, includeCover = true } = settings;
     const slotsPerSheet = columns * rows;
-    const pages = Array(slotsPerSheet * 2).fill(null);
+    
+    // [FIX] Initialize arrays
+    let frontPages = [];
+    let backPages = [];
 
     if (impositionType === 'booklet') {
         let processingPages = numInputPages;
@@ -147,18 +152,26 @@ export function getPageSequenceForSheet(sheetIndex, numInputPages, settings) {
         const paddedPageCount = Math.ceil(processingPages / 4) * 4;
         const pairs = getBookletPagePairs(sheetIndex, paddedPageCount);
         
+        // Helper to resolve mapped index or null
         const resolve = (pIndex) => {
             if (pIndex > processingPages - 1) return null;
             return pIndex + 1 + pageOffset;
         };
 
-        const frontPages = [resolve(pairs.front[0]), resolve(pairs.front[1])];
-        const backPages = [resolve(pairs.back[0]), resolve(pairs.back[1])];
+        const singleRowFront = [resolve(pairs.front[0]), resolve(pairs.front[1])];
+        const singleRowBack = [resolve(pairs.back[0]), resolve(pairs.back[1])];
+
+        // [FIX] Repeat the booklet spread for the number of rows specified
+        // If rows=2, we want [Left, Right, Left, Right]
+        for (let r = 0; r < rows; r++) {
+            frontPages.push(...singleRowFront);
+            backPages.push(...singleRowBack);
+        }
+        
         return { front: frontPages, back: backPages };
     }
 
-    const frontPages = [];
-    const backPages = [];
+    // --- Standard Logic for Stack/Repeat ---
 
     if (impositionType === 'stack') {
         const baseIndex = sheetIndex * slotsPerSheet * (isDuplex ? 2 : 1);
@@ -204,6 +217,7 @@ export function getPageSequenceForSheet(sheetIndex, numInputPages, settings) {
         }
     }
 
+    // Work-and-turn logic for duplex stack/collate
     if (isDuplex && (impositionType === 'stack' || impositionType === 'collateCut') && columns > 1) {
         const reversedRows = [];
         for (let row = 0; row < rows; row++) {
