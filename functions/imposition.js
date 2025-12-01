@@ -1,4 +1,6 @@
 const { PDFDocument, rgb, degrees, StandardFonts, cmyk } = require('pdf-lib');
+// [FIX] Added path operators to imports
+const { pushGraphicsState, popGraphicsState, clip, endPath, moveTo, lineTo, closePath } = require('pdf-lib');
 const qrcode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
@@ -63,27 +65,72 @@ function getSlipSheetColorRgb(colorName) {
     }
 }
 
+// [FIXED] Updated to suppress vertical marks at shared edges (spine)
 const drawCropMarks = (page, trimAreaX, trimAreaY, trimAreaWidth, trimAreaHeight, options = {}) => {
     const registrationBlack = cmyk(1, 1, 1, 1);
     const commonOptions = { thickness: CROP_MARK_THICKNESS_POINTS, color: registrationBlack };
     const { hasTopNeighbor, hasBottomNeighbor, hasLeftNeighbor, hasRightNeighbor } = options;
     
+    // TOP MARKS (Vertical lines above corners)
     if (!hasTopNeighbor) {
-        page.drawLine({ start: { x: trimAreaX, y: trimAreaY + trimAreaHeight + CROP_MARK_OFFSET_POINTS }, end: { x: trimAreaX, y: trimAreaY + trimAreaHeight + CROP_MARK_OFFSET_POINTS + CROP_MARK_LENGTH_POINTS }, ...commonOptions });
-        page.drawLine({ start: { x: trimAreaX + trimAreaWidth, y: trimAreaY + trimAreaHeight + CROP_MARK_OFFSET_POINTS }, end: { x: trimAreaX + trimAreaWidth, y: trimAreaY + trimAreaHeight + CROP_MARK_OFFSET_POINTS + CROP_MARK_LENGTH_POINTS }, ...commonOptions });
+        // Draw Top-Left Vertical only if no Left Neighbor (Spine check)
+        if (!hasLeftNeighbor) {
+            page.drawLine({ start: { x: trimAreaX, y: trimAreaY + trimAreaHeight + CROP_MARK_OFFSET_POINTS }, end: { x: trimAreaX, y: trimAreaY + trimAreaHeight + CROP_MARK_OFFSET_POINTS + CROP_MARK_LENGTH_POINTS }, ...commonOptions });
+        }
+        // Draw Top-Right Vertical only if no Right Neighbor (Spine check)
+        if (!hasRightNeighbor) {
+            page.drawLine({ start: { x: trimAreaX + trimAreaWidth, y: trimAreaY + trimAreaHeight + CROP_MARK_OFFSET_POINTS }, end: { x: trimAreaX + trimAreaWidth, y: trimAreaY + trimAreaHeight + CROP_MARK_OFFSET_POINTS + CROP_MARK_LENGTH_POINTS }, ...commonOptions });
+        }
     }
+
+    // BOTTOM MARKS (Vertical lines below corners)
     if (!hasBottomNeighbor) {
-        page.drawLine({ start: { x: trimAreaX, y: trimAreaY - CROP_MARK_OFFSET_POINTS }, end: { x: trimAreaX, y: trimAreaY - CROP_MARK_OFFSET_POINTS - CROP_MARK_LENGTH_POINTS }, ...commonOptions });
-        page.drawLine({ start: { x: trimAreaX + trimAreaWidth, y: trimAreaY - CROP_MARK_OFFSET_POINTS }, end: { x: trimAreaX + trimAreaWidth, y: trimAreaY - CROP_MARK_OFFSET_POINTS - CROP_MARK_LENGTH_POINTS }, ...commonOptions });
+        // Draw Bottom-Left Vertical only if no Left Neighbor
+        if (!hasLeftNeighbor) {
+            page.drawLine({ start: { x: trimAreaX, y: trimAreaY - CROP_MARK_OFFSET_POINTS }, end: { x: trimAreaX, y: trimAreaY - CROP_MARK_OFFSET_POINTS - CROP_MARK_LENGTH_POINTS }, ...commonOptions });
+        }
+        // Draw Bottom-Right Vertical only if no Right Neighbor
+        if (!hasRightNeighbor) {
+            page.drawLine({ start: { x: trimAreaX + trimAreaWidth, y: trimAreaY - CROP_MARK_OFFSET_POINTS }, end: { x: trimAreaX + trimAreaWidth, y: trimAreaY - CROP_MARK_OFFSET_POINTS - CROP_MARK_LENGTH_POINTS }, ...commonOptions });
+        }
     }
+
+    // LEFT MARKS (Horizontal lines to the left)
     if (!hasLeftNeighbor) {
         page.drawLine({ start: { x: trimAreaX - CROP_MARK_OFFSET_POINTS, y: trimAreaY + trimAreaHeight }, end: { x: trimAreaX - CROP_MARK_OFFSET_POINTS - CROP_MARK_LENGTH_POINTS, y: trimAreaY + trimAreaHeight }, ...commonOptions });
         page.drawLine({ start: { x: trimAreaX - CROP_MARK_OFFSET_POINTS, y: trimAreaY }, end: { x: trimAreaX - CROP_MARK_OFFSET_POINTS - CROP_MARK_LENGTH_POINTS, y: trimAreaY }, ...commonOptions });
     }
+
+    // RIGHT MARKS (Horizontal lines to the right)
     if (!hasRightNeighbor) {
         page.drawLine({ start: { x: trimAreaX + trimAreaWidth + CROP_MARK_OFFSET_POINTS, y: trimAreaY + trimAreaHeight }, end: { x: trimAreaX + trimAreaWidth + CROP_MARK_OFFSET_POINTS + CROP_MARK_LENGTH_POINTS, y: trimAreaY + trimAreaHeight }, ...commonOptions });
         page.drawLine({ start: { x: trimAreaX + trimAreaWidth + CROP_MARK_OFFSET_POINTS, y: trimAreaY }, end: { x: trimAreaX + trimAreaWidth + CROP_MARK_OFFSET_POINTS + CROP_MARK_LENGTH_POINTS, y: trimAreaY }, ...commonOptions });
     }
+};
+
+// [NEW] Fixed Center Spine Mark
+const drawFixedSpineMark = (page, x, trimY, trimHeight) => {
+    const registrationBlack = cmyk(1, 1, 1, 1);
+    const commonOptions = { thickness: CROP_MARK_THICKNESS_POINTS, color: registrationBlack };
+    
+    // Top Spine Mark
+    page.drawLine({ 
+        start: { x: x, y: trimY + trimHeight + CROP_MARK_OFFSET_POINTS }, 
+        end: { x: x, y: trimY + trimHeight + CROP_MARK_OFFSET_POINTS + CROP_MARK_LENGTH_POINTS }, 
+        ...commonOptions 
+    });
+    
+    // Bottom Spine Mark
+    page.drawLine({ 
+        start: { x: x, y: trimY - CROP_MARK_OFFSET_POINTS }, 
+        end: { x: x, y: trimY - CROP_MARK_OFFSET_POINTS - CROP_MARK_LENGTH_POINTS }, 
+        ...commonOptions 
+    });
+    
+    // Optional: Crosshair at center
+    // const crossSize = 5;
+    // page.drawLine({ start: { x: x - crossSize, y: trimY + trimHeight + CROP_MARK_OFFSET_POINTS + (CROP_MARK_LENGTH_POINTS/2) }, end: { x: x + crossSize, y: trimY + trimHeight + CROP_MARK_OFFSET_POINTS + (CROP_MARK_LENGTH_POINTS/2) }, ...commonOptions });
+    // page.drawLine({ start: { x: x - crossSize, y: trimY - CROP_MARK_OFFSET_POINTS - (CROP_MARK_LENGTH_POINTS/2) }, end: { x: x + crossSize, y: trimY - CROP_MARK_OFFSET_POINTS - (CROP_MARK_LENGTH_POINTS/2) }, ...commonOptions });
 };
 
 const drawSlugInfo = async (page, pdfDoc, currentSheetId, totalSheetsForSlug, font, jobInfo, inputFile, position = 'bottomLeft') => {
@@ -138,7 +185,8 @@ async function imposePdfLogic(params) {
         columns, rows, bleedInches, horizontalGutterInches, verticalGutterInches,
         impositionType, sheetOrientation, isDuplex, rowOffsetType,
         showQRCode, qrCodePosition, slipSheetColor,
-        creepInches = 0
+        creepInches = 0,
+        preserveCenterSpread // [FIX] Added
     } = settings;
 
     // [FIX] Ensure impositionType is normalized to lowercase and defaults to stack
@@ -185,7 +233,6 @@ async function imposePdfLogic(params) {
             break;
         }
     }
-    // ---------------------------------------------
 
     const bleedPoints = bleedInches * INCH_TO_POINTS;
     const horizontalGutterPoints = horizontalGutterInches * INCH_TO_POINTS;
@@ -245,16 +292,20 @@ async function imposePdfLogic(params) {
     
     let colStepX;
     if (impositionType === 'booklet') {
+        // Booklet always assumes strict trim alignment at spine
         colStepX = trimWidth + horizontalGutterPoints;
     } else {
+        // For stack/other, we usually step by the full content box (including bleed) if present
         colStepX = pageContentWidth + horizontalGutterPoints;
     }
 
     // --- CENTERING CALCULATION ---
     let totalTrimWidth;
     if (impositionType === 'booklet') {
+         // Width is (Trim * Cols) + (Gutter * Gaps)
          totalTrimWidth = (trimWidth * currentColumnsForLayout) + (Math.max(0, currentColumnsForLayout - 1) * horizontalGutterPoints);
     } else {
+         // For Stack, center the full content block for consistency
          totalTrimWidth = (pageContentWidth * currentColumnsForLayout) + (Math.max(0, currentColumnsForLayout - 1) * horizontalGutterPoints);
     }
     
@@ -280,6 +331,9 @@ async function imposePdfLogic(params) {
             let xPos = startXBlock + col * colStepX;
             const yPos = startYBlock + (currentRowsForLayout - 1 - row) * (pageContentHeight + verticalGutterPoints);
             
+            // For stack, if we centered based on Content Width, startXBlock is the Content Edge.
+            // But our draw logic assumes xPos is the Trim Edge (it subtracts bleed).
+            // So for STACK, we must adjust xPos to be the Trim Edge.
             if (impositionType !== 'booklet') {
                  // Left Trim Edge = Left Content Edge + Bleed.
                  xPos += bleedPoints;
@@ -294,11 +348,18 @@ async function imposePdfLogic(params) {
     const calculateCreepShift = (sheetIndex, isLeftPage) => {
         if (impositionType !== 'booklet' || !creepInches || creepInches === 0) return 0;
         
+        // [FIX] Check for Preserve Center Spread
+        if (preserveCenterSpread && sheetIndex === totalPhysicalSheets - 1) {
+            return 0;
+        }
+
         const safeTotalSheets = Math.max(1, totalPhysicalSheets - 1);
         const creepStep = (creepInches * INCH_TO_POINTS) / safeTotalSheets;
         const shiftAmount = sheetIndex * creepStep;
 
         // Direction: INWARD (Towards Spine)
+        // Left Page (Col 0) -> Spine on Right -> Move Right (+)
+        // Right Page (Col 1) -> Spine on Left -> Move Left (-)
         return isLeftPage ? shiftAmount : -shiftAmount;
     };
 
@@ -322,8 +383,6 @@ async function imposePdfLogic(params) {
             return null;
         }
     };
-
-    const { pushGraphicsState, popGraphicsState, clip, endPath, rect } = require('pdf-lib');
 
     for (let physicalSheetIndex = 0; physicalSheetIndex < totalPhysicalSheets; physicalSheetIndex++) {
 
@@ -369,34 +428,53 @@ async function imposePdfLogic(params) {
             const embeddedPage = await embedPageForBatch(pIndex);
             if (!embeddedPage) continue; 
 
-            let { x, y } = slotPositions[slotIndex]; 
+            // x is nominalX (The fixed grid position)
+            let { x: nominalX, y } = slotPositions[slotIndex]; 
             const gridCols = impositionType === 'booklet' ? 2 : columns;
             const gridRows = rows;
             const row = Math.floor(slotIndex / gridCols);
             const col = slotIndex % gridCols;
+
+            let x = nominalX;
 
             if (impositionType === 'booklet') {
                 const isLeftPage = (col === 0);
                 x += calculateCreepShift(physicalSheetIndex, isLeftPage);
             }
 
-            // --- [FIXED] BOOKLET MASKING ---
-            // Clip specifically at the spine so bleed doesn't cross over
             if (impositionType === 'booklet') {
                 outputSheetFront.pushOperators(pushGraphicsState());
+                // MASKING LOGIC FOR BOOKLET (Spine Handling)
+                // Using manual path construction to replace 'rect()'
                 if (col === 0) {
-                    // Left Page: Clip Right Edge (Spine)
-                    // We allow bleed on Left/Top/Bottom, but Right stops at Trim Edge
-                    // Box: [x - bleed, y] width: [bleed + trim], height: [contentH]
-                    outputSheetFront.pushOperators(rect(x - bleedPoints, y, bleedPoints + trimWidth, pageContentHeight));
-                    outputSheetFront.pushOperators(clip(), endPath());
+                    // Left Page: Clip Right Edge at Spine
+                    const clipX = x - bleedPoints;
+                    const clipW = (nominalX + trimWidth) - clipX;
+                    // Path: Bottom-Left -> Bottom-Right -> Top-Right -> Top-Left -> Close
+                    outputSheetFront.pushOperators(
+                        moveTo(clipX, y),
+                        lineTo(clipX + clipW, y),
+                        lineTo(clipX + clipW, y + pageContentHeight),
+                        lineTo(clipX, y + pageContentHeight),
+                        closePath(),
+                        clip(),
+                        endPath()
+                    );
                 } else {
-                    // Right Page: Clip Left Edge (Spine)
-                    // We allow bleed on Right/Top/Bottom, but Left starts at Trim Edge
-                    // Box: [x, y] width: [trim + bleed], height: [contentH]
-                    outputSheetFront.pushOperators(rect(x, y, trimWidth + bleedPoints, pageContentHeight));
-                    outputSheetFront.pushOperators(clip(), endPath());
+                    // Right Page: Clip Left Edge at Spine
+                    const clipX = nominalX;
+                    const clipW = (x + trimWidth + bleedPoints) - clipX;
+                    outputSheetFront.pushOperators(
+                        moveTo(clipX, y),
+                        lineTo(clipX + clipW, y),
+                        lineTo(clipX + clipW, y + pageContentHeight),
+                        lineTo(clipX, y + pageContentHeight),
+                        closePath(),
+                        clip(),
+                        endPath()
+                    );
                 }
+                
                 outputSheetFront.drawPage(embeddedPage, { x: x - bleedPoints, y, width: pageContentWidth, height: pageContentHeight });
                 outputSheetFront.pushOperators(popGraphicsState());
             } else {
@@ -406,18 +484,26 @@ async function imposePdfLogic(params) {
             const trimAreaY = y + bleedPoints;
             const trimAreaH = pageContentHeight - (2 * bleedPoints);
             let finalCropX = x; 
-            if (impositionType === 'stack') {
-                finalCropX = x; 
-            }
+            if (impositionType === 'stack') { finalCropX = x; }
             if (impositionType === 'booklet') {
                 if (col === 0) finalCropX = x; // Start of trim
                 if (col === 1) finalCropX = x; // Start of trim (Spine)
             }
 
+            // Updated neighbor logic for Booklet (col 0 right is spine, col 1 left is spine)
+            const hasLeft = impositionType === 'booklet' ? (col === 1) : (col > 0);
+            const hasRight = impositionType === 'booklet' ? (col === 0) : (col < gridCols - 1);
+
             drawCropMarks(outputSheetFront, finalCropX, trimAreaY, trimWidth, trimAreaH, {
                 hasTopNeighbor: row > 0, hasBottomNeighbor: row < gridRows - 1,
-                hasLeftNeighbor: col > 0, hasRightNeighbor: col < gridCols - 1
+                hasLeftNeighbor: hasLeft, hasRightNeighbor: hasRight
             });
+
+            // [NEW] Draw Fixed Spine Mark (Only draw once per spread - handled at col 1)
+            if (impositionType === 'booklet' && col === 1) {
+                // nominalX is the shared spine position for the spread
+                drawFixedSpineMark(outputSheetFront, nominalX, trimAreaY, trimAreaH);
+            }
         }
 
         if (showQRCode) await drawSlugInfo(outputSheetFront, currentBatchDoc, `${physicalSheetIndex + 1}F`, totalPhysicalSheets, currentBatchFont, jobInfo, inputFile, qrCodePosition);
@@ -448,11 +534,13 @@ async function imposePdfLogic(params) {
                 const embeddedPage = await embedPageForBatch(pIndex);
                 if (!embeddedPage) continue;
 
-                let { x, y } = slotPositions[slotIndex]; 
+                let { x: nominalX, y } = slotPositions[slotIndex]; 
                 const gridCols = impositionType === 'booklet' ? 2 : columns;
                 const gridRows = rows;
                 const row = Math.floor(slotIndex / gridCols);
                 const col = slotIndex % gridCols;
+
+                let x = nominalX;
 
                 if (impositionType === 'booklet') {
                     // Note: Col 0 on Back is physically LEFT (Page 2), which is a LEFT page in the book.
@@ -460,17 +548,32 @@ async function imposePdfLogic(params) {
                     x += calculateCreepShift(physicalSheetIndex, isLeftPage);
                 }
 
-                // --- [FIXED] BOOKLET MASKING (BACK SIDE) ---
                 if (impositionType === 'booklet') {
                     outputSheetBack.pushOperators(pushGraphicsState());
                     if (col === 0) {
-                        // Left Page Logic (Clip Right Edge/Spine)
-                        outputSheetBack.pushOperators(rect(x - bleedPoints, y, bleedPoints + trimWidth, pageContentHeight));
-                        outputSheetBack.pushOperators(clip(), endPath());
+                        const clipX = x - bleedPoints;
+                        const clipW = (nominalX + trimWidth) - clipX;
+                        outputSheetBack.pushOperators(
+                            moveTo(clipX, y),
+                            lineTo(clipX + clipW, y),
+                            lineTo(clipX + clipW, y + pageContentHeight),
+                            lineTo(clipX, y + pageContentHeight),
+                            closePath(),
+                            clip(),
+                            endPath()
+                        );
                     } else {
-                         // Right Page Logic (Clip Left Edge/Spine)
-                        outputSheetBack.pushOperators(rect(x, y, trimWidth + bleedPoints, pageContentHeight));
-                        outputSheetBack.pushOperators(clip(), endPath());
+                        const clipX = nominalX;
+                        const clipW = (x + trimWidth + bleedPoints) - clipX;
+                        outputSheetBack.pushOperators(
+                            moveTo(clipX, y),
+                            lineTo(clipX + clipW, y),
+                            lineTo(clipX + clipW, y + pageContentHeight),
+                            lineTo(clipX, y + pageContentHeight),
+                            closePath(),
+                            clip(),
+                            endPath()
+                        );
                     }
                     outputSheetBack.drawPage(embeddedPage, { x: x - bleedPoints, y, width: pageContentWidth, height: pageContentHeight });
                     outputSheetBack.pushOperators(popGraphicsState());
@@ -487,10 +590,17 @@ async function imposePdfLogic(params) {
                     if (col === 1) finalCropX = x;
                 }
 
+                const hasLeft = impositionType === 'booklet' ? (col === 1) : (col > 0);
+                const hasRight = impositionType === 'booklet' ? (col === 0) : (col < gridCols - 1);
+
                 drawCropMarks(outputSheetBack, finalCropX, trimAreaY, trimWidth, trimAreaH, {
                     hasTopNeighbor: row > 0, hasBottomNeighbor: row < gridRows - 1,
-                    hasLeftNeighbor: col > 0, hasRightNeighbor: col < gridCols - 1
+                    hasLeftNeighbor: hasLeft, hasRightNeighbor: hasRight
                 });
+
+                if (impositionType === 'booklet' && col === 1) {
+                    drawFixedSpineMark(outputSheetBack, nominalX, trimAreaY, trimAreaH);
+                }
             }
             
             if (showQRCode) await drawSlugInfo(outputSheetBack, currentBatchDoc, `${physicalSheetIndex + 1}B`, totalPhysicalSheets, currentBatchFont, jobInfo, inputFile, qrCodePosition);
@@ -569,20 +679,6 @@ async function maximizeNUp(docWidth, docHeight, db) {
     const sheetSizes = sheetSizesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
     if (sheetSizes.length === 0) throw new Error("No sheet sizes are defined in Firestore settings.");
-
-    // --- DETECT BLEED FOR UI ---
-    let detectedBleed = 0.125;
-    const TOLERANCE = 5;
-    
-    for (const [name, dims] of Object.entries(STANDARD_SIZES_POINTS)) {
-        const [stdW, stdH] = dims;
-        if ((Math.abs(docWidth - stdW) < TOLERANCE && Math.abs(docHeight - stdH) < TOLERANCE) || 
-            (Math.abs(docWidth - stdH) < TOLERANCE && Math.abs(docHeight - stdW) < TOLERANCE)) {
-            detectedBleed = 0;
-            break;
-        }
-    }
-    // ---------------------------
 
     let forcedSheet = null;
     let forcedRuleSettings = null; 
@@ -669,7 +765,7 @@ async function maximizeNUp(docWidth, docHeight, db) {
         sheetLongSideInches: parseFloat(bestLayout.sheet.longSideInches),
         sheetShortSideInches: parseFloat(bestLayout.sheet.shortSideInches),
         sheetOrientation: bestLayout.sheetOrientation,
-        bleedInches: detectedBleed,
+        bleedInches: 0.125,
         horizontalGutterInches: impositionSettings.horizontalGutterInches,
         verticalGutterInches: impositionSettings.verticalGutterInches
     };
