@@ -1729,15 +1729,20 @@ async function createBookletPdf(projectId, files, spineMode) {
             drawSpine = false;
         }
 
+        // [FIX] Correct Layout for LTR: [Back | Spine | Front]
+        // zoneLeft = Back, zoneRight = Front
         await drawPart(coverPage1, coverFiles.back, zoneLeft.x, zoneLeft.y, zoneLeft.w, zoneLeft.h); 
         if (drawSpine) await drawPart(coverPage1, coverFiles.spine, zoneMid.x, zoneMid.y, zoneMid.w, zoneMid.h);
         await drawPart(coverPage1, coverFiles.front, zoneRight.x, zoneRight.y, zoneRight.w, zoneRight.h);
 
-        // Page 2: Inner Cover
+        // Page 2: Inner Cover (Inside Front | Spine | Inside Back)
         if (coverFiles.inside_front || coverFiles.inside_back || (specs.binding === 'perfectBound' && spineWidth > 0)) {
             const coverPage2 = coverDoc.addPage([totalWidth * 72, totalHeight * 72]);
+
+            // Inside Front (Left), Inside Back (Right)
             await drawPart(coverPage2, coverFiles.inside_front, 0, 0, trimWidth + bleed, totalHeight);
             await drawPart(coverPage2, coverFiles.inside_back, trimWidth + bleed + spineWidth, 0, trimWidth + bleed, totalHeight);
+
             if (specs.binding === 'perfectBound' && spineWidth > 0) {
                 const glueW = (spineWidth + 0.25) * 72; 
                 const centerX = ((trimWidth + bleed) * 72) + ((spineWidth * 72) / 2);
@@ -2519,11 +2524,12 @@ exports.generateBooklet = onCall({
                 drawSpine = false;
             }
 
+            // [FIX] Correct Layout for LTR: [Back | Spine | Front]
             await drawPart(coverPage1, coverFiles.back, zoneLeft.x, zoneLeft.y, zoneLeft.w, zoneLeft.h); 
             if (drawSpine) await drawPart(coverPage1, coverFiles.spine, zoneMid.x, zoneMid.y, zoneMid.w, zoneMid.h);
             await drawPart(coverPage1, coverFiles.front, zoneRight.x, zoneRight.y, zoneRight.w, zoneRight.h);
 
-            // --- Page 2: Inner Cover ---
+            // --- Page 2: Inner Cover (Inside Front | Spine | Inside Back) ---
             if (coverFiles.inside_front || coverFiles.inside_back || (specs.binding === 'perfectBound' && spineWidth > 0)) {
                 const coverPage2 = coverDoc.addPage([totalWidth * 72, totalHeight * 72]);
                 
@@ -2708,9 +2714,6 @@ exports.imposePdf = onCall({
     if (!projectDoc.exists) throw new HttpsError('not-found', 'Project not found.');
     const projectData = projectDoc.data();
 
-    const latestVersion = projectData.versions?.reduce((latest, v) => (v.versionNumber > latest.versionNumber ? v : latest), projectData.versions[0]);
-    if (!latestVersion || !latestVersion.fileURL) throw new HttpsError('not-found', 'No interior file found.');
-
     const bucket = admin.storage().bucket();
     
     const resolveStoragePath = (url) => {
@@ -2721,12 +2724,23 @@ exports.imposePdf = onCall({
         return urlObj.pathname.startsWith('/') ? urlObj.pathname.slice(1) : urlObj.pathname;
     };
 
-    const interiorPath = resolveStoragePath(latestVersion.fileURL);
-    const localInteriorPath = path.join(os.tmpdir(), `interior_${Date.now()}.pdf`);
-    await bucket.file(decodeURIComponent(interiorPath)).download({ destination: localInteriorPath });
-    tempFilesToCleanup.push(localInteriorPath);
+    let sourceFileUrl;
 
-    let finalSourcePath = localInteriorPath;
+    if (settings.source === 'cover') {
+        if (!projectData.cover || !projectData.cover.fileURL) throw new HttpsError('not-found', 'No cover file found on this project.');
+        sourceFileUrl = projectData.cover.fileURL;
+    } else {
+        const latestVersion = projectData.versions?.reduce((latest, v) => (v.versionNumber > latest.versionNumber ? v : latest), projectData.versions[0]);
+        if (!latestVersion || !latestVersion.fileURL) throw new HttpsError('not-found', 'No interior file found.');
+        sourceFileUrl = latestVersion.fileURL;
+    }
+
+    const sourcePath = resolveStoragePath(sourceFileUrl);
+    const localSourcePath = path.join(os.tmpdir(), `source_${Date.now()}.pdf`);
+    await bucket.file(decodeURIComponent(sourcePath)).download({ destination: localSourcePath });
+    tempFilesToCleanup.push(localSourcePath);
+
+    let finalSourcePath = localSourcePath;
 
     // [FIX] ONLY MERGE COVER FOR BOOKLETS
     if (settings.impositionType === 'booklet' && settings.includeCover && projectData.cover && projectData.cover.fileURL) {
@@ -2742,7 +2756,7 @@ exports.imposePdf = onCall({
             const mergedDoc = await PDFDocument.create();
             
             const coverPdf = await PDFDocument.load(fs.readFileSync(localCoverPath));
-            const interiorPdf = await PDFDocument.load(fs.readFileSync(localInteriorPath));
+            const interiorPdf = await PDFDocument.load(fs.readFileSync(localSourcePath));
             const coverCount = coverPdf.getPageCount();
             
             // Get Geometry
@@ -2752,20 +2766,23 @@ exports.imposePdf = onCall({
             // Detect Spread
             const coverP1 = coverPdf.getPage(0);
             const { width: covW, height: covH } = coverP1.getSize();
-            const isSpread = coverCount === 2 && covW > intW * 1.5;
+            const isSpread = (coverCount === 2 && covW > intW * 1.5) || (coverCount === 2 && settings.source === 'cover'); // Force spread logic for 2-page source cover? No, if source=cover we don't merge.
 
             if (isSpread) {
                 const [embeddedCover1] = await mergedDoc.embedPages([coverP1]);
                 const [embeddedCover2] = await mergedDoc.embedPages([coverPdf.getPage(1)]);
 
-                // 1. Front (Right Half of P1)
+                // 1. Front (Right Half of P1) - P1 is [Back | Spine | Front]
+                // Front is at the RIGHT end of the spread.
+                // To crop to Front, we shift the spread LEFT by (SpreadWidth - PageWidth).
+                // x = intW - covW.
                 const p1 = mergedDoc.addPage([intW, intH]);
-                // Align Right Edge: drawX = PageWidth - SpreadWidth
                 p1.drawPage(embeddedCover1, { x: intW - covW, y: 0, width: covW, height: covH });
 
-                // 2. Inside Front (Left Half of P2)
+                // 2. Inside Front (Left Half of P2) - P2 is [Inside Front | Spine | Inside Back]
+                // Inside Front is at the LEFT end.
+                // x = 0.
                 const p2 = mergedDoc.addPage([intW, intH]);
-                // Align Left Edge: drawX = 0
                 p2.drawPage(embeddedCover2, { x: 0, y: 0, width: covW, height: covH });
 
                 // 3. Interiors
@@ -2774,10 +2791,14 @@ exports.imposePdf = onCall({
                 interiorPages.forEach(p => mergedDoc.addPage(p));
 
                 // 4. Inside Back (Right Half of P2)
+                // Inside Back is at RIGHT end.
+                // x = intW - covW.
                 const p3 = mergedDoc.addPage([intW, intH]);
                 p3.drawPage(embeddedCover2, { x: intW - covW, y: 0, width: covW, height: covH });
 
                 // 5. Back (Left Half of P1)
+                // Back is at LEFT end of Outer Spread.
+                // x = 0.
                 const p4 = mergedDoc.addPage([intW, intH]);
                 p4.drawPage(embeddedCover1, { x: 0, y: 0, width: covW, height: covH });
 
