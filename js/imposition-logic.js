@@ -12,14 +12,20 @@ const DEFAULT_SHEET_SIZES = [
     { name: "Letter (8.5 x 11 in)", longSideInches: 11, shortSideInches: 8.5 },
 ];
 
+// Added for detection logic
+const STANDARD_SIZES_POINTS = {
+    'Letter': [612, 792],
+    'Legal': [612, 1008],
+    'Tabloid': [792, 1224],
+    'A4': [595.28, 841.89],
+    'A3': [841.89, 1190.55],
+    '11x17': [792, 1224],
+    '12x18': [864, 1296],
+    '13x19': [936, 1368]
+};
+
 let sheetSizesCache = null;
 
-/**
- * Fetches sheet sizes from Firestore. Caches the result.
- * Falls back to default sizes if Firestore is empty or errors out.
- * @param {object} db - The Firestore database instance.
- * @returns {Promise<Array>} A promise that resolves to an array of sheet size objects.
- */
 export async function getSheetSizes(db) {
     if (sheetSizesCache) {
         return sheetSizesCache;
@@ -49,7 +55,6 @@ export async function getSheetSizes(db) {
 }
 
 function calculateLayout(docWidth, docHeight, sheetWidth, sheetHeight) {
-    // ... (calculateLayout function remains unchanged)
     const cols1 = Math.floor(sheetWidth / docWidth);
     const rows1 = Math.floor(sheetHeight / docHeight);
     const count1 = cols1 * rows1;
@@ -85,6 +90,21 @@ export function maximizeNUp(docWidth, docHeight, sheetSizes) {
             bestLayout = { ...landscapeLayout, sheet: sheet, sheetOrientation: 'landscape' };
         }
     }
+
+    // --- DETECT BLEED ON INPUT FILE ---
+    let detectedBleed = 0.125;
+    const TOLERANCE = 5;
+    
+    for (const [name, dims] of Object.entries(STANDARD_SIZES_POINTS)) {
+        const [stdW, stdH] = dims;
+        if ((Math.abs(docWidth - stdW) < TOLERANCE && Math.abs(docHeight - stdH) < TOLERANCE) || 
+            (Math.abs(docWidth - stdH) < TOLERANCE && Math.abs(docHeight - stdW) < TOLERANCE)) {
+            detectedBleed = 0;
+            break;
+        }
+    }
+    // ----------------------------------
+
     if (bestLayout.count === 0) return null;
     return {
         columns: bestLayout.columns,
@@ -92,6 +112,7 @@ export function maximizeNUp(docWidth, docHeight, sheetSizes) {
         sheet: bestLayout.sheet.name,
         sheetOrientation: bestLayout.sheetOrientation,
         impositionType: 'stack',
+        bleedInches: detectedBleed, // Return detected bleed
     };
 }
 
@@ -111,21 +132,46 @@ function getBookletPagePairs(sheetIndex, paddedPageCount) {
 
 
 export function getPageSequenceForSheet(sheetIndex, numInputPages, settings) {
-    const { impositionType, columns, rows, isDuplex } = settings;
+    const { impositionType, columns, rows, isDuplex, includeCover = true } = settings;
     const slotsPerSheet = columns * rows;
-    const pages = Array(slotsPerSheet * 2).fill(null); // Max size for duplex
+    
+    // [FIX] Initialize arrays
+    let frontPages = [];
+    let backPages = [];
 
     if (impositionType === 'booklet') {
-        const paddedPageCount = Math.ceil(numInputPages / 4) * 4;
+        let processingPages = numInputPages;
+        let pageOffset = 0;
+
+        // Handle Cover Exclusion
+        if (includeCover === false && numInputPages >= 4) {
+            processingPages = numInputPages - 4; // Ignore 2 at start and 2 at end
+            pageOffset = 2; // Start mapping from page index 2 (Page 3)
+        }
+
+        const paddedPageCount = Math.ceil(processingPages / 4) * 4;
         const pairs = getBookletPagePairs(sheetIndex, paddedPageCount);
-        // The booklet logic uses a fixed 2-column, 1-row layout for its pairs
-        const frontPages = [pairs.front[0] + 1, pairs.front[1] + 1].map(p => p > paddedPageCount ? null : p);
-        const backPages = [pairs.back[0] + 1, pairs.back[1] + 1].map(p => p > paddedPageCount ? null : p);
+        
+        // Helper to resolve mapped index or null
+        const resolve = (pIndex) => {
+            if (pIndex > processingPages - 1) return null;
+            return pIndex + 1 + pageOffset;
+        };
+
+        const singleRowFront = [resolve(pairs.front[0]), resolve(pairs.front[1])];
+        const singleRowBack = [resolve(pairs.back[0]), resolve(pairs.back[1])];
+
+        // [FIX] Repeat the booklet spread for the number of rows specified
+        // If rows=2, we want [Left, Right, Left, Right]
+        for (let r = 0; r < rows; r++) {
+            frontPages.push(...singleRowFront);
+            backPages.push(...singleRowBack);
+        }
+        
         return { front: frontPages, back: backPages };
     }
 
-    const frontPages = [];
-    const backPages = [];
+    // --- Standard Logic for Stack/Repeat ---
 
     if (impositionType === 'stack') {
         const baseIndex = sheetIndex * slotsPerSheet * (isDuplex ? 2 : 1);

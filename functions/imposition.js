@@ -1,4 +1,6 @@
 const { PDFDocument, rgb, degrees, StandardFonts, cmyk } = require('pdf-lib');
+// [FIX] Added path operators to imports
+const { pushGraphicsState, popGraphicsState, clip, endPath, moveTo, lineTo, closePath } = require('pdf-lib');
 const qrcode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
@@ -63,27 +65,67 @@ function getSlipSheetColorRgb(colorName) {
     }
 }
 
+// [FIXED] Updated to suppress vertical marks at shared edges (spine)
 const drawCropMarks = (page, trimAreaX, trimAreaY, trimAreaWidth, trimAreaHeight, options = {}) => {
     const registrationBlack = cmyk(1, 1, 1, 1);
     const commonOptions = { thickness: CROP_MARK_THICKNESS_POINTS, color: registrationBlack };
     const { hasTopNeighbor, hasBottomNeighbor, hasLeftNeighbor, hasRightNeighbor } = options;
     
+    // TOP MARKS (Vertical lines above corners)
     if (!hasTopNeighbor) {
-        page.drawLine({ start: { x: trimAreaX, y: trimAreaY + trimAreaHeight + CROP_MARK_OFFSET_POINTS }, end: { x: trimAreaX, y: trimAreaY + trimAreaHeight + CROP_MARK_OFFSET_POINTS + CROP_MARK_LENGTH_POINTS }, ...commonOptions });
-        page.drawLine({ start: { x: trimAreaX + trimAreaWidth, y: trimAreaY + trimAreaHeight + CROP_MARK_OFFSET_POINTS }, end: { x: trimAreaX + trimAreaWidth, y: trimAreaY + trimAreaHeight + CROP_MARK_OFFSET_POINTS + CROP_MARK_LENGTH_POINTS }, ...commonOptions });
+        // Draw Top-Left Vertical only if no Left Neighbor (Spine check)
+        if (!hasLeftNeighbor) {
+            page.drawLine({ start: { x: trimAreaX, y: trimAreaY + trimAreaHeight + CROP_MARK_OFFSET_POINTS }, end: { x: trimAreaX, y: trimAreaY + trimAreaHeight + CROP_MARK_OFFSET_POINTS + CROP_MARK_LENGTH_POINTS }, ...commonOptions });
+        }
+        // Draw Top-Right Vertical only if no Right Neighbor (Spine check)
+        if (!hasRightNeighbor) {
+            page.drawLine({ start: { x: trimAreaX + trimAreaWidth, y: trimAreaY + trimAreaHeight + CROP_MARK_OFFSET_POINTS }, end: { x: trimAreaX + trimAreaWidth, y: trimAreaY + trimAreaHeight + CROP_MARK_OFFSET_POINTS + CROP_MARK_LENGTH_POINTS }, ...commonOptions });
+        }
     }
+
+    // BOTTOM MARKS (Vertical lines below corners)
     if (!hasBottomNeighbor) {
-        page.drawLine({ start: { x: trimAreaX, y: trimAreaY - CROP_MARK_OFFSET_POINTS }, end: { x: trimAreaX, y: trimAreaY - CROP_MARK_OFFSET_POINTS - CROP_MARK_LENGTH_POINTS }, ...commonOptions });
-        page.drawLine({ start: { x: trimAreaX + trimAreaWidth, y: trimAreaY - CROP_MARK_OFFSET_POINTS }, end: { x: trimAreaX + trimAreaWidth, y: trimAreaY - CROP_MARK_OFFSET_POINTS - CROP_MARK_LENGTH_POINTS }, ...commonOptions });
+        // Draw Bottom-Left Vertical only if no Left Neighbor
+        if (!hasLeftNeighbor) {
+            page.drawLine({ start: { x: trimAreaX, y: trimAreaY - CROP_MARK_OFFSET_POINTS }, end: { x: trimAreaX, y: trimAreaY - CROP_MARK_OFFSET_POINTS - CROP_MARK_LENGTH_POINTS }, ...commonOptions });
+        }
+        // Draw Bottom-Right Vertical only if no Right Neighbor
+        if (!hasRightNeighbor) {
+            page.drawLine({ start: { x: trimAreaX + trimAreaWidth, y: trimAreaY - CROP_MARK_OFFSET_POINTS }, end: { x: trimAreaX + trimAreaWidth, y: trimAreaY - CROP_MARK_OFFSET_POINTS - CROP_MARK_LENGTH_POINTS }, ...commonOptions });
+        }
     }
+
+    // LEFT MARKS (Horizontal lines to the left)
     if (!hasLeftNeighbor) {
         page.drawLine({ start: { x: trimAreaX - CROP_MARK_OFFSET_POINTS, y: trimAreaY + trimAreaHeight }, end: { x: trimAreaX - CROP_MARK_OFFSET_POINTS - CROP_MARK_LENGTH_POINTS, y: trimAreaY + trimAreaHeight }, ...commonOptions });
         page.drawLine({ start: { x: trimAreaX - CROP_MARK_OFFSET_POINTS, y: trimAreaY }, end: { x: trimAreaX - CROP_MARK_OFFSET_POINTS - CROP_MARK_LENGTH_POINTS, y: trimAreaY }, ...commonOptions });
     }
+
+    // RIGHT MARKS (Horizontal lines to the right)
     if (!hasRightNeighbor) {
         page.drawLine({ start: { x: trimAreaX + trimAreaWidth + CROP_MARK_OFFSET_POINTS, y: trimAreaY + trimAreaHeight }, end: { x: trimAreaX + trimAreaWidth + CROP_MARK_OFFSET_POINTS + CROP_MARK_LENGTH_POINTS, y: trimAreaY + trimAreaHeight }, ...commonOptions });
         page.drawLine({ start: { x: trimAreaX + trimAreaWidth + CROP_MARK_OFFSET_POINTS, y: trimAreaY }, end: { x: trimAreaX + trimAreaWidth + CROP_MARK_OFFSET_POINTS + CROP_MARK_LENGTH_POINTS, y: trimAreaY }, ...commonOptions });
     }
+};
+
+// [NEW] Fixed Center Spine Mark
+const drawFixedSpineMark = (page, x, trimY, trimHeight) => {
+    const registrationBlack = cmyk(1, 1, 1, 1);
+    const commonOptions = { thickness: CROP_MARK_THICKNESS_POINTS, color: registrationBlack };
+    
+    // Top Spine Mark
+    page.drawLine({ 
+        start: { x: x, y: trimY + trimHeight + CROP_MARK_OFFSET_POINTS }, 
+        end: { x: x, y: trimY + trimHeight + CROP_MARK_OFFSET_POINTS + CROP_MARK_LENGTH_POINTS }, 
+        ...commonOptions 
+    });
+    
+    // Bottom Spine Mark
+    page.drawLine({ 
+        start: { x: x, y: trimY - CROP_MARK_OFFSET_POINTS }, 
+        end: { x: x, y: trimY - CROP_MARK_OFFSET_POINTS - CROP_MARK_LENGTH_POINTS }, 
+        ...commonOptions 
+    });
 };
 
 const drawSlugInfo = async (page, pdfDoc, currentSheetId, totalSheetsForSlug, font, jobInfo, inputFile, position = 'bottomLeft') => {
@@ -100,7 +142,9 @@ const drawSlugInfo = async (page, pdfDoc, currentSheetId, totalSheetsForSlug, fo
     }
 
     const qty = jobInfo.quantity || 'N/A';
-    const jobName = jobInfo.jobIdName || (jobInfo.fileNameTitle || inputFile.name.substring(0, inputFile.name.lastIndexOf('.')) || "Job");
+    const inputName = inputFile && inputFile.name ? inputFile.name : "Generated_File.pdf";
+    const jobName = jobInfo.jobIdName || (jobInfo.fileNameTitle || inputName.substring(0, inputName.lastIndexOf('.')) || "Job");
+    
     const dueDateSlug = formatDateForSlug(jobInfo.dueDate);
     const slugText = `${currentSheetId}/${totalSheetsForSlug} | ${jobName.substring(0,15)} | Qty:${qty} | ${dueDateSlug}`;
 
@@ -130,12 +174,23 @@ const drawSlugInfo = async (page, pdfDoc, currentSheetId, totalSheetsForSlug, fo
 
 async function imposePdfLogic(params) {
     const { inputFile, settings, jobInfo, localFilePath, preLoadedPdfDoc } = params; 
-    const {
+    
+    // Normalize and extract settings
+    let {
         columns, rows, bleedInches, horizontalGutterInches, verticalGutterInches,
         impositionType, sheetOrientation, isDuplex, rowOffsetType,
         showQRCode, qrCodePosition, slipSheetColor,
-        includeCover = true // [NEW] Default to true
+        creepInches = 0,
+        preserveCenterSpread // [FIX] Added
     } = settings;
+
+    // [FIX] Ensure impositionType is normalized to lowercase and defaults to stack
+    impositionType = (impositionType || 'stack').toLowerCase();
+
+    // Default safe values if undefined
+    if (horizontalGutterInches === undefined) horizontalGutterInches = 0;
+    if (verticalGutterInches === undefined) verticalGutterInches = 0;
+    if (bleedInches === undefined) bleedInches = 0;
 
     let inputPdfDoc;
     let tempInputPath;
@@ -157,22 +212,29 @@ async function imposePdfLogic(params) {
     }
 
     const numInputPages = inputPdfDoc.getPageCount();
+    const { width: pageContentWidth, height: pageContentHeight } = inputPdfDoc.getPages()[0].getSize();
+
+    // --- [FIX] AUTO-DETECT BLEED ON INPUT FILE ---
+    // If the input file exactly matches a standard Trim size, we MUST force bleedInches to 0.
+    const TOLERANCE = 5;
+    for (const dims of Object.values(STANDARD_SIZES_POINTS)) {
+        const [stdW, stdH] = dims;
+        if ((Math.abs(pageContentWidth - stdW) < TOLERANCE && Math.abs(pageContentHeight - stdH) < TOLERANCE) || 
+            (Math.abs(pageContentWidth - stdH) < TOLERANCE && Math.abs(pageContentHeight - stdW) < TOLERANCE)) {
+            if (bleedInches > 0) {
+                console.log(`Auto-Correction: Input detected as Net Format (${pageContentWidth}x${pageContentHeight}). Forcing bleed to 0.`);
+                bleedInches = 0;
+            }
+            break;
+        }
+    }
+
     const bleedPoints = bleedInches * INCH_TO_POINTS;
     const horizontalGutterPoints = horizontalGutterInches * INCH_TO_POINTS;
     const verticalGutterPoints = verticalGutterInches * INCH_TO_POINTS;
-    const { width: pageContentWidth, height: pageContentHeight } = inputPdfDoc.getPages()[0].getSize();
-
-    // --- 1. COVER EXCLUSION LOGIC ---
-    let pageOffset = 0;
-    let processingPageCount = numInputPages;
-
-    if (impositionType === 'booklet' && includeCover === false) {
-        // If excluding cover, we assume the input has the cover (4 pages: F, IF, IB, B)
-        // We want to skip the first 2 and ignore the last 2.
-        if (numInputPages < 4) throw new Error("Cannot exclude cover: Document has fewer than 4 pages.");
-        pageOffset = 2; // Start reading from Page 3 (Index 2)
-        processingPageCount = numInputPages - 4; // Exclude last 2 pages
-    }
+    
+    // Ensure trimWidth is safe
+    const trimWidth = Math.max(0, pageContentWidth - (2 * bleedPoints));
 
     // --- SHEET SIZE RESOLUTION ---
     let paperLongSidePoints, paperShortSidePoints;
@@ -202,16 +264,13 @@ async function imposePdfLogic(params) {
     // --- LAYOUT CALCULATIONS ---
     let slotsPerSheet = columns * rows;
     if (impositionType === 'booklet') {
-        // [FIX] Support Step-and-Repeat for Booklets
-        // Booklet always has 2 columns (Left Page, Right Page)
-        // But can have multiple rows (stacking duplicates)
+        // [FIX] Ensure slots account for rows (2 cols * rows)
         slotsPerSheet = 2 * rows; 
     }
 
     let totalPhysicalSheets = 0;
     if (impositionType === 'booklet') {
-        // Calculate based on the "Interior Only" count if cover is excluded
-        const paddedPageCount = Math.ceil(processingPageCount / 4) * 4;
+        const paddedPageCount = Math.ceil(numInputPages / 4) * 4;
         totalPhysicalSheets = paddedPageCount / 4;
     } else if (impositionType === 'repeat') {
         totalPhysicalSheets = isDuplex ? Math.ceil(numInputPages / 2) : numInputPages;
@@ -219,28 +278,86 @@ async function imposePdfLogic(params) {
         const slotsPerPhysicalSheet = slotsPerSheet * (isDuplex ? 2 : 1);
         totalPhysicalSheets = Math.ceil(numInputPages / slotsPerPhysicalSheet);
     }
-    if (totalPhysicalSheets === 0 && processingPageCount > 0) totalPhysicalSheets = 1;
+    if (totalPhysicalSheets === 0 && numInputPages > 0) totalPhysicalSheets = 1;
 
     // Grid Calculations
     const currentColumnsForLayout = impositionType === 'booklet' ? 2 : columns;
-    const currentRowsForLayout = rows; // Use provided rows (e.g. 2 for 4-up booklet)
+    const currentRowsForLayout = rows;
     
     const slotPositions = [];
-    let totalRequiredWidth = (pageContentWidth * currentColumnsForLayout) + (Math.max(0, currentColumnsForLayout - 1) * horizontalGutterPoints);
-    const totalRequiredHeight = (pageContentHeight * currentRowsForLayout) + (Math.max(0, currentRowsForLayout - 1) * verticalGutterPoints);
-    if (rowOffsetType === 'half' && currentRowsForLayout > 1) totalRequiredWidth += (pageContentWidth + horizontalGutterPoints) / 2;
     
-    const startXBlock = (actualSheetWidthPoints - totalRequiredWidth) / 2;
+    let colStepX;
+    if (impositionType === 'booklet') {
+        // Booklet always assumes strict trim alignment at spine
+        colStepX = trimWidth + horizontalGutterPoints;
+    } else {
+        // For stack/other, we usually step by the full content box (including bleed) if present
+        colStepX = pageContentWidth + horizontalGutterPoints;
+    }
+
+    // --- CENTERING CALCULATION ---
+    let totalTrimWidth;
+    if (impositionType === 'booklet') {
+         // Width is (Trim * Cols) + (Gutter * Gaps)
+         totalTrimWidth = (trimWidth * currentColumnsForLayout) + (Math.max(0, currentColumnsForLayout - 1) * horizontalGutterPoints);
+    } else {
+         // For Stack, center the full content block for consistency
+         totalTrimWidth = (pageContentWidth * currentColumnsForLayout) + (Math.max(0, currentColumnsForLayout - 1) * horizontalGutterPoints);
+    }
+    
+    const totalRequiredHeight = (pageContentHeight * currentRowsForLayout) + (Math.max(0, currentRowsForLayout - 1) * verticalGutterPoints);
+    
+    // startXBlock is now calculated to position the LEFT TRIM EDGE of the first column
+    let startXBlock;
+    
+    if (impositionType === 'booklet') {
+        // Center the TRIM block
+        const centeredTrimX = (actualSheetWidthPoints - totalTrimWidth) / 2;
+        startXBlock = centeredTrimX; 
+    } else {
+         // Keep legacy centering for stack (Centering the full content block)
+         const totalContentWidth = (pageContentWidth * currentColumnsForLayout) + (Math.max(0, currentColumnsForLayout - 1) * horizontalGutterPoints);
+         startXBlock = (actualSheetWidthPoints - totalContentWidth) / 2;
+    }
+    
     const startYBlock = (actualSheetHeightPoints - totalRequiredHeight) / 2;
 
     for (let row = 0; row < currentRowsForLayout; row++) {
         for (let col = 0; col < currentColumnsForLayout; col++) {
-            let xPos = startXBlock + col * (pageContentWidth + horizontalGutterPoints);
+            let xPos = startXBlock + col * colStepX;
             const yPos = startYBlock + (currentRowsForLayout - 1 - row) * (pageContentHeight + verticalGutterPoints);
-            if (rowOffsetType === 'half' && row % 2 !== 0) xPos += (pageContentWidth + horizontalGutterPoints) / 2;
+            
+            // For stack, if we centered based on Content Width, startXBlock is the Content Edge.
+            // But our draw logic assumes xPos is the Trim Edge (it subtracts bleed).
+            // So for STACK, we must adjust xPos to be the Trim Edge.
+            if (impositionType !== 'booklet') {
+                 // Left Trim Edge = Left Content Edge + Bleed.
+                 xPos += bleedPoints;
+            }
+
+            if (rowOffsetType === 'half' && row % 2 !== 0 && impositionType !== 'booklet') xPos += (pageContentWidth + horizontalGutterPoints) / 2;
             slotPositions.push({ x: xPos, y: yPos });
         }
     }
+
+    // --- CREEP CALCULATION HELPERS ---
+    const calculateCreepShift = (sheetIndex, isLeftPage) => {
+        if (impositionType !== 'booklet' || !creepInches || creepInches === 0) return 0;
+        
+        // [FIX] Check for Preserve Center Spread
+        if (preserveCenterSpread && sheetIndex === totalPhysicalSheets - 1) {
+            return 0;
+        }
+
+        const safeTotalSheets = Math.max(1, totalPhysicalSheets - 1);
+        const creepStep = (creepInches * INCH_TO_POINTS) / safeTotalSheets;
+        const shiftAmount = sheetIndex * creepStep;
+
+        // Direction: INWARD (Towards Spine)
+        // Left Page (Col 0) -> Spine on Right -> Move Right (+)
+        // Right Page (Col 1) -> Spine on Left -> Move Left (-)
+        return isLeftPage ? shiftAmount : -shiftAmount;
+    };
 
     // --- CHUNKED PROCESSING ---
     const partialFiles = [];
@@ -250,9 +367,7 @@ async function imposePdfLogic(params) {
     let batchPageCache = new Map(); 
     
     const embedPageForBatch = async (pageIndex) => {
-        if (pageIndex === 'OUT_OF_BOUNDS') return 'OUT_OF_BOUNDS';
-        if (pageIndex >= numInputPages) return 'OUT_OF_BOUNDS'; 
-        
+        if (pageIndex === 'OUT_OF_BOUNDS' || pageIndex === null || pageIndex >= numInputPages) return null;
         if (batchPageCache.has(pageIndex)) return batchPageCache.get(pageIndex);
         const sourcePage = inputPdfDoc.getPages()[pageIndex];
         try {
@@ -260,16 +375,9 @@ async function imposePdfLogic(params) {
             batchPageCache.set(pageIndex, embeddedPage);
             return embeddedPage;
         } catch (e) {
-            console.warn(`Failed to embed page ${pageIndex}: ${e.message}`);
             batchPageCache.set(pageIndex, null);
             return null;
         }
-    };
-
-    // Helper: Map Virtual Booklet Index to Real PDF Index (Handling Exclusions)
-    const resolveBookletIndex = (virtualIndex) => {
-        if (virtualIndex >= processingPageCount) return 'OUT_OF_BOUNDS';
-        return virtualIndex + pageOffset;
     };
 
     for (let physicalSheetIndex = 0; physicalSheetIndex < totalPhysicalSheets; physicalSheetIndex++) {
@@ -283,7 +391,6 @@ async function imposePdfLogic(params) {
             currentBatchDoc = await PDFDocument.create();
             currentBatchFont = await currentBatchDoc.embedFont(StandardFonts.Helvetica);
             batchPageCache.clear(); 
-            
             if (global.gc) { try { global.gc(); } catch(e) {} }
         }
 
@@ -295,60 +402,125 @@ async function imposePdfLogic(params) {
         }
 
         const pagesForFrontIndices = [];
-        if (impositionType === 'stack') {
+        if (impositionType === 'booklet') {
+            const totalBookletPages = totalPhysicalSheets * 4; 
+            const s = physicalSheetIndex;
+            const leftVirtual = totalBookletPages - 1 - (2 * s);
+            const rightVirtual = 0 + (2 * s);
+            
+            // [FIX] Duplicate rows logic here ensures server also respects 2-up booklets
+            for (let r = 0; r < rows; r++) {
+                pagesForFrontIndices.push(leftVirtual);
+                pagesForFrontIndices.push(rightVirtual);
+            }
+        } else if (impositionType === 'stack') {
             const baseInputIndex = physicalSheetIndex * slotsPerSheet * (isDuplex ? 2 : 1);
             for (let i = 0; i < slotsPerSheet; i++) pagesForFrontIndices.push(baseInputIndex + (isDuplex ? i * 2 : i));
         } else if (impositionType === 'repeat') {
             const masterIndex = physicalSheetIndex * (isDuplex ? 2 : 1);
             for (let i = 0; i < slotsPerSheet; i++) pagesForFrontIndices.push(masterIndex);
-        } else if (impositionType === 'booklet') {
-            // [FIX] Saddle Stitch Ordering (Front)
-            const totalBookletPages = totalPhysicalSheets * 4; 
-            const s = physicalSheetIndex;
-            
-            // 1. Calculate the Page PAIR for this sheet
-            const leftVirtual = totalBookletPages - 1 - (2 * s);
-            const rightVirtual = 0 + (2 * s);
-
-            // 2. Resolve to absolute PDF indices
-            const absLeft = resolveBookletIndex(leftVirtual);
-            const absRight = resolveBookletIndex(rightVirtual);
-
-            // 3. Repeat for every Row (Step and Repeat)
-            for (let r = 0; r < rows; r++) {
-                pagesForFrontIndices.push(absLeft);
-                pagesForFrontIndices.push(absRight);
-            }
         }
 
+        // --- PASS 1: DRAW MARKS (LAYER 1) ---
         for (let slotIndex = 0; slotIndex < slotsPerSheet; slotIndex++) {
-            const pIndex = pagesForFrontIndices[slotIndex];
-            if (pIndex === undefined) continue;
-            
-            const embeddedPage = await embedPageForBatch(pIndex);
-            
-            if (embeddedPage === 'OUT_OF_BOUNDS') continue; 
-
-            const { x, y } = slotPositions[slotIndex];
-            // [FIX] Columns is 2 for booklet, but if 'stack', use settings.columns
+            let { x: nominalX, y } = slotPositions[slotIndex]; 
             const gridCols = impositionType === 'booklet' ? 2 : columns;
-            const gridRows = rows;
-
             const row = Math.floor(slotIndex / gridCols);
             const col = slotIndex % gridCols;
 
-            if (embeddedPage) {
-                outputSheetFront.drawPage(embeddedPage, { x, y, width: pageContentWidth, height: pageContentHeight });
+            let x = nominalX;
+
+            if (impositionType === 'booklet') {
+                const isLeftPage = (col === 0);
+                x += calculateCreepShift(physicalSheetIndex, isLeftPage);
             }
 
-            const trimAreaX = x + bleedPoints;
             const trimAreaY = y + bleedPoints;
-            const trimAreaW = pageContentWidth - (2 * bleedPoints);
             const trimAreaH = pageContentHeight - (2 * bleedPoints);
-            drawCropMarks(outputSheetFront, trimAreaX, trimAreaY, trimAreaW, trimAreaH, {
-                hasTopNeighbor: row > 0, hasBottomNeighbor: row < gridRows - 1,
-                hasLeftNeighbor: col > 0, hasRightNeighbor: col < gridCols - 1
+            
+            let finalCropX = x; 
+
+            // Neighbor Logic
+            let hasLeft = false;
+            let hasRight = false;
+            let hasTop = false;
+            let hasBottom = false;
+
+            if (impositionType === 'booklet') {
+                hasLeft = (col === 1); // Col 1 Left is Spine
+                hasRight = (col === 0); // Col 0 Right is Spine
+            }
+
+            drawCropMarks(outputSheetFront, finalCropX, trimAreaY, trimWidth, trimAreaH, {
+                hasTopNeighbor: hasTop, 
+                hasBottomNeighbor: hasBottom,
+                hasLeftNeighbor: hasLeft, 
+                hasRightNeighbor: hasRight
             });
+
+            if (impositionType === 'booklet' && col === 1) {
+                drawFixedSpineMark(outputSheetFront, nominalX, trimAreaY, trimAreaH);
+            }
+        }
+
+        // --- PASS 2: DRAW CONTENT (LAYER 2) ---
+        for (let slotIndex = 0; slotIndex < slotsPerSheet; slotIndex++) {
+            const pIndex = pagesForFrontIndices[slotIndex];
+            const embeddedPage = await embedPageForBatch(pIndex);
+
+            if (!embeddedPage) continue;
+
+            let { x: nominalX, y } = slotPositions[slotIndex];
+            const gridCols = impositionType === 'booklet' ? 2 : columns;
+            const col = slotIndex % gridCols;
+
+            let x = nominalX;
+
+            if (impositionType === 'booklet') {
+                const isLeftPage = (col === 0);
+                x += calculateCreepShift(physicalSheetIndex, isLeftPage);
+            }
+
+            const trimAreaY = y + bleedPoints;
+            const trimAreaH = pageContentHeight - (2 * bleedPoints);
+
+            if (impositionType === 'booklet') {
+                outputSheetFront.pushOperators(pushGraphicsState());
+                // MASKING LOGIC FOR BOOKLET (Spine Handling) - Manual Path Construction
+                if (col === 0) {
+                    // Left Page: Clip Right Edge at Spine
+                    const clipX = x - bleedPoints;
+                    const clipW = (nominalX + trimWidth) - clipX;
+                    // Path: Bottom-Left -> Bottom-Right -> Top-Right -> Top-Left -> Close
+                    outputSheetFront.pushOperators(
+                        moveTo(clipX, y),
+                        lineTo(clipX + clipW, y),
+                        lineTo(clipX + clipW, y + pageContentHeight),
+                        lineTo(clipX, y + pageContentHeight),
+                        closePath(),
+                        clip(),
+                        endPath()
+                    );
+                } else {
+                    // Right Page: Clip Left Edge at Spine
+                    const clipX = nominalX;
+                    const clipW = (x + trimWidth + bleedPoints) - clipX;
+                    outputSheetFront.pushOperators(
+                        moveTo(clipX, y),
+                        lineTo(clipX + clipW, y),
+                        lineTo(clipX + clipW, y + pageContentHeight),
+                        lineTo(clipX, y + pageContentHeight),
+                        closePath(),
+                        clip(),
+                        endPath()
+                    );
+                }
+                
+                outputSheetFront.drawPage(embeddedPage, { x: x - bleedPoints, y, width: pageContentWidth, height: pageContentHeight });
+                outputSheetFront.pushOperators(popGraphicsState());
+            } else {
+                outputSheetFront.drawPage(embeddedPage, { x: x - bleedPoints, y, width: pageContentWidth, height: pageContentHeight });
+            }
         }
 
         if (showQRCode) await drawSlugInfo(outputSheetFront, currentBatchDoc, `${physicalSheetIndex + 1}F`, totalPhysicalSheets, currentBatchFont, jobInfo, inputFile, qrCodePosition);
@@ -356,57 +528,112 @@ async function imposePdfLogic(params) {
         if (isDuplex) {
             const outputSheetBack = currentBatchDoc.addPage([actualSheetWidthPoints, actualSheetHeightPoints]);
             const pagesForBackIndices = [];
-             if (impositionType === 'stack') {
+            
+            if (impositionType === 'booklet') {
+                const totalBookletPages = totalPhysicalSheets * 4;
+                const s = physicalSheetIndex;
+                const leftVirtual = 0 + (2 * s) + 1;
+                const rightVirtual = totalBookletPages - 1 - (2 * s) - 1;
+                // [FIX] Repeat Rows Logic for Back Side
+                for (let r = 0; r < rows; r++) {
+                    pagesForBackIndices.push(leftVirtual);
+                    pagesForBackIndices.push(rightVirtual);
+                }
+            } else if (impositionType === 'stack') {
                 const baseInputIndex = physicalSheetIndex * slotsPerSheet * 2;
                 for (let i = 0; i < slotsPerSheet; i++) pagesForBackIndices.push(baseInputIndex + (i * 2) + 1);
             } else if (impositionType === 'repeat') {
                  const masterIndex = (physicalSheetIndex * 2) + 1;
                  for (let i = 0; i < slotsPerSheet; i++) pagesForBackIndices.push(masterIndex);
-            } else if (impositionType === 'booklet') {
-                // [FIX] Saddle Stitch Ordering (Back)
-                const totalBookletPages = totalPhysicalSheets * 4;
-                const s = physicalSheetIndex;
+            }
 
-                // 1. Calculate Page PAIR
-                const leftVirtual = 0 + (2 * s) + 1;
-                const rightVirtual = totalBookletPages - 1 - (2 * s) - 1;
+            // --- PASS 1: DRAW MARKS (LAYER 1) ---
+            for (let slotIndex = 0; slotIndex < slotsPerSheet; slotIndex++) {
+                let { x: nominalX, y } = slotPositions[slotIndex]; 
+                const gridCols = impositionType === 'booklet' ? 2 : columns;
+                const col = slotIndex % gridCols;
 
-                // 2. Resolve
-                const absLeft = resolveBookletIndex(leftVirtual);
-                const absRight = resolveBookletIndex(rightVirtual);
+                let x = nominalX;
 
-                // 3. Repeat for Rows
-                for (let r = 0; r < rows; r++) {
-                    pagesForBackIndices.push(absLeft);
-                    pagesForBackIndices.push(absRight);
+                if (impositionType === 'booklet') {
+                    const isLeftPage = (col === 0);
+                    x += calculateCreepShift(physicalSheetIndex, isLeftPage);
+                }
+
+                const trimAreaY = y + bleedPoints;
+                const trimAreaH = pageContentHeight - (2 * bleedPoints);
+                let finalCropX = x;
+                
+                let hasLeft = false;
+                let hasRight = false;
+                let hasTop = false;
+                let hasBottom = false;
+
+                if (impositionType === 'booklet') {
+                    hasLeft = (col === 1); 
+                    hasRight = (col === 0);
+                }
+
+                drawCropMarks(outputSheetBack, finalCropX, trimAreaY, trimWidth, trimAreaH, {
+                    hasTopNeighbor: hasTop, hasBottomNeighbor: hasBottom,
+                    hasLeftNeighbor: hasLeft, hasRightNeighbor: hasRight
+                });
+
+                if (impositionType === 'booklet' && col === 1) {
+                    drawFixedSpineMark(outputSheetBack, nominalX, trimAreaY, trimAreaH);
                 }
             }
 
+            // --- PASS 2: DRAW CONTENT (LAYER 2) ---
             for (let slotIndex = 0; slotIndex < slotsPerSheet; slotIndex++) {
                 const pIndex = pagesForBackIndices[slotIndex];
-                if (pIndex === undefined) continue;
-                
                 const embeddedPage = await embedPageForBatch(pIndex);
-                if (embeddedPage === 'OUT_OF_BOUNDS') continue;
 
-                const { x, y } = slotPositions[slotIndex]; 
+                if (!embeddedPage) continue;
+
+                let { x: nominalX, y } = slotPositions[slotIndex];
                 const gridCols = impositionType === 'booklet' ? 2 : columns;
-                const gridRows = rows;
-                const row = Math.floor(slotIndex / gridCols);
                 const col = slotIndex % gridCols;
 
-                if (embeddedPage) {
-                    outputSheetBack.drawPage(embeddedPage, { x, y, width: pageContentWidth, height: pageContentHeight });
+                let x = nominalX;
+
+                if (impositionType === 'booklet') {
+                    const isLeftPage = (col === 0);
+                    x += calculateCreepShift(physicalSheetIndex, isLeftPage);
                 }
 
-                const trimAreaX = x + bleedPoints;
-                const trimAreaY = y + bleedPoints;
-                const trimAreaW = pageContentWidth - (2 * bleedPoints);
-                const trimAreaH = pageContentHeight - (2 * bleedPoints);
-                drawCropMarks(outputSheetBack, trimAreaX, trimAreaY, trimAreaW, trimAreaH, {
-                    hasTopNeighbor: row > 0, hasBottomNeighbor: row < gridRows - 1,
-                    hasLeftNeighbor: col > 0, hasRightNeighbor: col < gridCols - 1
-                });
+                if (impositionType === 'booklet') {
+                    outputSheetBack.pushOperators(pushGraphicsState());
+                    if (col === 0) {
+                        const clipX = x - bleedPoints;
+                        const clipW = (nominalX + trimWidth) - clipX;
+                        outputSheetBack.pushOperators(
+                            moveTo(clipX, y),
+                            lineTo(clipX + clipW, y),
+                            lineTo(clipX + clipW, y + pageContentHeight),
+                            lineTo(clipX, y + pageContentHeight),
+                            closePath(),
+                            clip(),
+                            endPath()
+                        );
+                    } else {
+                        const clipX = nominalX;
+                        const clipW = (x + trimWidth + bleedPoints) - clipX;
+                        outputSheetBack.pushOperators(
+                            moveTo(clipX, y),
+                            lineTo(clipX + clipW, y),
+                            lineTo(clipX + clipW, y + pageContentHeight),
+                            lineTo(clipX, y + pageContentHeight),
+                            closePath(),
+                            clip(),
+                            endPath()
+                        );
+                    }
+                    outputSheetBack.drawPage(embeddedPage, { x: x - bleedPoints, y, width: pageContentWidth, height: pageContentHeight });
+                    outputSheetBack.pushOperators(popGraphicsState());
+                } else {
+                    outputSheetBack.drawPage(embeddedPage, { x: x - bleedPoints, y, width: pageContentWidth, height: pageContentHeight });
+                }
             }
             
             if (showQRCode) await drawSlugInfo(outputSheetBack, currentBatchDoc, `${physicalSheetIndex + 1}B`, totalPhysicalSheets, currentBatchFont, jobInfo, inputFile, qrCodePosition);
@@ -445,15 +672,10 @@ function calculateLayout(docWidth, docHeight, sheetWidth, sheetHeight, gutterH =
     const effectiveDocWidth = docWidth + gutterH;
     const effectiveDocHeight = docHeight + gutterV;
 
-    // Option 1: Standard Orientation
     const cols1 = Math.floor(effectiveSheetWidth / effectiveDocWidth);
     const rows1 = Math.floor(effectiveSheetHeight / effectiveDocHeight);
     const count1 = cols1 * rows1;
     
-    // Option 2: Rotated Orientation
-    // When rotated 90deg: 
-    // - Doc Height aligns with Sheet Width (Horizontal) -> uses Horizontal Gutter
-    // - Doc Width aligns with Sheet Height (Vertical) -> uses Vertical Gutter
     const effectiveDocWidthRotated = docHeight + gutterH; 
     const effectiveDocHeightRotated = docWidth + gutterV;
     
@@ -466,7 +688,6 @@ function calculateLayout(docWidth, docHeight, sheetWidth, sheetHeight, gutterH =
     } else if (count2 > count1) {
         return { count: count2, cols: cols2, rows: rows2, docRotated: true };
     } else {
-        // Tie-breaker: Prefer Standard Orientation if counts are equal
         return { count: count1, cols: cols1, rows: rows1, docRotated: false };
     }
 }
@@ -477,63 +698,40 @@ function getStandardSizeName(w, h) {
 
     for (const [name, dims] of Object.entries(STANDARD_SIZES_POINTS)) {
         const [stdW, stdH] = dims;
-
         const matchTrimPortrait = (Math.abs(w - stdW) < TOLERANCE && Math.abs(h - stdH) < TOLERANCE);
         const matchTrimLandscape = (Math.abs(w - stdH) < TOLERANCE && Math.abs(h - stdW) < TOLERANCE);
-
         const matchBleedPortrait = (Math.abs(w - (stdW + BLEED_ADDITION)) < TOLERANCE && Math.abs(h - (stdH + BLEED_ADDITION)) < TOLERANCE);
         const matchBleedLandscape = (Math.abs(w - (stdH + BLEED_ADDITION)) < TOLERANCE && Math.abs(h - (stdW + BLEED_ADDITION)) < TOLERANCE);
-
-        if (matchTrimPortrait || matchTrimLandscape || matchBleedPortrait || matchBleedLandscape) {
-            return name;
-        }
+        if (matchTrimPortrait || matchTrimLandscape || matchBleedPortrait || matchBleedLandscape) return name;
     }
     return null;
 }
 
 async function maximizeNUp(docWidth, docHeight, db) {
-    console.log(`maximizeNUp: Input Doc Dimensions = ${docWidth} x ${docHeight} pts`);
-
     const sheetSizesSnapshot = await db.collection('settings').doc('sheetSizes').collection('sizes').get();
     const sheetSizes = sheetSizesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-    if (sheetSizes.length === 0) {
-        throw new Error("No sheet sizes are defined in Firestore settings.");
-    }
+    if (sheetSizes.length === 0) throw new Error("No sheet sizes are defined in Firestore settings.");
 
     let forcedSheet = null;
     let forcedRuleSettings = null; 
 
     const docSizeName = getStandardSizeName(docWidth, docHeight);
-    console.log(`maximizeNUp: Detected Standard Name = ${docSizeName || "None"}`);
 
     if (docSizeName) {
         const rulesSnapshot = await db.collection('impositionDefaults').get();
-        
         rulesSnapshot.forEach(doc => {
             const data = doc.data();
             const ruleDocSize = data.docSize ? data.docSize.toLowerCase() : '';
-            const currentDocSize = docSizeName.toLowerCase();
-            
-            if (ruleDocSize === currentDocSize) {
+            if (ruleDocSize === docSizeName.toLowerCase()) {
                 let match = null;
-                if (data.pressSheetId) {
-                    match = sheetSizes.find(s => s.id === data.pressSheetId);
-                }
-                if (!match && data.pressSheet) {
-                    const ruleSheetName = data.pressSheet.trim();
-                    match = sheetSizes.find(s => s.name.trim() === ruleSheetName);
-                }
-
-                if (match) {
-                    forcedSheet = match;
-                    forcedRuleSettings = data; 
-                }
+                if (data.pressSheetId) match = sheetSizes.find(s => s.id === data.pressSheetId);
+                if (!match && data.pressSheet) match = sheetSizes.find(s => s.name.trim() === data.pressSheet.trim());
+                if (match) { forcedSheet = match; forcedRuleSettings = data; }
             }
         });
     }
 
-    // -- Extract Gutter Settings (Convert to Points) --
     let ruleHGutPts = 0;
     let ruleVGutPts = 0;
     let ruleHGutInches = 0;
@@ -549,33 +747,21 @@ async function maximizeNUp(docWidth, docHeight, db) {
     let bestLayout = { count: 0, waste: Infinity };
 
     if (forcedSheet) {
-        console.log(`maximizeNUp: Using FORCED sheet: ${forcedSheet.name}`);
-        
         const longSidePts = parseFloat(forcedSheet.longSideInches) * INCH_TO_POINTS;
         const shortSidePts = parseFloat(forcedSheet.shortSideInches) * INCH_TO_POINTS;
-
-        // Pass Gutters to Layout Calculation
         const portraitLayout = calculateLayout(docWidth, docHeight, shortSidePts, longSidePts, ruleHGutPts, ruleVGutPts);
         const landscapeLayout = calculateLayout(docWidth, docHeight, longSidePts, shortSidePts, ruleHGutPts, ruleVGutPts);
-
-        if (portraitLayout.count > landscapeLayout.count) { 
-             bestLayout = { ...portraitLayout, sheet: forcedSheet, sheetOrientation: 'portrait' };
-        } else {
-             bestLayout = { ...landscapeLayout, sheet: forcedSheet, sheetOrientation: 'landscape' };
-        }
-        
+        if (portraitLayout.count > landscapeLayout.count) bestLayout = { ...portraitLayout, sheet: forcedSheet, sheetOrientation: 'portrait' };
+        else bestLayout = { ...landscapeLayout, sheet: forcedSheet, sheetOrientation: 'landscape' };
     } else {
-        console.log("maximizeNUp: No rule found. Running best-fit algorithm (ignoring gutters for fallback).");
         for (const sheet of sheetSizes) {
             const longSide = parseFloat(sheet.longSideInches) * INCH_TO_POINTS;
             const shortSide = parseFloat(sheet.shortSideInches) * INCH_TO_POINTS;
             if (isNaN(longSide) || isNaN(shortSide)) continue;
-
             const portraitLayout = calculateLayout(docWidth, docHeight, shortSide, longSide);
             if (portraitLayout.count > bestLayout.count || (portraitLayout.count === bestLayout.count && portraitLayout.waste < bestLayout.waste)) {
                 bestLayout = { ...portraitLayout, sheet: sheet, sheetOrientation: 'portrait' };
             }
-
             const landscapeLayout = calculateLayout(docWidth, docHeight, longSide, shortSide);
             if (landscapeLayout.count > bestLayout.count || (landscapeLayout.count === bestLayout.count && landscapeLayout.waste < bestLayout.waste)) {
                 bestLayout = { ...landscapeLayout, sheet: sheet, sheetOrientation: 'landscape' };
@@ -583,9 +769,7 @@ async function maximizeNUp(docWidth, docHeight, db) {
         }
     }
 
-    if (bestLayout.count === 0) {
-        throw new Error("Document dimensions are too large to fit on any available sheet size.");
-    }
+    if (bestLayout.count === 0) throw new Error("Document dimensions are too large to fit on any available sheet size.");
 
     let impositionSettings = {
         columns: bestLayout.cols,
@@ -598,23 +782,16 @@ async function maximizeNUp(docWidth, docHeight, db) {
     if (forcedRuleSettings) {
         if (forcedRuleSettings.impositionType) impositionSettings.impositionType = forcedRuleSettings.impositionType;
         if (forcedRuleSettings.slipSheetColor) impositionSettings.slipSheetColor = forcedRuleSettings.slipSheetColor;
-        
         impositionSettings.horizontalGutterInches = ruleHGutInches;
         impositionSettings.verticalGutterInches = ruleVGutInches;
-    } 
-    else {
-        const ruleSnapshot = await db.collection('impositionDefaults')
-            .where('pressSheetId', '==', bestLayout.sheet.id)
-            .get();
-        
+    } else {
+        const ruleSnapshot = await db.collection('impositionDefaults').where('pressSheetId', '==', bestLayout.sheet.id).get();
         if (!ruleSnapshot.empty) {
             const rule = ruleSnapshot.docs[0].data();
             impositionSettings.impositionType = rule.type || 'stack';
         }
     }
     
-    console.log(`maximizeNUp: Final Decision -> Sheet: ${bestLayout.sheet.name}, Layout: ${bestLayout.cols}x${bestLayout.rows}, Gutter: ${impositionSettings.horizontalGutterInches}"x${impositionSettings.verticalGutterInches}"`);
-
     return {
         ...impositionSettings,
         sheet: bestLayout.sheet.name,
