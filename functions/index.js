@@ -918,6 +918,33 @@ exports.estimators_calculateEstimate = onCall({ region: 'us-central1' }, async (
     // --- EXECUTION ---
     const costBreakdown = calculateCosts(finalDetails, paperData);
 
+    // --- NEW: Markup Curve Application ---
+    // If not using 'advanced' mixed mode (which might use detailed markup),
+    // apply the volume discount curve to the markupPercent if needed.
+    // However, calculateCosts already uses the markupPercent passed in details.
+    // So we should have adjusted 'finalDetails.markupPercent' *before* calling calculateCosts
+    // if we wanted to enforce the curve.
+
+    // BUT, the existing logic allows admins to override it.
+    // Let's refactor to apply the curve IF the client didn't provide a specific markup
+    // OR if we want to enforce it for non-admins.
+    // For now, we'll leave it as is to avoid breaking existing admin behavior,
+    // but the NEW quote wizard will likely use a different function or pass the calculated percent.
+
+    // Saving History (Only if requested, to avoid spamming DB on every keystroke)
+    if (clientDetails.saveQuote) {
+        try {
+            await db.collection('estimates').add({
+                ...costBreakdown,
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                createdBy: request.auth ? request.auth.uid : 'anonymous',
+                clientDetails: finalDetails
+            });
+        } catch (e) {
+            console.error("Failed to save estimate history:", e);
+        }
+    }
+
     if (isAdmin) {
         // Staff/Admins get the full breakdown with all cost details
         return costBreakdown;
@@ -929,6 +956,34 @@ exports.estimators_calculateEstimate = onCall({ region: 'us-central1' }, async (
             shippingCost: costBreakdown.shippingCost,
             error: costBreakdown.error || null
         };
+    }
+});
+
+exports.estimators_getQuoteHistory = onCall({ region: 'us-central1' }, async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Auth required.');
+
+    // strict admin check for now
+    const userDoc = await db.collection('users').doc(request.auth.uid).get();
+    if (!userDoc.exists || userDoc.data().role !== 'admin') {
+        throw new HttpsError('permission-denied', 'Admin only.');
+    }
+
+    try {
+        const snapshot = await db.collection('estimates')
+            .orderBy('createdAt', 'desc')
+            .limit(100) // Limit to recent 100 for performance
+            .get();
+
+        return {
+            quotes: snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data(),
+                createdAt: doc.data().createdAt ? doc.data().createdAt.toDate().toISOString() : null
+            }))
+        };
+    } catch (error) {
+        logger.error("Error fetching quote history:", error);
+        throw new HttpsError('internal', 'Failed to fetch history.');
     }
 });
 
