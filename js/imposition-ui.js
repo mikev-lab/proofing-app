@@ -7,8 +7,10 @@ import { collection, query, where, getDocs, doc, getDoc } from "https://www.gsta
 import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js"; 
 
 // ... (State variables) ...
-let interiorPdfDoc = null;
-let coverPdfDoc = null;
+let realInteriorPdfDoc = null; // Storing the actual interior doc
+let realCoverPdfDoc = null; // Storing the actual cover doc
+let interiorPdfDoc = null; // The one currently used for preview (could be cover if source=cover)
+let coverPdfDoc = null; // The cover doc for booklet merge
 let currentSheetIndex = 0;
 let totalSheets = 0;
 let currentSettings = {};
@@ -254,8 +256,26 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
         return;
     };
 
-    const { width: trimWidth, height: trimHeight } = getTrimSizeInPoints(projectData);
-    const bleedPoints = (currentSettings.bleedInches || 0) * INCH_TO_POINTS;
+    let trimWidth, trimHeight;
+    let bleedPoints = (currentSettings.bleedInches || 0) * INCH_TO_POINTS;
+
+    // [FIX] If imposing cover directly, use the PDF dimensions as the trim size
+    // ensuring the centering logic uses the full wrap width.
+    if (currentSettings.source === 'cover' && interiorPdfDoc) {
+        const page = await interiorPdfDoc.getPage(1);
+        const view = page.getViewport({ scale: 1 });
+        trimWidth = view.width;
+        trimHeight = view.height;
+        // If the file is already a wrap, we typically assume it includes bleed or is the net format.
+        // For centering, we treat the file as the 'art box'.
+        // We set bleed to 0 effectively for the grid calculation to avoid double-adding.
+        bleedPoints = 0;
+    } else {
+        const dims = getTrimSizeInPoints(projectData);
+        trimWidth = dims.width;
+        trimHeight = dims.height;
+    }
+
     const artBoxWidth = trimWidth + (2 * bleedPoints);
     const artBoxHeight = trimHeight + (2 * bleedPoints);
 
@@ -280,11 +300,9 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
     const totalRequiredHeight = (artBoxHeight * gridRows) + (Math.max(0, gridRows - 1) * (currentSettings.verticalGutterInches * INCH_TO_POINTS));
     const startY = (sheetHeight - totalRequiredHeight) / 2;
 
+    // --- PASS 1: MARKS (Layer 1) ---
     for (let row = 0; row < gridRows; row++) {
         for (let col = 0; col < gridCols; col++) {
-            const slotIndex = row * gridCols + col;
-            const virtualPageNum = pagesOnThisSide[slotIndex];
-            
             // nominalX = Fixed Spine Location
             let nominalX;
             if (isBooklet) {
@@ -312,7 +330,6 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
 
             let finalCropX = isBooklet ? contentX : nominalX;
 
-            // [LAYER 1] DRAW MARKS BEHIND CONTENT
             let hasLeft = false;
             let hasRight = false;
             let hasTop = false;
@@ -367,15 +384,61 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
                     ctx.restore();
                 }
             }
+        }
+    }
 
-            // [LAYER 2] DRAW CONTENT
+    // --- PASS 2: CONTENT (Layer 2) ---
+    for (let row = 0; row < gridRows; row++) {
+        for (let col = 0; col < gridCols; col++) {
+            const slotIndex = row * gridCols + col;
+            const virtualPageNum = pagesOnThisSide[slotIndex];
+
+            // Re-calculate positions for content placement
+            // nominalX = Fixed Spine Location
+            let nominalX;
+            if (isBooklet) {
+                nominalX = startX + col * colStepX;
+            } else {
+                nominalX = startX + (col * colStepX) + bleedPoints;
+            }
+
+            const y = startY + row * rowStepY;
+
+            let contentX = nominalX;
+            let shiftAmount = 0;
+
+            if (isBooklet && currentSettings.creepInches) {
+                const isCenterSheet = (sheetIndex === totalSheets - 1);
+                if (currentSettings.preserveCenterSpread && isCenterSheet) {
+                } else {
+                    const safeTotalSheets = Math.max(1, totalSheets - 1);
+                    const creepStep = (currentSettings.creepInches * INCH_TO_POINTS) / safeTotalSheets;
+                    shiftAmount = sheetIndex * creepStep;
+                    const isLeftPage = (col === 0);
+                    contentX += isLeftPage ? shiftAmount : -shiftAmount;
+                }
+            }
+
             if (!virtualPageNum) continue;
 
             let pdfToUse = interiorPdfDoc;
             let actualPageNum = virtualPageNum;
             let spreadShiftMode = 'none'; 
 
-            if (hasCover) {
+            // If we are imposing the cover as content (Source=Interior, Include Cover=True), handle logic.
+            // If Source=Cover, interiorPdfDoc IS the cover doc, so we don't need special 'hasCover' logic in that sense,
+            // UNLESS the user is trying to "Include Cover" on a Cover imposition (which we should prevent).
+            // But here, 'hasCover' is derived from `currentSettings.includeCover` and `coverPdfDoc`.
+            // We need to ensure that if source='cover', we treat it as simple pages.
+            // However, the `virtualPageNum` mapping happens in `calculateTotalSheets` and `getPageSequenceForSheet`.
+            // If `source` is 'cover', `getPageSequenceForSheet` likely just returns 1..N.
+            // So we need to be careful with this block.
+
+            if (currentSettings.source === 'cover') {
+                 // Simple mapping: virtualPageNum IS the page num
+                 pdfToUse = interiorPdfDoc; // This is the cover doc
+                 actualPageNum = virtualPageNum;
+            } else if (hasCover) {
                 if (virtualPageNum === 1) { 
                     pdfToUse = coverPdfDoc; actualPageNum = 1; if(isSpreadCover) spreadShiftMode = 'rightHalf'; 
                 } else if (virtualPageNum === 2) { 
@@ -421,13 +484,27 @@ async function renderSheetOnCanvas(ctx, sheetWidth, sheetHeight, sheetIndex, sid
             let drawW = viewport.width;
             let drawH = viewport.height;
 
-            if (isSpreadCover && pdfToUse === coverPdfDoc) {
+            if (isSpreadCover && pdfToUse === coverPdfDoc && currentSettings.source !== 'cover') {
                 const scaleFactor = artBoxHeight / viewport.height;
                 drawW = viewport.width * scaleFactor;
                 drawH = viewport.height * scaleFactor;
                 drawY = y; 
-                if (spreadShiftMode === 'rightHalf') drawX = (contentX + trimWidth) - (drawW / 2);
-                else if (spreadShiftMode === 'leftHalf') drawX = contentX - (drawW / 2);
+
+                // [FIX] Swapped logic for [Back | Spine | Front] layout
+                // Right Slot (Front) -> Needs Right half of image. Shift image Left.
+                // Left Slot (Back) -> Needs Left half of image. Draw at origin.
+
+                if (spreadShiftMode === 'rightHalf') {
+                    // Page 1 (Front) -> Right Slot
+                    // DrawX = contentX - (LeftHalfWidth). LeftHalf is Back+Spine (~DrawW/2).
+                    drawX = contentX - (drawW / 2);
+                } else if (spreadShiftMode === 'leftHalf') {
+                    // Page N (Back) -> Left Slot
+                    // DrawX = contentX. We want Left edge of image at Left edge of Slot.
+                    // But wait, the slot width is Trim. Image is 2xTrim.
+                    // If we draw at contentX, we see Back. Correct.
+                    drawX = contentX;
+                }
             }
 
             ctx.drawImage(tempCanvas, drawX, drawY, drawW, drawH);
@@ -546,17 +623,43 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
             currentSettings.creepInches = 0;
         }
         const creepGroup = document.getElementById('creep-control-group');
-        const coverGroup = document.getElementById('include-cover-group');
         const coverContainer = document.getElementById('include-cover-container');
+
+        // Handle Source Switching Logic
+        if (currentSettings.source === 'cover') {
+            interiorPdfDoc = realCoverPdfDoc;
+            // When imposing cover, we generally don't "Include Cover" recursively
+            if (coverContainer) {
+                coverContainer.classList.add('hidden');
+                document.getElementById('include-cover').checked = false;
+                currentSettings.includeCover = false;
+            }
+        } else {
+            interiorPdfDoc = realInteriorPdfDoc;
+            coverPdfDoc = realCoverPdfDoc;
+            if (currentSettings.impositionType === 'booklet' && coverContainer) {
+                coverContainer.classList.remove('hidden');
+            }
+        }
+
         if (currentSettings.impositionType === 'booklet') {
             if (creepGroup) creepGroup.classList.remove('hidden');
-            if (coverGroup) coverGroup.classList.remove('hidden');
-            if (coverContainer) coverContainer.classList.remove('hidden');
+            if (currentSettings.source !== 'cover' && coverContainer) {
+                coverContainer.classList.remove('hidden');
+            } else if (coverContainer) {
+                coverContainer.classList.add('hidden');
+            }
         } else {
             if (creepGroup) creepGroup.classList.add('hidden');
-            if (coverGroup) coverGroup.classList.add('hidden');
             if (coverContainer) coverContainer.classList.add('hidden');
         }
+
+        // If we switched source and the new doc is null (e.g. no cover), handle gracefully
+        if (!interiorPdfDoc) {
+             // Maybe alert or just clear?
+             // For now, let render fail gracefully
+        }
+
         currentSheetIndex = 0;
         currentViewSide = 'front';
         if (sideSelectorContainer) sideSelectorContainer.classList.add('hidden');
@@ -650,10 +753,13 @@ export async function initializeImpositionUI({ projectData, db, projectId }) {
         }
         if (imposePdfButton) imposePdfButton.style.display = 'inline-block';
         const latestVersion = projectData.versions.slice().sort((a, b) => b.versionNumber - a.versionNumber)[0];
-        interiorPdfDoc = await getPdfDoc(latestVersion.previewURL || latestVersion.fileURL);
+        realInteriorPdfDoc = await getPdfDoc(latestVersion.previewURL || latestVersion.fileURL);
+        interiorPdfDoc = realInteriorPdfDoc;
+
         if (projectData.cover && projectData.cover.fileURL) {
             try {
-                coverPdfDoc = await getPdfDoc(projectData.cover.previewURL || projectData.cover.fileURL);
+                realCoverPdfDoc = await getPdfDoc(projectData.cover.previewURL || projectData.cover.fileURL);
+                coverPdfDoc = realCoverPdfDoc;
                 console.log("Cover PDF loaded for preview");
             } catch (e) {
                 console.warn("Failed to load cover PDF for preview", e);
