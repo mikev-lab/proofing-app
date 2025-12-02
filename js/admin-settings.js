@@ -15,6 +15,8 @@ const safetyInchesInput = document.getElementById('safety-inches');
 // --- Estimator Defaults ---
 const estimatorForm = document.getElementById('estimator-defaults-form');
 const estimatorStatus = document.getElementById('estimator-status');
+const markupTiersContainer = document.getElementById('markup-tiers-container');
+const addMarkupTierBtn = document.getElementById('add-markup-tier-btn');
 
 // --- Sheet Sizes ---
 const sheetSizesList = document.getElementById('sheet-sizes-list');
@@ -188,6 +190,24 @@ async function deleteImpositionRule(e) {
 }
 
 // --- Estimator Defaults Logic ---
+function renderMarkupTier(tierData = { maxQuantity: 100, markupPercent: 50 }) {
+    const div = document.createElement('div');
+    div.className = 'flex items-center space-x-2';
+    div.innerHTML = `
+        <span class="text-gray-400 text-sm">Up to</span>
+        <input type="number" class="tier-qty form-input w-24" placeholder="Qty" value="${tierData.maxQuantity}">
+        <span class="text-gray-400 text-sm">units:</span>
+        <input type="number" class="tier-pct form-input w-20" placeholder="%" value="${tierData.markupPercent}">
+        <span class="text-gray-400 text-sm">%</span>
+        <button type="button" class="remove-tier-btn text-red-400 hover:text-red-300 ml-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+        </button>
+    `;
+    // Attach listener
+    div.querySelector('.remove-tier-btn').addEventListener('click', () => div.remove());
+    markupTiersContainer.appendChild(div);
+}
+
 async function loadEstimatorDefaults() {
     if (!estimatorForm) return;
     const estimatorDefaultsRef = doc(db, "settings", "globalEstimatorDefaults");
@@ -198,10 +218,21 @@ async function loadEstimatorDefaults() {
             document.getElementById('default-labor-rate').value = data.laborRate || 50;
             document.getElementById('default-markup').value = data.markupPercent || 35;
             document.getElementById('default-spoilage').value = data.spoilagePercent || 5;
+
+            markupTiersContainer.innerHTML = '';
+            if (data.markupTiers && Array.isArray(data.markupTiers)) {
+                data.markupTiers.forEach(tier => renderMarkupTier(tier));
+            } else {
+                // Default if missing
+                renderMarkupTier({ maxQuantity: 10, markupPercent: 200 });
+                renderMarkupTier({ maxQuantity: 100, markupPercent: 100 });
+                renderMarkupTier({ maxQuantity: 1000000, markupPercent: 30 });
+            }
         } else {
             document.getElementById('default-labor-rate').value = 50;
             document.getElementById('default-markup').value = 35;
             document.getElementById('default-spoilage').value = 5;
+            renderMarkupTier({ maxQuantity: 100, markupPercent: 50 });
         }
     } catch (err) {
         console.error(err);
@@ -212,11 +243,26 @@ async function loadEstimatorDefaults() {
 async function saveEstimatorDefaults(e) {
     e.preventDefault();
     estimatorStatus.textContent = "Saving...";
+
+    // Gather Tiers
+    const tiers = [];
+    const tierDivs = markupTiersContainer.children;
+    for (let div of tierDivs) {
+        const qty = parseInt(div.querySelector('.tier-qty').value);
+        const pct = parseFloat(div.querySelector('.tier-pct').value);
+        if (!isNaN(qty) && !isNaN(pct)) {
+            tiers.push({ maxQuantity: qty, markupPercent: pct });
+        }
+    }
+    // Sort by quantity
+    tiers.sort((a, b) => a.maxQuantity - b.maxQuantity);
+
     try {
         const data = {
             laborRate: parseFloat(document.getElementById('default-labor-rate').value),
             markupPercent: parseFloat(document.getElementById('default-markup').value),
-            spoilagePercent: parseFloat(document.getElementById('default-spoilage').value)
+            spoilagePercent: parseFloat(document.getElementById('default-spoilage').value),
+            markupTiers: tiers
         };
         const estimatorDefaultsRef = doc(db, "settings", "globalEstimatorDefaults");
         await setDoc(estimatorDefaultsRef, data, { merge: true });
@@ -225,6 +271,10 @@ async function saveEstimatorDefaults(e) {
         console.error(err);
         estimatorStatus.textContent = "Error saving defaults.";
     }
+}
+
+if (addMarkupTierBtn) {
+    addMarkupTierBtn.addEventListener('click', () => renderMarkupTier());
 }
 
 
