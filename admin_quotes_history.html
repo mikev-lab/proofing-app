@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCE Printing - Quote History</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="min-h-screen bg-slate-900 text-gray-100">
+
+    <div class="max-w-7xl mx-auto p-6">
+        <div class="flex justify-between items-center mb-8">
+            <h1 class="text-2xl font-bold text-white">Quote History</h1>
+            <a href="admin_quote.html" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-md shadow">
+                + New Quote
+            </a>
+        </div>
+
+        <div class="bg-slate-800 rounded-lg shadow border border-slate-700 overflow-hidden">
+            <table class="w-full text-left text-sm text-gray-400">
+                <thead class="bg-slate-700/50 text-gray-200 uppercase text-xs">
+                    <tr>
+                        <th scope="col" class="px-6 py-3">Date</th>
+                        <th scope="col" class="px-6 py-3">Project Type</th>
+                        <th scope="col" class="px-6 py-3">Quantity</th>
+                        <th scope="col" class="px-6 py-3 text-right">Total Price</th>
+                        <th scope="col" class="px-6 py-3 text-right">Unit Price</th>
+                        <th scope="col" class="px-6 py-3 text-center">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="history-table-body" class="divide-y divide-slate-700">
+                    <tr>
+                        <td colspan="6" class="px-6 py-8 text-center text-gray-500">Loading history...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Detail Modal -->
+    <div id="detail-modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center backdrop-blur-sm z-50">
+        <div class="bg-slate-800 rounded-lg shadow-2xl border border-slate-600 w-full max-w-2xl p-6 relative m-4">
+            <button id="close-modal" class="absolute top-4 right-4 text-gray-400 hover:text-white">&times;</button>
+            <h3 class="text-xl font-bold text-white mb-4">Quote Details</h3>
+
+            <div class="grid grid-cols-2 gap-6 text-sm">
+                <div>
+                    <h4 class="text-indigo-400 font-semibold mb-2">Specifications</h4>
+                    <dl class="space-y-1 text-gray-300" id="modal-specs">
+                        <!-- Populated via JS -->
+                    </dl>
+                </div>
+                <div>
+                    <h4 class="text-emerald-400 font-semibold mb-2">Cost Breakdown</h4>
+                    <dl class="space-y-1 text-gray-300" id="modal-costs">
+                        <!-- Populated via JS -->
+                    </dl>
+                </div>
+            </div>
+
+            <div class="mt-6 pt-6 border-t border-slate-700 flex justify-end">
+                <button id="close-modal-btn" class="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { initLayout } from './js/layout.js';
+        initLayout();
+    </script>
+    <script type="module" src="js/admin_quotes_history.js"></script>
+</body>
+</html>

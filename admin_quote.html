@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCE Printing - New Quote</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Load Inter font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+        .wizard-step {
+            display: none;
+        }
+        .wizard-step.active {
+            display: block;
+            animation: fadeIn 0.3s ease-out;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        /* Custom Select Card */
+        .option-card {
+            border: 2px solid rgba(255,255,255,0.1);
+            background: rgba(255,255,255,0.05);
+            transition: all 0.2s;
+            cursor: pointer;
+        }
+        .option-card:hover {
+            border-color: rgba(99, 102, 241, 0.5); /* indigo-500/50 */
+            background: rgba(255,255,255,0.08);
+        }
+        .option-card.selected {
+            border-color: #6366f1; /* indigo-500 */
+            background: rgba(99, 102, 241, 0.1);
+            position: relative;
+        }
+        .option-card.selected::after {
+            content: '✓';
+            position: absolute;
+            top: 0.5rem;
+            right: 0.5rem;
+            color: #6366f1;
+            font-weight: bold;
+        }
+        .paper-preview {
+            height: 100px;
+            background-size: cover;
+            background-position: center;
+            border-radius: 0.375rem;
+            margin-bottom: 0.5rem;
+        }
+        /* Progress Bar */
+        .step-indicator {
+            width: 2rem;
+            height: 2rem;
+            border-radius: 9999px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            background: rgba(255,255,255,0.1);
+            color: #9ca3af;
+        }
+        .step-indicator.active {
+            background: #6366f1;
+            color: white;
+        }
+        .step-indicator.completed {
+            background: #10b981; /* emerald-500 */
+            color: white;
+        }
+    </style>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-[#0f172a] to-[#334155] text-gray-100 flex flex-col">
+
+    <!-- Header -->
+    <header class="bg-slate-900/50 backdrop-blur border-b border-slate-700/50 p-4">
+        <div class="max-w-5xl mx-auto flex justify-between items-center">
+            <h1 class="text-xl font-bold text-white flex items-center gap-2">
+                <span class="text-indigo-400">⚡</span> Quick Quote
+            </h1>
+            <div class="flex items-center space-x-4">
+                <button id="toggle-full-form-btn" class="text-sm text-gray-400 hover:text-white transition">Show Full Summary</button>
+                <a href="admin_quotes_history.html" class="text-sm text-indigo-400 hover:text-indigo-300">View History</a>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="flex-grow p-6">
+        <div class="max-w-3xl mx-auto">
+
+            <!-- Progress Bar -->
+            <div class="flex justify-between items-center mb-8 relative">
+                <div class="absolute top-1/2 left-0 w-full h-1 bg-slate-700 -z-10 rounded"></div>
+                <div class="step-indicator active" data-step="1">1</div>
+                <div class="step-indicator" data-step="2">2</div>
+                <div class="step-indicator" data-step="3">3</div>
+                <div class="step-indicator" data-step="4">4</div>
+                <div class="step-indicator" data-step="5">5</div>
+            </div>
+
+            <form id="quote-form">
+
+                <!-- STEP 1: Project Type -->
+                <div id="step-1" class="wizard-step active">
+                    <h2 class="text-2xl font-bold text-white mb-6 text-center">What are we printing today?</h2>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div class="option-card p-6 rounded-xl text-center" data-name="projectType" data-value="booklet">
+                            <div class="text-4xl mb-4">📖</div>
+                            <h3 class="text-xl font-semibold text-white">Booklet</h3>
+                            <p class="text-gray-400 text-sm mt-2">Magazines, Catalogs, Programs</p>
+                            <p class="text-xs text-gray-500 mt-1">Multi-page, bound documents.</p>
+                        </div>
+                        <div class="option-card p-6 rounded-xl text-center" data-name="projectType" data-value="loose">
+                            <div class="text-4xl mb-4">📄</div>
+                            <h3 class="text-xl font-semibold text-white">Loose Sheets</h3>
+                            <p class="text-gray-400 text-sm mt-2">Flyers, Posters, Cards</p>
+                            <p class="text-xs text-gray-500 mt-1">Single sheets, no binding.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- STEP 2: Basics -->
+                <div id="step-2" class="wizard-step">
+                    <h2 class="text-2xl font-bold text-white mb-6 text-center">The Basics</h2>
+                    <div class="space-y-6 bg-slate-800/60 p-6 rounded-xl border border-slate-700/50">
+                        <!-- Dimensions -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Size</label>
+                            <div class="grid grid-cols-2 sm:grid-cols-4 gap-3" id="size-presets">
+                                <!-- Presets injected via JS -->
+                            </div>
+                            <!-- Custom Size Inputs (Hidden by default) -->
+                            <div id="custom-size-inputs" class="hidden mt-4 grid grid-cols-2 gap-4 animate-fadeIn">
+                                <div>
+                                    <label class="text-xs text-gray-400">Width (in)</label>
+                                    <input type="number" name="customWidth" step="0.1" class="w-full bg-slate-700/50 border border-slate-600 rounded p-2 text-white">
+                                </div>
+                                <div>
+                                    <label class="text-xs text-gray-400">Height (in)</label>
+                                    <input type="number" name="customHeight" step="0.1" class="w-full bg-slate-700/50 border border-slate-600 rounded p-2 text-white">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Quantity -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Quantity</label>
+                            <input type="number" name="quantity" value="100" min="1" class="w-full bg-slate-700/50 border border-slate-600 rounded-lg p-3 text-white text-lg font-mono">
+                        </div>
+
+                        <!-- Page Count (for booklets) -->
+                        <div id="page-count-container">
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Page Count (Interior + Cover)</label>
+                            <input type="number" name="pageCount" value="8" min="4" step="4" class="w-full bg-slate-700/50 border border-slate-600 rounded-lg p-3 text-white text-lg font-mono">
+                            <p class="text-xs text-gray-500 mt-1">Must be a multiple of 4 for booklets.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- STEP 3: Interior -->
+                <div id="step-3" class="wizard-step">
+                    <div class="flex justify-between items-center mb-6">
+                        <h2 class="text-2xl font-bold text-white">Interior Pages</h2>
+                        <label class="flex items-center space-x-2 cursor-pointer">
+                            <input type="checkbox" id="advanced-interior-toggle" class="rounded bg-slate-700 border-gray-500 text-indigo-500 focus:ring-indigo-500">
+                            <span class="text-sm text-indigo-300 font-medium">Advanced / Mixed Mode</span>
+                        </label>
+                    </div>
+
+                    <!-- Simple Mode: Ink Selection -->
+                    <div id="simple-ink-mode" class="grid grid-cols-2 gap-4 mb-8">
+                        <div class="option-card p-4 rounded-lg text-center" data-name="inkType" data-value="bw">
+                            <div class="w-8 h-8 bg-black rounded-full mx-auto mb-2 border border-gray-600"></div>
+                            <span class="font-medium text-white">Black & White</span>
+                        </div>
+                        <div class="option-card p-4 rounded-lg text-center" data-name="inkType" data-value="color">
+                            <div class="w-8 h-8 bg-gradient-to-br from-cyan-400 via-magenta-500 to-yellow-400 rounded-full mx-auto mb-2"></div>
+                            <span class="font-medium text-white">Full Color</span>
+                        </div>
+                    </div>
+
+                    <!-- Advanced Mode: Manual Counts -->
+                    <div id="advanced-ink-mode" class="hidden grid grid-cols-2 gap-4 mb-8 bg-slate-800/60 p-4 rounded-lg border border-indigo-500/30">
+                        <div>
+                            <label class="block text-xs text-gray-400">B&W Pages</label>
+                            <input type="number" name="bwPages" class="w-full bg-slate-700 border border-slate-600 rounded p-2 text-white">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-400">Color Pages</label>
+                            <input type="number" name="colorPages" class="w-full bg-slate-700 border border-slate-600 rounded p-2 text-white">
+                        </div>
+                    </div>
+
+                    <!-- Paper Type -->
+                    <h3 class="text-lg font-semibold text-gray-300 mb-3">Paper Type</h3>
+                    <div class="grid grid-cols-3 gap-4 mb-6">
+                        <div class="option-card p-3 rounded-lg" data-name="paperFinish" data-value="Uncoated">
+                            <div class="paper-preview bg-gray-200 opacity-80" style="background-image: url('https://www.transparenttextures.com/patterns/cardboard-flat.png')"></div>
+                            <div class="text-center font-medium text-white">Uncoated</div>
+                            <div class="text-xs text-center text-gray-400">Standard, writable</div>
+                        </div>
+                        <div class="option-card p-3 rounded-lg" data-name="paperFinish" data-value="Matte">
+                            <div class="paper-preview bg-gray-100" style="background-image: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);"></div>
+                            <div class="text-center font-medium text-white">Silk / Matte</div>
+                            <div class="text-xs text-center text-gray-400">Smooth, low glare</div>
+                        </div>
+                        <div class="option-card p-3 rounded-lg" data-name="paperFinish" data-value="Gloss">
+                            <div class="paper-preview bg-white" style="background: linear-gradient(135deg, rgba(255,255,255,1) 0%, rgba(229,229,229,1) 50%, rgba(255,255,255,1) 100%);"></div>
+                            <div class="text-center font-medium text-white">Gloss</div>
+                            <div class="text-xs text-center text-gray-400">Shiny, vibrant</div>
+                        </div>
+                    </div>
+
+                    <!-- Paper Weight (Dynamic) -->
+                    <h3 class="text-lg font-semibold text-gray-300 mb-3">Paper Weight</h3>
+                    <div id="paper-weight-container" class="flex flex-wrap gap-3">
+                        <p class="text-gray-500 text-sm">Select a paper type first.</p>
+                    </div>
+                </div>
+
+                <!-- STEP 4: Cover & Finishing -->
+                <div id="step-4" class="wizard-step">
+                    <h2 class="text-2xl font-bold text-white mb-6 text-center">Cover & Finishing</h2>
+
+                    <div id="cover-section" class="space-y-6">
+                        <!-- Cover Exists Toggle -->
+                        <div class="flex items-center space-x-3 mb-4">
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" id="has-cover-toggle" class="sr-only peer" checked>
+                                <div class="w-11 h-6 bg-gray-700 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-indigo-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+                                <span class="ml-3 text-sm font-medium text-gray-300">Self Cover (Same as Interior) vs Plus Cover</span>
+                            </label>
+                        </div>
+
+                        <div id="cover-options" class="bg-slate-800/60 p-6 rounded-xl border border-slate-700/50 animate-fadeIn">
+                            <h3 class="text-md font-semibold text-gray-300 mb-3">Cover Stock</h3>
+                            <!-- Similar to Interior Paper but filtered for Cover stocks -->
+                            <div class="grid grid-cols-2 gap-4 mb-4">
+                                <div class="option-card p-3 rounded-lg text-center" data-name="coverFinish" data-value="Matte">
+                                    <span class="block font-medium text-white">Silk / Matte Cover</span>
+                                </div>
+                                <div class="option-card p-3 rounded-lg text-center" data-name="coverFinish" data-value="Gloss">
+                                    <span class="block font-medium text-white">Gloss Cover</span>
+                                </div>
+                            </div>
+
+                            <div id="cover-weight-container" class="flex flex-wrap gap-3 mb-6">
+                                <!-- Weights -->
+                            </div>
+
+                            <h3 class="text-md font-semibold text-gray-300 mb-3">Lamination</h3>
+                            <div class="flex gap-3">
+                                <div class="option-card px-4 py-2 rounded-lg flex-1 text-center" data-name="lamination" data-value="none">None</div>
+                                <div class="option-card px-4 py-2 rounded-lg flex-1 text-center" data-name="lamination" data-value="matte">Matte</div>
+                                <div class="option-card px-4 py-2 rounded-lg flex-1 text-center" data-name="lamination" data-value="gloss">Gloss</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mt-8">
+                        <h3 class="text-lg font-semibold text-gray-300 mb-3">Binding</h3>
+                        <div class="grid grid-cols-2 gap-4" id="binding-options">
+                            <!-- Binding options populated based on project type -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- STEP 5: Review & Quote -->
+                <div id="step-5" class="wizard-step">
+                    <h2 class="text-2xl font-bold text-white mb-6 text-center">Ready to Quote?</h2>
+
+                    <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-6">
+                        <h3 class="text-lg font-semibold text-white mb-4 border-b border-slate-700 pb-2">Summary</h3>
+                        <dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm text-gray-300" id="summary-list">
+                            <!-- JS Populated -->
+                        </dl>
+                    </div>
+
+                    <div id="quote-result" class="hidden text-center mb-8 animate-fadeIn">
+                        <div class="text-gray-400 text-sm mb-1">Estimated Price</div>
+                        <div class="text-5xl font-bold text-emerald-400" id="final-price-display">$0.00</div>
+                        <div class="text-gray-500 text-xs mt-1" id="price-per-unit-display">$0.00 / unit</div>
+
+                        <!-- Shipping info -->
+                        <div id="shipping-display" class="mt-4 p-3 bg-slate-900/50 rounded text-sm text-gray-400 inline-block">
+                            Calculating shipping...
+                        </div>
+                    </div>
+
+                    <div class="flex justify-center space-x-4">
+                        <button type="button" id="calculate-btn" class="bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 px-8 rounded-full shadow-lg shadow-indigo-500/20 transition transform hover:scale-105">
+                            ⚡ Calculate Quote
+                        </button>
+                        <button type="button" id="save-quote-btn" class="hidden bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 px-8 rounded-full shadow-lg shadow-emerald-500/20 transition transform hover:scale-105">
+                            💾 Save Quote
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Navigation Buttons -->
+                <div class="mt-10 flex justify-between pt-6 border-t border-slate-700/50">
+                    <button type="button" id="prev-btn" class="text-gray-400 hover:text-white px-4 py-2 rounded hidden">
+                        &larr; Back
+                    </button>
+                    <button type="button" id="next-btn" class="bg-white text-slate-900 font-semibold px-6 py-2 rounded-lg hover:bg-gray-100 transition ml-auto">
+                        Next &rarr;
+                    </button>
+                </div>
+
+            </form>
+        </div>
+    </main>
+
+    <script type="module">
+        import { initLayout } from './js/layout.js';
+        initLayout();
+    </script>
+    <script type="module" src="js/admin_quote.js"></script>
+</body>
+</html>
