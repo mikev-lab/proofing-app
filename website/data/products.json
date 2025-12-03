@@ -1,0 +1,86 @@
+[
+  {
+    "id": "perfect-bound-book",
+    "name": "Perfect Bound Books",
+    "slug": "perfect-bound-books",
+    "category": "Books",
+    "shortDescription": "Professional softcover books with a square spine. Ideal for novels, manga, and anthologies.",
+    "description": "Our perfect bound books offer a sleek, professional finish that artists and authors love. Using a strong, flexible glue, we bind the pages to a wrap-around cover, creating a durable square spine that looks great on any bookshelf. Perfect for projects with 28 to 400+ pages.",
+    "features": [
+      "28 to 400+ pages",
+      "Square printable spine",
+      "Gloss or Matte cover finish",
+      "Premium 70lb or 80lb text stock"
+    ],
+    "specs": {
+        "minPages": 28,
+        "maxPages": 400,
+        "paperStocks": ["80lb Gloss Text", "70lb Uncoated", "100lb Gloss Text"],
+        "sizes": ["5.5 x 8.5", "6 x 9", "A5", "A4", "8.5 x 11"]
+    },
+    "relevantConventions": ["anime", "comic", "general"]
+  },
+  {
+    "id": "saddle-stitch-book",
+    "name": "Saddle Stitch Booklets",
+    "slug": "saddle-stitch-booklets",
+    "category": "Books",
+    "shortDescription": "Cost-effective stapled booklets. Great for comics, zines, and catalogs.",
+    "description": "Saddle stitching is the go-to binding method for comics, zines, and shorter booklets. Sheets are folded and stapled through the fold line, allowing the book to lay fully flat. It’s economical, fast, and perfect for lower page counts.",
+    "features": [
+      "8 to 60 pages",
+      "Lays flat when open",
+      "Economical for short runs",
+      "Fast production time"
+    ],
+    "specs": {
+        "minPages": 8,
+        "maxPages": 64,
+        "paperStocks": ["80lb Gloss Text", "100lb Gloss Text", "70lb Uncoated"],
+        "sizes": ["5.5 x 8.5", "6 x 9", "A5", "A4", "Comic Standard"]
+    },
+    "relevantConventions": ["comic", "anime", "furry"]
+  },
+  {
+    "id": "art-prints",
+    "name": "Premium Art Prints",
+    "slug": "art-prints",
+    "category": "Prints",
+    "shortDescription": "High-fidelity prints on cardstock. The staple of every Artist Alley table.",
+    "description": "Capture every detail of your artwork with our premium cardstock prints. We use high-grade coated stocks that make colors pop and blacks deep. Available in standard framing sizes and custom cuts.",
+    "features": [
+      "100lb or 12pt Cardstock",
+      "Vibrant color reproduction",
+      "Gloss, Matte, or Satin finish",
+      "Bulk discounts for Artist Alley"
+    ],
+    "specs": {
+        "minPages": 1,
+        "maxPages": 1,
+        "paperStocks": ["100lb Gloss Cover", "12pt C1S", "100lb Matte Cover"],
+        "sizes": ["11 x 17", "8.5 x 11", "A3", "A4", "Custom"]
+    },
+    "relevantConventions": ["anime", "furry", "comic", "general"]
+  },
+  {
+    "id": "manga-printing",
+    "name": "Manga Printing",
+    "slug": "manga",
+    "category": "Books",
+    "shortDescription": "Authentic manga printing with right-to-left binding options and creamy paper.",
+    "description": "We specialize in printing manga the way it was meant to be read. Choose from standard trade sizes, authentic cream-colored uncoated paper stocks, and even right-to-left binding configuration to give your doujinshi or original manga that professional feel.",
+    "features": [
+      "Right-to-Left Binding Available",
+      "Cream/Natural Uncoated Paper",
+      "Standard Manga Sizes (5x7.5, etc)",
+      "B&W or Full Color Interiors"
+    ],
+    "specs": {
+        "minPages": 28,
+        "maxPages": 400,
+        "paperStocks": ["70lb Uncoated Cream", "60lb Uncoated White"],
+        "sizes": ["5 x 7.5", "5.5 x 8.5", "A5"]
+    },
+    "relevantConventions": ["anime", "comic"]
+  }
+]
