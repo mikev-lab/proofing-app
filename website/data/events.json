@@ -1,0 +1,67 @@
+[
+  {
+    "id": "anime-expo-2025",
+    "name": "Anime Expo 2025",
+    "slug": "anime-expo",
+    "location": "Los Angeles, CA",
+    "dates": {
+      "eventStart": "2025-07-04",
+      "shipping": "2025-06-25",
+      "filesNeeded": "2025-06-10",
+      "orderBy": "2025-06-01"
+    },
+    "capacity": 85
+  },
+  {
+    "id": "sakuracon-2025",
+    "name": "Sakura-Con 2025",
+    "slug": "sakuracon",
+    "location": "Seattle, WA",
+    "dates": {
+      "eventStart": "2025-04-18",
+      "shipping": "2025-04-10",
+      "filesNeeded": "2025-03-25",
+      "orderBy": "2025-03-15"
+    },
+    "capacity": 45
+  },
+  {
+    "id": "comiket-106",
+    "name": "Comiket 106",
+    "slug": "comiket",
+    "location": "Tokyo, Japan",
+    "dates": {
+      "eventStart": "2025-08-11",
+      "shipping": "2025-08-01",
+      "filesNeeded": "2025-07-15",
+      "orderBy": "2025-07-01"
+    },
+    "capacity": 20
+  },
+  {
+    "id": "anthrocon-2025",
+    "name": "Anthrocon 2025",
+    "slug": "anthrocon",
+    "location": "Pittsburgh, PA",
+    "dates": {
+      "eventStart": "2025-07-03",
+      "shipping": "2025-06-24",
+      "filesNeeded": "2025-06-09",
+      "orderBy": "2025-05-30"
+    },
+    "capacity": 70
+  },
+  {
+    "id": "emerald-city-comic-con-2025",
+    "name": "Emerald City Comic Con",
+    "slug": "eccc",
+    "location": "Seattle, WA",
+    "dates": {
+      "eventStart": "2025-03-06",
+      "shipping": "2025-02-27",
+      "filesNeeded": "2025-02-15",
+      "orderBy": "2025-02-01"
+    },
+    "capacity": 60
+  }
+]
