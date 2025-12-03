@@ -1,0 +1,215 @@
+[
+  {
+    "id": "perfect-bound-book",
+    "name": "Perfect Bound Books",
+    "slug": "perfect-bound-books",
+    "category": "Books",
+    "shortDescription": "Professional softcover books with a square spine. Ideal for novels, manga, and anthologies.",
+    "description": "Our perfect bound books offer a sleek, professional finish that artists and authors love. Using a strong, flexible glue, we bind the pages to a wrap-around cover, creating a durable square spine that looks great on any bookshelf. Perfect for projects with 28 to 400+ pages.",
+    "features": [
+      "28 to 400+ pages",
+      "Square printable spine",
+      "Gloss or Matte cover finish"
+    ],
+    "specs": {
+        "minPages": 28,
+        "maxPages": 400,
+        "paperStocks": ["80lb Gloss Text", "70lb Uncoated", "100lb Gloss Text"],
+        "sizes": ["5.5 x 8.5", "6 x 9", "A5", "A4", "8.5 x 11"]
+    },
+    "relevantConventions": ["anime", "comic", "general"]
+  },
+  {
+    "id": "saddle-stitch-book",
+    "name": "Saddle Stitch Booklets",
+    "slug": "saddle-stitch-booklets",
+    "category": "Books",
+    "shortDescription": "Cost-effective stapled booklets. Great for comics, zines, and catalogs.",
+    "description": "Saddle stitching is the go-to binding method for comics, zines, and shorter booklets. Sheets are folded and stapled through the fold line, allowing the book to lay fully flat. It’s economical, fast, and perfect for lower page counts.",
+    "features": [
+      "8 to 60 pages",
+      "Lays flat when open",
+      "Fast production time"
+    ],
+    "specs": {
+        "minPages": 8,
+        "maxPages": 64,
+        "paperStocks": ["80lb Gloss Text", "100lb Gloss Text", "70lb Uncoated"],
+        "sizes": ["5.5 x 8.5", "6 x 9", "A5", "A4", "Comic Standard"]
+    },
+    "relevantConventions": ["comic", "anime", "furry"]
+  },
+  {
+    "id": "hardcover-case-bound",
+    "name": "Hardcover Books",
+    "slug": "hardcover-books",
+    "category": "Books",
+    "shortDescription": "Premium case-bound books for special editions and art collections.",
+    "description": "Make a statement with our premium hardcover books. Featuring a printed case wrap or dust jacket options, these books are built to last and impress.",
+    "features": ["Case Bound", "Dust Jacket Option", "Smyth Sewn available"],
+    "specs": {},
+    "relevantConventions": ["anime", "general"]
+  },
+  {
+    "id": "spiral-bound",
+    "name": "Spiral / Coil Bound",
+    "slug": "spiral-bound-books",
+    "category": "Books",
+    "shortDescription": "Durable plastic coil binding. Perfect for sketchbooks and manuals.",
+    "description": "Coil binding allows pages to rotate 360 degrees and lay completely flat. Ideal for workbooks, sketchbooks, and reference guides.",
+    "features": ["Lays 360° flat", "Durable coil", "Great for writing"],
+    "specs": {},
+    "relevantConventions": ["general"]
+  },
+  {
+    "id": "manga-printing",
+    "name": "Manga Printing",
+    "slug": "manga",
+    "category": "Books",
+    "shortDescription": "Authentic manga printing with right-to-left binding options and creamy paper.",
+    "description": "We specialize in printing manga the way it was meant to be read. Choose from standard trade sizes, authentic cream-colored uncoated paper stocks, and even right-to-left binding configuration.",
+    "features": [
+      "Right-to-Left Binding",
+      "Cream Paper Stock",
+      "Standard Manga Sizes"
+    ],
+    "specs": {},
+    "relevantConventions": ["anime", "comic"]
+  },
+  {
+    "id": "art-prints",
+    "name": "Premium Art Prints",
+    "slug": "art-prints",
+    "category": "Prints",
+    "shortDescription": "High-fidelity prints on cardstock. The staple of every Artist Alley table.",
+    "description": "Capture every detail of your artwork with our premium cardstock prints. We use high-grade coated stocks that make colors pop and blacks deep.",
+    "features": [
+      "100lb or 12pt Cardstock",
+      "Vibrant color reproduction",
+      "Gloss, Matte, or Satin"
+    ],
+    "specs": {},
+    "relevantConventions": ["anime", "furry", "comic", "general"]
+  },
+  {
+    "id": "holographic-prints",
+    "name": "Holographic Prints",
+    "slug": "holographic-prints",
+    "category": "Prints",
+    "shortDescription": "Add a shimmering rainbow effect to your artwork.",
+    "description": "Stand out with holographic cardstock that reflects light in a rainbow spectrum. Perfect for special edition prints.",
+    "features": ["Rainbow/Shattered Glass", "Heavy Cardstock", "Eye-catching"],
+    "specs": {},
+    "relevantConventions": ["anime", "furry"]
+  },
+  {
+    "id": "posters-large",
+    "name": "Large Format Posters",
+    "slug": "large-format-posters",
+    "category": "Large Format",
+    "shortDescription": "11x17, 18x24 and larger posters to display your art.",
+    "description": "Go big with our large format posters. Printed on high-quality semi-gloss or matte paper.",
+    "features": ["11x17 to 24x36", "Rolled shipping", "Vibrant ink"],
+    "specs": {},
+    "relevantConventions": ["anime", "general"]
+  },
+  {
+    "id": "vinyl-banners",
+    "name": "Vinyl Banners",
+    "slug": "vinyl-banners",
+    "category": "Large Format",
+    "shortDescription": "Durable banners with grommets for your convention booth setup.",
+    "description": "Essential for your table setup. Our vinyl banners are durable, easy to hang, and come with grommets.",
+    "features": ["Indoor/Outdoor Vinyl", "Grommets included", "Custom Sizes"],
+    "specs": {},
+    "relevantConventions": ["general"]
+  },
+  {
+    "id": "retractable-banners",
+    "name": "Retractable Banner Stands",
+    "slug": "retractable-banners",
+    "category": "Large Format",
+    "shortDescription": "Portable standing banners that roll up for easy travel.",
+    "description": "The ultimate professional display. Sets up in seconds and rolls down into a compact carrying case.",
+    "features": ["Includes Stand & Case", "33x81 inch standard", "Premium Non-Curl"],
+    "specs": {},
+    "relevantConventions": ["general"]
+  },
+  {
+    "id": "business-cards",
+    "name": "Business Cards",
+    "slug": "business-cards",
+    "category": "Marketing",
+    "shortDescription": "Standard, square, or rounded corner cards to network effectively.",
+    "description": "Don't leave a connection behind. High quality business cards on 14pt or 16pt stock.",
+    "features": ["14pt or 16pt Stock", "Matte, Gloss, or Soft Touch", "Spot UV available"],
+    "specs": {},
+    "relevantConventions": ["general"]
+  },
+  {
+    "id": "postcards",
+    "name": "Postcards / Flyers",
+    "slug": "postcards-flyers",
+    "category": "Marketing",
+    "shortDescription": "Handouts to promote your comic, webtoon, or next event.",
+    "description": "Versatile marketing tools. Use them as commission sheets, mini-prints, or promotional handouts.",
+    "features": ["4x6, 5x7, or Custom", "Bulk Pricing", "Fast Turnaround"],
+    "specs": {},
+    "relevantConventions": ["general"]
+  },
+  {
+    "id": "bookmarks",
+    "name": "Bookmarks",
+    "slug": "bookmarks",
+    "category": "Marketing",
+    "shortDescription": "2x6 or 2x7 bookmarks. A perfect low-cost merch item.",
+    "description": "A classic merch item for authors and artists. Double-sided printing available.",
+    "features": ["2x6 or 2x7 inch", "Hole punch option", "Tassel option"],
+    "specs": {},
+    "relevantConventions": ["anime", "comic"]
+  },
+  {
+    "id": "stickers-diecut",
+    "name": "Die-Cut Stickers",
+    "slug": "die-cut-stickers",
+    "category": "Merch",
+    "shortDescription": "Vinyl stickers cut to the exact shape of your design.",
+    "description": "High quality vinyl stickers that are water and scratch resistant. Cut to any shape.",
+    "features": ["Waterproof Vinyl", "Custom Shapes", "Matte or Gloss"],
+    "specs": {},
+    "relevantConventions": ["anime", "furry"]
+  },
+  {
+    "id": "sticker-sheets",
+    "name": "Sticker Sheets",
+    "slug": "sticker-sheets",
+    "category": "Merch",
+    "shortDescription": "Multiple kiss-cut stickers on a single backing sheet.",
+    "description": "Great for sets and collections. Kiss-cut stickers on a 4x6 or 5x7 sheet.",
+    "features": ["Kiss-Cut", "Branding Header", "Retail Ready"],
+    "specs": {},
+    "relevantConventions": ["anime"]
+  },
+  {
+    "id": "acrylic-charms",
+    "name": "Acrylic Charms",
+    "slug": "acrylic-charms",
+    "category": "Merch",
+    "shortDescription": "Double-sided clear acrylic keychains.",
+    "description": "Vibrant custom shaped keychains. Double board acrylic with epoxy dome options.",
+    "features": ["Clear Acrylic", "Double Sided", "Keyring included"],
+    "specs": {},
+    "relevantConventions": ["anime", "furry"]
+  },
+  {
+    "id": "buttons",
+    "name": "Pinback Buttons",
+    "slug": "buttons",
+    "category": "Merch",
+    "shortDescription": "Classic 1.25 or 2.25 inch round buttons.",
+    "description": "An affordable staple for any table. Steel pin-back buttons with vibrant printing.",
+    "features": ["1.25\" or 2.25\"", "Steel construction", "Gloss finish"],
+    "specs": {},
+    "relevantConventions": ["general"]
+  }
+]
