@@ -1,0 +1,72 @@
+{
+  "file-setup-guide": {
+    "title": "The Ultimate File Setup Guide for Print",
+    "description": "Learn how to prepare your files for professional printing. We cover bleed, safe zones, resolution, and exporting from Photoshop and InDesign.",
+    "category": "Technical Guide",
+    "content": "<h2>1. Understanding Bleed, Trim, and Safety</h2><p>When designing for print, three lines are critical:</p><ul><li><strong>Trim Line:</strong> This is where the paper will be cut.</li><li><strong>Bleed Line:</strong> (Usually 0.125\" outside the trim). Your background art must extend to this line to avoid white edges after cutting.</li><li><strong>Safety Line:</strong> (Usually 0.125\" inside the trim). Keep text and important logos inside this area to ensure they aren't chopped off.</li></ul><h2>2. Resolution Matters</h2><p>For print, your images needs to be <strong>300 DPI (Dots Per Inch)</strong> at the actual size they will be printed. Web images are typically 72 DPI and will look pixelated if printed.</p><h2>3. Exporting PDFs</h2><p>We prefer <strong>PDF/X-1a:2001</strong> standard. This flattens transparency and embeds fonts, ensuring what you see is what we print.</p>",
+    "relatedProducts": ["perfect-bound-books", "art-prints", "saddle-stitch-booklets"]
+  },
+  "paper-types-explained": {
+    "title": "Paper Weight and Finishes Explained",
+    "description": "Confused by GSM, lb, Text, and Cover stocks? We demystify paper weights and finishes so you can choose the perfect feel for your project.",
+    "category": "Material Info",
+    "content": "<h2>Text vs. Cover Stock</h2><p><strong>Text Stock</strong> is thinner paper, used for the inside pages of books. Think generic copy paper (20lb Bond) up to high-quality magazine pages (100lb Gloss Text).</p><p><strong>Cover Stock</strong> is thick cardstock, used for book covers, business cards, and postcards. 10pt to 16pt are common thicknesses.</p><h2>Coating Options</h2><ul><li><strong>Gloss:</strong> Shiny and reflective. Makes colors pop. Great for photos and comics.</li><li><strong>Matte:</strong> subtle sheen, smooth texture. Professional and glare-free.</li><li><strong>Uncoated:</strong> Natural paper feel. Best for journals or books you need to write in.</li></ul>",
+    "relatedProducts": ["flyers", "business-cards", "saddle-stitch-booklets"]
+  },
+  "binding-options": {
+    "title": "Choosing the Right Binding for Your Book",
+    "description": "Perfect Bound vs. Saddle Stitch vs. Spiral. Which one fits your page count and budget? We break down the pros and cons.",
+    "category": "Product Comparison",
+    "content": "<h2>Saddle Stitch (Stapled)</h2><p><strong>Best for:</strong> 8 to 64 pages.</p><p>Sheets are folded and stapled down the spine. It's cost-effective and lies flat, making it perfect for comics, zines, and catalogs.</p><h2>Perfect Bound (Softcover)</h2><p><strong>Best for:</strong> 28+ pages.</p><p>Pages are glued to a square spine. This gives a professional 'bookstore' look. Essential for graphic novels, anthologies, and thicker catalogs.</p><h2>Spiral / Wire-O</h2><p><strong>Best for:</strong> Manuals, Cookbooks, Planners.</p><p>The book lies completely flat and can fold back on itself. Great for utility, though less 'aesthetic' for art books.</p>",
+    "relatedProducts": ["perfect-bound-books", "saddle-stitch-booklets", "spiral-bound-books"]
+  },
+  "rgb-vs-cmyk": {
+    "title": "RGB vs CMYK: Converting Colors for Print",
+    "description": "Why do colors look duller in print? Learn the difference between additive (screen) and subtractive (ink) color models.",
+    "category": "Technical Guide",
+    "content": "<h2>The Difference</h2><p><strong>RGB (Red, Green, Blue)</strong> is for screens. It uses light to create color, allowing for neon brights.</p><p><strong>CMYK (Cyan, Magenta, Yellow, Key/Black)</strong> is for print. It uses ink. You cannot print neon light.</p><h2>The Shift</h2><p>When you convert a bright neon RGB blue to CMYK, it will look muddier. To avoid surprises, <strong>always design in CMYK mode</strong> or use a 'Soft Proof' profile in your software to preview how the colors will shift.</p>",
+    "relatedProducts": ["art-prints", "posters", "hardcover-books"]
+  },
+  "artist-alley-tips": {
+    "title": "Artist Alley Survival Guide: Printing Essentials",
+    "description": "Tabling at a convention? Here is a checklist of printed goods you need to maximize your profit per square foot.",
+    "category": "Use Case",
+    "content": "<h2>1. The Anchor Product</h2><p>You need a high-ticket item. Hardcover art books or comprehensive graphic novels ($30-$60 range) anchor your table.</p><h2>2. The Impulse Buy</h2><p>Stickers, bookmarks, and small prints ($1-$10). These cover your lunch money and draw people in.</p><h2>3. Business Cards</h2><p>Don't let them leave without a way to find you online. Hand out a business card with every purchase.</p><h2>4. Vertical Displays</h2><p>Use retractable banners or tall print displays to catch eyes from across the hall.</p>",
+    "relatedProducts": ["table-throws", "retractable-banners", "stickers"]
+  },
+  "self-publishing-101": {
+    "title": "Self-Publishing 101: From PDF to Physical Book",
+    "description": "A step-by-step walkthrough of the printing process for indie authors and comic creators.",
+    "category": "Use Case",
+    "content": "<h2>Step 1: The Quote</h2><p>Know your specs. Size, page count, and quantity. Ordering 100 books costs much less per unit than ordering 1.</p><h2>Step 2: The Proof</h2><p><strong>Always order a physical proof.</strong> seeing one copy allows you to catch typos and color issues before you commit to 500 copies.</p><h2>Step 3: Distribution</h2><p>Consider how you will ship. If you are fulfilling yourself, do you have space? If not, look into fulfillment services.</p>",
+    "relatedProducts": ["hardcover-books", "perfect-bound-books", "bookmarks"]
+  },
+  "hardcover-vs-softcover": {
+    "title": "Hardcover vs Softcover: Which is Right for You?",
+    "description": "An analysis of durability, cost, and perceived value to help you decide on your next book format.",
+    "category": "Product Comparison",
+    "content": "<h2>Perceived Value</h2><p>Hardcovers (Case Bound) immediately command a higher price point. They feel substantial and collectible. If you are doing a Kickstarter special edition, Hardcover is the way to go.</p><h2>Cost Efficiency</h2><p>Softcovers (Perfect Bound) are significantly cheaper to produce and lighter to ship. For your standard trade paperback or manga volume, this is the industry standard.</p><h2>Durability</h2><p>Hardcovers last longer, but modern softcover laminations (like soft-touch matte) are very resistant to wear and tear.</p>",
+    "relatedProducts": ["hardcover-books", "perfect-bound-books"]
+  },
+  "print-resolution-guide": {
+    "title": "DPI vs PPI: Image Resolution Guide",
+    "description": "Avoid the dreaded 'blurry image'. We explain why 72 DPI is not enough and how to check your image quality.",
+    "category": "Technical Guide",
+    "content": "<h2>DPI (Dots Per Inch)</h2><p>This is a printer term. It refers to ink dots on paper.</p><h2>PPI (Pixels Per Inch)</h2><p>This is the digital term. If you have an image that is 1000 pixels wide, and you print it at 10 inches wide, that is 100 PPI. That will look blocky.</p><h2>The Golden Rule</h2><p>Aim for <strong>300 PPI</strong> at final print size. If your image is 3000 pixels wide, you can print it up to 10 inches wide safely.</p>",
+    "relatedProducts": ["large-format-posters", "art-prints", "vinyl-banners"]
+  },
+  "book-formatting-guide": {
+    "title": "Interior Book Formatting Best Practices",
+    "description": "Margins, gutters, and page numbers. How to format your text so it is readable and professional.",
+    "category": "Technical Guide",
+    "content": "<h2>The Gutter</h2><p>The inside margin where the pages are glued (the spine) needs extra space. If your text is too close to the gutter, it will fall into the crack and be unreadable. Add at least 0.125\" to 0.25\" extra margin on the inside edge.</p><h2>Page Numbers</h2><p>Odd numbers are always on the <strong>Right</strong> page. Even numbers are on the <strong>Left</strong>. Ensure your pagination reflects this.</p><h2>Fonts</h2><p>For body text, serif fonts (like Garamond or Caslon) are generally easier to read in print than sans-serif fonts.</p>",
+    "relatedProducts": ["perfect-bound-books", "hardcover-books"]
+  },
+  "sustainable-printing": {
+    "title": "Eco-Friendly Printing Options",
+    "description": "How to make your print project greener using recycled stocks and soy-based inks.",
+    "category": "Values",
+    "content": "<h2>Recycled Stocks</h2><p>We offer 30% to 100% post-consumer waste (PCW) recycled papers. They have a lovely, slightly textured feel that communicates 'natural' to your customers.</p><h2>Soy Inks</h2><p>Traditional petroleum inks release VOCs. Soy and vegetable-based inks are cleaner, renewable, and actually produce more vibrant colors.</p><h2>Print on Demand</h2><p>The most sustainable choice is not printing more than you need. Our short-run digital capabilities mean you don't have to order 1000 books if you only need 100.</p>",
+    "relatedProducts": ["flyers", "brochures", "saddle-stitch-booklets"]
+  }
+}
