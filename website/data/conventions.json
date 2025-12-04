@@ -1,0 +1,54 @@
+{
+  "anime": {
+    "title": "Anime Convention Printing Services",
+    "slug": "anime",
+    "heroHeadline": "Dominate the Artist Alley",
+    "heroSubhead": "From Doujinshi to 11x17 prints, we have everything you need for your next Anime Convention.",
+    "description": "Anime conventions are visual feasts, and your table needs to stand out. We understand the specific needs of anime artists: vibrant colors for prints, correct binding for manga, and fast turnarounds for last-minute con crunch. Whether you're selling at Anime Expo, Otakon, or a local show, we've got your back.",
+    "popularProducts": ["manga", "art-prints", "perfect-bound-books"],
+    "tips": [
+      "Order your books at least 3 weeks before the con to avoid rush fees.",
+      "Matte covers reduce glare in convention hall photos.",
+      "Standardize your print sizes (11x17, A4) to make buying frames easier for customers."
+    ]
+  },
+  "furry": {
+    "title": "Furry Convention Printing Essentials",
+    "slug": "furry",
+    "heroHeadline": "Bring Your Sona to Life",
+    "heroSubhead": "High-quality badges, zines, and art books for the furry community.",
+    "description": "The furry community values quality and tactile experiences. Our rich, color-accurate printing ensures your commissions, badges, and zines look exactly as intended. We offer specialized stocks that feel as good as they look.",
+    "popularProducts": ["saddle-stitch-booklets", "art-prints", "perfect-bound-books"],
+    "tips": [
+      "Offer a range of price points: Buttons/Stickers -> Prints -> Zines.",
+      "Saddle stitch booklets are perfect for short comics or sketch collections.",
+      "Bring business cards with your commission info!"
+    ]
+  },
+  "comic": {
+    "title": "Comic Con Printing Services",
+    "slug": "comic",
+    "heroHeadline": "Professional Quality for Indie Creators",
+    "heroSubhead": "Standard American comic sizes, graphic novels, and marketing fliers.",
+    "description": "Whether you are pitching to a publisher or selling directly to fans, your comic needs to look professional. We offer industry-standard US Comic sizes, glossy covers, and crisp interior printing that rivals the big houses.",
+    "popularProducts": ["saddle-stitch-booklets", "perfect-bound-books", "art-prints"],
+    "tips": [
+      "US Standard Comic size is 6.625\" x 10.25\". We have templates for this!",
+      "Full bleed is essential for dynamic panels.",
+      "Don't forget flyers or bookmarks to put in bags with purchases."
+    ]
+  },
+  "general": {
+    "title": "Event & Convention Printing",
+    "slug": "general",
+    "heroHeadline": "Reliable Printing for Every Event",
+    "heroSubhead": "Brochures, programs, signage, and marketing materials delivered on time.",
+    "description": "Organizing an event or setting up a corporate booth? You need reliability above all else. We provide high-volume printing for programs, flyers, and banners with strict quality control and guaranteed delivery timelines.",
+    "popularProducts": ["saddle-stitch-booklets", "art-prints", "perfect-bound-books"],
+    "tips": [
+      "Keep text away from the trim line (Safety Zone).",
+      "High-gloss finishes attract attention under convention lights.",
+      "Bulk ordering flyers significantly reduces cost per unit."
+    ]
+  }
+}

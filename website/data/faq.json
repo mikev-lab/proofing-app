@@ -1,0 +1,26 @@
+[
+  {
+    "question": "Do you offer local pickup?",
+    "answer": "Yes! We offer free local pickup at our facility in Washington. Select 'Local Pickup' at checkout to skip shipping costs."
+  },
+  {
+    "question": "Can you ship directly to my hotel for a convention?",
+    "answer": "Absolutely. We understand the hassle of traveling with heavy inventory. We can ship your order directly to your hotel or convention center. Just provide the specific address and guest details during checkout."
+  },
+  {
+    "question": "What is the standard turnaround time?",
+    "answer": "For most standard orders like books and prints, our production time is 5-7 business days after file approval. Rush options are available for tight deadlines."
+  },
+  {
+    "question": "How do I prepare my files for printing?",
+    "answer": "We recommend submitting PDF files with a 0.125\" bleed on all sides. Images should be 300 DPI or higher. You can use our 'File Setup' tools to check your dimensions before uploading."
+  },
+  {
+    "question": "Do you offer bulk discounts?",
+    "answer": "Yes, we offer competitive pricing for large orders. Convention organizers and partners also receive special discount rates. Check our Partner page for more info."
+  },
+  {
+    "question": "What if my convention isn't listed on your calendar?",
+    "answer": "Our calendar tracks major events, but we print for everyone! Just use our standard turnaround times (order ~4 weeks in advance to be safe) or contact us for a custom timeline."
+  }
+]
