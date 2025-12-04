@@ -4,34 +4,53 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { db, httpsCallable, functions, auth } from '../../firebase/config';
 import { collection, onSnapshot, query, orderBy, addDoc, serverTimestamp, where } from 'firebase/firestore';
+import { onAuthStateChanged } from 'firebase/auth';
 
 export default function AdminProjects() {
   const [projects, setProjects] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [authLoading, setAuthLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
   const [creating, setCreating] = useState(false);
   const [generatedLink, setGeneratedLink] = useState<string | null>(null);
 
-  // Fetch Projects
+  // Fetch Projects with Auth Guard
   useEffect(() => {
-    // Basic query: All projects, ordered by creation (desc)
-    // Note: Requires index in Firestore if using orderBy('createdAt', 'desc') with other filters
-    const q = query(collection(db, 'projects'), orderBy('createdAt', 'desc'));
+    let unsubscribeProjects: (() => void) | undefined;
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const projs = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
-      setProjects(projs);
-      setLoading(false);
-    }, (error) => {
-      console.error("Error fetching projects:", error);
-      setLoading(false);
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      setAuthLoading(false);
+      if (user) {
+        // User is logged in, now we can subscribe to projects
+        // Basic query: All projects, ordered by creation (desc)
+        // Note: Requires index in Firestore if using orderBy('createdAt', 'desc') with other filters
+        const q = query(collection(db, 'projects'), orderBy('createdAt', 'desc'));
+
+        unsubscribeProjects = onSnapshot(q, (snapshot) => {
+          const projs = snapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+          }));
+          setProjects(projs);
+          setLoading(false);
+        }, (error) => {
+          console.error("Error fetching projects:", error);
+          setLoading(false);
+          // If permission denied, it might mean the token claims haven't refreshed or rules deny it.
+          // But waiting for onAuthStateChanged usually fixes the "missing permissions" due to uninitialized auth.
+        });
+      } else {
+        // User is not logged in
+        setProjects([]);
+        setLoading(false);
+      }
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribeAuth();
+      if (unsubscribeProjects) unsubscribeProjects();
+    };
   }, []);
 
   const handleCreateProject = async (e: React.FormEvent) => {
@@ -55,8 +74,6 @@ export default function AdminProjects() {
 
         // 2. Generate Link (Call Cloud Function)
         const generateLinkFn = httpsCallable(functions, 'generateGuestLink');
-        // Note: Legacy function expects { projectId: ..., ... }
-        // We might need to check the function signature. Assuming standard:
         const result = await generateLinkFn({
             projectId: projectRef.id,
             permissions: { canUpload: true, canApprove: false }
@@ -78,6 +95,10 @@ export default function AdminProjects() {
       setIsModalOpen(false);
       setGeneratedLink(null);
   };
+
+  if (authLoading) {
+      return <div className="text-center py-12 text-gray-400">Verifying access...</div>;
+  }
 
   return (
     <div>
