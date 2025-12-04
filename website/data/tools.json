@@ -1,0 +1,72 @@
+[
+  {
+    "id": "spine-calc",
+    "name": "Book Spine Calculator",
+    "slug": "book-spine-calculator",
+    "description": "Calculate exact spine width based on page count and paper stock.",
+    "category": "Calculators"
+  },
+  {
+    "id": "pixel-conv",
+    "name": "Pixel to Print Converter",
+    "slug": "pixel-print-converter",
+    "description": "Check if your image resolution is high enough for print dimensions.",
+    "category": "Pre-Press"
+  },
+  {
+    "id": "paper-weight",
+    "name": "Paper Weight Converter",
+    "slug": "paper-weight-converter",
+    "description": "Convert between GSM and lbs text/cover weights.",
+    "category": "Calculators"
+  },
+  {
+    "id": "bleed-guide",
+    "name": "Bleed Guide Generator",
+    "slug": "bleed-guide-generator",
+    "description": "Download custom templates with bleed lines for your project.",
+    "category": "Templates"
+  },
+  {
+    "id": "contrast",
+    "name": "Contrast Checker",
+    "slug": "contrast-checker",
+    "description": "Ensure your text is readable against your background color.",
+    "category": "Pre-Press"
+  },
+  {
+    "id": "box-vol",
+    "name": "Box Volume Calculator",
+    "slug": "box-volume-calculator",
+    "description": "Estimate how many books fit in a standard shipping box.",
+    "category": "Logistics"
+  },
+  {
+    "id": "res-check",
+    "name": "Resolution Checker",
+    "slug": "resolution-checker",
+    "description": "Upload an image to see its effective DPI at different print sizes.",
+    "category": "Pre-Press"
+  },
+  {
+    "id": "imposition",
+    "name": "Imposition Preview",
+    "slug": "imposition-preview",
+    "description": "Visualize how pages are laid out on a press sheet.",
+    "category": "Pre-Press"
+  },
+  {
+    "id": "typography",
+    "name": "Typography Golden Ratio",
+    "slug": "typography-golden-ratio",
+    "description": "Calculate ideal line heights and font sizes.",
+    "category": "Design"
+  },
+  {
+    "id": "bulk-est",
+    "name": "Bulk Price Estimator",
+    "slug": "bulk-price-estimator",
+    "description": "Quick ballpark figures for large runs.",
+    "category": "Calculators"
+  }
+]
