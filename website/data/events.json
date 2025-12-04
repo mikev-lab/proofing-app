@@ -1,0 +1,202 @@
+[
+  {
+    "id": "anime-expo-2025",
+    "name": "Anime Expo 2025",
+    "slug": "anime-expo",
+    "location": "Los Angeles, CA",
+    "dates": {
+      "eventStart": "2025-07-04",
+      "shipping": "2025-06-25",
+      "filesNeeded": "2025-06-10",
+      "orderBy": "2025-06-01"
+    },
+    "capacity": 90,
+    "stats": {
+        "attendees": "160,000+",
+        "artistAlley": "Massive (500+ tables)",
+        "website": "anime-expo.org"
+    },
+    "description": "The largest anime convention in North America. A must-attend for major artists and publishers. High competition but massive foot traffic.",
+    "category": "anime"
+  },
+  {
+    "id": "sakuracon-2025",
+    "name": "Sakura-Con 2025",
+    "slug": "sakuracon",
+    "location": "Seattle, WA",
+    "dates": {
+      "eventStart": "2025-04-18",
+      "shipping": "2025-04-10",
+      "filesNeeded": "2025-03-25",
+      "orderBy": "2025-03-15"
+    },
+    "capacity": 75,
+    "stats": {
+        "attendees": "25,000+",
+        "artistAlley": "Large",
+        "website": "sakuracon.org"
+    },
+    "description": "The premier Pacific Northwest anime convention. Known for a friendly artist alley and strong community support.",
+    "category": "anime"
+  },
+  {
+    "id": "comiket-106",
+    "name": "Comiket 106",
+    "slug": "comiket",
+    "location": "Tokyo, Japan",
+    "dates": {
+      "eventStart": "2025-08-11",
+      "shipping": "2025-08-01",
+      "filesNeeded": "2025-07-15",
+      "orderBy": "2025-07-01"
+    },
+    "capacity": 95,
+    "stats": {
+        "attendees": "500,000+",
+        "artistAlley": "The World's Largest",
+        "website": "comiket.co.jp"
+    },
+    "description": "The world's largest dojinshi fair. Requires specialized logistics for international sellers. We handle the printing and shipping.",
+    "category": "anime"
+  },
+  {
+    "id": "anthrocon-2025",
+    "name": "Anthrocon 2025",
+    "slug": "anthrocon",
+    "location": "Pittsburgh, PA",
+    "dates": {
+      "eventStart": "2025-07-03",
+      "shipping": "2025-06-24",
+      "filesNeeded": "2025-06-09",
+      "orderBy": "2025-05-30"
+    },
+    "capacity": 80,
+    "stats": {
+        "attendees": "13,000+",
+        "artistAlley": "Dealer's Den focus",
+        "website": "anthrocon.org"
+    },
+    "description": "One of the largest furry conventions. High demand for badges, zines, and high-quality art prints.",
+    "category": "furry"
+  },
+  {
+    "id": "emerald-city-comic-con-2025",
+    "name": "Emerald City Comic Con",
+    "slug": "eccc",
+    "location": "Seattle, WA",
+    "dates": {
+      "eventStart": "2025-03-06",
+      "shipping": "2025-02-27",
+      "filesNeeded": "2025-02-15",
+      "orderBy": "2025-02-01"
+    },
+    "capacity": 65,
+    "stats": {
+        "attendees": "90,000+",
+        "artistAlley": "Professional / Indie Hybrid",
+        "website": "emeraldcitycomiccon.com"
+    },
+    "description": "A comic-focused show with a massive artist alley. Great for indie comic creators and print artists.",
+    "category": "comic"
+  },
+  {
+    "id": "dragon-con-2025",
+    "name": "Dragon Con 2025",
+    "slug": "dragon-con",
+    "location": "Atlanta, GA",
+    "dates": {
+      "eventStart": "2025-08-28",
+      "shipping": "2025-08-15",
+      "filesNeeded": "2025-08-01",
+      "orderBy": "2025-07-15"
+    },
+    "capacity": 85,
+    "stats": {
+        "attendees": "85,000+",
+        "artistAlley": "Multi-genre, High Traffic",
+        "website": "dragoncon.org"
+    },
+    "description": "The largest multi-media, pop culture convention focusing on science fiction & fantasy, gaming, comics, literature, art, music, and film.",
+    "category": "general"
+  },
+  {
+    "id": "sdcc-2025",
+    "name": "San Diego Comic-Con",
+    "slug": "sdcc",
+    "location": "San Diego, CA",
+    "dates": {
+      "eventStart": "2025-07-24",
+      "shipping": "2025-07-10",
+      "filesNeeded": "2025-06-25",
+      "orderBy": "2025-06-10"
+    },
+    "capacity": 100,
+    "stats": {
+        "attendees": "135,000+",
+        "artistAlley": "Highly Competitive",
+        "website": "comic-con.org"
+    },
+    "description": "The big one. The international focal point for the comic book, movie, and related popular art conventions.",
+    "category": "comic"
+  },
+  {
+    "id": "midwest-furfest-2025",
+    "name": "Midwest FurFest",
+    "slug": "mff",
+    "location": "Rosemont, IL",
+    "dates": {
+      "eventStart": "2025-12-04",
+      "shipping": "2025-11-20",
+      "filesNeeded": "2025-11-10",
+      "orderBy": "2025-10-25"
+    },
+    "capacity": 60,
+    "stats": {
+        "attendees": "15,000+",
+        "artistAlley": "Very Large",
+        "website": "furfest.org"
+    },
+    "description": "The world's largest furry convention by attendance. Late year timing makes it great for holiday sales.",
+    "category": "furry"
+  },
+  {
+    "id": "fanime-2025",
+    "name": "FanimeCon 2025",
+    "slug": "fanime",
+    "location": "San Jose, CA",
+    "dates": {
+      "eventStart": "2025-05-23",
+      "shipping": "2025-05-10",
+      "filesNeeded": "2025-04-25",
+      "orderBy": "2025-04-10"
+    },
+    "capacity": 70,
+    "stats": {
+        "attendees": "30,000+",
+        "artistAlley": "Juried, High Quality",
+        "website": "fanime.com"
+    },
+    "description": "By fans, for fans. Known for its massive 24-hour Artist Alley and gaming hall.",
+    "category": "anime"
+  },
+  {
+    "id": "pax-west-2025",
+    "name": "PAX West 2025",
+    "slug": "pax-west",
+    "location": "Seattle, WA",
+    "dates": {
+      "eventStart": "2025-08-29",
+      "shipping": "2025-08-15",
+      "filesNeeded": "2025-08-01",
+      "orderBy": "2025-07-15"
+    },
+    "capacity": 80,
+    "stats": {
+        "attendees": "100,000+",
+        "artistAlley": "Gaming Focused",
+        "website": "west.paxsite.com"
+    },
+    "description": "A festival for gamers to celebrate gaming culture. Perfect for selling prints of game fan art and peripherals.",
+    "category": "general"
+  }
+]
