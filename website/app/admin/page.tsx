@@ -2,23 +2,32 @@
 
 import React, { useEffect, useState } from 'react';
 import { medusaAdmin } from '../lib/medusa-admin';
+import { db, auth } from '../firebase/config';
+import { collection, query, where, onSnapshot, getDocs } from 'firebase/firestore';
+import { onAuthStateChanged } from 'firebase/auth';
 
 export default function AdminDashboard() {
   // Stats state
-  const [revenue, setRevenue] = useState<string>('$124,592'); // Mock default
-  const [pendingCount, setPendingCount] = useState<number>(14); // Mock default
+  const [revenue, setRevenue] = useState<string>('$124,592'); // Mock default for Medusa
+  const [pendingCount, setPendingCount] = useState<number>(14); // Mock default for Medusa
   const [recentOrders, setRecentOrders] = useState<any[]>([
       { id: '#1024', customer: 'Alex Chen', status: 'paid', total: '$450.00' },
       { id: '#1023', customer: 'Studio Trigger', status: 'pending', total: '$1,200.00' },
       { id: '#1022', customer: 'John Doe', status: 'paid', total: '$85.00' },
-  ]); // Mock default
-  const [isLive, setIsLive] = useState(false);
+  ]); // Mock default for Medusa
+  const [isMedusaLive, setIsMedusaLive] = useState(false);
 
+  // Firebase Realtime State
+  const [activeProjectsCount, setActiveProjectsCount] = useState<number | string>('...');
+  const [awaitingFilesCount, setAwaitingFilesCount] = useState<number | string>('...');
+  const [productionQueue, setProductionQueue] = useState<any[]>([]);
+  const [firebaseStatus, setFirebaseStatus] = useState<'initializing' | 'connected' | 'disconnected'>('initializing');
+
+  // Fetch Medusa Data
   useEffect(() => {
-    const fetchStats = async () => {
+    const fetchMedusaStats = async () => {
         try {
             // Attempt to fetch from Medusa
-            // Note: This requires an authenticated session. If CORS/Auth fails, we stay on mock.
             const { count, orders } = await medusaAdmin.admin.order.list({ limit: 5, offset: 0 });
 
             if (orders) {
@@ -33,23 +42,101 @@ export default function AdminDashboard() {
                     status: o.payment_status,
                     total: `$${(o.total / 100).toFixed(2)}`
                 })));
-                setIsLive(true);
+                setIsMedusaLive(true);
             }
         } catch (e) {
             console.log("Admin: Medusa not connected or unauthenticated. Using mock data.");
         }
     };
-    fetchStats();
+    fetchMedusaStats();
+  }, []);
+
+  // Fetch Firebase Data
+  useEffect(() => {
+    let unsubscribeActive: (() => void) | undefined;
+    let unsubscribeAwaiting: (() => void) | undefined;
+    let unsubscribeQueue: (() => void) | undefined;
+
+    setFirebaseStatus('initializing');
+
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+        if (user) {
+            setFirebaseStatus('connected');
+
+            // 1. Active Projects Count (Not 'Completed' or 'Archived')
+            const projectsRef = collection(db, 'projects');
+
+            // Query for Awaiting Files
+            const qAwaiting = query(projectsRef, where('status', '==', 'Awaiting Client Upload'));
+            unsubscribeAwaiting = onSnapshot(qAwaiting, (snap) => {
+                setAwaitingFilesCount(snap.size);
+            });
+
+            // Query for Active Projects
+            const qAllActive = query(projectsRef);
+            unsubscribeActive = onSnapshot(qAllActive, (snap) => {
+                const projects = snap.docs.map(d => d.data());
+
+                // Active = Not Complete, Not Archived, Not Awaiting Upload
+                const active = projects.filter(p =>
+                    !['Complete', 'Archived', 'Awaiting Client Upload'].includes(p.status)
+                );
+                setActiveProjectsCount(active.length);
+
+                // Build Production Queue (Top 3 recent active)
+                const getProgress = (s: string) => {
+                    const map: Record<string, number> = { 'Pre-Press': 20, 'Queued': 40, 'Printing': 60, 'Finishing': 80, 'Complete': 100 };
+                    return map[s] || 10;
+                };
+                const getColor = (s: string) => {
+                    const map: Record<string, string> = { 'Pre-Press': 'bg-yellow-600', 'Printing': 'bg-indigo-600', 'Finishing': 'bg-green-600' };
+                    return map[s] || 'bg-gray-600';
+                };
+
+                const queue = active
+                    .sort((a: any, b: any) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0))
+                    .slice(0, 3)
+                    .map((p: any) => ({
+                        name: p.projectName,
+                        stage: p.status,
+                        progress: getProgress(p.status),
+                        color: getColor(p.status)
+                    }));
+
+                setProductionQueue(queue);
+            });
+
+        } else {
+            setFirebaseStatus('disconnected');
+            setActiveProjectsCount('Auth Req');
+            setAwaitingFilesCount('Auth Req');
+        }
+    });
+
+    return () => {
+        unsubscribeAuth();
+        if (unsubscribeActive) unsubscribeActive();
+        if (unsubscribeAwaiting) unsubscribeAwaiting();
+        if (unsubscribeQueue) unsubscribeQueue();
+    };
   }, []);
 
   return (
     <div>
         <div className="flex items-center gap-4 mb-8">
             <h1 className="text-3xl font-bold text-white">Admin Dashboard</h1>
-            {isLive ? (
-                <span className="bg-green-900/50 text-green-400 text-xs px-2 py-1 rounded border border-green-700">Live Medusa Data</span>
+            {isMedusaLive ? (
+                <span className="bg-green-900/50 text-green-400 text-xs px-2 py-1 rounded border border-green-700">Medusa: Live</span>
             ) : (
-                <span className="bg-gray-800 text-gray-500 text-xs px-2 py-1 rounded border border-gray-700">Mock Data (Backend Unreachable)</span>
+                <span className="bg-gray-800 text-gray-500 text-xs px-2 py-1 rounded border border-gray-700">Medusa: Mock</span>
+            )}
+
+            {firebaseStatus === 'connected' ? (
+                <span className="bg-indigo-900/50 text-indigo-400 text-xs px-2 py-1 rounded border border-indigo-700">Firebase: Connected</span>
+            ) : firebaseStatus === 'initializing' ? (
+                <span className="bg-yellow-900/50 text-yellow-400 text-xs px-2 py-1 rounded border border-yellow-700 animate-pulse">Firebase: Connecting...</span>
+            ) : (
+                <span className="bg-red-900/50 text-red-400 text-xs px-2 py-1 rounded border border-red-700">Firebase: Disconnected</span>
             )}
         </div>
 
@@ -81,7 +168,9 @@ export default function AdminDashboard() {
                 <div className="flex justify-between items-start">
                     <div>
                         <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Active Projects</p>
-                        <h3 className="text-2xl font-bold text-white mt-1">8</h3>
+                        <h3 className="text-2xl font-bold text-white mt-1">
+                            {firebaseStatus === 'initializing' ? <span className="animate-pulse">...</span> : activeProjectsCount}
+                        </h3>
                     </div>
                     <span className="bg-indigo-900/30 text-indigo-400 text-xs font-bold px-2 py-1 rounded">Production</span>
                 </div>
@@ -92,7 +181,9 @@ export default function AdminDashboard() {
                 <div className="flex justify-between items-start">
                     <div>
                         <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Awaiting Files</p>
-                        <h3 className="text-2xl font-bold text-white mt-1">3</h3>
+                        <h3 className="text-2xl font-bold text-white mt-1">
+                            {firebaseStatus === 'initializing' ? <span className="animate-pulse">...</span> : awaitingFilesCount}
+                        </h3>
                     </div>
                     <span className="bg-red-900/30 text-red-400 text-xs font-bold px-2 py-1 rounded">Urgent</span>
                 </div>
@@ -143,21 +234,25 @@ export default function AdminDashboard() {
                     <span className="text-xs font-mono text-gray-500">firestore/projects</span>
                 </div>
                 <div className="p-6 space-y-4">
-                    {[
-                        { name: 'Anime Expo Art Book', stage: 'Printing', progress: 60, color: 'bg-indigo-600' },
-                        { name: 'Fall Catalog 2025', stage: 'Pre-Press', progress: 20, color: 'bg-yellow-600' },
-                        { name: 'Manga Vol 1 (Reprint)', stage: 'Finishing', progress: 90, color: 'bg-green-600' },
-                    ].map((proj, i) => (
-                        <div key={i}>
-                            <div className="flex justify-between text-sm mb-1">
-                                <span className="text-white font-medium">{proj.name}</span>
-                                <span className="text-gray-400">{proj.stage}</span>
+                    {firebaseStatus === 'initializing' && (
+                        <div className="text-center text-gray-500 py-4 animate-pulse">Loading queue...</div>
+                    )}
+
+                    {firebaseStatus !== 'initializing' && productionQueue.length === 0 ? (
+                        <div className="text-center text-gray-500 py-4">No active production jobs.</div>
+                    ) : (
+                        productionQueue.map((proj, i) => (
+                            <div key={i}>
+                                <div className="flex justify-between text-sm mb-1">
+                                    <span className="text-white font-medium">{proj.name}</span>
+                                    <span className="text-gray-400">{proj.stage}</span>
+                                </div>
+                                <div className="w-full bg-slate-700 rounded-full h-2">
+                                    <div className={`${proj.color} h-2 rounded-full`} style={{ width: `${proj.progress}%` }}></div>
+                                </div>
                             </div>
-                            <div className="w-full bg-slate-700 rounded-full h-2">
-                                <div className={`${proj.color} h-2 rounded-full`} style={{ width: `${proj.progress}%` }}></div>
-                            </div>
-                        </div>
-                    ))}
+                        ))
+                    )}
                 </div>
             </div>
         </div>

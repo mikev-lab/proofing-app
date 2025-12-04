@@ -1,8 +1,44 @@
-import React from 'react';
+'use client';
+
+import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import CartIcon from './CartIcon';
+import { auth, db } from '../firebase/config';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { doc, getDoc } from 'firebase/firestore';
 
 export default function Header() {
+  const [user, setUser] = useState<any>(null);
+  const [role, setRole] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      if (currentUser) {
+        setUser(currentUser);
+        try {
+            const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
+            if (userDoc.exists()) {
+                setRole(userDoc.data().role);
+            }
+        } catch (e) {
+            console.error("Failed to fetch user role", e);
+        }
+      } else {
+        setUser(null);
+        setRole(null);
+      }
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  const handleLogout = async () => {
+      await signOut(auth);
+      window.location.href = '/login';
+  };
+
   return (
     <header className="bg-slate-900 border-b border-slate-700/50 sticky top-0 z-50">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -53,12 +89,30 @@ export default function Header() {
             </Link>
           </nav>
           <div className="flex items-center space-x-4">
-            <Link href="/login" className="text-gray-300 hover:text-white px-3 py-2 rounded-md text-sm font-medium transition-colors">
-              Log in
-            </Link>
-            <Link href="/register" className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors shadow-sm">
-              Register
-            </Link>
+            {loading ? (
+                <div className="h-8 w-20 bg-slate-800 rounded animate-pulse"></div>
+            ) : user ? (
+                <div className="flex items-center gap-4">
+                    {role === 'admin' && (
+                        <Link href="/admin" className="text-indigo-400 hover:text-indigo-300 text-sm font-medium">
+                            Admin Panel
+                        </Link>
+                    )}
+                    <span className="text-gray-300 text-sm">{user.email}</span>
+                    <button onClick={handleLogout} className="text-gray-400 hover:text-white text-sm">
+                        Log out
+                    </button>
+                </div>
+            ) : (
+                <>
+                    <Link href="/login" className="text-gray-300 hover:text-white px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                    Log in
+                    </Link>
+                    <Link href="/register" className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors shadow-sm">
+                    Register
+                    </Link>
+                </>
+            )}
             <div className="border-l border-slate-700 pl-4 ml-2">
                 <CartIcon />
             </div>
