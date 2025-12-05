@@ -127,7 +127,11 @@ export default function ClientDashboard() {
 
                                     {/* Thumbnail - Left Side */}
                                     <div className="w-32 bg-slate-900 border-r border-slate-700 relative flex-shrink-0">
-                                        <ProjectThumbnail url={proj.resolvedPreview} />
+                                        <ProjectThumbnail
+                                            url={proj.resolvedPreview}
+                                            aspectRatio={proj.specs?.dimensions ? (proj.specs.dimensions.width / proj.specs.dimensions.height) : undefined}
+                                            rtl={proj.specs?.readingDirection === 'rtl'}
+                                        />
                                     </div>
 
                                     {/* Details - Right Side */}
@@ -143,12 +147,20 @@ export default function ClientDashboard() {
 
                                             {/* Action Buttons */}
                                             <div className="flex gap-3 mt-auto">
-                                                <button
-                                                    onClick={() => openPlaceOrder(proj)}
-                                                    className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium rounded transition-colors"
-                                                >
-                                                    Place Order
-                                                </button>
+                                                <div className="relative group">
+                                                    <button
+                                                        onClick={() => openPlaceOrder(proj)}
+                                                        disabled={proj.status !== 'Approved'}
+                                                        className={`px-3 py-1.5 text-white text-xs font-medium rounded transition-colors ${proj.status === 'Approved' ? 'bg-indigo-600 hover:bg-indigo-500' : 'bg-slate-700 opacity-50 cursor-not-allowed'}`}
+                                                    >
+                                                        Place Order
+                                                    </button>
+                                                    {proj.status !== 'Approved' && (
+                                                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-900 text-white text-xs rounded border border-slate-700 shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 text-center">
+                                                            You must approve the proof in order to place an order.
+                                                        </div>
+                                                    )}
+                                                </div>
                                                 <Link
                                                     href={`/proof?id=${proj.id}`}
                                                     className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white text-xs font-medium rounded transition-colors"
