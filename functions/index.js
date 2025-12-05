@@ -8,6 +8,7 @@ const { onObjectFinalized } = require('firebase-functions/v2/storage');
 const { onCall, HttpsError } = require('firebase-functions/v2/https'); // <-- Import for callable function
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onDocumentUpdated, onDocumentCreated } = require('firebase-functions/v2/firestore');
+const { onUserCreated } = require("firebase-functions/v2/identity");
 const logger = require('firebase-functions/logger');
 const crypto = require('crypto'); // <-- Import for token generation
 const { GoogleAuth } = require('google-auth-library');
@@ -3475,3 +3476,34 @@ if (process.env.FUNCTION_TARGET === 'analyzePdfToolbox' || process.env.FUNCTIONS
         }
     });
 }
+// --- NEW TRIGGER: Sync New Firebase User to Medusa ---
+exports.onUserCreated = onUserCreated({ region: "us-central1" }, async (event) => {
+    const user = event.data;
+    const { email, displayName, uid } = user;
+
+    logger.log(`New user created: ${email} (${uid}). Syncing to Medusa...`);
+
+    try {
+        const MEDUSA_BACKEND_URL = "https://medusa-server-7690.up.railway.app";
+
+        // Use Storefront API to register customer (safe, no admin token needed)
+        // Password is required by Medusa but not by Firebase Auth provider flow.
+        // We set a placeholder so the account exists.
+        const response = await axios.post(`${MEDUSA_BACKEND_URL}/store/customers`, {
+            email: email,
+            first_name: displayName || 'New User',
+            last_name: '(Firebase)',
+            password: "PlaceholderPassword123!",
+            has_account: true
+        });
+
+        logger.log(`Successfully synced ${email} to Medusa via Store API. ID: ${response.data.customer.id}`);
+
+    } catch (error) {
+        if (error.response && error.response.status === 422) {
+            logger.log(`User ${email} already exists in Medusa.`);
+        } else {
+            logger.error("Failed to sync user to Medusa:", error.message);
+        }
+    }
+});
