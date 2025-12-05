@@ -127,28 +127,45 @@ export default function ClientDashboard() {
 
                                     {/* Thumbnail - Left Side */}
                                     <div className="w-32 bg-slate-900 border-r border-slate-700 relative flex-shrink-0">
-                                        <ProjectThumbnail url={proj.resolvedPreview} />
+                                        <ProjectThumbnail
+                                            url={proj.resolvedPreview}
+                                            aspectRatio={proj.specs?.dimensions ? (proj.specs.dimensions.width / proj.specs.dimensions.height) : undefined}
+                                            rtl={proj.specs?.readingDirection === 'rtl'}
+                                        />
                                     </div>
 
                                     {/* Details - Right Side */}
                                     <div className="flex-1 p-4 flex flex-col justify-between">
                                         <div>
                                             <div className="flex justify-between items-start mb-1">
-                                                <h3 className="text-lg font-semibold text-white group-hover:text-indigo-300 transition-colors truncate" title={proj.projectName}>
-                                                    {proj.projectName || 'Untitled'}
-                                                </h3>
+                                                <div>
+                                                    <h3 className="text-lg font-semibold text-white group-hover:text-indigo-300 transition-colors truncate" title={proj.projectName}>
+                                                        {proj.projectName || 'Untitled'}
+                                                    </h3>
+                                                    <span className={`inline-block mt-1 text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded ${proj.specs?.binding && proj.specs.binding.includes('saddle') ? 'bg-purple-900/30 text-purple-400' : proj.specs?.binding && proj.specs.binding.includes('perfect') ? 'bg-pink-900/30 text-pink-400' : 'bg-slate-700 text-gray-400'}`}>
+                                                        {proj.specs?.binding ? (proj.specs.binding.includes('saddle') ? 'Booklet' : proj.specs.binding.includes('perfect') ? 'Book' : 'Print') : 'Print'}
+                                                    </span>
+                                                </div>
                                                 {getStatusBadge(proj.status)}
                                             </div>
                                             <div className="text-sm text-gray-400 mb-2">{proj.createdAt?.seconds ? new Date(proj.createdAt.seconds * 1000).toLocaleDateString() : 'N/A'}</div>
 
                                             {/* Action Buttons */}
                                             <div className="flex gap-3 mt-auto">
-                                                <button
-                                                    onClick={() => openPlaceOrder(proj)}
-                                                    className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium rounded transition-colors"
-                                                >
-                                                    Place Order
-                                                </button>
+                                                <div className="relative group/tooltip">
+                                                    <button
+                                                        onClick={() => openPlaceOrder(proj)}
+                                                        disabled={!['approved', 'imposition complete', 'in production'].includes((proj.status || '').toLowerCase())}
+                                                        className={`px-3 py-1.5 text-white text-xs font-medium rounded transition-colors ${['approved', 'imposition complete', 'in production'].includes((proj.status || '').toLowerCase()) ? 'bg-indigo-600 hover:bg-indigo-500' : 'bg-indigo-950 text-indigo-400/50 cursor-not-allowed'}`}
+                                                    >
+                                                        Place Order
+                                                    </button>
+                                                    {!['approved', 'imposition complete', 'in production'].includes((proj.status || '').toLowerCase()) && (
+                                                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-900 text-white text-xs rounded border border-slate-700 shadow-xl opacity-0 group-hover/tooltip:opacity-100 transition-opacity pointer-events-none z-10 text-center">
+                                                            You must approve the proof in order to place an order.
+                                                        </div>
+                                                    )}
+                                                </div>
                                                 <Link
                                                     href={`/proof?id=${proj.id}`}
                                                     className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white text-xs font-medium rounded transition-colors"
