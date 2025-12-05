@@ -150,16 +150,25 @@ function calculatePageGuideGeometries(specs: ProjectSpecs, pageRenderInfo: PageR
     return { trimBox, bleedBox, safetyBox };
 }
 
-function drawBox(ctx: CanvasRenderingContext2D, { x, y, width, height, color, lineWidth = 1, dashPattern = [] }: any) {
+function drawBox(ctx: CanvasRenderingContext2D, { x, y, width, height, color, lineWidth = 1, dashPattern = [], clippedSide }: any) {
     if (width <= 0 || height <= 0) return;
     ctx.save();
     ctx.strokeStyle = color;
 
     // Use CSS pixel scale
-    const currentScale = 1; // Assuming canvas is mapped 1:1 in coordinate space relative to the react-pdf layer
+    const currentScale = 1;
 
     ctx.lineWidth = lineWidth;
     ctx.setLineDash(dashPattern);
+
+    // Always draw full box for Trim and Safety, even if clipped, to show spine line.
+    // If it's Bleed, `clippedSide` is handled in `drawBleedVisuals`.
+    // But `drawBox` is generic.
+    // The previous implementation used strokeRect, which draws all 4 sides.
+    // That should be correct for Trim/Safety.
+    // If the box is clipped by CSS on the page wrapper, this canvas overlay (which is NOT clipped)
+    // should show the line crossing the spine.
+
     ctx.strokeRect(x, y, width, height);
     ctx.restore();
 }
