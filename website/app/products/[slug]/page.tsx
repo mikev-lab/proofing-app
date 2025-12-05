@@ -1,40 +1,19 @@
 import React from 'react';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import productsData from '../../../data/products.json';
 import conventionsData from '../../../data/conventions.json';
 import InstantQuote from '../../components/InstantQuote';
+import { getAllProductHandles, getProductByHandle } from '../../lib/medusa-products';
 
 const conventions: Record<string, any> = conventionsData;
 
-interface ProductData {
-    id: string;
-    name: string;
-    slug: string;
-    category: string;
-    shortDescription: string;
-    description: string;
-    features: string[];
-    specs: {
-        minPages?: number;
-        maxPages?: number;
-        paperStocks?: string[];
-        sizes?: string[];
-    };
-    relevantConventions: string[];
-}
-
-const products: ProductData[] = productsData as ProductData[];
-
 export async function generateStaticParams() {
-  return products.map((product) => ({
-    slug: product.slug,
-  }));
+  return await getAllProductHandles();
 }
 
 export default async function ProductPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
-  const product = products.find((p) => p.slug === slug);
+  const product = await getProductByHandle(slug);
 
   if (!product) {
     notFound();
