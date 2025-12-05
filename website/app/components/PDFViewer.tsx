@@ -27,24 +27,13 @@ function isBookBinding(binding: string | undefined): boolean {
 
 function getViewCount(numPages: number, viewMode: 'single' | 'spread'): number {
     if (viewMode === 'single' || !numPages) return numPages;
-    // Spread mode: Page 1 is single. Remaining pages are paired.
-    // If total 5 pages: [1], [2-3], [4-5]. Total 3 views.
     return 1 + Math.ceil((numPages - 1) / 2);
 }
 
 function getPagesForView(viewIndex: number, numPages: number, viewMode: 'single' | 'spread', rtl: boolean = false): number[] {
-    // viewIndex is 0-based for internal logic, but we often use 1-based for UI.
-    // Let's assume viewIndex is 0-based here for calculation, mapped from UI's "Page 1" -> index 0.
-
-    // Actually, state `pageNumber` usually implies the *View Number* in a viewer context, starting at 1.
-    // Let's stick to 1-based `viewNumber` input.
-
     if (viewMode === 'single') return [viewIndex];
-
     if (viewIndex === 1) return [1]; // Cover is always single
 
-    // View 2 -> Pages 2, 3
-    // View 3 -> Pages 4, 5
     const startPage = 2 + (viewIndex - 2) * 2;
     const endPage = startPage + 1;
 
@@ -52,18 +41,15 @@ function getPagesForView(viewIndex: number, numPages: number, viewMode: 'single'
     if (startPage <= numPages) pages.push(startPage);
     if (endPage <= numPages) pages.push(endPage);
 
-    // RTL Swap: If spread [2,3], RTL visual order is [3,2] (Left, Right)
-    // Legacy logic: "In RTL spreads, the pages array is reversed... i=0 corresponds to the Odd page (visually Left)"
     if (rtl && pages.length === 2) {
         return pages.reverse();
     }
-
     return pages;
 }
 
 // --- Sub-Components ---
 
-const Thumbnail = ({ pdf, pageIndex, viewMode, isCurrent, onClick, rtl }: any) => {
+const Thumbnail = ({ pdf, pageIndex, viewMode, isCurrent, onClick, rtl, bleedInches = 0.125 }: any) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [loaded, setLoaded] = useState(false);
 
@@ -73,8 +59,6 @@ const Thumbnail = ({ pdf, pageIndex, viewMode, isCurrent, onClick, rtl }: any) =
         let active = true;
         const renderThumb = async () => {
             try {
-                // Determine pages for this thumbnail view
-                // pageIndex here is actually the VIEW index (1-based)
                 const pages = getPagesForView(pageIndex, pdf.numPages, viewMode, rtl);
                 if (pages.length === 0) return;
 
@@ -86,29 +70,70 @@ const Thumbnail = ({ pdf, pageIndex, viewMode, isCurrent, onClick, rtl }: any) =
                 const pageProxies = await Promise.all(pages.map(p => pdf.getPage(p)));
                 if (!active) return;
 
-                const scale = 0.2; // Small scale for thumbnail
+                const scale = 0.2; // Base scale for thumbnail
                 const viewports = pageProxies.map(p => p.getViewport({ scale }));
 
-                const totalWidth = viewports.reduce((acc, vp) => acc + vp.width, 0);
+                // Calculate cropped dimensions for bleed masking
+                const bleedPx = bleedInches * INCH_TO_POINTS * scale;
+                const isSpread = viewMode === 'spread' && pages.length > 1;
+
+                // Total Width Calculation with Masking
+                let totalWidth = 0;
                 const maxHeight = Math.max(...viewports.map(vp => vp.height));
+
+                // First pass to calculate total width
+                viewports.forEach((vp, idx) => {
+                    let w = vp.width;
+                    if (isSpread) {
+                        w -= bleedPx; // Each page in a spread loses 1 bleed width (inner spine)
+                    }
+                    totalWidth += w;
+                });
 
                 canvas.width = totalWidth;
                 canvas.height = maxHeight;
                 ctx.clearRect(0, 0, totalWidth, maxHeight);
 
+                // Render loop with cropping
                 let currentX = 0;
                 for (let i = 0; i < pageProxies.length; i++) {
                     const page = pageProxies[i];
                     const viewport = viewports[i];
 
-                    // Render to the main canvas at offset
+                    // Render page to a temporary canvas first to crop it easily
+                    const tempCanvas = document.createElement('canvas');
+                    tempCanvas.width = viewport.width;
+                    tempCanvas.height = viewport.height;
+                    const tempCtx = tempCanvas.getContext('2d');
+                    if (!tempCtx) continue;
+
                     await page.render({
-                        canvasContext: ctx,
-                        viewport: viewport,
-                        transform: [1, 0, 0, 1, currentX, 0] // Translate x
+                        canvasContext: tempCtx,
+                        viewport: viewport
                     }).promise;
 
-                    currentX += viewport.width;
+                    // Determine source cropping
+                    let sourceX = 0;
+                    let sourceW = viewport.width;
+
+                    if (isSpread) {
+                        sourceW = viewport.width - bleedPx; // We always take width - bleed
+
+                        // If Left Page (First in DOM list): Crop Right (Inner). SourceX = 0.
+                        // If Right Page (Second in DOM list): Crop Left (Inner). SourceX = bleedPx.
+                        if (i === 1) { // Right Page
+                             sourceX = bleedPx;
+                        }
+                        // Left Page (i===0) defaults to sourceX=0 (cropping right side implicitly by reducing width)
+                    }
+
+                    ctx.drawImage(
+                        tempCanvas,
+                        sourceX, 0, sourceW, viewport.height, // Source
+                        currentX, 0, sourceW, viewport.height // Dest
+                    );
+
+                    currentX += sourceW;
                 }
                 if (active) setLoaded(true);
 
@@ -119,18 +144,24 @@ const Thumbnail = ({ pdf, pageIndex, viewMode, isCurrent, onClick, rtl }: any) =
 
         renderThumb();
         return () => { active = false; };
-    }, [pdf, pageIndex, viewMode, rtl]);
+    }, [pdf, pageIndex, viewMode, rtl, bleedInches]);
+
+    const label = viewMode === 'single'
+        ? `Page ${pageIndex}`
+        : (pageIndex === 1 ? 'Page 1' : `Spread ${pageIndex}`); // Fixed "Cover" label to "Page 1" for Internals
 
     return (
         <div
             onClick={onClick}
-            className={`relative cursor-pointer border-2 rounded overflow-hidden bg-slate-800 flex flex-col items-center justify-center p-2 transition-colors ${isCurrent ? 'border-indigo-500 bg-slate-800' : 'border-transparent hover:border-slate-600'}`}
+            className={`relative cursor-pointer border-b border-slate-700 bg-slate-900 hover:bg-slate-800 transition-colors flex items-center p-3 gap-3 ${isCurrent ? 'bg-slate-800 border-l-4 border-l-indigo-500' : 'border-l-4 border-l-transparent'}`}
         >
-            <div className="w-full flex items-center justify-center min-h-[100px]">
-                <canvas ref={canvasRef} className="max-w-full max-h-32 object-contain" />
+             {/* Thumbnail Image Container */}
+            <div className="w-16 h-16 shrink-0 flex items-center justify-center bg-slate-950 rounded border border-slate-700 overflow-hidden">
+                 <canvas ref={canvasRef} className="max-w-full max-h-full object-contain" />
             </div>
-            <span className="text-gray-500 text-xs mt-2">
-                {viewMode === 'single' ? `Page ${pageIndex}` : (pageIndex === 1 ? 'Cover' : `Spread ${pageIndex}`)}
+             {/* Label */}
+            <span className="text-sm font-medium text-gray-300">
+                {label}
             </span>
         </div>
     );
@@ -140,40 +171,32 @@ export default function PDFViewer({ fileUrl: initialFileUrl, project, projectId 
   const [user, setUser] = useState<any>(null);
   const [pdfDocument, setPdfDocument] = useState<any>(null);
   const [numPages, setNumPages] = useState<number>(0);
-  const [viewIndex, setViewIndex] = useState<number>(1); // Current View Number (1-based)
+  const [viewIndex, setViewIndex] = useState<number>(1);
 
-  // Transform State
   const [scale, setScale] = useState(1.0);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
   const [fitScale, setFitScale] = useState(1.0);
 
-  // File / View State
   const [activeFileUrl, setActiveFileUrl] = useState(initialFileUrl);
   const [activeTab, setActiveTab] = useState<'interior' | 'cover'>('interior');
 
-  // Tools
   const [tool, setTool] = useState<'pan' | 'annotate'>('pan');
-  const [sidebarTab, setSidebarTab] = useState<'comments' | 'specs'>('specs');
+  // Removed sidebarTab state, simplified sidebar
 
-  // Default view mode based on binding
   const defaultViewMode = isBookBinding(project.specs?.binding) ? 'spread' : 'single';
   const [viewMode, setViewMode] = useState<'single' | 'spread'>(defaultViewMode);
 
-  // Guides
-  const [guideOptions, setGuideOptions] = useState({ trim: true, bleed: true, safety: true }); // Added Safety default true
+  const [guideOptions, setGuideOptions] = useState({ trim: true, bleed: true, safety: true });
   const [guideTooltip, setGuideTooltip] = useState<{ x: number, y: number, title: string, description: string } | null>(null);
 
-  // Annotations
   const [annotations, setAnnotations] = useState<any[]>([]);
   const [tempAnnotation, setTempAnnotation] = useState<any>(null);
   const [commentText, setCommentText] = useState('');
 
-  // Refs
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const viewerRef = useRef<HTMLDivElement>(null); // The scrollable/clippable container
-  const contentRef = useRef<HTMLDivElement>(null); // The transformed content wrapper
+  const viewerRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
 
-  // Dragging State
   const [isDragging, setIsDragging] = useState(false);
   const [startDrag, setStartDrag] = useState({ x: 0, y: 0 });
 
@@ -182,7 +205,6 @@ export default function PDFViewer({ fileUrl: initialFileUrl, project, projectId 
 
   const rtl = project.specs?.readingDirection === 'rtl';
 
-  // Auth & Data
   useEffect(() => {
     const unsubscribeAuth = onAuthStateChanged(auth, (u) => setUser(u));
     const q = query(collection(db, 'projects', projectId, 'annotations'), orderBy('createdAt', 'desc'));
@@ -192,20 +214,17 @@ export default function PDFViewer({ fileUrl: initialFileUrl, project, projectId 
     return () => { unsubscribeAuth(); unsubscribeNotes(); };
   }, [projectId]);
 
-  // Handle Tab Switching
   const switchTab = (tab: 'interior' | 'cover') => {
       setActiveTab(tab);
       setViewIndex(1);
-      setPanOffset({ x: 0, y: 0 }); // Reset pan
+      setPanOffset({ x: 0, y: 0 });
 
       if (tab === 'cover') {
-           // Force single view for cover file if explicitly separate
            setViewMode('single');
            if (project.cover && project.cover.previewURL) setActiveFileUrl(project.cover.previewURL);
            else if (project.cover && project.cover.fileURL) setActiveFileUrl(project.cover.fileURL);
            else setActiveFileUrl('');
       } else {
-          // Restore default logic for interior
           setViewMode(defaultViewMode);
           setActiveFileUrl(initialFileUrl);
       }
@@ -214,15 +233,13 @@ export default function PDFViewer({ fileUrl: initialFileUrl, project, projectId 
   function onDocumentLoadSuccess(pdf: any) {
     setPdfDocument(pdf);
     setNumPages(pdf.numPages);
-    fitToScreen(pdf); // Initial Fit
+    fitToScreen(pdf);
   }
 
-  // --- Fit To Screen Logic ---
   const fitToScreen = useCallback(async (pdf = pdfDocument) => {
       if (!pdf || !viewerRef.current) return;
 
       try {
-          // Get dimensions of the first page to calculate aspect ratio
           const page = await pdf.getPage(1);
           const viewport = page.getViewport({ scale: 1 });
 
@@ -233,18 +250,21 @@ export default function PDFViewer({ fileUrl: initialFileUrl, project, projectId 
           const availableWidth = containerWidth - PADDING;
           const availableHeight = containerHeight - PADDING;
 
-          // Determine visual width based on view mode
           let contentWidth = viewport.width;
           let contentHeight = viewport.height;
 
+          const bleed = project.specs?.bleedInches || 0.125;
+          const bleedPx = bleed * INCH_TO_POINTS;
+
           if (viewMode === 'spread') {
-              contentWidth = viewport.width * 2; // Rough approximation, accurate enough for fit
+              // Width = 2 pages - 2 bleeds (inner spines masked)
+              contentWidth = (viewport.width * 2) - (bleedPx * 2);
           }
 
           const scaleW = availableWidth / contentWidth;
           const scaleH = availableHeight / contentHeight;
 
-          const newScale = Math.min(scaleW, scaleH, 1.5); // Cap at 1.5x to avoid pixelation
+          const newScale = Math.min(scaleW, scaleH, 1.5);
 
           setFitScale(newScale);
           setScale(newScale);
@@ -253,9 +273,8 @@ export default function PDFViewer({ fileUrl: initialFileUrl, project, projectId 
       } catch (e) {
           console.error("Error fitting to screen", e);
       }
-  }, [pdfDocument, viewMode]);
+  }, [pdfDocument, viewMode, project.specs]);
 
-  // Handle Resize
   useEffect(() => {
       const handleResize = () => fitToScreen();
       window.addEventListener('resize', handleResize);
@@ -267,103 +286,53 @@ export default function PDFViewer({ fileUrl: initialFileUrl, project, projectId 
   const updateOverlayGeometry = useCallback(() => {
      if (!contentRef.current || !canvasRef.current) return;
 
-     const container = contentRef.current; // The transformed wrapper
+     const container = contentRef.current;
      const canvas = canvasRef.current;
 
-     // The canvas should match the *visual* size of the content contentRef
-     // Because contentRef is transformed (scaled), we use getBoundingClientRect or offsetWidth/Height
-     // However, the logic here assumes the canvas IS the coordinate system.
-     // To align guides with the PDF pages, we need to map the PDF Page elements.
-
-     // IMPORTANT: The canvas needs to be the same size as the container *untransformed*
-     // OR match the transformed size.
-     // Let's make the canvas match the contentRef's full scrollable size.
      canvas.width = container.scrollWidth;
      canvas.height = container.scrollHeight;
 
-     const pageElements = container.querySelectorAll('.react-pdf__Page');
+     // Select wrapper divs, NOT the Page canvas/div itself, to get the clipped size
+     const pageWrappers = container.querySelectorAll('.page-wrapper');
      const newInfos: PageRenderInfo[] = [];
 
-     pageElements.forEach((el, index) => {
-         // Because `el` is inside the transformed container, `offsetLeft` is relative to the container 0,0.
-         // This is exactly what we want if we draw on a canvas inside that same container.
-
+     pageWrappers.forEach((el, index) => {
          const x = (el as HTMLElement).offsetLeft;
          const y = (el as HTMLElement).offsetTop;
-         const width = (el as HTMLElement).offsetWidth; // This is width *at scale* if scale is applied to parent?
-         // React-PDF applies width/height style to the Page div based on scale prop.
-         // So offsetWidth INCLUDES the scale passed to Page component.
-
+         const width = (el as HTMLElement).offsetWidth;
          const height = (el as HTMLElement).offsetHeight;
 
-         // Determine Left/Right
-         // In spread mode, we rendered [Page A, Page B].
-         // If RTL: [Page B (Right), Page A (Left)] -> Wait.
-         // getPagesForView returns [3, 2] for RTL.
-         // React renders map: First element is Page 3. Second is Page 2.
-         // Visually: Page 3 is on Left? No, RTL means Page 3 is Left, Page 2 is Right?
-         // NO. RTL Book: Page 1 (Cover) is Right (or Left depending on spine).
-         // Standard RTL: Opens Right-to-Left.
-         // Spread 2-3: 3 is on the Right, 2 is on the Left.
-         // Visual Order on Screen: [Page 3] [Page 2].
-         // So Index 0 (Page 3) is LEFT visual?
-         // Let's assume standard Western visual order: Left side of screen is "Left Page".
-
-         const isSpread = viewMode === 'spread' && pageElements.length > 1;
+         const isSpread = viewMode === 'spread' && pageWrappers.length > 1;
          let isLeft = false;
 
          if (isSpread) {
-             // In LTR: [Page 2, Page 3]. Index 0 is Page 2 (Left). Index 1 is Page 3 (Right).
-             // In RTL: [Page 3, Page 2]. Index 0 is Page 3 (Right). Index 1 is Page 2 (Left).
-
              if (rtl) {
-                 // First element (index 0) is visually Left?
-                 // If getPagesForView returned [3, 2], we render Page 3 then Page 2.
-                 // Page 3 is the "Right" page in terms of content (odd), but visually on Left?
-                 // Actually, let's look at standard Reader Spread.
-                 // LTR: 2 (Left) | 3 (Right).
-                 // RTL: 3 (Right) | 2 (Left).
-                 // Visually on screen: [3] | [2].
-                 // So Index 0 is Page 3. Is Page 3 a "Left Page" in terms of spine?
-                 // No, Page 3 is a Right page (Odd). But visually it's on the Left.
-
-                 // `drawGuides` expects `isLeftPage` to determine where the spine is.
-                 // Spine is always in the center of the spread.
-                 // If visual index 0 (Left side of screen): Spine is on its Right.
-                 // If visual index 1 (Right side of screen): Spine is on its Left.
-
-                 // So purely based on visual position:
                  isLeft = (index === 0);
              } else {
                  isLeft = (index === 0);
              }
          }
 
-         // Pass "scale" as 1 because offsetWidth already accounts for the scale prop passed to Page.
-         // The guide drawing logic multiplies dimensions by scale.
-         // If we pass `width` (already scaled) AND `scale` (e.g. 1.0), it might double scale?
-         // Legacy logic: `width` was unscaled points? No.
-         // Let's check `PDFViewer.tsx` legacy: `newInfos.push({..., scale })`.
-         // And `drawGuides` uses `scaledTrimWidth = trimDimensions.width * scale`.
+         // We pass scale: 1.0 because 'width'/'height' from DOM are already scaled by CSS transform/content size.
+         // Wait, contentRef is transformed (translated). Inside it, the Page components are scaled by prop.
+         // So offsetWidth IS the scaled width.
+         // However, `drawGuides` multiplies by `scale`.
+         // If we pass `width` (scaled) and `scale` (e.g. 1.2), guide logic does `width * 1.2` => double scale!
+         // We must pass `scale: 1.0` if we measure the DOM which is already scaled.
 
-         // In React-PDF, if we pass `scale={currentScale}` to Page, the div is sized to `width * currentScale`.
-         // So `el.offsetWidth` is ~ `ptWidth * currentScale`.
-         // If we pass `scale` as `currentScale` to `newInfos`, `drawGuides` calculates `trim * currentScale`.
-         // We need to normalize.
-         // Ideally, pass `scale: 1` if we use the rendered DOM width as "base".
-         // OR pass `scale: currentScale` but calculate "base" x/y/w/h.
-
-         // Let's normalize back to Scale 1 for the "info" logic to be robust?
-         // `drawGuides` logic: `const scaledTrimWidth = trimDimensions.width * scale;`
-         // It expects `scale` to be the current visual scale.
-         // And it expects `x, y` to be current visual coordinates.
+         // Alternatively, we can divide DOM width by scale to get "base points", then pass current scale.
+         // BUT, the cropping logic relies on visual pixels.
+         // If we use scale: 1.0, `drawGuides` treats `specs.dimensions` (Points) as 1:1 to Pixels.
+         // This works if 1 Point = 1 Pixel at Scale 1.
+         // React-PDF renders 1pt = 1px at scale 1.
+         // So yes, scale: 1.0 is the correct approach for `drawGuides` when using measured DOM values.
 
          newInfos.push({
              x,
              y,
              width,
              height,
-             scale: 1.0, // Because width/height are ALREADY scaled by the Page component
+             scale: 1.0,
              isSpread,
              isLeftPage: isLeft
         });
@@ -373,65 +342,50 @@ export default function PDFViewer({ fileUrl: initialFileUrl, project, projectId 
   }, [scale, viewIndex, numPages, viewMode, activeFileUrl, rtl]);
 
   useEffect(() => {
-      // Small delay to ensure DOM is rendered before measuring
       const t = setTimeout(updateOverlayGeometry, 100);
       return () => clearTimeout(t);
-  }, [updateOverlayGeometry]); // Dependencies covered by callback
+  }, [updateOverlayGeometry]);
 
-
-  // --- Render Loop for Guides ---
   useEffect(() => {
       if (!canvasRef.current || pageRenderInfos.length === 0) return;
       const canvas = canvasRef.current;
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
-      // Clear Canvas
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // Determine Specs
       const currentSpecs = activeTab === 'cover' && project.specs?.coverDimensions
           ? { ...project.specs, dimensions: project.specs.coverDimensions }
           : project.specs;
 
       if (currentSpecs) {
-          // Guide Options now includes safety
           drawGuides(ctx, currentSpecs, pageRenderInfos, guideOptions);
       }
 
   }, [pageRenderInfos, guideOptions, project.specs, activeTab]);
 
-  // --- Interaction ---
   const handleMouseDown = (e: React.MouseEvent) => {
       if (tool === 'pan') {
           setIsDragging(true);
           setStartDrag({ x: e.clientX - panOffset.x, y: e.clientY - panOffset.y });
       } else if (tool === 'annotate') {
-          // Annotation logic... needs update for multi-page transforms?
-          // Simplification: We map click to PDF Page coordinates?
-          // Current logic: `const x = (e.clientX - rect.left) / scale;`
-          // This assumes `rect` is the Page.
-          // But `e.target` might be the overlay canvas.
-          // We need to find which page was clicked.
-
-          // Implementation for now: Use simple click on the top layer?
-          // Ideally, we iterate `pageRenderInfos` to find which page contains the point.
-
           if (tempAnnotation) return;
-          const rect = viewerRef.current?.getBoundingClientRect();
-          if (!rect) return;
 
-          // Mouse relative to Viewer Container
-          const mouseX = e.clientX - rect.left;
-          const mouseY = e.clientY - rect.top;
+          // Find which page was clicked
+          const target = e.target as HTMLElement;
+          const pageWrapper = target.closest('.page-wrapper') as HTMLElement;
 
-          // Adjust for Pan/Zoom (Inverse) not needed if we look at visual elements?
-          // The annotations are absolute positioned divs on top of the Page components.
-          // Or they are on the overlay?
-          // Legacy put them on top. Here we need to map to Page Space.
+          if (pageWrapper && pageWrapper.dataset.pageNumber) {
+              const pageNum = parseInt(pageWrapper.dataset.pageNumber, 10);
+              const rect = pageWrapper.getBoundingClientRect();
 
-          // Let's defer complex annotation fixes for a second pass if needed.
-          // Just fix the pan logic first.
+              // Calculate coordinates relative to the specific page, unscaled (Points)
+              // We divide by scale because the visual element is scaled by CSS/React-PDF
+              const x = (e.clientX - rect.left) / scale;
+              const y = (e.clientY - rect.top) / scale;
+
+              setTempAnnotation({ x, y, page: pageNum });
+          }
       }
   };
 
@@ -442,12 +396,6 @@ export default function PDFViewer({ fileUrl: initialFileUrl, project, projectId 
 
       if (canvasRef.current && pageRenderInfos.length > 0) {
            const rect = canvasRef.current.getBoundingClientRect();
-           // Mouse relative to the Canvas (which is inside the transformed group? No, canvas moves with pan?)
-           // Wait, structure:
-           // Viewer (Overflow Hidden)
-           //   -> Content Wrapper (Transform: Pan)
-           //       -> Canvas (Absolute, covers content)
-
            const x = e.clientX - rect.left;
            const y = e.clientY - rect.top;
 
@@ -455,7 +403,6 @@ export default function PDFViewer({ fileUrl: initialFileUrl, project, projectId 
             ? { ...project.specs, dimensions: project.specs.coverDimensions }
             : project.specs;
 
-           // We use the raw X/Y on the canvas because pageRenderInfos are in Canvas Space.
            const hit = getGuideHit(x, y, currentSpecs, pageRenderInfos, guideOptions);
            if (hit) {
               setGuideTooltip({ x: e.clientX, y: e.clientY, ...hit });
@@ -467,9 +414,38 @@ export default function PDFViewer({ fileUrl: initialFileUrl, project, projectId 
 
   const handleMouseUp = () => setIsDragging(false);
 
+  const saveAnnotation = async () => {
+      if (!tempAnnotation || !commentText || !user) return;
+      try {
+          // We need to map the viewer-relative click (tempAnnotation.x/y) to the specific page and its local coordinates
+          // However, for this fix, we will save the viewer-relative coordinates and pageNumber as 0 or the current view index?
+          // Legacy saved page-relative coordinates.
+          // Since we simplified the click to be viewer-relative, we will save it as such for now,
+          // but logically associate it with the current view (pageNumber = viewIndex).
+
+          await addDoc(collection(db, 'projects', projectId, 'annotations'), {
+              text: commentText,
+              x: tempAnnotation.x,
+              y: tempAnnotation.y,
+              pageNumber: tempAnnotation.page, // Use the correct page number
+              context: activeTab,
+              author: user.email,
+              authorUid: user.uid,
+              createdAt: serverTimestamp(),
+              resolved: false
+          });
+          setTempAnnotation(null);
+          setCommentText('');
+          setTool('pan');
+          // Sidebar is simplified, so we don't switch tabs
+      } catch (e) {
+          console.error("Failed to save annotation", e);
+          alert("Error saving comment.");
+      }
+  };
+
   const handleApprove = async () => {
     if (!user) return;
-
     try {
         await updateDoc(doc(db, 'projects', projectId), { status: 'Approved' });
         await addDoc(collection(db, 'projects', projectId, 'history'), {
@@ -487,105 +463,106 @@ export default function PDFViewer({ fileUrl: initialFileUrl, project, projectId 
   };
 
 
-  // --- Helper to Render Pages ---
   const renderPages = () => {
       const pageIndices = getPagesForView(viewIndex, numPages, viewMode, rtl);
 
-      // Calculate Bleed Masking
       const bleed = project.specs?.bleedInches || 0.125;
-      const bleedPx = bleed * INCH_TO_POINTS * scale; // Pixel amount to crop
-
-      // If Spread, we need to crop the spine edge.
-      // Left Page (First in DOM): Crop Right side?
-      // Wait, standard imposition:
-      // Left Page: Spine is on the Right. Bleed on Right should be hidden.
-      // Right Page: Spine is on the Left. Bleed on Left should be hidden.
-
-      // In a Flex Row: [Left Page] [Right Page]
-      // Left Page: marginRight = -bleedPx? Or clip?
-      // Clipping is cleaner.
+      const bleedPx = bleed * INCH_TO_POINTS * scale;
 
       return (
           <div className="flex flex-row items-center justify-center shadow-2xl relative bg-white">
               {pageIndices.map((pageNum, idx) => {
                   const isSpread = viewMode === 'spread' && pageIndices.length > 1;
 
-                  // Determine clipping styles
-                  let wrapperStyle: React.CSSProperties = { position: 'relative', overflow: 'hidden' };
-                  let pageStyle: React.CSSProperties = {};
+                  // Masking Styles
+                  // We use a wrapper div to clip the content
+                  let clipStyle: React.CSSProperties = {
+                      position: 'relative',
+                      overflow: 'hidden',
+                      zIndex: 1 // Default
+                  };
+
+                  // Content Style (Shift the PDF Page inside the clipped wrapper)
+                  let contentStyle: React.CSSProperties = {};
 
                   if (isSpread) {
-                      // We need to render the full page but hide the spine bleed.
-                      // Width of wrapper = PageWidth - Bleed.
-                      // We don't know PageWidth easily before render without viewport.
-                      // React-PDF Page renders a div with correct dimensions.
-                      // We can use negative margins?
+                      // Left Page (idx 0): Clip Right Side.
+                      // Wrapper Width = Full Width - Bleed.
+                      // Content Position = Left 0.
 
-                      // Easier Hack: Overlap them.
-                      // [Left Page] margin-right: -bleedPx [Right Page]
-                      // Z-index?
-                      // Actually, if we just overlap, the bleed is still visible, just covered by the other page?
-                      // No, because the other page has bleed too. They would double up.
+                      // Right Page (idx 1): Clip Left Side.
+                      // Wrapper Width = Full Width - Bleed.
+                      // Content Position = Left -Bleed.
 
-                      // We want the TRIM lines to touch.
-                      // The Trim line is at `width - bleed`.
-                      // So we want the distance between origins to be `width - bleed`.
-                      // Default distance is `width`.
-                      // So overlap by `bleed`.
+                      // Note: We don't know exact width yet (it's dynamic).
+                      // But we can use `width: calc(100% - bleed)`? No, React-PDF page sets explicit width.
+                      // We can assume the Wrapper shrinks to fit children, then we force width?
 
-                      // Left Page: margin-right = -bleedPx
-                      // Right Page: margin-left = 0
-                      // Total Overlap = bleed.
+                      // Better: Use `margin` and `overflow`.
+                      // But `react-pdf` sets explicit width/height on the canvas/div.
+                      // We can use a precise pixel reduction since we know `bleedPx`.
 
-                      // Wait, both have bleed.
-                      // Left Page has Right Bleed. Right Page has Left Bleed.
-                      // We want to hide BOTH bleeds.
-                      // Total overlap should be 2 * bleed?
-                      // If we overlap by 2*bleed, the trim lines touch.
+                      // However, we can't easily set "width = auto - bleedPx" in JS without measuring.
+                      // Trick: Use a negative margin on the *Page* component?
+                      // If we set `marginLeft: -bleedPx` on the Right Page, it moves left.
+                      // If the container is `overflow: hidden` and width is constrained...
+
+                      // Let's use `calc` based on the known PDF dimensions?
+                      // `scale` is known. `specs.dimensions` is known.
+                      // Page width = `specs.dimensions.width * scale`.
+                      // Clipped Width = `(specs.dimensions.width - bleed) * scale`. (Roughly, if dimensions include bleed).
+
+                      // WAIT. `specs.dimensions` is TRIM size usually? Or Full size?
+                      // Usually Specs = Trim Size (e.g. 8.5x11).
+                      // PDF File = Trim + Bleed (e.g. 8.75x11.25).
+                      // So the Page Width > Specs Width.
+                      // Bleed is the extra part.
+                      // We want to clip the *inner* bleed.
+
+                      // So we just need to clip `bleedPx` off the side.
+                      // We can simply set the wrapper width to `calc(100% - ${bleedPx}px)`?
+                      // No, React-PDF puts inline styles on the Page div.
+
+                      // Robust Solution:
+                      // Wrapper `width` is NOT set (fits content).
+                      // Wrapper `maxWidth = "calc(100% - bleed)"`? No.
+
+                      // We can set an explicit width on the wrapper if we calculate it.
+                      // But React-PDF `onLoadSuccess` gives us dimensions.
+                      // Simpler: Just rely on visual overlap? No, user requested "bleed mask active".
+
+                      // CSS Clip Path!
+                      // Left Page: `inset(0px ${bleedPx}px 0px 0px)`
+                      // Right Page: `inset(0px 0px 0px ${bleedPx}px)`
+                      // AND shift them together.
 
                       if (idx === 0) {
-                          // First Page (Left Visual)
-                          wrapperStyle = { zIndex: 10 }; // On top?
+                           // Left Page: Clip Right
+                           clipStyle.clipPath = `inset(0px ${bleedPx}px 0px 0px)`;
+                           // No shift needed
+                           clipStyle.marginRight = `-${bleedPx}px`; // Pull next element closer
+                      } else {
+                           // Right Page: Clip Left
+                           clipStyle.clipPath = `inset(0px 0px 0px ${bleedPx}px)`;
+                           // Shift left happens via negative margin of previous, or self?
+                           // If previous pulls, this follows.
                       }
-
-                      // Apply negative margin to the second item?
-                      // Or negative margin to right of first item?
-
-                      // Actually, let's just render them normally. The guides show the trim.
-                      // The user just wants them "grouped". Overlap is a "nice to have" but complicates the DOM for guides.
-                      // If I overlap, `offsetLeft` changes, and `drawGuides` might break if it doesn't know.
-                      // `drawGuides` uses `offsetLeft`. So if I overlap, `offsetLeft` reflects that.
-                      // So guide drawing should self-correct!
-
-                      // Let's try simple negative margin.
-                      // Only apply between them.
                   }
 
-                  // Calculate overlap amount roughly?
-                  // We need precise "bleed" value from specs.
-                  // `bleedPx` calculated above.
-
-                  const overlapStyle = (isSpread && idx === 0) ? { marginRight: `-${bleedPx}px` } : {};
-
-                  // Actually, to hide the bleed visually we usually need a `clip-path` or container overflow.
-                  // But standard proofers often just show them side-by-side or overlapped.
-                  // The prompt says "thumbnails grouped by spread", "spread view option".
-                  // It doesn't explicitly demand "hide spine bleed".
-                  // However, "trim marks don't line up" was an issue.
-                  // If I overlap, the trim marks (black) will touch, which is correct for a spread.
-
                   return (
-                      <div key={pageNum} style={{ ...wrapperStyle, ...overlapStyle }} className="relative">
-                          <Page
+                      <div key={pageNum} className="page-wrapper" style={clipStyle} data-page-number={pageNum}>
+                          <div style={contentStyle}>
+                            <Page
                                 pageNumber={pageNum}
                                 scale={scale}
                                 renderAnnotationLayer={false}
                                 renderTextLayer={false}
-                                className="border border-slate-200" // Light border to see edges
+                                className="" // Removed border class
                             />
-                            {/* Annotations Layer */}
-                             {annotations.filter(a => a.pageNumber === pageNum && a.context === activeTab).map(note => (
-                                <div key={note.id} className="absolute w-8 h-8 -ml-4 -mt-8 text-indigo-500 drop-shadow-lg z-30 hover:scale-110 transition-transform cursor-pointer group"
+                          </div>
+                          {/* Annotations */}
+                          {annotations.filter(a => a.pageNumber === pageNum && a.context === activeTab).map(note => (
+                                <div key={note.id} className="absolute w-8 h-8 -ml-4 -mt-8 text-indigo-500 drop-shadow-lg z-30 hover:scale-110 transition-transform cursor-pointer"
                                      style={{ left: note.x * scale, top: note.y * scale }}>
                                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-full h-full"><path fillRule="evenodd" d="M11.54 22.351l.07.04.028.016a.76.76 0 00.723 0l.028-.015.071-.041a16.975 16.975 0 001.144-.742 19.58 19.58 0 002.683-2.282c1.944-1.99 3.963-4.98 3.963-8.827a8.25 8.25 0 00-16.5 0c0 3.846 2.02 6.837 3.963 8.827a19.58 19.58 0 002.682 2.282 16.975 16.975 0 001.145.742zM12 13.5a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" /></svg>
                                 </div>
@@ -597,6 +574,7 @@ export default function PDFViewer({ fileUrl: initialFileUrl, project, projectId 
       );
   };
 
+  const label = viewMode === 'single' ? `Page ${viewIndex}` : (viewIndex === 1 ? 'Page 1' : `Spread ${viewIndex}`);
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-slate-900 text-gray-100 font-sans">
@@ -617,21 +595,19 @@ export default function PDFViewer({ fileUrl: initialFileUrl, project, projectId 
                     </span>
                 </div>
 
-                {/* File Tabs */}
                 <div className="flex bg-slate-800 rounded-lg p-1 ml-4 border border-white/5">
                     <button onClick={() => switchTab('interior')} className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-all ${activeTab === 'interior' ? 'bg-indigo-600 text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}>Interior</button>
                     <button onClick={() => switchTab('cover')} disabled={!project.cover} className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-all ${activeTab === 'cover' ? 'bg-indigo-600 text-white shadow-lg' : 'text-gray-400 hover:text-white disabled:opacity-30'}`}>Cover</button>
                 </div>
             </div>
 
-            {/* Toolbar */}
              <div className="flex items-center gap-4 bg-slate-800/80 backdrop-blur rounded-full px-4 py-2 border border-white/10 shadow-xl">
                 <button onClick={() => setViewIndex(Math.max(1, viewIndex - 1))} disabled={viewIndex <= 1} className="p-1.5 text-gray-400 hover:text-white disabled:opacity-30 hover:bg-white/10 rounded-full transition-colors">
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
                 </button>
 
                 <span className="text-sm font-mono w-20 text-center text-gray-300">
-                    {viewMode === 'single' ? `Page ${viewIndex}` : (viewIndex === 1 ? 'Cover' : `Spread ${viewIndex}`)}
+                    {label}
                 </span>
 
                 <button onClick={() => setViewIndex(Math.min(getViewCount(numPages, viewMode), viewIndex + 1))} disabled={viewIndex >= getViewCount(numPages, viewMode)} className="p-1.5 text-gray-400 hover:text-white disabled:opacity-30 hover:bg-white/10 rounded-full transition-colors">
@@ -688,10 +664,9 @@ export default function PDFViewer({ fileUrl: initialFileUrl, project, projectId 
             <aside className="w-72 bg-slate-900 border-r border-slate-700 flex flex-col z-10 shrink-0 shadow-2xl">
                  <div className="p-4 border-b border-slate-700 text-xs font-bold text-gray-500 uppercase tracking-widest">Pages</div>
                 <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
-                    <div className="grid grid-cols-2 gap-4">
-                        {/* Only render thumbnails if PDF document is loaded */}
+                    <div className="grid grid-cols-1 gap-4"> {/* Single Column */}
                         {pdfDocument && Array.from({ length: getViewCount(numPages, viewMode) }).map((_, i) => {
-                             const idx = i + 1; // 1-based view index
+                             const idx = i + 1;
                              return (
                                 <Thumbnail
                                     key={idx}
@@ -701,6 +676,7 @@ export default function PDFViewer({ fileUrl: initialFileUrl, project, projectId 
                                     isCurrent={viewIndex === idx}
                                     onClick={() => setViewIndex(idx)}
                                     rtl={rtl}
+                                    bleedInches={project.specs?.bleedInches || 0.125}
                                 />
                              );
                         })}
@@ -726,12 +702,7 @@ export default function PDFViewer({ fileUrl: initialFileUrl, project, projectId 
                     <div
                         className="transition-transform duration-75 origin-top-left"
                         style={{
-                            transform: `translate(${panOffset.x}px, ${panOffset.y}px)`, // We apply pan to wrapper
-                            // NOTE: We do NOT apply scale here because we want React-PDF to render at high res.
-                            // However, centering logic needs to know size.
-                            // Let's apply standard viewer pattern:
-                            // Wrapper centers content.
-                            // Transform applies to INNER content.
+                            transform: `translate(${panOffset.x}px, ${panOffset.y}px)`,
                             width: '100%',
                             height: '100%',
                             display: 'flex',
@@ -740,7 +711,6 @@ export default function PDFViewer({ fileUrl: initialFileUrl, project, projectId 
                             cursor: tool === 'pan' ? (isDragging ? 'grabbing' : 'grab') : 'crosshair'
                         }}
                     >
-                         {/* This inner div is what we transform/scale/pan */}
                          <div
                             ref={contentRef}
                             className="relative"
@@ -754,12 +724,12 @@ export default function PDFViewer({ fileUrl: initialFileUrl, project, projectId 
                                 {renderPages()}
                             </Document>
 
-                            {/* Overlay Canvas for Guides - Absolutely positioned over the rendered pages */}
                             <canvas
                                 ref={canvasRef}
                                 className="absolute top-0 left-0 z-20 pointer-events-none"
                                 style={{ width: '100%', height: '100%' }}
                             />
+
                         </div>
                     </div>
                 )}
@@ -773,37 +743,60 @@ export default function PDFViewer({ fileUrl: initialFileUrl, project, projectId 
                 )}
             </main>
 
-            {/* Right Sidebar */}
+            {/* Right Sidebar - Combined Specs & Comments */}
             <aside className="w-80 bg-slate-900 border-l border-slate-700 flex flex-col z-10 shrink-0 shadow-xl">
-                <div className="flex border-b border-slate-700">
-                    <button onClick={() => setSidebarTab('specs')} className={`flex-1 py-3 text-sm font-semibold transition-colors ${sidebarTab === 'specs' ? 'text-indigo-400 border-b-2 border-indigo-500' : 'text-gray-500 hover:text-gray-300'}`}>Specs</button>
-                    <button onClick={() => setSidebarTab('comments')} className={`flex-1 py-3 text-sm font-semibold transition-colors ${sidebarTab === 'comments' ? 'text-indigo-400 border-b-2 border-indigo-500' : 'text-gray-500 hover:text-gray-300'}`}>Comments ({annotations.length})</button>
+                <div className="p-4 border-b border-slate-700 text-xs font-bold text-gray-500 uppercase tracking-widest bg-slate-900/50">
+                    Project Specs
+                </div>
+                <div className="p-4 border-b border-slate-700 bg-slate-800/30">
+                    <table className="w-full text-sm text-left">
+                        <tbody className="divide-y divide-white/5">
+                            <tr>
+                                <td className="py-2 text-gray-500 text-xs uppercase pr-4">Dimensions</td>
+                                <td className="py-2 text-white font-mono text-xs text-right">
+                                    {project.specs?.dimensions ? `${project.specs.dimensions.width} x ${project.specs.dimensions.height} ${project.specs.dimensions.units}` : 'N/A'}
+                                </td>
+                            </tr>
+                            <tr>
+                                <td className="py-2 text-gray-500 text-xs uppercase pr-4">Quantity</td>
+                                <td className="py-2 text-white font-medium text-right">{project.specs?.quantity || '-'}</td>
+                            </tr>
+                             <tr>
+                                <td className="py-2 text-gray-500 text-xs uppercase pr-4">Paper</td>
+                                <td className="py-2 text-white font-medium text-right">{project.specs?.paperType || 'Standard'}</td>
+                            </tr>
+                            <tr>
+                                <td className="py-2 text-gray-500 text-xs uppercase pr-4">Binding</td>
+                                <td className="py-2 text-white font-medium text-right">{project.specs?.binding || 'Loose Sheets'}</td>
+                            </tr>
+                        </tbody>
+                    </table>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-5 custom-scrollbar">
-                    {sidebarTab === 'specs' ? (
-                        <div className="space-y-6 text-sm">
-                            <div className="bg-slate-800/50 p-4 rounded-lg border border-white/5 space-y-4">
-                                <div><label className="block text-xs text-gray-500 uppercase tracking-widest mb-1">Dimensions</label><div className="text-white font-mono text-xs">{project.specs?.dimensions ? `${project.specs.dimensions.width} x ${project.specs.dimensions.height} ${project.specs.dimensions.units}` : 'N/A'}</div></div>
-                                <div><label className="block text-xs text-gray-500 uppercase tracking-widest mb-1">Quantity</label><div className="text-white font-medium">{project.specs?.quantity || '-'}</div></div>
-                                <div><label className="block text-xs text-gray-500 uppercase tracking-widest mb-1">Paper</label><div className="text-white font-medium">{project.specs?.paperType || 'Standard'}</div></div>
-                                <div><label className="block text-xs text-gray-500 uppercase tracking-widest mb-1">Binding</label><div className="text-white font-medium">{project.specs?.binding || 'Loose Sheets'}</div></div>
+                <div className="p-4 border-b border-slate-700 text-xs font-bold text-gray-500 uppercase tracking-widest bg-slate-900/50 flex justify-between items-center">
+                    <span>Comments</span>
+                    <span className="bg-indigo-600 text-white px-1.5 rounded-full text-[10px]">{annotations.length}</span>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-4 custom-scrollbar bg-slate-900">
+                     {annotations.length === 0 && (
+                        <div className="text-center py-8">
+                             <p className="text-gray-600 text-sm italic">No comments yet.</p>
+                             <p className="text-gray-700 text-xs mt-1">Select the annotate tool to leave feedback.</p>
+                        </div>
+                     )}
+                     <div className="space-y-3">
+                     {annotations.map(note => (
+                        <div key={note.id} className="bg-slate-800 p-3 rounded-lg border border-slate-700 hover:border-indigo-500 cursor-pointer transition-colors group relative" onClick={() => setViewIndex(note.pageNumber)}>
+                            <div className="flex justify-between items-start mb-2">
+                                <span className="text-xs font-bold text-indigo-400 group-hover:text-indigo-300">{note.author}</span>
+                                <span className="text-[10px] text-gray-500 bg-slate-900 px-1.5 py-0.5 rounded">Page {note.pageNumber}</span>
                             </div>
+                            <p className="text-sm text-gray-300 leading-relaxed">{note.text}</p>
+                            <div className="absolute right-3 top-3 w-1.5 h-1.5 rounded-full bg-indigo-500 opacity-0 group-hover:opacity-100 transition-opacity"></div>
                         </div>
-                    ) : (
-                        <div className="space-y-3">
-                             {annotations.length === 0 && <p className="text-gray-500 text-center italic mt-4">No comments yet.</p>}
-                             {annotations.map(note => (
-                                <div key={note.id} className="bg-slate-800 p-3 rounded-lg border border-slate-700 hover:border-indigo-500 cursor-pointer transition-colors group" onClick={() => setViewIndex(note.pageNumber)}> {/* Note: Check if pageNumber in annotation matches viewIndex? Probably need mapping */}
-                                    <div className="flex justify-between items-start mb-2">
-                                        <span className="text-xs font-bold text-indigo-400 group-hover:text-indigo-300">{note.author}</span>
-                                        <span className="text-[10px] text-gray-500 bg-slate-900 px-1.5 py-0.5 rounded">Page {note.pageNumber}</span>
-                                    </div>
-                                    <p className="text-sm text-gray-300 leading-relaxed">{note.text}</p>
-                                </div>
-                             ))}
-                        </div>
-                    )}
+                     ))}
+                     </div>
                 </div>
             </aside>
         </div>
