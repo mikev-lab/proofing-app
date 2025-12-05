@@ -106,17 +106,12 @@ function calculatePageGuideGeometries(specs: ProjectSpecs, pageRenderInfo: PageR
     const centerY = renderY + renderHeight / 2;
 
     // 1. Trim Box
-    let trimX, trimY = centerY - scaledTrimHeight / 2;
+    // Always center the trim box relative to the page geometry.
+    // This assumes standard PDFs with symmetrical bleed on all 4 sides.
+    // The CSS masking in the viewer handles hiding the inner bleed visually.
+    let trimX = renderX + (renderWidth - scaledTrimWidth) / 2;
+    let trimY = centerY - scaledTrimHeight / 2;
 
-    if (isSpread) {
-        if (isLeftPage) {
-            trimX = renderX + renderWidth - scaledTrimWidth;
-        } else {
-            trimX = renderX;
-        }
-    } else {
-        trimX = renderX + (renderWidth - scaledTrimWidth) / 2;
-    }
     const trimBox = { x: trimX, y: trimY, width: scaledTrimWidth, height: scaledTrimHeight };
 
     // 2. Bleed Box
@@ -127,14 +122,40 @@ function calculatePageGuideGeometries(specs: ProjectSpecs, pageRenderInfo: PageR
     let clippedSide: 'left' | 'right' | null = null;
 
     if (isSpread) {
+        // Since we are now centering the boxes, we need to recalculate clipping based on the VISUAL spine edge.
+        // Left Page: Spine is at renderX + renderWidth (visually, minus the bleed we hid via CSS).
+        // Actually, the 'renderWidth' passed here is the DOM element width.
+        // In the PDFViewer, we set margin-right to pull them together.
+        // So visually, they touch.
+        // The 'renderWidth' includes the full width (Trim + 2*Bleed).
+
+        // If Left Page:
+        // Visual Right Edge (Spine) should ideally be at 'trimX + scaledTrimWidth'.
+        // Current 'trimX' (centered) = renderX + Bleed.
+        // So Right Edge = renderX + Bleed + Trim.
+        // 'bleedWidth' extends to renderX + Bleed + Trim + Bleed.
+        // We want to clip the Right side of the BLEED box so it doesn't cross the spine?
+        // Actually, the Canvas overlay is NOT clipped.
+        // So we must manually limit the width of the bleed box drawing.
+
         if (isLeftPage) {
-            const maxX = trimX + scaledTrimWidth;
-            bleedWidth = maxX - bleedX;
+            // Clip Right Side of Bleed Box
+            // Max X should be the Spine Line (Trim Right)
+            // Spine X = trimX + scaledTrimWidth
+            // Current Bleed Right = bleedX + bleedWidth (which is Spine X + Bleed)
+            // So we just limit width to reach Spine X.
+            const spineX = trimX + scaledTrimWidth;
+            bleedWidth = spineX - bleedX;
             clippedSide = 'right';
         } else {
-            const minX = trimX;
-            bleedWidth = (bleedX + bleedWidth) - minX;
-            bleedX = minX;
+            // Right Page: Clip Left Side of Bleed Box
+            // Min X should be the Spine Line (Trim Left)
+            // Spine X = trimX
+            // Current Bleed Left = bleedX (which is TrimX - Bleed)
+            // So we start at Spine X.
+            const originalRight = bleedX + bleedWidth;
+            bleedX = trimX;
+            bleedWidth = originalRight - bleedX;
             clippedSide = 'left';
         }
     }
@@ -150,16 +171,25 @@ function calculatePageGuideGeometries(specs: ProjectSpecs, pageRenderInfo: PageR
     return { trimBox, bleedBox, safetyBox };
 }
 
-function drawBox(ctx: CanvasRenderingContext2D, { x, y, width, height, color, lineWidth = 1, dashPattern = [] }: any) {
+function drawBox(ctx: CanvasRenderingContext2D, { x, y, width, height, color, lineWidth = 1, dashPattern = [], clippedSide }: any) {
     if (width <= 0 || height <= 0) return;
     ctx.save();
     ctx.strokeStyle = color;
 
     // Use CSS pixel scale
-    const currentScale = 1; // Assuming canvas is mapped 1:1 in coordinate space relative to the react-pdf layer
+    const currentScale = 1;
 
     ctx.lineWidth = lineWidth;
     ctx.setLineDash(dashPattern);
+
+    // Always draw full box for Trim and Safety, even if clipped, to show spine line.
+    // If it's Bleed, `clippedSide` is handled in `drawBleedVisuals`.
+    // But `drawBox` is generic.
+    // The previous implementation used strokeRect, which draws all 4 sides.
+    // That should be correct for Trim/Safety.
+    // If the box is clipped by CSS on the page wrapper, this canvas overlay (which is NOT clipped)
+    // should show the line crossing the spine.
+
     ctx.strokeRect(x, y, width, height);
     ctx.restore();
 }
