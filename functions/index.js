@@ -4,6 +4,7 @@
 // Example Dockerfile command: RUN apt-get update && apt-get install -y ghostscript
 
 // Gen 2 Imports:
+const functions = require('firebase-functions'); // v1 SDK for auth trigger
 const { onObjectFinalized } = require('firebase-functions/v2/storage');
 const { onCall, HttpsError } = require('firebase-functions/v2/https'); // <-- Import for callable function
 const { onSchedule } = require("firebase-functions/v2/scheduler");
@@ -3475,3 +3476,33 @@ if (process.env.FUNCTION_TARGET === 'analyzePdfToolbox' || process.env.FUNCTIONS
         }
     });
 }
+// --- NEW TRIGGER: Sync New Firebase User to Medusa ---
+// Using v1 syntax for reliability as v2 identity triggers can be tricky in some environments
+// or require Blocking Functions which need specific Auth config.
+// Switching to v1 standard event trigger.
+exports.onUserCreated = functions.auth.user().onCreate(async (user) => {
+    const { email, displayName, uid } = user;
+
+    logger.log(`New user created: ${email} (${uid}). Syncing to Medusa...`);
+
+    try {
+        const MEDUSA_BACKEND_URL = "https://medusa-server-7690.up.railway.app";
+
+        const response = await axios.post(`${MEDUSA_BACKEND_URL}/store/customers`, {
+            email: email,
+            first_name: displayName || 'New User',
+            last_name: '(Firebase)',
+            password: "PlaceholderPassword123!",
+            has_account: true
+        });
+
+        logger.log(`Successfully synced ${email} to Medusa via Store API. ID: ${response.data.customer.id}`);
+
+    } catch (error) {
+        if (error.response && error.response.status === 422) {
+            logger.log(`User ${email} already exists in Medusa.`);
+        } else {
+            logger.error("Failed to sync user to Medusa:", error.message);
+        }
+    }
+});
