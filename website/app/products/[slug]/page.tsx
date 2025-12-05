@@ -1,40 +1,19 @@
 import React from 'react';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import productsData from '../../../data/products.json';
 import conventionsData from '../../../data/conventions.json';
 import InstantQuote from '../../components/InstantQuote';
+import { getAllProductHandles, getProductByHandle } from '../../lib/medusa-products';
 
 const conventions: Record<string, any> = conventionsData;
 
-interface ProductData {
-    id: string;
-    name: string;
-    slug: string;
-    category: string;
-    shortDescription: string;
-    description: string;
-    features: string[];
-    specs: {
-        minPages?: number;
-        maxPages?: number;
-        paperStocks?: string[];
-        sizes?: string[];
-    };
-    relevantConventions: string[];
-}
-
-const products: ProductData[] = productsData as ProductData[];
-
 export async function generateStaticParams() {
-  return products.map((product) => ({
-    slug: product.slug,
-  }));
+  return await getAllProductHandles();
 }
 
 export default async function ProductPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
-  const product = products.find((p) => p.slug === slug);
+  const product = await getProductByHandle(slug);
 
   if (!product) {
     notFound();
@@ -88,29 +67,6 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
                     <p className="text-base text-gray-300 leading-relaxed">{product.description}</p>
                 </div>
 
-                <div className="mt-8 border-t border-slate-700 pt-8">
-                    <h3 className="text-lg font-medium text-white mb-4">Specifications</h3>
-                    <dl className="grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-2">
-                        {product.specs.minPages && product.specs.maxPages && (
-                            <div>
-                                <dt className="text-sm font-medium text-gray-400">Page Count Range</dt>
-                                <dd className="mt-1 text-sm text-white">{product.specs.minPages} - {product.specs.maxPages} pages</dd>
-                            </div>
-                        )}
-                        {product.specs.sizes && (
-                             <div>
-                                <dt className="text-sm font-medium text-gray-400">Available Sizes</dt>
-                                <dd className="mt-1 text-sm text-white">{product.specs.sizes.join(", ")}</dd>
-                            </div>
-                        )}
-                        {product.specs.paperStocks && (
-                            <div className="sm:col-span-2">
-                                 <dt className="text-sm font-medium text-gray-400">Paper Stocks</dt>
-                                 <dd className="mt-1 text-sm text-white">{product.specs.paperStocks.join(", ")}</dd>
-                            </div>
-                        )}
-                    </dl>
-                </div>
 
                 <div className="mt-10">
                     <InstantQuote product={product} />
