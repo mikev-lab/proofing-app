@@ -24,6 +24,10 @@ interface InstantQuoteProps {
 
 export default function InstantQuote({ product }: InstantQuoteProps) {
     const { addItem } = useStore();
+    const isBook = product.category === 'Books';
+    const isLargeFormat = product.category === 'Large Format';
+    const isMerch = product.category === 'Merch'; // Simplified logic for stickers/pins
+
     const [pageCount, setPageCount] = useState<number>(32);
     const [quantity, setQuantity] = useState<number>(100);
     const [paperType, setPaperType] = useState<string>(product.specs.paperStocks?.[0] || '80lb Gloss Text');
@@ -67,28 +71,42 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
             } else if (size === 'A4') { width = 8.27; height = 11.69; }
             else if (size === 'A5') { width = 5.83; height = 8.27; }
 
+            const items = [];
+
+            if (isBook) {
+                // Book Logic: Interior + Cover
+                items.push({
+                    type: 'Interior',
+                    pages: pageCount,
+                    stockName: paperType,
+                    colorType: 'Color',
+                    doubleSided: true
+                });
+                items.push({
+                    type: 'Cover',
+                    pages: 4,
+                    stockName: '100lb Gloss Cover', // Default cover for now
+                    colorType: 'Color',
+                    doubleSided: false,
+                    finish: 'Gloss'
+                });
+            } else {
+                // Flat Item Logic (Prints, Posters)
+                items.push({
+                    type: 'Flat', // Backend should handle 'Flat' or 'Interior' contextually
+                    pages: 2, // Front/Back
+                    stockName: paperType,
+                    colorType: 'Color',
+                    doubleSided: true
+                });
+            }
+
             const requestData = {
                 quantity: quantity,
-                bindingType: product.category === 'Books' ? (product.slug.includes('saddle') ? 'Saddle Stitch' : 'Perfect Bound') : 'None', // infer
+                bindingType: isBook ? (product.slug.includes('saddle') ? 'Saddle Stitch' : 'Perfect Bound') : 'None',
                 finishedWidth: width,
                 finishedHeight: height,
-                items: [
-                    {
-                        type: 'Interior',
-                        pages: pageCount,
-                        stockName: paperType,
-                        colorType: 'Color', // Defaulting to Color
-                        doubleSided: true
-                    },
-                    {
-                        type: 'Cover',
-                        pages: 4,
-                        stockName: '100lb Gloss Cover', // Default cover
-                        colorType: 'Color',
-                        doubleSided: false, // Single sided outer
-                        finish: 'Gloss'
-                    }
-                ]
+                items: items
             };
 
             const result = await calculateEstimate(requestData);
@@ -154,7 +172,7 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
                 </div>
 
                 {/* Page Count (Only for books) */}
-                {product.category === 'Books' && (
+                {isBook && (
                     <div>
                         <label className="block text-sm font-medium text-gray-400 mb-1">Page Count</label>
                         <input
@@ -168,28 +186,34 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
                 )}
 
                 {/* Size */}
-                <div>
-                    <label className="block text-sm font-medium text-gray-400 mb-1">Size</label>
-                    <select
-                        value={size}
-                        onChange={(e) => setSize(e.target.value)}
-                        className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white focus:ring-2 focus:ring-indigo-500"
-                    >
-                        {product.specs.sizes?.map(s => <option key={s} value={s}>{s}</option>)}
-                    </select>
-                </div>
+                {!isMerch && (
+                    <div>
+                        <label className="block text-sm font-medium text-gray-400 mb-1">Size</label>
+                        <select
+                            value={size}
+                            onChange={(e) => setSize(e.target.value)}
+                            className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white focus:ring-2 focus:ring-indigo-500"
+                        >
+                            {product.specs.sizes?.map(s => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                    </div>
+                )}
 
-                {/* Paper */}
-                <div>
-                    <label className="block text-sm font-medium text-gray-400 mb-1">Paper Stock</label>
-                    <select
-                        value={paperType}
-                        onChange={(e) => setPaperType(e.target.value)}
-                        className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white focus:ring-2 focus:ring-indigo-500"
-                    >
-                        {product.specs.paperStocks?.map(s => <option key={s} value={s}>{s}</option>)}
-                    </select>
-                </div>
+                {/* Paper - Conditional Label */}
+                {!isMerch && (
+                    <div>
+                        <label className="block text-sm font-medium text-gray-400 mb-1">
+                            {isBook ? "Interior Paper" : "Paper Stock"}
+                        </label>
+                        <select
+                            value={paperType}
+                            onChange={(e) => setPaperType(e.target.value)}
+                            className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white focus:ring-2 focus:ring-indigo-500"
+                        >
+                            {product.specs.paperStocks?.map(s => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                    </div>
+                )}
             </div>
 
             {/* Price Display */}
