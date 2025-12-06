@@ -14,7 +14,7 @@ export interface ProductData {
         minPages?: number;
         maxPages?: number;
         paperStocks?: string[];
-        sizes?: string[];
+        // Sizes are now managed via Firestore
     };
     relevantConventions: string[];
 }
@@ -35,38 +35,26 @@ function mapMedusaProduct(product: any): ProductData {
         if (Array.isArray(metadata.features)) {
             features = metadata.features;
         } else if (typeof metadata.features === 'string') {
-            // Priority 1: Try straightforward JSON parse (Most likely for simple stringified arrays)
             try {
                 const parsed = JSON.parse(metadata.features);
                 if (Array.isArray(parsed)) {
                     features = parsed;
                 } else {
-                    // If parsed but not an array (e.g. string), treat as single item? Or re-parse?
-                    // If it parses to a string, it might be double-encoded.
                     throw new Error("Not an array");
                 }
             } catch (e) {
-                // Priority 2: Handle Double-Encoded JSON (e.g. "[\"A\", \"B\"]")
-                // This happens if the admin UI wraps the JSON string in quotes.
                 let cleanStr = metadata.features.trim();
-
-                // If it starts with a quote, strip outer quotes
                 if (cleanStr.startsWith('"') && cleanStr.endsWith('"')) {
                     cleanStr = cleanStr.slice(1, -1);
                 }
-
-                // Unescape inner quotes
                 cleanStr = cleanStr.replace(/\\"/g, '"');
-
                 try {
                     const parsed2 = JSON.parse(cleanStr);
                     if (Array.isArray(parsed2)) features = parsed2;
                     else {
-                        // Priority 3: Fallback to Comma-Separated Values
                         features = metadata.features.split(',').map((s: string) => s.trim());
                     }
                 } catch (e2) {
-                    // Priority 3: Fallback to Comma-Separated Values
                     features = metadata.features.split(',').map((s: string) => s.trim());
                 }
             }
@@ -74,7 +62,6 @@ function mapMedusaProduct(product: any): ProductData {
     }
 
     // Map Categories
-    // Medusa products have a 'categories' array. We take the first one or default.
     const category = product.categories && product.categories.length > 0
         ? product.categories[0].name
         : 'Uncategorized';
@@ -82,23 +69,18 @@ function mapMedusaProduct(product: any): ProductData {
     // Map Type
     const type = product.type ? product.type.value : 'print_builder';
 
-    // Map Specs from Options or Metadata
-    // For now, we look for 'specs' in metadata, or try to infer from variants/options if implemented later.
-    // Assuming metadata.specs is a JSON object similar to your local data.
+    // Map Specs
     let specs: {
         minPages: number;
         maxPages: number;
         paperStocks: string[];
-        sizes: string[];
     } = {
         minPages: 0,
         maxPages: 0,
         paperStocks: [],
-        sizes: []
     };
 
     if (metadata.specs) {
-        // If specs is stored as a nested object in metadata (Medusa supports this via JSON type in newer versions, or stringified)
         if (typeof metadata.specs === 'string') {
              try {
                 const parsedSpecs = JSON.parse(metadata.specs);
@@ -111,29 +93,12 @@ function mapMedusaProduct(product: any): ProductData {
         }
     }
 
-    // Explicitly check for 'sizes' key in metadata (CSV string or JSON array) - Case Insensitive
-    // This handles "Sizes", "sizes", "trim_sizes", etc.
-    const sizeKey = Object.keys(metadata).find(k => k.toLowerCase() === 'sizes' || k.toLowerCase() === 'trim_sizes');
-    const rawSizes = sizeKey ? metadata[sizeKey] : undefined;
+    // Note: Sizes are no longer parsed from Medusa metadata.
+    // They are managed in the website Admin Dashboard -> Paper Ledger.
 
-    if (rawSizes) {
-        console.log(`[mapMedusaProduct] Found explicit size key '${sizeKey}':`, rawSizes);
-        if (Array.isArray(rawSizes)) {
-            specs.sizes = rawSizes;
-        } else if (typeof rawSizes === 'string') {
-            // Split by comma and trim
-            specs.sizes = rawSizes.split(',').map((s: string) => s.trim()).filter(Boolean);
-        }
-    }
-
-    if (!metadata.specs && !metadata.sizes) {
-        // Fallback: Try to find Options named "Size" or "Paper"
+    if (!metadata.specs) {
+        // Fallback: Try to find Options named "Paper"
         if (product.options) {
-            const sizeOpt = product.options.find((o: any) => o?.title?.toLowerCase() === 'size');
-            if (sizeOpt && sizeOpt.values) {
-                // @ts-ignore
-                specs.sizes = sizeOpt.values.map(v => v.value);
-            }
             const paperOpt = product.options.find((o: any) => o?.title?.toLowerCase().includes('paper'));
             if (paperOpt && paperOpt.values) {
                 // @ts-ignore
@@ -143,12 +108,10 @@ function mapMedusaProduct(product: any): ProductData {
     }
 
     // Map Conventions from Collections or Tags
-    // If using Collections for "Popular at X", we map collection handles/titles.
     const relevantConventions = product.collection
-        ? [product.collection.handle] // Single collection per product in standard Medusa, or use tags
+        ? [product.collection.handle]
         : [];
 
-    // If you use tags for multiple conventions:
     if (product.tags) {
         product.tags.forEach((t: any) => relevantConventions.push(t.value));
     }
