@@ -4,7 +4,7 @@
 // Example Dockerfile command: RUN apt-get update && apt-get install -y ghostscript
 
 // Gen 2 Imports:
-const functions = require('firebase-functions'); // v1 SDK for auth trigger
+const functions = require('firebase-functions/v1'); // v1 SDK for auth trigger
 const { onObjectFinalized } = require('firebase-functions/v2/storage');
 const { onCall, HttpsError } = require('firebase-functions/v2/https'); // <-- Import for callable function
 const { onSchedule } = require("firebase-functions/v2/scheduler");
