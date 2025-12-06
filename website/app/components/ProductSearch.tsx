@@ -2,9 +2,13 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import products from '../../data/products.json';
+import { ProductData } from '../lib/medusa-products';
 
-export default function ProductSearch() {
+interface ProductSearchProps {
+  products: ProductData[];
+}
+
+export default function ProductSearch({ products }: ProductSearchProps) {
   const router = useRouter();
   const [query, setQuery] = useState('');
 
