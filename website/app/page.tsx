@@ -1,9 +1,11 @@
 import React from 'react';
 import Link from 'next/link';
 import ProductSearch from './components/ProductSearch';
-import products from '../data/products.json';
+import { getAllProducts } from './lib/medusa-products';
 
-export default function Home() {
+export default async function Home() {
+  const products = await getAllProducts();
+
   return (
     <div className="bg-slate-900">
 
