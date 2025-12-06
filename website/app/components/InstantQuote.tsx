@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useStore } from '../context/StoreContext';
 import { functions, httpsCallable, db } from '../firebase/config';
 import { collection, query, where, getDocs, orderBy, onSnapshot } from 'firebase/firestore';
@@ -62,6 +62,7 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
     const [customWidth, setCustomWidth] = useState<number>(8.5);
     const [customHeight, setCustomHeight] = useState<number>(11);
     const [isCustomSize, setIsCustomSize] = useState(false);
+    const [customUnit, setCustomUnit] = useState<'in' | 'mm'>('in'); // New State: Unit Toggle
 
     // Books / Saddle Stitch
     const [pageCount, setPageCount] = useState<number>(product.specs.minPages || (isSaddleStitch ? 8 : 32));
@@ -170,18 +171,41 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
         };
     }, [productType, product.specs.sizes]);
 
+    // --- Derived State: Filtered & Sorted Sizes ---
+    const filteredSizes = useMemo(() => {
+        if (!product.specs.sizes || product.specs.sizes.length === 0) {
+            // Fallback: If no metadata specs, show all sizes sorted by name (default from DB)
+            return availableSizes;
+        }
+
+        // Filter: Only include sizes listed in product.specs.sizes
+        // Note: We match by Name.
+        const allowed = availableSizes.filter(s => product.specs.sizes!.includes(s.name));
+
+        // Sort: Match the order in product.specs.sizes
+        return allowed.sort((a, b) => {
+            const indexA = product.specs.sizes!.indexOf(a.name);
+            const indexB = product.specs.sizes!.indexOf(b.name);
+            return indexA - indexB;
+        });
+    }, [availableSizes, product.specs.sizes]);
+
 
     // --- 2. Handle Size Selection ---
-    const handleSizeSelect = (sizeObj: PaperSize) => {
-        setSelectedSizeName(sizeObj.name);
-        setCustomWidth(sizeObj.width);
-        setCustomHeight(sizeObj.height);
-        setIsCustomSize(false);
-    };
-
-    const handleCustomSizeToggle = () => {
-        setIsCustomSize(true);
-        setSelectedSizeName('Custom');
+    const handleSizeSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
+        const val = e.target.value;
+        if (val === 'Custom') {
+            setIsCustomSize(true);
+            setSelectedSizeName('Custom');
+        } else {
+            const sizeObj = availableSizes.find(s => s.name === val);
+            if (sizeObj) {
+                setSelectedSizeName(sizeObj.name);
+                setCustomWidth(sizeObj.width);
+                setCustomHeight(sizeObj.height);
+                setIsCustomSize(false);
+            }
+        }
     };
 
     // --- 3. Trigger Calculation ---
@@ -194,7 +218,7 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
         quantity, customWidth, customHeight, pageCount,
         interiorPaper, coverPaper, paperStock,
         lamination, bindingType, hasSeparateCover,
-        loadingData
+        loadingData, customUnit // Add unit to dependencies
     ]);
 
     const calculatePrice = async () => {
@@ -226,10 +250,6 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
                 });
             } else if (isSaddleStitch) {
                 // Saddle Stitch
-                // If "Self Cover" (hasSeparateCover = false), the cover is just the outer 4 pages of the interior stock.
-                // The backend usually treats Saddle Stitch as one "Interior" block if self-cover,
-                // OR separate if specified. However, standard logic often assumes Cover is separate object for Paper Type.
-
                 if (hasSeparateCover) {
                     items.push({
                         type: 'Interior',
@@ -247,21 +267,13 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
                         finish: lamination !== 'None' ? lamination : undefined
                     });
                 } else {
-                    // Self Cover: Treat as one big interior block?
-                    // Or explicit Cover object with SAME stock?
-                    // Let's send 4 pages less for interior + 4 pages cover with SAME stock to be safe for pricing model.
                     items.push({
                         type: 'Interior',
-                        pages: pageCount, // Total pages for self cover usually includes cover
+                        pages: pageCount,
                         stockName: interiorPaper?.name || 'Unknown',
                         colorType: 'Color',
                         doubleSided: true
                     });
-                     // Lamination on Self Cover?
-                    if (lamination !== 'None') {
-                         // If lamination is needed on self cover, we might need to separate it logic-wise
-                         // to trigger the lamination cost on the outer 4 pages.
-                    }
                 }
             } else {
                 // Flat / Large Format
@@ -274,13 +286,21 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
                 });
             }
 
+            // Unit Conversion for Custom Sizes
+            let finalWidth = customWidth;
+            let finalHeight = customHeight;
+
+            if (isCustomSize && customUnit === 'mm') {
+                finalWidth = customWidth / 25.4;
+                finalHeight = customHeight / 25.4;
+            }
+
             const requestData = {
                 quantity: quantity,
                 bindingType: (isBookBuilder || isSaddleStitch) ? bindingType : 'None',
-                finishedWidth: customWidth,
-                finishedHeight: customHeight,
+                finishedWidth: finalWidth,
+                finishedHeight: finalHeight,
                 items: items,
-                // Saddle Stitch specific Logic for backend if needed
                 laminationType: lamination.toLowerCase()
             };
 
@@ -291,7 +311,6 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
                 setEstimatedPrice(data.totalPrice);
             } else {
                 setEstimatedPrice(null);
-                // setError("Could not calculate price."); // Don't show error immediately on init
             }
         } catch (err) {
             console.error("Estimate error:", err);
@@ -344,58 +363,64 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
                     />
                 </div>
 
-                {/* 2. Trim Size */}
+                {/* 2. Trim Size (Refactored to Dropdown with Custom Unit Toggle) */}
                 {!isMerch && (
                     <div>
                         <label className="block text-sm font-bold text-gray-300 mb-2">Trim Size</label>
-                        <div className="flex flex-wrap gap-2 mb-3">
-                            {/* Filter available sizes based on product specs if present */}
-                            {availableSizes
-                                .filter(s => !product.specs.sizes || product.specs.sizes.length === 0 || product.specs.sizes.includes(s.name))
-                                .map(size => (
-                                <button
-                                    key={size.id}
-                                    onClick={() => handleSizeSelect(size)}
-                                    className={`px-3 py-2 rounded text-sm font-medium transition-colors border ${
-                                        !isCustomSize && selectedSizeName === size.name
-                                        ? 'bg-indigo-600 border-indigo-500 text-white'
-                                        : 'bg-slate-900 border-slate-600 text-gray-300 hover:bg-slate-700'
-                                    }`}
-                                >
-                                    {size.name} <span className="text-xs opacity-75">({size.width}" x {size.height}")</span>
-                                </button>
+
+                        <select
+                            value={selectedSizeName}
+                            onChange={handleSizeSelect}
+                            className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-3 text-white focus:ring-2 focus:ring-indigo-500 font-medium mb-3"
+                        >
+                            {filteredSizes.map(size => (
+                                <option key={size.id} value={size.name}>
+                                    {size.name} ({size.width}" x {size.height}")
+                                </option>
                             ))}
-                            <button
-                                onClick={handleCustomSizeToggle}
-                                className={`px-3 py-2 rounded text-sm font-medium transition-colors border ${
-                                    isCustomSize
-                                    ? 'bg-indigo-600 border-indigo-500 text-white'
-                                    : 'bg-slate-900 border-slate-600 text-gray-300 hover:bg-slate-700'
-                                }`}
-                            >
-                                Custom Size
-                            </button>
-                        </div>
+                            <option value="Custom">Custom Size</option>
+                        </select>
 
                         {isCustomSize && (
-                            <div className="grid grid-cols-2 gap-4 bg-slate-900/50 p-3 rounded border border-slate-700">
-                                <div>
-                                    <label className="block text-xs text-gray-400 mb-1">Width (in)</label>
-                                    <input
-                                        type="number" step="0.125"
-                                        value={customWidth}
-                                        onChange={e => setCustomWidth(parseFloat(e.target.value))}
-                                        className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-white text-sm"
-                                    />
+                            <div className="bg-slate-900/50 p-4 rounded border border-slate-700">
+                                <div className="flex justify-between items-center mb-3">
+                                    <span className="text-xs text-gray-400 uppercase tracking-wider font-semibold">Dimensions</span>
+                                    {/* Unit Toggle */}
+                                    <div className="flex bg-slate-800 rounded p-1 border border-slate-600">
+                                        <button
+                                            onClick={() => setCustomUnit('in')}
+                                            className={`px-3 py-1 text-xs font-medium rounded transition-colors ${customUnit === 'in' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}
+                                        >
+                                            IN
+                                        </button>
+                                        <button
+                                            onClick={() => setCustomUnit('mm')}
+                                            className={`px-3 py-1 text-xs font-medium rounded transition-colors ${customUnit === 'mm' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}
+                                        >
+                                            MM
+                                        </button>
+                                    </div>
                                 </div>
-                                <div>
-                                    <label className="block text-xs text-gray-400 mb-1">Height (in)</label>
-                                    <input
-                                        type="number" step="0.125"
-                                        value={customHeight}
-                                        onChange={e => setCustomHeight(parseFloat(e.target.value))}
-                                        className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-white text-sm"
-                                    />
+
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block text-xs text-gray-400 mb-1">Width</label>
+                                        <input
+                                            type="number" step="0.125"
+                                            value={customWidth}
+                                            onChange={e => setCustomWidth(parseFloat(e.target.value))}
+                                            className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-white font-medium"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs text-gray-400 mb-1">Height</label>
+                                        <input
+                                            type="number" step="0.125"
+                                            value={customHeight}
+                                            onChange={e => setCustomHeight(parseFloat(e.target.value))}
+                                            className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-white font-medium"
+                                        />
+                                    </div>
                                 </div>
                             </div>
                         )}
