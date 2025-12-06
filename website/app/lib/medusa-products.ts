@@ -82,7 +82,12 @@ function mapMedusaProduct(product: any): ProductData {
     // Map Specs from Options or Metadata
     // For now, we look for 'specs' in metadata, or try to infer from variants/options if implemented later.
     // Assuming metadata.specs is a JSON object similar to your local data.
-    let specs = {
+    let specs: {
+        minPages: number;
+        maxPages: number;
+        paperStocks: string[];
+        sizes: string[];
+    } = {
         minPages: 0,
         maxPages: 0,
         paperStocks: [],
