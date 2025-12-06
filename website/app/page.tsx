@@ -27,7 +27,7 @@ export default async function Home() {
           {/* Product Search Widget */}
           <div className="mt-8 max-w-xl mx-auto text-left">
               <label className="block text-sm font-medium text-gray-400 mb-2 text-center">Find your product instantly:</label>
-              <ProductSearch />
+              <ProductSearch products={products} />
           </div>
 
           <div className="mt-10 flex justify-center gap-4">
