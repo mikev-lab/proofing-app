@@ -158,29 +158,9 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
         }
     };
 
-    const handleAddToCart = () => {
-        if (estimatedPrice === null) return;
-
-        let specsString = `${quantity} copies, ${size}`;
-        if (isBookBuilder) {
-            specsString += `, ${pageCount} pages, Int: ${interiorPaper}, Cov: ${coverPaper}, ${lamination}`;
-        } else {
-            specsString += `, ${paperStock}`;
-        }
-
-        addItem({
-            title: product.name,
-            quantity: 1, // 1 "Project" of X copies
-            unit_price: Math.round(estimatedPrice * 100), // cents
-            metadata: {
-                specs: specsString,
-                quantity_ordered: quantity,
-                is_custom_quote: true
-            },
-            variant: {
-                title: `${quantity} Copies`
-            }
-        });
+    const handleStartProject = () => {
+        // Placeholder functionality as requested
+        alert("Builder coming soon! This will launch the project setup wizard.");
     };
 
     return (
@@ -308,18 +288,13 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
 
                 {error && <p className="text-xs text-yellow-500 mb-4">{error}</p>}
 
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3">
                     <button
-                        onClick={handleAddToCart}
+                        onClick={handleStartProject}
                         disabled={isCalculating || !estimatedPrice}
-                        className="bg-green-600 hover:bg-green-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-3 px-4 rounded-lg shadow transition-colors flex items-center justify-center"
+                        className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-3 px-4 rounded-lg shadow transition-colors flex items-center justify-center w-full"
                     >
-                        Add to Cart
-                    </button>
-                    <button
-                        className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 px-4 rounded-lg shadow transition-colors"
-                    >
-                        Start Building
+                        Start Your Project
                     </button>
                 </div>
             </div>
