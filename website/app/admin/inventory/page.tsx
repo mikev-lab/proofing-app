@@ -37,7 +37,7 @@ export default function AdminInventory() {
       name: '', manufacturerSKU: '', type: 'Text', weight: '', finish: 'Matte',
       thickness_caliper: '', sheetsPerPackage: '', location: '', reorderPoint: '',
       dimensions: { width: '', height: '', unit: 'in' }, grainDirection: 'long',
-      brand: '', color: ''
+      brand: '', color: '', availableForBuilders: []
   });
   const [receiveData, setReceiveData] = useState({ inventoryItemId: '', packagesQuantity: '', totalCost: '' });
   const [submitting, setSubmitting] = useState(false);
@@ -152,7 +152,7 @@ export default function AdminInventory() {
              name: '', manufacturerSKU: '', type: 'Text', weight: '', finish: 'Matte',
              thickness_caliper: '', sheetsPerPackage: '', location: '', reorderPoint: '',
              dimensions: { width: '', height: '', unit: 'in' }, grainDirection: 'long',
-             brand: '', color: ''
+             brand: '', color: '', availableForBuilders: []
           });
       } catch (err: any) {
           alert(`Error: ${err.message}`);
@@ -414,6 +414,31 @@ export default function AdminInventory() {
                                 <label className="block text-xs text-gray-400 mb-1">Color (Optional)</label>
                                 <input className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white"
                                     value={newItem.color} onChange={e => setNewItem({...newItem, color: e.target.value})} />
+                            </div>
+                        </div>
+
+                        {/* Column 4: Builder Availability (Full Width) */}
+                        <div className="col-span-1 md:col-span-3 bg-slate-900/50 p-4 rounded border border-slate-700">
+                            <h4 className="text-sm font-bold text-gray-300 mb-3">Available In Builders</h4>
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                {['book_builder', 'print_builder', 'large_format_builder', 'saddle_stitch_builder'].map(builder => (
+                                    <label key={builder} className="flex items-center space-x-2 cursor-pointer">
+                                        <input
+                                            type="checkbox"
+                                            className="form-checkbox text-indigo-600 rounded bg-slate-800 border-slate-600"
+                                            checked={newItem.availableForBuilders?.includes(builder) || false}
+                                            onChange={(e) => {
+                                                const current = newItem.availableForBuilders || [];
+                                                if (e.target.checked) {
+                                                    setNewItem({ ...newItem, availableForBuilders: [...current, builder] });
+                                                } else {
+                                                    setNewItem({ ...newItem, availableForBuilders: current.filter((b: string) => b !== builder) });
+                                                }
+                                            }}
+                                        />
+                                        <span className="text-sm text-gray-400 capitalize">{builder.replace(/_/g, ' ')}</span>
+                                    </label>
+                                ))}
                             </div>
                         </div>
 
