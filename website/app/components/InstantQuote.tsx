@@ -118,22 +118,20 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
                     }
                 });
 
-                // B. Fetch Inventory (Papers available for this builder)
-                // Note: We fetch ALL inventory and filter client-side because Firestore array-contains
-                // is simple, but we need to check if 'productType' is in 'availableForBuilders' array.
-                const invQuery = query(collection(db, 'inventory'));
-                const invSnapshot = await getDocs(invQuery);
+                // B. Fetch Inventory via Cloud Function (Secure & Public)
+                const getPublicPaperList = httpsCallable(functions, 'estimators_getPublicPaperList');
+                const result = await getPublicPaperList();
+                const allPapers = (result.data as any).papers || [];
 
                 const papers: PaperStock[] = [];
-                invSnapshot.forEach(doc => {
-                    const data = doc.data();
-                    const builders = data.availableForBuilders || [];
+                allPapers.forEach((p: any) => {
+                    const builders = p.availableForBuilders || [];
                     if (builders.includes(productType)) {
                         papers.push({
-                            id: doc.id,
-                            name: data.name,
-                            type: data.type,
-                            finish: data.finish
+                            id: p.sku, // Use SKU as ID if doc ID unavailable, or handle mapping
+                            name: p.name,
+                            type: p.type,
+                            finish: p.finish
                         });
                     }
                 });
