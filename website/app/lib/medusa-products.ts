@@ -99,12 +99,12 @@ function mapMedusaProduct(product: any): ProductData {
     } else {
         // Fallback: Try to find Options named "Size" or "Paper"
         if (product.options) {
-            const sizeOpt = product.options.find((o: any) => o.title.toLowerCase() === 'size');
+            const sizeOpt = product.options.find((o: any) => o?.title?.toLowerCase() === 'size');
             if (sizeOpt && sizeOpt.values) {
                 // @ts-ignore
                 specs.sizes = sizeOpt.values.map(v => v.value);
             }
-            const paperOpt = product.options.find((o: any) => o.title.toLowerCase().includes('paper'));
+            const paperOpt = product.options.find((o: any) => o?.title?.toLowerCase().includes('paper'));
             if (paperOpt && paperOpt.values) {
                 // @ts-ignore
                 specs.paperStocks = paperOpt.values.map(v => v.value);
