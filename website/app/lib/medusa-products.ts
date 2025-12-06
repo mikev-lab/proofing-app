@@ -98,13 +98,17 @@ function mapMedusaProduct(product: any): ProductData {
         }
     }
 
-    // Explicitly check for 'sizes' key in metadata (CSV string or JSON array)
-    if (metadata.sizes) {
-        if (Array.isArray(metadata.sizes)) {
-            specs.sizes = metadata.sizes;
-        } else if (typeof metadata.sizes === 'string') {
+    // Explicitly check for 'sizes' key in metadata (CSV string or JSON array) - Case Insensitive
+    // This handles "Sizes", "sizes", "trim_sizes", etc.
+    const sizeKey = Object.keys(metadata).find(k => k.toLowerCase() === 'sizes' || k.toLowerCase() === 'trim_sizes');
+    const rawSizes = sizeKey ? metadata[sizeKey] : undefined;
+
+    if (rawSizes) {
+        if (Array.isArray(rawSizes)) {
+            specs.sizes = rawSizes;
+        } else if (typeof rawSizes === 'string') {
             // Split by comma and trim
-            specs.sizes = metadata.sizes.split(',').map((s: string) => s.trim()).filter(Boolean);
+            specs.sizes = rawSizes.split(',').map((s: string) => s.trim()).filter(Boolean);
         }
     }
 
