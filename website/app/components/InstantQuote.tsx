@@ -9,6 +9,7 @@ interface ProductData {
     name: string;
     slug: string;
     category: string;
+    type?: string;
     specs: {
         minPages?: number;
         maxPages?: number;
@@ -24,15 +25,45 @@ interface InstantQuoteProps {
 
 export default function InstantQuote({ product }: InstantQuoteProps) {
     const { addItem } = useStore();
-    const [pageCount, setPageCount] = useState<number>(32);
+
+    // Determine the builder mode based on product type
+    const productType = product.type || 'print_builder';
+    const isBookBuilder = productType === 'book_builder';
+
+    // Legacy Category Flags (still useful for Merch vs Print logic if type is generic)
+    const isMerch = product.category === 'Merch';
+
+    // State
     const [quantity, setQuantity] = useState<number>(100);
-    const [paperType, setPaperType] = useState<string>(product.specs.paperStocks?.[0] || '80lb Gloss Text');
     const [size, setSize] = useState<string>(product.specs.sizes?.[0] || '5.5 x 8.5');
-    const [bindingType, setBindingType] = useState<string>('Perfect Bound'); // Default, or derive from product category
+
+    // Book Builder Specifics
+    const [pageCount, setPageCount] = useState<number>(product.specs.minPages || 32);
+    const [interiorPaper, setInteriorPaper] = useState<string>(product.specs.paperStocks?.[0] || '80lb Gloss Text');
+    const [coverPaper, setCoverPaper] = useState<string>('100lb Gloss Cover');
+    const [lamination, setLamination] = useState<string>('Gloss');
+    const [bindingType, setBindingType] = useState<string>(product.name.includes('Saddle') ? 'Saddle Stitch' : 'Perfect Bound');
+
+    // Print Builder Specifics
+    const [paperStock, setPaperStock] = useState<string>(product.specs.paperStocks?.[0] || '100lb Gloss Text');
 
     const [estimatedPrice, setEstimatedPrice] = useState<number | null>(null);
     const [isCalculating, setIsCalculating] = useState(false);
     const [error, setError] = useState<string | null>(null);
+
+    // Cover Stock Options (Hardcoded for now as they aren't in specs yet)
+    const COVER_STOCKS = [
+        "100lb Gloss Cover",
+        "100lb Matte Cover",
+        "12pt C1S"
+    ];
+
+    // Lamination Options
+    const LAMINATIONS = [
+        "Gloss",
+        "Matte",
+        "Soft Touch"
+    ];
 
     // Debounce calculation
     useEffect(() => {
@@ -40,7 +71,7 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
             calculatePrice();
         }, 500);
         return () => clearTimeout(timer);
-    }, [pageCount, quantity, paperType, size, bindingType]);
+    }, [quantity, size, pageCount, interiorPaper, coverPaper, lamination, bindingType, paperStock, isBookBuilder]);
 
     const calculatePrice = async () => {
         setIsCalculating(true);
@@ -67,28 +98,42 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
             } else if (size === 'A4') { width = 8.27; height = 11.69; }
             else if (size === 'A5') { width = 5.83; height = 8.27; }
 
+            const items = [];
+
+            if (isBookBuilder) {
+                // Book Logic: Interior + Cover
+                items.push({
+                    type: 'Interior',
+                    pages: pageCount,
+                    stockName: interiorPaper,
+                    colorType: 'Color',
+                    doubleSided: true
+                });
+                items.push({
+                    type: 'Cover',
+                    pages: 4,
+                    stockName: coverPaper,
+                    colorType: 'Color',
+                    doubleSided: false,
+                    finish: lamination
+                });
+            } else {
+                // Flat Item Logic (Prints, Posters)
+                items.push({
+                    type: 'Flat',
+                    pages: 2, // Front/Back assumed for flat prints
+                    stockName: paperStock,
+                    colorType: 'Color',
+                    doubleSided: true
+                });
+            }
+
             const requestData = {
                 quantity: quantity,
-                bindingType: product.category === 'Books' ? (product.slug.includes('saddle') ? 'Saddle Stitch' : 'Perfect Bound') : 'None', // infer
+                bindingType: isBookBuilder ? bindingType : 'None',
                 finishedWidth: width,
                 finishedHeight: height,
-                items: [
-                    {
-                        type: 'Interior',
-                        pages: pageCount,
-                        stockName: paperType,
-                        colorType: 'Color', // Defaulting to Color
-                        doubleSided: true
-                    },
-                    {
-                        type: 'Cover',
-                        pages: 4,
-                        stockName: '100lb Gloss Cover', // Default cover
-                        colorType: 'Color',
-                        doubleSided: false, // Single sided outer
-                        finish: 'Gloss'
-                    }
-                ]
+                items: items
             };
 
             const result = await calculateEstimate(requestData);
@@ -116,12 +161,19 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
     const handleAddToCart = () => {
         if (estimatedPrice === null) return;
 
+        let specsString = `${quantity} copies, ${size}`;
+        if (isBookBuilder) {
+            specsString += `, ${pageCount} pages, Int: ${interiorPaper}, Cov: ${coverPaper}, ${lamination}`;
+        } else {
+            specsString += `, ${paperStock}`;
+        }
+
         addItem({
             title: product.name,
             quantity: 1, // 1 "Project" of X copies
             unit_price: Math.round(estimatedPrice * 100), // cents
             metadata: {
-                specs: `${quantity} copies, ${pageCount} pages, ${size}, ${paperType}`,
+                specs: specsString,
                 quantity_ordered: quantity,
                 is_custom_quote: true
             },
@@ -153,43 +205,83 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
                     />
                 </div>
 
-                {/* Page Count (Only for books) */}
-                {product.category === 'Books' && (
+                {/* Size - Common to both */}
+                {!isMerch && (
                     <div>
-                        <label className="block text-sm font-medium text-gray-400 mb-1">Page Count</label>
-                        <input
-                            type="number"
-                            value={pageCount}
-                            onChange={(e) => setPageCount(Number(e.target.value))}
+                        <label className="block text-sm font-medium text-gray-400 mb-1">Size</label>
+                        <select
+                            value={size}
+                            onChange={(e) => setSize(e.target.value)}
                             className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white focus:ring-2 focus:ring-indigo-500"
-                            min="8"
-                        />
+                        >
+                            {product.specs.sizes?.map(s => <option key={s} value={s}>{s}</option>)}
+                        </select>
                     </div>
                 )}
 
-                {/* Size */}
-                <div>
-                    <label className="block text-sm font-medium text-gray-400 mb-1">Size</label>
-                    <select
-                        value={size}
-                        onChange={(e) => setSize(e.target.value)}
-                        className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white focus:ring-2 focus:ring-indigo-500"
-                    >
-                        {product.specs.sizes?.map(s => <option key={s} value={s}>{s}</option>)}
-                    </select>
-                </div>
+                {/* BOOK BUILDER CONTROLS */}
+                {isBookBuilder && (
+                    <>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-400 mb-1">Page Count</label>
+                            <input
+                                type="number"
+                                value={pageCount}
+                                onChange={(e) => setPageCount(Number(e.target.value))}
+                                className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white focus:ring-2 focus:ring-indigo-500"
+                                min={product.specs.minPages || 8}
+                                max={product.specs.maxPages || 600}
+                            />
+                        </div>
 
-                {/* Paper */}
-                <div>
-                    <label className="block text-sm font-medium text-gray-400 mb-1">Paper Stock</label>
-                    <select
-                        value={paperType}
-                        onChange={(e) => setPaperType(e.target.value)}
-                        className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white focus:ring-2 focus:ring-indigo-500"
-                    >
-                        {product.specs.paperStocks?.map(s => <option key={s} value={s}>{s}</option>)}
-                    </select>
-                </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-400 mb-1">Interior Paper</label>
+                            <select
+                                value={interiorPaper}
+                                onChange={(e) => setInteriorPaper(e.target.value)}
+                                className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white focus:ring-2 focus:ring-indigo-500"
+                            >
+                                {product.specs.paperStocks?.map(s => <option key={s} value={s}>{s}</option>)}
+                            </select>
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-gray-400 mb-1">Cover Paper</label>
+                            <select
+                                value={coverPaper}
+                                onChange={(e) => setCoverPaper(e.target.value)}
+                                className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white focus:ring-2 focus:ring-indigo-500"
+                            >
+                                {COVER_STOCKS.map(s => <option key={s} value={s}>{s}</option>)}
+                            </select>
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-gray-400 mb-1">Lamination</label>
+                            <select
+                                value={lamination}
+                                onChange={(e) => setLamination(e.target.value)}
+                                className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white focus:ring-2 focus:ring-indigo-500"
+                            >
+                                {LAMINATIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                            </select>
+                        </div>
+                    </>
+                )}
+
+                {/* PRINT BUILDER CONTROLS */}
+                {!isBookBuilder && !isMerch && (
+                    <div>
+                        <label className="block text-sm font-medium text-gray-400 mb-1">Paper Stock</label>
+                        <select
+                            value={paperStock}
+                            onChange={(e) => setPaperStock(e.target.value)}
+                            className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white focus:ring-2 focus:ring-indigo-500"
+                        >
+                            {product.specs.paperStocks?.map(s => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                    </div>
+                )}
             </div>
 
             {/* Price Display */}
