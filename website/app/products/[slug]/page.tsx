@@ -8,7 +8,14 @@ import { getAllProductHandles, getProductByHandle } from '../../lib/medusa-produ
 const conventions: Record<string, any> = conventionsData;
 
 export async function generateStaticParams() {
-  return await getAllProductHandles();
+  try {
+      const handles = await getAllProductHandles();
+      if (handles.length === 0) return [{ slug: 'placeholder' }]; // Ensure at least one path
+      return handles;
+  } catch (e) {
+      console.warn("Static params generation failed", e);
+      return [{ slug: 'placeholder' }];
+  }
 }
 
 export default async function ProductPage({ params }: { params: Promise<{ slug: string }> }) {
