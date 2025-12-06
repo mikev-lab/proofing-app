@@ -171,15 +171,34 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
 
     // --- Derived State: Filtered & Sorted Sizes ---
     const filteredSizes = useMemo(() => {
+        console.log(`[InstantQuote] Filtering sizes for product: ${product.name}`);
+        console.log(`[InstantQuote] Product spec sizes:`, product.specs.sizes);
+        console.log(`[InstantQuote] Available Firestore sizes:`, availableSizes.map(s => s.name));
+
         if (!product.specs.sizes || product.specs.sizes.length === 0) {
             // Strict Mode: If no metadata sizes are defined, show NO predefined sizes.
             // Only 'Custom Size' will be available.
+            console.log(`[InstantQuote] No sizes defined in product specs.`);
             return [];
         }
 
         // Filter: Only include sizes listed in product.specs.sizes
         // Note: We match by Name.
-        const allowed = availableSizes.filter(s => product.specs.sizes!.includes(s.name));
+        const allowed = availableSizes.filter(s => {
+            const isMatch = product.specs.sizes!.includes(s.name);
+            if (!isMatch) {
+                // Check if it's a near match (e.g. whitespace)
+                const normalizedSpecSizes = product.specs.sizes!.map(str => str.replace(/\s+/g, '').toLowerCase());
+                const normalizedCurrentName = s.name.replace(/\s+/g, '').toLowerCase();
+
+                if (normalizedSpecSizes.includes(normalizedCurrentName)) {
+                     console.warn(`[InstantQuote] Size mismatch prevented by strict check: Product has '${s.name}' but formatting differs.`);
+                }
+            }
+            return isMatch;
+        });
+
+        console.log(`[InstantQuote] Matched sizes:`, allowed.map(s => s.name));
 
         // Sort: Match the order in product.specs.sizes
         return allowed.sort((a, b) => {

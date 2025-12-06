@@ -26,6 +26,9 @@ export interface ProductData {
 function mapMedusaProduct(product: any): ProductData {
     const metadata = product.metadata || {};
 
+    console.log(`[mapMedusaProduct] Processing product: ${product.title} (${product.handle})`);
+    console.log(`[mapMedusaProduct] Raw metadata:`, JSON.stringify(metadata, null, 2));
+
     // Parse features from metadata
     let features: string[] = [];
     if (metadata && metadata.features) {
@@ -97,7 +100,12 @@ function mapMedusaProduct(product: any): ProductData {
     if (metadata.specs) {
         // If specs is stored as a nested object in metadata (Medusa supports this via JSON type in newer versions, or stringified)
         if (typeof metadata.specs === 'string') {
-             try { specs = JSON.parse(metadata.specs); } catch(e) {}
+             try {
+                const parsedSpecs = JSON.parse(metadata.specs);
+                specs = { ...specs, ...parsedSpecs };
+             } catch(e) {
+                console.error(`[mapMedusaProduct] Failed to parse specs JSON for ${product.handle}`, e);
+             }
         } else {
              specs = { ...specs, ...metadata.specs };
         }
@@ -109,6 +117,7 @@ function mapMedusaProduct(product: any): ProductData {
     const rawSizes = sizeKey ? metadata[sizeKey] : undefined;
 
     if (rawSizes) {
+        console.log(`[mapMedusaProduct] Found explicit size key '${sizeKey}':`, rawSizes);
         if (Array.isArray(rawSizes)) {
             specs.sizes = rawSizes;
         } else if (typeof rawSizes === 'string') {
@@ -143,6 +152,8 @@ function mapMedusaProduct(product: any): ProductData {
     if (product.tags) {
         product.tags.forEach((t: any) => relevantConventions.push(t.value));
     }
+
+    console.log(`[mapMedusaProduct] Final specs for ${product.handle}:`, JSON.stringify(specs, null, 2));
 
     return {
         id: product.id,
