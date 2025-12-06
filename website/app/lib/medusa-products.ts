@@ -165,8 +165,7 @@ export async function getAllProducts(): Promise<ProductData[]> {
 
     try {
         const { products } = await sdk.store.product.list({
-            limit: 100,
-            fields: "*"
+            limit: 100
         });
         return products.map(mapMedusaProduct);
     } catch (e) {
@@ -182,11 +181,9 @@ export async function getProductByHandle(handle: string): Promise<ProductData | 
     if (isMedusaConfigured()) {
         try {
             // Use Store API (public)
-            // Using wildcard fields to attempt to fetch full objects including relations
             const { products } = await sdk.store.product.list({
                 handle: handle,
-                limit: 1,
-                fields: "*"
+                limit: 1
             });
 
             if (products.length > 0) {
