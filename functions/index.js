@@ -1088,7 +1088,8 @@ exports.estimators_getPublicPaperList = onCall({ region: 'us-central1' }, async 
                         gsm: data.weight || 0,
                         finish: data.finish || 'Uncoated',
                         type: data.type || 'Uncoated',
-                        usage: data.usage || 'General' // Used to sort papers in the UI
+                        usage: data.usage || 'General', // Used to sort papers in the UI
+                        availableForBuilders: data.availableForBuilders || [] // NEW: Expose availability
                     });
                 }
             }
@@ -1130,7 +1131,7 @@ exports.upsertInventoryItem = onCall({ region: 'us-central1' }, async (request) 
     const {
         itemId, name, manufacturerSKU, sheetsPerPackage, type, weight, finish,
         thickness_caliper, location, reorderPoint, dimensions, grainDirection,
-        brand, color
+        brand, color, availableForBuilders
     } = request.data;
 
     // Core fields validation
@@ -1157,6 +1158,7 @@ exports.upsertInventoryItem = onCall({ region: 'us-central1' }, async (request) 
         grainDirection,
         brand: brand || '', // Optional
         color: color || '', // Optional
+        availableForBuilders: Array.isArray(availableForBuilders) ? availableForBuilders : [], // New Field
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
     };
 
