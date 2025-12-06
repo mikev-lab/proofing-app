@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { medusaAdmin } from '../../lib/medusa-admin';
+import { functions, httpsCallable } from '../../firebase/config';
 import { auth } from '../../firebase/config';
 import { onAuthStateChanged } from 'firebase/auth';
 import Link from 'next/link';
@@ -12,21 +12,23 @@ export default function ClientOrders() {
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      if (currentUser) {
+      if (currentUser && currentUser.email) {
         try {
-            const { orders: medusaOrders } = await medusaAdmin.admin.order.list({
-                q: currentUser.email,
-                limit: 50
-            });
-            const myOrders = medusaOrders.filter((o: any) => o.email === currentUser.email);
-            setOrders(myOrders);
+            const getOrders = httpsCallable(functions, 'medusa_getCustomerOrders');
+            const result = await getOrders();
+            const data = result.data as any;
+            setOrders(data.orders || []);
         } catch (e) {
             console.warn("Failed to fetch Medusa orders:", e);
         } finally {
             setLoading(false);
         }
-      } else {
+      } else if (!currentUser) {
+        // Redirect if not logged in
         window.location.href = '/login';
+      } else {
+        // Logged in but no email?
+        setLoading(false);
       }
     });
     return () => unsubscribe();
