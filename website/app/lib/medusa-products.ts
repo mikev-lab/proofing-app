@@ -96,7 +96,19 @@ function mapMedusaProduct(product: any): ProductData {
         } else {
              specs = { ...specs, ...metadata.specs };
         }
-    } else {
+    }
+
+    // Explicitly check for 'sizes' key in metadata (CSV string or JSON array)
+    if (metadata.sizes) {
+        if (Array.isArray(metadata.sizes)) {
+            specs.sizes = metadata.sizes;
+        } else if (typeof metadata.sizes === 'string') {
+            // Split by comma and trim
+            specs.sizes = metadata.sizes.split(',').map(s => s.trim()).filter(Boolean);
+        }
+    }
+
+    if (!metadata.specs && !metadata.sizes) {
         // Fallback: Try to find Options named "Size" or "Paper"
         if (product.options) {
             const sizeOpt = product.options.find((o: any) => o?.title?.toLowerCase() === 'size');

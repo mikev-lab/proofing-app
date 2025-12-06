@@ -174,8 +174,9 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
     // --- Derived State: Filtered & Sorted Sizes ---
     const filteredSizes = useMemo(() => {
         if (!product.specs.sizes || product.specs.sizes.length === 0) {
-            // Fallback: If no metadata specs, show all sizes sorted by name (default from DB)
-            return availableSizes;
+            // Strict Mode: If no metadata sizes are defined, show NO predefined sizes.
+            // Only 'Custom Size' will be available.
+            return [];
         }
 
         // Filter: Only include sizes listed in product.specs.sizes
@@ -388,13 +389,25 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
                                     {/* Unit Toggle */}
                                     <div className="flex bg-slate-800 rounded p-1 border border-slate-600">
                                         <button
-                                            onClick={() => setCustomUnit('in')}
+                                            onClick={() => {
+                                                if (customUnit !== 'in') {
+                                                    setCustomUnit('in');
+                                                    setCustomWidth(w => parseFloat((w / 25.4).toFixed(3)));
+                                                    setCustomHeight(h => parseFloat((h / 25.4).toFixed(3)));
+                                                }
+                                            }}
                                             className={`px-3 py-1 text-xs font-medium rounded transition-colors ${customUnit === 'in' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}
                                         >
                                             IN
                                         </button>
                                         <button
-                                            onClick={() => setCustomUnit('mm')}
+                                            onClick={() => {
+                                                if (customUnit !== 'mm') {
+                                                    setCustomUnit('mm');
+                                                    setCustomWidth(w => parseFloat((w * 25.4).toFixed(1)));
+                                                    setCustomHeight(h => parseFloat((h * 25.4).toFixed(1)));
+                                                }
+                                            }}
                                             className={`px-3 py-1 text-xs font-medium rounded transition-colors ${customUnit === 'mm' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}
                                         >
                                             MM
