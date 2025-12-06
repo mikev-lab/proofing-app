@@ -104,7 +104,7 @@ function mapMedusaProduct(product: any): ProductData {
             specs.sizes = metadata.sizes;
         } else if (typeof metadata.sizes === 'string') {
             // Split by comma and trim
-            specs.sizes = metadata.sizes.split(',').map(s => s.trim()).filter(Boolean);
+            specs.sizes = metadata.sizes.split(',').map((s: string) => s.trim()).filter(Boolean);
         }
     }
 
