@@ -10,6 +10,9 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
     "@medusajs/js-sdk": "^2.12.1",
     "chart.js": "^4.5.1",
     "firebase": "^12.6.0",

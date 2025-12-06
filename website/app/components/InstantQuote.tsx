@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useStore } from '../context/StoreContext';
 import { functions, httpsCallable, db } from '../firebase/config';
-import { collection, query, where, getDocs, orderBy, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, getDocs, orderBy, onSnapshot, doc } from 'firebase/firestore';
 
 interface ProductData {
     id: string;
@@ -15,7 +15,7 @@ interface ProductData {
         minPages?: number;
         maxPages?: number;
         paperStocks?: string[];
-        sizes?: string[]; // E.g. ["A4", "US Letter"]
+        // Sizes are now managed via Firestore
     };
 }
 
@@ -51,7 +51,8 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
 
     // --- State: Data from Firestore ---
     const [availablePapers, setAvailablePapers] = useState<PaperStock[]>([]);
-    const [availableSizes, setAvailableSizes] = useState<PaperSize[]>([]);
+    const [allSizes, setAllSizes] = useState<PaperSize[]>([]); // All definitions
+    const [allowedSizeIds, setAllowedSizeIds] = useState<string[]>([]); // Ordered IDs for this product
     const [loadingData, setLoadingData] = useState(true);
 
     // --- State: User Selections ---
@@ -62,17 +63,17 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
     const [customWidth, setCustomWidth] = useState<number>(8.5);
     const [customHeight, setCustomHeight] = useState<number>(11);
     const [isCustomSize, setIsCustomSize] = useState(false);
-    const [customUnit, setCustomUnit] = useState<'in' | 'mm'>('in'); // New State: Unit Toggle
+    const [customUnit, setCustomUnit] = useState<'in' | 'mm'>('in');
 
     // Books / Saddle Stitch
     const [pageCount, setPageCount] = useState<number>(product.specs.minPages || (isSaddleStitch ? 8 : 32));
     const [bindingType, setBindingType] = useState<string>('Perfect Bound');
-    const [lamination, setLamination] = useState<string>('None'); // None, Gloss, Matte
+    const [lamination, setLamination] = useState<string>('None');
 
     // Paper Selections
     const [interiorPaper, setInteriorPaper] = useState<PaperStock | null>(null);
     const [coverPaper, setCoverPaper] = useState<PaperStock | null>(null);
-    const [paperStock, setPaperStock] = useState<PaperStock | null>(null); // For Flat/Large Format
+    const [paperStock, setPaperStock] = useState<PaperStock | null>(null);
 
     // Saddle Stitch Specific
     const [hasSeparateCover, setHasSeparateCover] = useState(false);
@@ -82,43 +83,38 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
     const [isCalculating, setIsCalculating] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    // Lamination Options
     const LAMINATIONS = ["None", "Gloss", "Matte"];
 
-    // --- 1. Fetch Data (Papers & Sizes) ---
+    // --- 1. Fetch Data ---
     useEffect(() => {
         let unsubscribeSizes: () => void;
+        let unsubscribeProductRules: () => void;
 
         const fetchData = async () => {
             setLoadingData(true);
             try {
-                // A. Fetch Paper Sizes (Real-time listener for Settings)
+                // A. Fetch All Paper Size Definitions
                 const sizesQuery = query(collection(db, 'settings', 'paper_sizes', 'items'), orderBy('name'));
                 unsubscribeSizes = onSnapshot(sizesQuery, (snapshot) => {
                     const sizes = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as PaperSize[];
-                    setAvailableSizes(sizes);
-
-                    // Set default size selection
-                    const defaultSizeName = product.specs.sizes?.[0];
-                    if (defaultSizeName) {
-                        const found = sizes.find(s => s.name === defaultSizeName);
-                        if (found) {
-                            setSelectedSizeName(found.name);
-                            setCustomWidth(found.width);
-                            setCustomHeight(found.height);
-                        } else {
-                             // Fallback if spec size not found in ledger
-                            setSelectedSizeName('Custom');
-                            setIsCustomSize(true);
-                        }
-                    } else if (sizes.length > 0) {
-                        setSelectedSizeName(sizes[0].name);
-                        setCustomWidth(sizes[0].width);
-                        setCustomHeight(sizes[0].height);
-                    }
+                    setAllSizes(sizes);
                 });
 
-                // B. Fetch Inventory via Cloud Function (Secure & Public)
+                // B. Fetch Product Specific Rules (Strict Mode)
+                if (product.id) {
+                    const productRef = doc(db, 'settings', 'product_sizes', 'items', product.id);
+                    unsubscribeProductRules = onSnapshot(productRef, (docSnap) => {
+                         if (docSnap.exists()) {
+                             const data = docSnap.data();
+                             setAllowedSizeIds(data.allowedSizeIds || []);
+                         } else {
+                             // Strict Mode: If no doc exists, NO sizes are allowed (except custom)
+                             setAllowedSizeIds([]);
+                         }
+                    });
+                }
+
+                // C. Fetch Inventory
                 const getPublicPaperList = httpsCallable(functions, 'estimators_getPublicPaperList');
                 const result = await getPublicPaperList();
                 const allPapers = (result.data as any).papers || [];
@@ -128,7 +124,7 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
                     const builders = p.availableForBuilders || [];
                     if (builders.includes(productType)) {
                         papers.push({
-                            id: p.sku, // Use SKU as ID if doc ID unavailable, or handle mapping
+                            id: p.sku,
                             name: p.name,
                             type: p.type,
                             finish: p.finish
@@ -136,17 +132,12 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
                     }
                 });
 
-                // If no papers found specific to builder, fallback to all (dev safety) or empty
-                if (papers.length === 0) {
-                     // console.warn("No specific papers found for builder, loading generic fallback...");
-                }
                 setAvailablePapers(papers);
 
-                // Set Default Papers
+                // Default Papers
                 if (papers.length > 0) {
                     setInteriorPaper(papers[0]);
                     setPaperStock(papers[0]);
-                    // Try to find a cover stock for default
                     const cover = papers.find(p => p.type === 'Cover' || p.name.includes('Cover')) || papers[0];
                     setCoverPaper(cover);
                 }
@@ -160,53 +151,44 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
 
         fetchData();
 
-        // Set Initial Binding Defaults
         if (isBookBuilder) setBindingType('Perfect Bound');
         if (isSaddleStitch) setBindingType('Saddle Stitch');
 
         return () => {
             if (unsubscribeSizes) unsubscribeSizes();
+            if (unsubscribeProductRules) unsubscribeProductRules();
         };
-    }, [productType, product.specs.sizes]);
+    }, [productType, product.id]);
+
 
     // --- Derived State: Filtered & Sorted Sizes ---
     const filteredSizes = useMemo(() => {
-        console.log(`[InstantQuote] Filtering sizes for product: ${product.name}`);
-        console.log(`[InstantQuote] Product spec sizes:`, product.specs.sizes);
-        console.log(`[InstantQuote] Available Firestore sizes:`, availableSizes.map(s => s.name));
+        // Map allowed IDs to actual size objects, preserving order of allowedSizeIds
+        const result: PaperSize[] = [];
 
-        if (!product.specs.sizes || product.specs.sizes.length === 0) {
-            // Strict Mode: If no metadata sizes are defined, show NO predefined sizes.
-            // Only 'Custom Size' will be available.
-            console.log(`[InstantQuote] No sizes defined in product specs.`);
-            return [];
+        allowedSizeIds.forEach(id => {
+            const found = allSizes.find(s => s.id === id);
+            if (found) result.push(found);
+        });
+
+        return result;
+    }, [allSizes, allowedSizeIds]);
+
+    // --- Set Default Size ---
+    useEffect(() => {
+        if (!loadingData && filteredSizes.length > 0 && !selectedSizeName) {
+            // Select the first recommended size
+            const first = filteredSizes[0];
+            setSelectedSizeName(first.name);
+            setCustomWidth(first.width);
+            setCustomHeight(first.height);
+            setIsCustomSize(false);
+        } else if (!loadingData && filteredSizes.length === 0 && !isCustomSize) {
+             // If no sizes allowed, force custom
+             setSelectedSizeName('Custom');
+             setIsCustomSize(true);
         }
-
-        // Filter: Only include sizes listed in product.specs.sizes
-        // Note: We match by Name.
-        const allowed = availableSizes.filter(s => {
-            const isMatch = product.specs.sizes!.includes(s.name);
-            if (!isMatch) {
-                // Check if it's a near match (e.g. whitespace)
-                const normalizedSpecSizes = product.specs.sizes!.map(str => str.replace(/\s+/g, '').toLowerCase());
-                const normalizedCurrentName = s.name.replace(/\s+/g, '').toLowerCase();
-
-                if (normalizedSpecSizes.includes(normalizedCurrentName)) {
-                     console.warn(`[InstantQuote] Size mismatch prevented by strict check: Product has '${s.name}' but formatting differs.`);
-                }
-            }
-            return isMatch;
-        });
-
-        console.log(`[InstantQuote] Matched sizes:`, allowed.map(s => s.name));
-
-        // Sort: Match the order in product.specs.sizes
-        return allowed.sort((a, b) => {
-            const indexA = product.specs.sizes!.indexOf(a.name);
-            const indexB = product.specs.sizes!.indexOf(b.name);
-            return indexA - indexB;
-        });
-    }, [availableSizes, product.specs.sizes]);
+    }, [filteredSizes, loadingData, selectedSizeName, isCustomSize]);
 
 
     // --- 2. Handle Size Selection ---
@@ -216,7 +198,7 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
             setIsCustomSize(true);
             setSelectedSizeName('Custom');
         } else {
-            const sizeObj = availableSizes.find(s => s.name === val);
+            const sizeObj = filteredSizes.find(s => s.name === val);
             if (sizeObj) {
                 setSelectedSizeName(sizeObj.name);
                 setCustomWidth(sizeObj.width);
@@ -236,7 +218,7 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
         quantity, customWidth, customHeight, pageCount,
         interiorPaper, coverPaper, paperStock,
         lamination, bindingType, hasSeparateCover,
-        loadingData, customUnit // Add unit to dependencies
+        loadingData, customUnit
     ]);
 
     const calculatePrice = async () => {
@@ -250,7 +232,6 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
             const items = [];
 
             if (isBookBuilder) {
-                // Perfect Bound Book
                 items.push({
                     type: 'Interior',
                     pages: pageCount,
@@ -267,7 +248,6 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
                     finish: lamination !== 'None' ? lamination : undefined
                 });
             } else if (isSaddleStitch) {
-                // Saddle Stitch
                 if (hasSeparateCover) {
                     items.push({
                         type: 'Interior',
@@ -294,7 +274,6 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
                     });
                 }
             } else {
-                // Flat / Large Format
                 items.push({
                     type: 'Flat',
                     pages: 2,
@@ -304,7 +283,6 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
                 });
             }
 
-            // Unit Conversion for Custom Sizes
             let finalWidth = customWidth;
             let finalHeight = customHeight;
 
@@ -332,7 +310,6 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
             }
         } catch (err) {
             console.error("Estimate error:", err);
-            // Fallback
             const rough = (0.05 * pageCount * quantity) + (2 * quantity);
             setEstimatedPrice(rough);
             setError("Live quote unavailable (offline mode)");
@@ -345,12 +322,9 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
         alert("Builder coming soon!");
     };
 
-    // --- Helper for Page Steps ---
     const handlePageCountChange = (val: number) => {
-        let step = 2; // Default
+        let step = 2;
         if (isSaddleStitch) step = 4;
-
-        // Snap to step
         const remainder = val % step;
         if (remainder !== 0) {
             val = val + (step - remainder);
@@ -381,7 +355,7 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
                     />
                 </div>
 
-                {/* 2. Trim Size (Refactored to Dropdown with Custom Unit Toggle) */}
+                {/* 2. Trim Size */}
                 {!isMerch && (
                     <div>
                         <label className="block text-sm font-bold text-gray-300 mb-2">Trim Size</label>
@@ -391,6 +365,7 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
                             onChange={handleSizeSelect}
                             className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-3 text-white focus:ring-2 focus:ring-indigo-500 font-medium mb-3"
                         >
+                            {/* Only show allowed sizes */}
                             {filteredSizes.map(size => (
                                 <option key={size.id} value={size.name}>
                                     {size.name} ({size.width}" x {size.height}")
@@ -403,7 +378,6 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
                             <div className="bg-slate-900/50 p-4 rounded border border-slate-700">
                                 <div className="flex justify-between items-center mb-3">
                                     <span className="text-xs text-gray-400 uppercase tracking-wider font-semibold">Dimensions</span>
-                                    {/* Unit Toggle */}
                                     <div className="flex bg-slate-800 rounded p-1 border border-slate-600">
                                         <button
                                             onClick={() => {
@@ -457,7 +431,7 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
                     </div>
                 )}
 
-                {/* 3. Page Count (Books Only) */}
+                {/* 3. Page Count */}
                 {(isBookBuilder || isSaddleStitch) && (
                     <div>
                         <label className="block text-sm font-bold text-gray-300 mb-2">Page Count</label>
@@ -475,7 +449,7 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
                     </div>
                 )}
 
-                {/* 4. Binding Style (Visual Indicator Only mostly) */}
+                {/* 4. Binding Style */}
                 {(isBookBuilder || isSaddleStitch) && (
                     <div>
                          <label className="block text-sm font-bold text-gray-300 mb-2">Binding</label>
@@ -511,7 +485,6 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
                 {/* 6. Paper Selection - BOOK / SADDLE */}
                 {(isBookBuilder || isSaddleStitch) && (
                     <div className="space-y-4">
-                        {/* Interior Paper */}
                         <div>
                              <label className="block text-sm font-bold text-gray-300 mb-2">Interior Paper</label>
                              <div className="grid grid-cols-1 gap-2 max-h-48 overflow-y-auto pr-1 custom-scrollbar">
@@ -532,7 +505,6 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
                             </div>
                         </div>
 
-                        {/* Saddle Stitch Separate Cover Toggle */}
                         {isSaddleStitch && (
                             <div className="flex items-center space-x-3 bg-slate-900/50 p-3 rounded border border-slate-700">
                                 <label className="text-sm font-medium text-gray-300">Add separate cover stock?</label>
@@ -549,7 +521,6 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
                             </div>
                         )}
 
-                        {/* Cover Paper (Shown if Book Builder OR Saddle Stitch with Separate Cover) */}
                         {(isBookBuilder || (isSaddleStitch && hasSeparateCover)) && (
                             <div>
                                 <label className="block text-sm font-bold text-gray-300 mb-2">Cover Paper</label>
@@ -572,7 +543,6 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
                             </div>
                         )}
 
-                        {/* Lamination */}
                         <div>
                             <label className="block text-sm font-bold text-gray-300 mb-2">Cover Lamination</label>
                             <div className="flex gap-2">
@@ -595,7 +565,6 @@ export default function InstantQuote({ product }: InstantQuoteProps) {
                 )}
             </div>
 
-            {/* Footer / Price */}
             <div className="mt-8 pt-6 border-t border-slate-700">
                 <div className="flex justify-between items-end mb-4">
                     <span className="text-gray-400 text-sm">Estimated Total</span>
