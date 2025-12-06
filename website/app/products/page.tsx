@@ -1,10 +1,10 @@
 import React from 'react';
 import Link from 'next/link';
-import products from '../../data/products.json';
+import { getAllProducts, ProductData } from '../lib/medusa-products';
 
 // Helper to group products by category
-const groupProducts = (productList: typeof products) => {
-  const grouped: Record<string, typeof products> = {};
+const groupProducts = (productList: ProductData[]) => {
+  const grouped: Record<string, ProductData[]> = {};
   productList.forEach(p => {
     if (!grouped[p.category]) {
       grouped[p.category] = [];
@@ -14,7 +14,8 @@ const groupProducts = (productList: typeof products) => {
   return grouped;
 };
 
-export default function ProductsIndex() {
+export default async function ProductsIndex() {
+  const products = await getAllProducts();
   const grouped = groupProducts(products);
   const categories = Object.keys(grouped).sort();
 

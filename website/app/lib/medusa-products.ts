@@ -1,5 +1,4 @@
 import { sdk, isMedusaConfigured } from './medusa';
-import localProducts from '../../data/products.json';
 
 // Helper interface matching your local JSON structure
 export interface ProductData {
@@ -140,18 +139,12 @@ function mapMedusaProduct(product: any): ProductData {
 
 /**
  * Fetches all product handles for static generation.
- * Merges local JSON products with Medusa products.
  */
 export async function getAllProductHandles(): Promise<{ slug: string }[]> {
     const handles = new Set<string>();
 
-    // 1. Add Local
-    localProducts.forEach(p => handles.add(p.slug));
-
-    // 2. Add Medusa (if configured)
     if (isMedusaConfigured()) {
         try {
-            // Use Store API (public) instead of Admin API (protected)
             const { products } = await sdk.store.product.list({ limit: 100 });
             products.forEach((p: any) => {
                 if (p.handle) handles.add(p.handle);
@@ -165,11 +158,27 @@ export async function getAllProductHandles(): Promise<{ slug: string }[]> {
 }
 
 /**
+ * Fetches all products with full details (for index page).
+ */
+export async function getAllProducts(): Promise<ProductData[]> {
+    if (!isMedusaConfigured()) return [];
+
+    try {
+        const { products } = await sdk.store.product.list({
+            limit: 100,
+            fields: "*"
+        });
+        return products.map(mapMedusaProduct);
+    } catch (e) {
+        console.warn("Failed to fetch all products from Medusa:", e);
+        return [];
+    }
+}
+
+/**
  * Fetches a single product by handle.
- * Checks Medusa first, then falls back to local JSON.
  */
 export async function getProductByHandle(handle: string): Promise<ProductData | null> {
-    // 1. Try Medusa
     if (isMedusaConfigured()) {
         try {
             // Use Store API (public)
@@ -181,21 +190,12 @@ export async function getProductByHandle(handle: string): Promise<ProductData | 
             });
 
             if (products.length > 0) {
-                // DEBUG: Check categories specifically
-                if (typeof window === 'undefined') {
-                    console.log(`[Medusa Debug] Categories for ${handle}:`, JSON.stringify(products[0].categories, null, 2));
-                    console.log(`[Medusa Debug] Type for ${handle}:`, JSON.stringify(products[0].type, null, 2));
-                }
                 return mapMedusaProduct(products[0]);
             }
         } catch (e) {
             console.warn(`Failed to fetch product ${handle} from Medusa:`, e);
         }
     }
-
-    // 2. Fallback to Local
-    const local = (localProducts as ProductData[]).find(p => p.slug === handle);
-    if (local) return local;
 
     return null;
 }
