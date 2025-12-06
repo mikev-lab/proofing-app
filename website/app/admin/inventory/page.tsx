@@ -326,18 +326,98 @@ export default function AdminInventory() {
             </div>
         )}
 
-        {/* Add/Edit & Receive Modals (Kept same as before, omitted for brevity but included in file write) */}
+        {/* Add/Edit Modal (Expanded) */}
         {isItemModalOpen && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm overflow-y-auto">
-                <div className="bg-slate-800 rounded-xl p-6 w-full max-w-2xl border border-slate-700 shadow-2xl my-8">
+                <div className="bg-slate-800 rounded-xl p-6 w-full max-w-4xl border border-slate-700 shadow-2xl my-8">
                     <h2 className="text-xl font-bold text-white mb-4">{newItem.itemId ? 'Edit Item' : 'Add New Item'}</h2>
-                    <form onSubmit={handleAddItem} className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div className="col-span-2">
-                            <label className="block text-xs text-gray-400 mb-1">Item Name</label>
-                            <input required className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white"
-                                value={newItem.name} onChange={e => setNewItem({...newItem, name: e.target.value})} />
+                    <form onSubmit={handleAddItem} className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        {/* Column 1 */}
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-xs text-gray-400 mb-1">Item Name</label>
+                                <input required className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white"
+                                    value={newItem.name} onChange={e => setNewItem({...newItem, name: e.target.value})} />
+                            </div>
+                            <div>
+                                <label className="block text-xs text-gray-400 mb-1">Manufacturer SKU</label>
+                                <input className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white"
+                                    value={newItem.manufacturerSKU} onChange={e => setNewItem({...newItem, manufacturerSKU: e.target.value})} />
+                            </div>
+                             <div>
+                                <label className="block text-xs text-gray-400 mb-1">Sheets Per Package</label>
+                                <input type="number" required className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white"
+                                    value={newItem.sheetsPerPackage} onChange={e => setNewItem({...newItem, sheetsPerPackage: e.target.value})} />
+                            </div>
+                             <div>
+                                <label className="block text-xs text-gray-400 mb-1">Location</label>
+                                <input className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white"
+                                    value={newItem.location} onChange={e => setNewItem({...newItem, location: e.target.value})} />
+                            </div>
                         </div>
-                        <div className="col-span-2 flex justify-end gap-3 mt-4">
+
+                        {/* Column 2 */}
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-xs text-gray-400 mb-1">Dimensions (W x H)</label>
+                                <div className="flex items-center space-x-2">
+                                     <input type="number" step="any" required placeholder="W" className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white"
+                                        value={newItem.dimensions?.width || ''} onChange={e => setNewItem({...newItem, dimensions: {...newItem.dimensions, width: e.target.value}})} />
+                                     <span className="text-gray-400">x</span>
+                                     <input type="number" step="any" required placeholder="H" className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white"
+                                        value={newItem.dimensions?.height || ''} onChange={e => setNewItem({...newItem, dimensions: {...newItem.dimensions, height: e.target.value}})} />
+                                     <select className="bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white"
+                                        value={newItem.dimensions?.unit || 'in'} onChange={e => setNewItem({...newItem, dimensions: {...newItem.dimensions, unit: e.target.value}})}>
+                                         <option value="in">in</option>
+                                         <option value="mm">mm</option>
+                                     </select>
+                                </div>
+                            </div>
+                             <div>
+                                <label className="block text-xs text-gray-400 mb-1">Grain Direction</label>
+                                <select className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white"
+                                    value={newItem.grainDirection} onChange={e => setNewItem({...newItem, grainDirection: e.target.value})}>
+                                    <option value="long">Long</option>
+                                    <option value="short">Short</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-xs text-gray-400 mb-1">Weight</label>
+                                <input className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white"
+                                    value={newItem.weight} onChange={e => setNewItem({...newItem, weight: e.target.value})} />
+                            </div>
+                            <div>
+                                <label className="block text-xs text-gray-400 mb-1">Thickness / Caliper (pt)</label>
+                                <input type="number" step="any" className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white"
+                                    value={newItem.thickness_caliper} onChange={e => setNewItem({...newItem, thickness_caliper: e.target.value})} />
+                            </div>
+                        </div>
+
+                        {/* Column 3 */}
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-xs text-gray-400 mb-1">Type</label>
+                                <input placeholder="e.g. Cover, Text" className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white"
+                                    value={newItem.type} onChange={e => setNewItem({...newItem, type: e.target.value})} />
+                            </div>
+                            <div>
+                                <label className="block text-xs text-gray-400 mb-1">Finish</label>
+                                <input placeholder="e.g. Gloss, Matte" className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white"
+                                    value={newItem.finish} onChange={e => setNewItem({...newItem, finish: e.target.value})} />
+                            </div>
+                            <div>
+                                <label className="block text-xs text-gray-400 mb-1">Brand (Optional)</label>
+                                <input className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white"
+                                    value={newItem.brand} onChange={e => setNewItem({...newItem, brand: e.target.value})} />
+                            </div>
+                             <div>
+                                <label className="block text-xs text-gray-400 mb-1">Color (Optional)</label>
+                                <input className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white"
+                                    value={newItem.color} onChange={e => setNewItem({...newItem, color: e.target.value})} />
+                            </div>
+                        </div>
+
+                        <div className="col-span-1 md:col-span-3 flex justify-end gap-3 mt-4 pt-4 border-t border-slate-700">
                             <button type="button" onClick={() => setIsItemModalOpen(false)} className="px-4 py-2 text-gray-300 hover:text-white">Cancel</button>
                             <button type="submit" disabled={submitting} className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-500">
                                 {submitting ? 'Saving...' : 'Save Item'}
@@ -348,6 +428,7 @@ export default function AdminInventory() {
             </div>
         )}
 
+        {/* Receive Inventory Modal (Unchanged) */}
         {isReceiveModalOpen && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
                 <div className="bg-slate-800 rounded-xl p-6 w-full max-w-md border border-slate-700 shadow-2xl">

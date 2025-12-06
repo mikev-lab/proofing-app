@@ -469,8 +469,9 @@ const HARDCODED_PAPER_TYPES = [
 ];
 
 // --- Production Constants ---
-const COLOR_CLICK_COST = 0.039;
-const BW_CLICK_COST = 0.009;
+// [MODIFIED] These are now dynamic defaults, overridable by settings.
+const DEFAULT_COLOR_CLICK_COST = 0.04;
+const DEFAULT_BW_CLICK_COST = 0.009;
 const GLOSS_LAMINATE_COST_PER_COVER = 0.30;
 const MATTE_LAMINATE_COST_PER_COVER = 0.60;
 const PRINTING_SPEED_SPM = 15; // Sheets per minute for c3080 (4 seconds per sheet)
@@ -708,18 +709,20 @@ const calculateCosts = (details, paperData) => {
     const bwPressSheets = Math.ceil((bwImposition > 0 ? Math.ceil(quantity * Math.ceil((bwPages > 0 ? bwPages : 0) / 2) / bwImposition) : 0) * spoilageMultiplier);
     const bwPaperCost = bwPaper ? bwPressSheets * bwPaper.costPerSheet : 0;
     const bwClicks = bwPressSheets * 2;
-    const bwClickCost = bwClicks * BW_CLICK_COST;
+    const bwClickCost = bwClicks * (details.clickCostBW || DEFAULT_BW_CLICK_COST);
 
     const colorPressSheets = Math.ceil((colorImposition > 0 ? Math.ceil(quantity * Math.ceil((colorPages > 0 ? colorPages : 0) / 2) / colorImposition) : 0) * spoilageMultiplier);
     const colorPaperCost = colorPaper ? colorPressSheets * colorPaper.costPerSheet : 0;
     const colorClicks = colorPressSheets * 2;
-    const colorClickCost = colorClicks * COLOR_CLICK_COST;
+    const colorClickCost = colorClicks * (details.clickCostColor || DEFAULT_COLOR_CLICK_COST);
 
     let coverPressSheets = 0, coverPaperCost = 0, coverClickCost = 0, coverClicks = 0;
     if (hasCover) {
         coverPressSheets = Math.ceil((coverImposition > 0 ? Math.ceil(quantity / coverImposition) : 0) * spoilageMultiplier);
         coverPaperCost = coverPaper ? coverPressSheets * coverPaper.costPerSheet : 0;
-        const coverClickRate = coverPrintColor === 'COLOR' ? COLOR_CLICK_COST : BW_CLICK_COST; // Use string literal
+        const coverClickRate = coverPrintColor === 'COLOR'
+            ? (details.clickCostColor || DEFAULT_COLOR_CLICK_COST)
+            : (details.clickCostBW || DEFAULT_BW_CLICK_COST);
         coverClicks = coverPressSheets * (coverPrintsOnBothSides ? 2 : 1);
         coverClickCost = coverClicks * coverClickRate;
     }
@@ -791,7 +794,9 @@ exports.estimators_calculateEstimate = onCall({ region: 'us-central1' }, async (
     let estimatorDefaults = {
         laborRate: 50, // Hardcoded fallback
         markupPercent: 35, // Hardcoded fallback
-        spoilagePercent: 5  // Hardcoded fallback
+        spoilagePercent: 5,  // Hardcoded fallback
+        clickCostColor: DEFAULT_COLOR_CLICK_COST,
+        clickCostBW: DEFAULT_BW_CLICK_COST
     };
 
     try {
@@ -803,13 +808,17 @@ exports.estimators_calculateEstimate = onCall({ region: 'us-central1' }, async (
             estimatorDefaults = {
                 laborRate: data.laborRate !== undefined && data.laborRate !== null ? parseFloat(data.laborRate) : 50,
                 markupPercent: data.markupPercent !== undefined && data.markupPercent !== null ? parseFloat(data.markupPercent) : 35,
-                spoilagePercent: data.spoilagePercent !== undefined && data.spoilagePercent !== null ? parseFloat(data.spoilagePercent) : 5
+                spoilagePercent: data.spoilagePercent !== undefined && data.spoilagePercent !== null ? parseFloat(data.spoilagePercent) : 5,
+                clickCostColor: data.clickCostColor !== undefined && data.clickCostColor !== null ? parseFloat(data.clickCostColor) : DEFAULT_COLOR_CLICK_COST,
+                clickCostBW: data.clickCostBW !== undefined && data.clickCostBW !== null ? parseFloat(data.clickCostBW) : DEFAULT_BW_CLICK_COST
             };
 
             // Final check to prevent NaN (e.g., from parseFloat("abc"))
             if (isNaN(estimatorDefaults.laborRate)) estimatorDefaults.laborRate = 50;
             if (isNaN(estimatorDefaults.markupPercent)) estimatorDefaults.markupPercent = 35;
             if (isNaN(estimatorDefaults.spoilagePercent)) estimatorDefaults.spoilagePercent = 5;
+            if (isNaN(estimatorDefaults.clickCostColor)) estimatorDefaults.clickCostColor = DEFAULT_COLOR_CLICK_COST;
+            if (isNaN(estimatorDefaults.clickCostBW)) estimatorDefaults.clickCostBW = DEFAULT_BW_CLICK_COST;
             // --- FIX #1 END ---
 
         }
@@ -820,8 +829,10 @@ exports.estimators_calculateEstimate = onCall({ region: 'us-central1' }, async (
     
     const clientDetails = request.data;
     let isAdmin = false;
+    let userEmail = 'Anonymous';
 
     if (request.auth && request.auth.uid) {
+        userEmail = request.auth.token.email || 'Unknown'; // Capture email
         try {
             const userDoc = await db.collection('users').doc(request.auth.uid).get();
             if (userDoc.exists && userDoc.data().role === 'admin') {
@@ -846,6 +857,8 @@ exports.estimators_calculateEstimate = onCall({ region: 'us-central1' }, async (
         finalDetails.laborRate = estimatorDefaults.laborRate;
         finalDetails.markupPercent = estimatorDefaults.markupPercent;
         finalDetails.spoilagePercent = estimatorDefaults.spoilagePercent;
+        finalDetails.clickCostColor = estimatorDefaults.clickCostColor;
+        finalDetails.clickCostBW = estimatorDefaults.clickCostBW;
 
         // Also force other sensible defaults
         finalDetails.calculateShipping = true;
@@ -918,6 +931,27 @@ exports.estimators_calculateEstimate = onCall({ region: 'us-central1' }, async (
 
     // --- EXECUTION ---
     const costBreakdown = calculateCosts(finalDetails, paperData);
+
+    // --- LOGGING (New Requirement) ---
+    // Log every quote provided through the tool
+    try {
+        const ipAddress = request.rawRequest.ip || request.rawRequest.headers['x-forwarded-for'] || 'Unknown';
+        const logData = {
+            timestamp: admin.firestore.FieldValue.serverTimestamp(),
+            userEmail: userEmail,
+            ipAddress: ipAddress,
+            projectName: finalDetails.projectName || 'front page quote', // Default as requested
+            quantity: finalDetails.quantity,
+            inputDetails: finalDetails, // Record what was asked
+            calculationResult: costBreakdown // Record the full logic output
+        };
+
+        // Asynchronously write to log, don't await blocking the response
+        db.collection('quotes').add(logData).catch(e => logger.error("Failed to log quote", e));
+
+    } catch (logErr) {
+        logger.error("Error setting up quote log", logErr);
+    }
 
     if (isAdmin) {
         // Staff/Admins get the full breakdown with all cost details
