@@ -166,7 +166,7 @@ export async function getAllProducts(): Promise<ProductData[]> {
     try {
         const { products } = await sdk.store.product.list({
             limit: 100,
-            fields: "id,title,handle,description,subtitle,metadata,*categories,*tags,*collection,*type,*options,*options.values"
+            fields: "id,title,handle,description,subtitle,metadata,categories.id,categories.name,type.id,type.value,collection.id,collection.handle,tags.id,tags.value,options.id,options.title,options.values.id,options.values.value"
         });
         return products.map(mapMedusaProduct);
     } catch (e) {
@@ -185,7 +185,7 @@ export async function getProductByHandle(handle: string): Promise<ProductData | 
             const { products } = await sdk.store.product.list({
                 handle: handle,
                 limit: 1,
-                fields: "id,title,handle,description,subtitle,metadata,*categories,*tags,*collection,*type,*options,*options.values"
+                fields: "id,title,handle,description,subtitle,metadata,categories.id,categories.name,type.id,type.value,collection.id,collection.handle,tags.id,tags.value,options.id,options.title,options.values.id,options.values.value"
             });
 
             if (products.length > 0) {
